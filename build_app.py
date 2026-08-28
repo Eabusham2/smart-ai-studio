@@ -23,10 +23,29 @@ def create_macos_bundle(dist_dir: str, app_name: str):
     resources_dir = os.path.join(contents_dir, "Resources")
     app_code_dir = os.path.join(resources_dir, "app")
 
+    # 1. Compile native macOS Mach-O executable applet via osacompile if available
+    if shutil.which("osacompile"):
+        applescript = f"""
+on run
+    set myPath to POSIX path of (path to me)
+    set resDir to myPath & "Contents/Resources/app"
+    set logFile to "/tmp/smartai_launch.log"
+    set shScript to "export PATH=\\"/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/Library/Frameworks/Python.framework/Versions/3.11/bin:/Library/Frameworks/Python.framework/Versions/3.10/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH\\"; cd " & quoted form of resDir & "; PYTHON_CMD=\\"\\"; for C in \\"$(which python3 2>/dev/null)\\" /opt/homebrew/bin/python3 /usr/local/bin/python3 /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 \\"$HOME/.pyenv/shims/python3\\"; do if [ -n \\"$C\\" ] && [ -x \\"$C\\" ]; then if \\"$C\\" -c \\"import tkinter\\" 2>/dev/null; then PYTHON_CMD=\\"$C\\"; break; fi; fi; done; if [ -z \\"$PYTHON_CMD\\" ]; then PYTHON_CMD=\\"python3\\"; fi; \\"$PYTHON_CMD\\" app_gui.py > " & quoted form of logFile & " 2>&1 &"
+    try
+        do shell script shScript
+    on error errMsg
+        display dialog ("Could not launch Smart AI Studio: " & errMsg) buttons {{"OK"}} default button "OK" with icon stop
+    end try
+end run
+"""
+        if os.path.exists(app_bundle):
+            shutil.rmtree(app_bundle, ignore_errors=True)
+        subprocess.run(["osacompile", "-o", app_bundle, "-e", applescript], check=True)
+
     os.makedirs(macos_dir, exist_ok=True)
     os.makedirs(app_code_dir, exist_ok=True)
 
-    # 1. Copy application source trees & icons
+    # 2. Copy application source trees & icons
     for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "AppIcon.icns"]:
         src = os.path.abspath(item)
         dst = os.path.join(app_code_dir, item)
@@ -39,8 +58,9 @@ def create_macos_bundle(dist_dir: str, app_name: str):
 
     if os.path.exists("AppIcon.icns"):
         shutil.copy2("AppIcon.icns", os.path.join(resources_dir, "AppIcon.icns"))
+        shutil.copy2("AppIcon.icns", os.path.join(resources_dir, "applet.icns"))
 
-    # 2. Write Info.plist
+    # 3. Write Info.plist
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -50,9 +70,9 @@ def create_macos_bundle(dist_dir: str, app_name: str):
     <key>CFBundleDisplayName</key>
     <string>Smart AI</string>
     <key>CFBundleExecutable</key>
-    <string>{app_name}</string>
+    <string>applet</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
+    <string>applet</string>
     <key>CFBundleIdentifier</key>
     <string>com.smartai.studio</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -62,7 +82,7 @@ def create_macos_bundle(dist_dir: str, app_name: str):
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
-    <string>????</string>
+    <string>aplt</string>
     <key>CFBundleShortVersionString</key>
     <string>2.0.0</string>
     <key>CFBundleVersion</key>
@@ -83,77 +103,10 @@ def create_macos_bundle(dist_dir: str, app_name: str):
     with open(os.path.join(contents_dir, "Info.plist"), "w") as f:
         f.write(plist_content)
 
-    # 3. Write executable launch script
-    launcher_script = f"""#!/usr/bin/env bash
-# macOS Smart AI Studio Universal App Launcher
-
-# 1. Expand PATH with Homebrew, Pyenv, Conda, and local Frameworks
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.pyenv/bin:$HOME/.local/bin:$HOME/miniconda3/bin:$HOME/anaconda3/bin:$PATH"
-
-# 2. Source user profile if available to inherit environment
-if [ -f "$HOME/.zprofile" ]; then source "$HOME/.zprofile" 2>/dev/null; fi
-if [ -f "$HOME/.zshrc" ]; then source "$HOME/.zshrc" 2>/dev/null; fi
-
-BUNDLE_DIR="$( cd "$( dirname "${{BASH_SOURCE[0]}}" )/../Resources/app" >/dev/null 2>&1 && pwd )"
-cd "$BUNDLE_DIR"
-
-LOG_FILE="/tmp/smartai_launch.log"
-echo "[$(date)] Launching Smart AI from $BUNDLE_DIR" > "$LOG_FILE"
-
-# 3. Find the best Python interpreter with tkinter and requirements
-PYTHON_CMD=""
-
-CANDIDATES=(
-    "$(which python3 2>/dev/null)"
-    "/opt/homebrew/bin/python3"
-    "/usr/local/bin/python3"
-    "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
-    "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
-    "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3"
-    "$HOME/.pyenv/shims/python3"
-    "$(which python 2>/dev/null)"
-)
-
-for CAND in "${{CANDIDATES[@]}}"; do
-    if [ -n "$CAND" ] && [ -x "$CAND" ]; then
-        if "$CAND" -c "import tkinter" 2>/dev/null; then
-            PYTHON_CMD="$CAND"
-            break
-        fi
-    fi
-done
-
-if [ -z "$PYTHON_CMD" ]; then
-    PYTHON_CMD="$(which python3 2>/dev/null || echo "python3")"
-fi
-
-echo "Selected Python interpreter: $PYTHON_CMD" >> "$LOG_FILE"
-
-# 4. Execute app and catch any crash/errors
-"$PYTHON_CMD" app_gui.py "$@" >> "$LOG_FILE" 2>&1
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -ne 0 ]; then
-    ERR_SNIPPET="$(tail -n 6 "$LOG_FILE" 2>/dev/null | tr '"' "'")"
-    osascript -e "display dialog \\"Smart AI Studio encountered an error during launch:\\n\\n$ERR_SNIPPET\\n\\nFull log saved to: /tmp/smartai_launch.log\\" buttons {{\\"OK\\"}} default button \\"OK\\" with icon stop with title \\"Smart AI Launch Error\\""
-fi
-exit $EXIT_CODE
-"""
-    exec_path = os.path.join(macos_dir, app_name)
-    with open(exec_path, "w") as f:
-        f.write(launcher_script)
-    os.chmod(exec_path, os.stat(exec_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    # 4. Clear macOS quarantine attributes & apply ad-hoc code signature
+    # 4. Clear macOS quarantine attributes
     if platform.system() == "Darwin":
         try:
-            # Clear quarantine attribute so Gatekeeper does not block or request admin
             subprocess.run(["xattr", "-cr", app_bundle], capture_output=True)
-        except Exception:
-            pass
-        try:
-            # Ad-hoc code sign to satisfy macOS security runtime
-            subprocess.run(["codesign", "--force", "--deep", "-s", "-", app_bundle], capture_output=True)
         except Exception:
             pass
 
