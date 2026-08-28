@@ -188,7 +188,6 @@ class SmartAIChatbotApp:
 
         # Prompt Task Queue
         self.prompt_queue: List[Tuple[str, str]] = []
-        self.conversation_list = []
 
         # Thinking Dropdown & Code Snippet Caches
         self.thinking_cache: Dict[str, str] = {}
@@ -258,29 +257,7 @@ class SmartAIChatbotApp:
         self.main_container = tk.Frame(self.root, bg=self.C["bg_app"])
         self.main_container.pack(fill="both", expand=True)
 
-        
-        # Master PanedWindow for Sidebar + Main Content
-        self.master_paned = tk.PanedWindow(self.main_container, orient="horizontal", bd=0, sashwidth=4, bg=self.C["border"])
-        self.master_paned.pack(fill="both", expand=True)
-
-        # 0. SIDEBAR
-        self.sidebar_frame = tk.Frame(self.master_paned, bg=self.C["bg_hud"], width=220)
-        self.master_paned.add(self.sidebar_frame, stretch="never", minsize=220)
-        
-        self.btn_new_chat = tk.Button(self.sidebar_frame, text="+ New Chat", bg=self.C["bg_card"], fg=self.C["text_main"], command=self._on_new_chat)
-        self.btn_new_chat.pack(fill="x", padx=8, pady=8)
-        
-        self.sidebar_list_frame = tk.Frame(self.sidebar_frame, bg=self.C["bg_hud"])
-        self.sidebar_list_frame.pack(fill="both", expand=True, padx=8)
-        
-        self.btn_settings = tk.Button(self.sidebar_frame, text="⚙ Settings", bg=self.C["bg_hud"], fg=self.C["text_muted"])
-        self.btn_settings.pack(fill="x", side="bottom", padx=8, pady=8)
-
-        self.main_content_frame = tk.Frame(self.master_paned, bg=self.C["bg_app"])
-        self.master_paned.add(self.main_content_frame, stretch="always")
-
         # 1. TOP HUD BAR (Telemetry Badges, Folder, Canvas Toggle, Export)
-
         self._build_hud_bar()
 
         # 2. SLIDE-OUT RESOURCE VIEWER DRAWER (Hidden by default)
@@ -300,7 +277,7 @@ class SmartAIChatbotApp:
 
         # 7. CENTER WORKSPACE: CHAT FEED (Left) + AI CANVAS (Right)
         self.content_paned = tk.PanedWindow(
-            self.main_content_frame, orient="horizontal", bg=self.C["border"],
+            self.main_container, orient="horizontal", bg=self.C["border"],
             sashwidth=4, bd=0
         )
         self.content_paned.pack(fill="both", expand=True, padx=16, pady=(6, 4))
@@ -315,7 +292,7 @@ class SmartAIChatbotApp:
     #  TOP HUD BAR
     # ─────────────────────────────────────────────────────
     def _build_hud_bar(self):
-        self.hud_bar = tk.Frame(self.main_content_frame, bg=self.C["bg_hud"], height=52)
+        self.hud_bar = tk.Frame(self.main_container, bg=self.C["bg_hud"], height=52)
         self.hud_bar.pack(fill="x", side="top")
         self.hud_bar.pack_propagate(False)
 
@@ -323,12 +300,10 @@ class SmartAIChatbotApp:
         brand_frame = tk.Frame(self.hud_bar, bg=self.C["bg_hud"])
         brand_frame.pack(side="left", padx=16, pady=8)
 
-        
-        self.btn_sidebar_toggle = tk.Button(brand_frame, text="☰", font=_FONT_TITLE, bg=self.C["bg_hud"], fg=self.C["text_main"], relief="flat", bd=0, command=lambda: self._toggle_sidebar())
-        self.btn_sidebar_toggle.pack(side="left", padx=(0, 8))
-        
-        tk.Label(brand_frame, text="✦ Smart AI", font=_FONT_TITLE, bg=self.C["bg_hud"], fg=self.C["accent_cyan"]).pack(side="left", padx=(0, 8))
-
+        tk.Label(
+            brand_frame, text="✦ Smart AI", font=_FONT_TITLE,
+            bg=self.C["bg_hud"], fg=self.C["accent_cyan"]
+        ).pack(side="left", padx=(0, 8))
 
         btn_folder = tk.Button(
             brand_frame, text="📂 Select Folder", font=_FONT_TINY_BOLD,
@@ -417,7 +392,7 @@ class SmartAIChatbotApp:
     # ─────────────────────────────────────────────────────
     def _build_resource_viewer(self):
         self.res_drawer = tk.Frame(
-            self.main_content_frame, bg=self.C["bg_resources"],
+            self.main_container, bg=self.C["bg_resources"],
             highlightbackground=self.C["border"], highlightthickness=1
         )
 
@@ -491,7 +466,7 @@ class SmartAIChatbotApp:
     #  MODEL TAB & CONTROLS BAR
     # ─────────────────────────────────────────────────────
     def _build_model_tab_bar(self):
-        self.tab_bar = tk.Frame(self.main_content_frame, bg=self.C["bg_tab_bar"], height=42)
+        self.tab_bar = tk.Frame(self.main_container, bg=self.C["bg_tab_bar"], height=42)
         self.tab_bar.pack(fill="x", side="top")
         self.tab_bar.pack_propagate(False)
 
@@ -583,11 +558,10 @@ class SmartAIChatbotApp:
         self.chat_stream = self.chat_streams[self.active_tab_id]
 
     def _configure_stream_tags(self, stream: tk.Text):
-        stream.tag_configure("user_msg", foreground="#ffffff", font=_FONT_MAIN, background=self.C["bg_user_bubble"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8, justify="right", relief="flat")
-        stream.tag_configure("ai_msg", foreground=self.C["text_main"], font=_FONT_MAIN, background=self.C["bg_ai_bubble"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8, justify="left", relief="flat")
-        stream.tag_configure("user_header", foreground=self.C["accent_cyan"], font=_FONT_H3, spacing1=18, spacing3=4, justify="right")
-        stream.tag_configure("ai_header", foreground=self.C["accent_green"], font=_FONT_H3, spacing1=20, spacing3=4, justify="left")
-
+        stream.tag_configure("user_header", foreground=self.C["accent_cyan"], font=_FONT_H3, spacing1=18, spacing3=4)
+        stream.tag_configure("user_msg", foreground="#ffffff", font=_FONT_MAIN, background=self.C["bg_user_bubble"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
+        stream.tag_configure("ai_header", foreground=self.C["accent_green"], font=_FONT_H3, spacing1=20, spacing3=4)
+        stream.tag_configure("ai_msg", foreground=self.C["text_main"], font=_FONT_MAIN, lmargin1=14, lmargin2=14, spacing1=3, spacing3=4)
 
         # Live Steer & Queue Tags
         stream.tag_configure("steer_header", foreground=self.C["accent_purple"], font=_FONT_H3, spacing1=16, spacing3=4)
@@ -753,7 +727,7 @@ class SmartAIChatbotApp:
     #  QUEUE DRAWER BAR
     # ─────────────────────────────────────────────────────
     def _build_queue_bar(self):
-        self.queue_bar = tk.Frame(self.main_content_frame, bg=self.C["bg_hud"], height=28)
+        self.queue_bar = tk.Frame(self.main_container, bg=self.C["bg_hud"], height=28)
         self.lbl_queue_indicator = tk.Label(
             self.queue_bar, text="📋 Pending Tasks: None", font=_FONT_TINY,
             bg=self.C["bg_hud"], fg=self.C["text_muted"], padx=10
@@ -788,7 +762,7 @@ class SmartAIChatbotApp:
     #  ATTACHED FILE BAR
     # ─────────────────────────────────────────────────────
     def _build_attachment_bar(self):
-        self.attachment_bar = tk.Frame(self.main_content_frame, bg=self.C["bg_card"], height=32)
+        self.attachment_bar = tk.Frame(self.main_container, bg=self.C["bg_card"], height=32)
         self.lbl_attached_file = tk.Label(
             self.attachment_bar, text="📎 Attached File: None", font=_FONT_SMALL,
             bg=self.C["bg_card"], fg=self.C["accent_cyan"], padx=10, pady=2,
@@ -808,33 +782,79 @@ class SmartAIChatbotApp:
     #  BOTTOM INPUT AREA WITH STEER & QUEUE CONTROLS
     # ─────────────────────────────────────────────────────
     def _build_input_area(self):
-        
-        self.input_container = tk.Frame(self.main_content_frame, bg=self.C["bg_input"], highlightbackground=self.C["border"], highlightthickness=1)
+        self.input_container = tk.Frame(
+            self.main_container, bg=self.C["bg_hud"],
+            highlightbackground=self.C["border"], highlightthickness=1
+        )
         self.input_container.pack(fill="x", side="bottom", padx=24, pady=(0, 14))
 
-        # Modern Layout
-        btn_attach = tk.Button(self.input_container, text="📎", font=(_FONT_FAMILY, 14), bg=self.C["bg_input"], fg=self.C["text_muted"], relief="flat", bd=0, command=self._on_upload_file)
-        btn_attach.pack(side="left", padx=8, pady=8)
+        # Upload / Attach File Button
+        btn_attach = tk.Button(
+            self.input_container, text="📎", font=(_FONT_FAMILY, 14),
+            bg=self.C["bg_hud"], fg=self.C["text_muted"],
+            activebackground=self.C["bg_card"], activeforeground=self.C["accent_cyan"],
+            relief="flat", bd=0, padx=8, cursor="hand2",
+            command=self._on_upload_file
+        )
+        btn_attach.pack(side="left", padx=(8, 2), pady=8)
 
-        self.txt_input = tk.Text(self.input_container, height=3, bg=self.C["bg_input"], fg=self.C["text_main"], insertbackground="#ffffff", font=_FONT_MAIN, bd=0, padx=14, pady=8, highlightthickness=0, wrap="word")
-        self.txt_input.insert("1.0", "Message Smart AI...")
+        # Autonomous /learn Mode Button
+        btn_learn = tk.Button(
+            self.input_container, text="🎓 Learn", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_purple"],
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1,
+            command=self._on_prompt_learn
+        )
+        btn_learn.pack(side="left", padx=(2, 4), pady=8)
+
+        # Multi-Line Text Input
+        self.txt_input = tk.Text(
+            self.input_container, height=3, bg=self.C["bg_input"], fg=self.C["text_main"],
+            insertbackground="#ffffff", font=_FONT_MAIN, bd=0,
+            padx=14, pady=8, highlightthickness=0, wrap="word"
+        )
         self.txt_input.pack(fill="both", side="left", expand=True, padx=4, pady=8)
-        self.txt_input.bind("<FocusIn>", lambda e: self.txt_input.delete("1.0", "end") if self.txt_input.get("1.0", "end-1c") == "Message Smart AI..." else None)
 
-        # Action Buttons
-        btn_box = tk.Frame(self.input_container, bg=self.C["bg_input"])
-        btn_box.pack(side="right", padx=8, pady=8)
+        # Keybindings: Enter to Send/Queue, Cmd/Ctrl+Enter to Steer
+        self.txt_input.bind("<Return>", self._on_enter_pressed)
+        self.txt_input.bind("<Shift-Return>", lambda e: None)
+        self.txt_input.bind("<Command-Return>", self._on_steer_shortcut)
+        self.txt_input.bind("<Control-Return>", self._on_steer_shortcut)
+        self.txt_input.focus_set()
 
-        self.btn_send = tk.Button(btn_box, text="↑", font=_FONT_BOLD, bg=self.C["bg_card"], fg="#ffffff", relief="flat", bd=0, command=self._on_send_message)
-        self.btn_send.pack(side="top")
+        # Action Buttons (▶ Start / Queue, 🎯 Steer, ⏹ Stop)
+        btn_box = tk.Frame(self.input_container, bg=self.C["bg_hud"])
+        btn_box.pack(side="right", padx=(4, 12), pady=6)
 
-        self.btn_stop = tk.Button(btn_box, text="■", font=_FONT_BOLD, bg=self.C["bg_card"], fg=self.C["text_muted"], relief="flat", bd=0, command=self._on_stop_generation)
-        
-        self.btn_steer = tk.Button(btn_box, text="🎯", font=_FONT_BOLD, bg=self.C["bg_card"], fg=self.C["accent_purple"], relief="flat", bd=0, command=self._on_steer_button_pressed)
-        
-        lbl_hints = tk.Label(self.main_content_frame, text="↵ Send • ⌘↵ Steer • ⇧↵ New line", font=_FONT_TINY, bg=self.C["bg_app"], fg=self.C["text_muted"])
-        lbl_hints.pack(side="bottom", pady=4)
+        self.btn_send = tk.Button(
+            btn_box, text="  ▶ Start  ", font=_FONT_BOLD,
+            bg=self.C["accent_cyan"], fg="#000000",
+            activebackground="#70e2ff", activeforeground="#000000",
+            relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
+            command=self._on_send_message
+        )
+        self.btn_send.pack(side="top", pady=(0, 3))
 
+        steer_key = "⌘⏎" if platform.system() == "Darwin" else "Ctrl+⏎"
+        self.btn_steer = tk.Button(
+            btn_box, text=f"🎯 Steer ({steer_key})", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_purple"],
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1,
+            command=self._on_steer_button_pressed
+        )
+        self.btn_steer.pack(side="top", pady=(0, 3))
+
+        self.btn_stop = tk.Button(
+            btn_box, text="⏹ Stop", font=_FONT_SMALL,
+            bg=self.C["bg_card"], fg=self.C["text_muted"],
+            relief="flat", bd=0, padx=8, pady=2, state="disabled",
+            command=self._on_stop_generation
+        )
+        self.btn_stop.pack(side="top")
 
     # ─────────────────────────────────────────────────────
     #  FILE UPLOAD & ATTACHMENT
@@ -1451,71 +1471,12 @@ class SmartAIChatbotApp:
                     return
 
                 curr_history = self.chat_history.get(self.active_tab_id, [])
-                
-                # Streaming Logic
-                try:
-                    import mlx.core as mx
-                    has_mlx = True
-                except ImportError:
-                    has_mlx = False
-                    
-                if self.is_model_loaded and has_mlx and hasattr(self.engine, 'stream_solve'):
-                    # Streaming path
-                    
-                    # 1. Typing indicator
-                    self.root.after(0, lambda: self.chat_stream.configure(state="normal"))
-                    self.root.after(0, lambda: self.chat_stream.insert("end", "\n● Ternary Bonsai is thinking...\n", "ai_msg"))
-                    self.root.after(0, lambda: self.chat_stream.configure(state="disabled"))
-                    self.root.after(0, lambda: self.chat_stream.see("end"))
-                    
-                    token_count = 0
-                    streamed_text = ""
-                    for token in self.engine.stream_solve(full_msg, history=curr_history, cancel_event=self.cancel_event):
-                        if token_count == 0:
-                            # Remove thinking indicator when first token arrives
-                            def _remove_thinking():
-                                self.chat_stream.configure(state="normal")
-                                idx = self.chat_stream.search("● Ternary Bonsai is thinking...", "1.0", "end")
-                                if idx:
-                                    self.chat_stream.delete(idx, f"{idx} lineend + 1c")
-                                self.chat_stream.configure(state="disabled")
-                            self.root.after(0, _remove_thinking)
-                            
-                        streamed_text += token
-                        token_count += 1
-                        def _insert_tok(tok=token):
-                            self.chat_stream.configure(state="normal")
-                            self.chat_stream.insert("end", tok, "ai_msg")
-                            self.chat_stream.configure(state="disabled")
-                            self.chat_stream.see("end")
-                        self.root.after(0, _insert_tok)
-                        
-                        duration = max(0.01, time.perf_counter() - start_time)
-                        tok_per_sec = token_count / duration
-                        self.root.after(0, lambda tps=tok_per_sec: self._update_telemetry(tps))
-                        
-                    duration_s = max(0.01, time.perf_counter() - start_time)
-                    tok_per_sec = token_count / duration_s
-                    response_text = streamed_text
-                    thinking_text = None
-                    thinking_tokens = 0
-                    
-                    # Once complete, clear the raw text and render proper markdown
-                    def _re_render():
-                        self.chat_stream.configure(state="normal")
-                        # We just delete the last streamed part and use the final re-render below
-                        pass
-                    self.root.after(0, _re_render)
-                    
-                else:
-                    # Batch fallback path
-                    ans, meta = self.engine.solve(full_msg, history=curr_history, cancel_event=self.cancel_event)
-                    response_text = ans
-                    thinking_text = meta.get("thinking_text")
-                    duration_s = max(0.01, time.perf_counter() - start_time)
-                    thinking_tokens = len(thinking_text.split()) * 2 if thinking_text else max(24, len(ans.split()) // 2 + 18)
-                    tok_per_sec = (len(ans.split()) * 2 + thinking_tokens) / duration_s
-
+                ans, meta = self.engine.solve(full_msg, history=curr_history, cancel_event=self.cancel_event)
+                response_text = ans
+                thinking_text = meta.get("thinking_text")
+                duration_s = max(0.01, time.perf_counter() - start_time)
+                thinking_tokens = len(thinking_text.split()) * 2 if thinking_text else max(24, len(ans.split()) // 2 + 18)
+                tok_per_sec = (len(ans.split()) * 2 + thinking_tokens) / duration_s
 
                 # Log trace into SQLite memory
                 self.db.log_interaction(
@@ -1623,10 +1584,3 @@ def launch_app(settings: Optional[Settings] = None):
 
 if __name__ == "__main__":
     launch_app()
-
-    def _update_conversation_sidebar(self):
-        for widget in self.sidebar_list_frame.winfo_children():
-            widget.destroy()
-        for conv in reversed(self.conversation_list):
-            btn = tk.Button(self.sidebar_list_frame, text=conv["title"][:20], bg=self.C["bg_card"], fg=self.C["text_muted"], command=self._on_clear_chat, anchor="w", relief="flat")
-            btn.pack(fill="x", pady=2)
