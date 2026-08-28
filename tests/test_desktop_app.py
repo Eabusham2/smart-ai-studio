@@ -115,7 +115,7 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.app._on_new_chat()
         content = self.app.chat_stream.get("1.0", "end")
         self.assertEqual(self.app.total_tokens_used, 0)
-        self.assertEqual(content.strip(), "")
+        self.assertIn("Smart AI Studio", content)
 
     def test_dual_model_tab_switching(self):
         """Test switching between Model 1 (Ternary Bonsai) and Model 2 (Qwen 3.8 Flash Next)."""

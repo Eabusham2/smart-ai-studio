@@ -207,6 +207,7 @@ class SmartAIChatbotApp:
 
         self._init_window()
         self._build_ui()
+        self._send_welcome_messages()
 
     # ─────────────────────────────────────────────────────
     #  WINDOW INITIALIZATION
@@ -247,7 +248,7 @@ class SmartAIChatbotApp:
         sys.exit(0)
 
     # ─────────────────────────────────────────────────────
-    #  MASTER UI STRUCTURE
+    #  MASTER UI STRUCTURE (Reliable Packing Hierarchy)
     # ─────────────────────────────────────────────────────
     def _build_ui(self):
         self.main_container = tk.Frame(self.root, bg=self.C["bg_app"])
@@ -262,24 +263,24 @@ class SmartAIChatbotApp:
         # 3. MODEL TAB & CONTROLS BAR (Single Reset & Reinstall, Load/Unload)
         self._build_model_tab_bar()
 
-        # 4. SPLIT CONTAINER: CHAT FEED (Left) + AI CANVAS (Right, ChatGPT-style)
-        self.split_pane = tk.PanedWindow(
+        # 4. BOTTOM INPUT & ACTION BUTTONS (Pack bottom first to prevent clipping!)
+        self._build_input_area()
+
+        # 5. ATTACHED FILE PILL BAR (Hidden until file attached)
+        self._build_attachment_bar()
+
+        # 6. CENTER WORKSPACE: CHAT FEED (Left) + AI CANVAS (Right)
+        self.content_paned = tk.PanedWindow(
             self.main_container, orient="horizontal", bg=self.C["border"],
             sashwidth=4, bd=0
         )
-        self.split_pane.pack(fill="both", expand=True)
+        self.content_paned.pack(fill="both", expand=True, padx=16, pady=(8, 4))
 
-        # 5. CHAT FEED CONTAINER
+        # Build Chat Feed Container inside PanedWindow
         self._build_chat_container()
 
-        # 6. CHATGPT-STYLE AI CANVAS (Interactive Document & Code Canvas)
+        # Build ChatGPT-Style AI Canvas inside PanedWindow
         self._build_ai_canvas_panel()
-
-        # 7. ATTACHED FILE PILL BAR
-        self._build_attachment_bar()
-
-        # 8. BOTTOM INPUT & ACTION BUTTONS (Start/Queue, Steer, Stop)
-        self._build_input_area()
 
     # ─────────────────────────────────────────────────────
     #  TOP HUD BAR
@@ -518,8 +519,8 @@ class SmartAIChatbotApp:
     #  CONTINUOUS CHAT FEED CONTAINER
     # ─────────────────────────────────────────────────────
     def _build_chat_container(self):
-        self.chat_container_frame = tk.Frame(self.split_pane, bg=self.C["bg_chat"])
-        self.split_pane.add(self.chat_container_frame, stretch="always", minsize=420)
+        self.chat_container_frame = tk.Frame(self.content_paned, bg=self.C["bg_chat"])
+        self.content_paned.add(self.chat_container_frame, stretch="always", minsize=420)
 
         self.chat_frames: Dict[str, tk.Frame] = {}
 
@@ -536,7 +537,7 @@ class SmartAIChatbotApp:
 
             stream = tk.Text(
                 cf, bg=self.C["bg_chat"], fg=self.C["text_main"],
-                font=_FONT_MAIN, wrap="word", bd=0, padx=32, pady=20,
+                font=_FONT_MAIN, wrap="word", bd=0, padx=28, pady=16,
                 highlightthickness=0, spacing1=6, spacing3=6,
                 yscrollcommand=scroll.set, cursor="arrow"
             )
@@ -588,7 +589,7 @@ class SmartAIChatbotApp:
     #  CHATGPT-STYLE AI CANVAS (Side-by-Side Artifact & Document Studio)
     # ─────────────────────────────────────────────────────
     def _build_ai_canvas_panel(self):
-        self.canvas_panel = tk.Frame(self.split_pane, bg=self.C["canvas_bg"])
+        self.canvas_panel = tk.Frame(self.content_paned, bg=self.C["canvas_bg"])
         # Initially unmapped until toggled or requested by AI
 
         # Canvas Top Bar
@@ -654,11 +655,11 @@ class SmartAIChatbotApp:
 
     def _on_toggle_canvas_viewer(self):
         if self.show_canvas:
-            self.split_pane.forget(self.canvas_panel)
+            self.content_paned.forget(self.canvas_panel)
             self.btn_toggle_canvas.configure(text="🎨 Canvas ▾", fg=self.C["accent_purple"])
             self.show_canvas = False
         else:
-            self.split_pane.add(self.canvas_panel, stretch="always", minsize=380)
+            self.content_paned.add(self.canvas_panel, stretch="always", minsize=380)
             self.btn_toggle_canvas.configure(text="🎨 Canvas ▴", fg="#ffffff")
             self.show_canvas = True
 
@@ -723,7 +724,7 @@ class SmartAIChatbotApp:
             self.main_container, bg=self.C["bg_hud"],
             highlightbackground=self.C["border"], highlightthickness=1
         )
-        self.input_container.pack(fill="x", side="bottom", padx=24, pady=(0, 16))
+        self.input_container.pack(fill="x", side="bottom", padx=24, pady=(0, 14))
 
         # Upload / Attach File Button
         btn_attach = tk.Button(
@@ -835,7 +836,6 @@ class SmartAIChatbotApp:
         if not confirm:
             return
 
-        # Purge local cache and start download worker
         purge_local_model_cache(repo_id)
         self._on_download_hf_model()
 
@@ -1045,6 +1045,24 @@ class SmartAIChatbotApp:
     # ─────────────────────────────────────────────────────
     #  MESSAGING & INFERENCE PIPELINE
     # ─────────────────────────────────────────────────────
+    def _send_welcome_messages(self):
+        """Initializes sleek status welcome message for all model streams."""
+        for tab_id, info in self.models_config.items():
+            stream = self.chat_streams[tab_id]
+            stream.configure(state="normal")
+            stream.insert("end", f"✦ {info['name']}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
+            param_str = format_parameter_count(info.get("raw_params", 27_400_000_000))
+            stream.insert(
+                "end",
+                f"Smart AI Studio ready to assist with autonomous reasoning and coding.\n\n"
+                f"• **Architecture**: {info['precision']} ({param_str} Parameters)\n"
+                f"• **Context Window**: {self.max_context_window:,} Tokens (Auto-Scaled for Unified RAM)\n"
+                f"• **Keyboard Shortcuts**: Press `⌘+Enter` (or `Ctrl+Enter`) to **Steer** live while typing, or `Enter` while generating to **Queue**.\n\n",
+                "ai_msg"
+            )
+            stream.insert("end", "─" * 56 + "\n\n", "separator")
+            stream.configure(state="disabled")
+
     def _append_user_message(self, text: str):
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
             self.chat_history[self.active_tab_id].append({"role": "user", "content": text})
@@ -1246,7 +1264,6 @@ class SmartAIChatbotApp:
 
                 def _learn_callback(stage: str, message: str, syn_delta: float):
                     if syn_delta > 0:
-                        # Scaling: syn_delta is in Millions of synapses
                         self.synapses_learned_count += syn_delta * 1_000_000
                         self.synapses_learned_m += syn_delta
                         self.root.after(0, self._update_telemetry)
@@ -1454,6 +1471,7 @@ class SmartAIChatbotApp:
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
             self.chat_history[self.active_tab_id].clear()
         self._update_telemetry()
+        self._send_welcome_messages()
 
     def _on_new_chat(self):
         self._on_clear_chat()
