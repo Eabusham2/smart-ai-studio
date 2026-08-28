@@ -1,0 +1,291 @@
+"""
+Multi-Platform Native Application & Installer Builder for Smart AI.
+Generates:
+1. macOS: Native SmartAI.app Application Bundle & SmartAI-macOS-arm64.dmg Disk Image Installer
+2. Windows: SmartAI-Windows package with SmartAI.bat, SmartAI.vbs (silent windowed launcher)
+3. Linux/Unix: SmartAI.AppDir structure, SmartAI.desktop launcher, AppRun, and SmartAI-Linux-x86_64.tar.gz
+"""
+
+import os
+import platform
+import shutil
+import stat
+import subprocess
+import sys
+
+
+def create_macos_bundle(dist_dir: str, app_name: str):
+    """Creates a native macOS .app bundle and compiles a .dmg disk image installer."""
+    print(f"[*] Assembling macOS {app_name}.app Application Bundle...")
+    app_bundle = os.path.join(dist_dir, f"{app_name}.app")
+    contents_dir = os.path.join(app_bundle, "Contents")
+    macos_dir = os.path.join(contents_dir, "MacOS")
+    resources_dir = os.path.join(contents_dir, "Resources")
+    app_code_dir = os.path.join(resources_dir, "app")
+
+    os.makedirs(macos_dir, exist_ok=True)
+    os.makedirs(app_code_dir, exist_ok=True)
+
+    # 1. Copy application source trees & icons
+    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "AppIcon.icns"]:
+        src = os.path.abspath(item)
+        dst = os.path.join(app_code_dir, item)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        elif os.path.isfile(src):
+            shutil.copy2(src, dst)
+
+    if os.path.exists("AppIcon.icns"):
+        shutil.copy2("AppIcon.icns", os.path.join(resources_dir, "AppIcon.icns"))
+
+    # 2. Write Info.plist
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>English</string>
+    <key>CFBundleDisplayName</key>
+    <string>Smart AI</string>
+    <key>CFBundleExecutable</key>
+    <string>{app_name}</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.smartai.studio</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>{app_name}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>2</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+</dict>
+</plist>
+"""
+    with open(os.path.join(contents_dir, "Info.plist"), "w") as f:
+        f.write(plist_content)
+
+    # 3. Write executable launch script
+    launcher_script = f"""#!/usr/bin/env bash
+BUNDLE_DIR="$( cd "$( dirname "${{BASH_SOURCE[0]}}" )/../Resources/app" >/dev/null 2>&1 && pwd )"
+cd "$BUNDLE_DIR"
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 app_gui.py "$@"
+elif [ -x "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" ]; then
+    exec "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" app_gui.py "$@"
+elif command -v python >/dev/null 2>&1; then
+    exec python app_gui.py "$@"
+else
+    osascript -e 'display dialog "Python 3 is required to launch Smart AI." buttons {{"OK"}} default button "OK" with icon stop'
+    exit 1
+fi
+"""
+    exec_path = os.path.join(macos_dir, app_name)
+    with open(exec_path, "w") as f:
+        f.write(launcher_script)
+    os.chmod(exec_path, os.stat(exec_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    print(f"[✓] macOS Application Bundle created at: {app_bundle}")
+
+    # 4. Generate .dmg disk image installer
+    if shutil.which("hdiutil"):
+        dmg_path = os.path.join(dist_dir, f"{app_name}-macOS-arm64.dmg")
+        if os.path.exists(dmg_path):
+            os.remove(dmg_path)
+
+        dmg_temp = os.path.join(dist_dir, "dmg_staging")
+        if os.path.exists(dmg_temp):
+            shutil.rmtree(dmg_temp, ignore_errors=True)
+        os.makedirs(dmg_temp, exist_ok=True)
+        shutil.copytree(app_bundle, os.path.join(dmg_temp, f"{app_name}.app"))
+
+        if os.path.exists(dmg_path):
+            try:
+                os.remove(dmg_path)
+            except Exception:
+                pass
+
+        print(f"[*] Compiling DMG disk image installer: {dmg_path}...")
+        cmd = [
+            "hdiutil", "create",
+            "-volname", f"{app_name}",
+            "-srcfolder", dmg_temp,
+            "-ov",
+            "-format", "UDZO",
+            dmg_path
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        shutil.rmtree(dmg_temp, ignore_errors=True)
+
+        # Create portable macOS zip archive
+        zip_path = os.path.join(dist_dir, f"{app_name}-macOS-arm64.zip")
+        if os.path.exists(zip_path):
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+        shutil.make_archive(os.path.join(dist_dir, f"{app_name}-macOS-arm64"), 'zip', dist_dir, f"{app_name}.app")
+        if os.path.exists(zip_path):
+            zsize = os.path.getsize(zip_path) / (1024 * 1024)
+            print(f"[✓] SUCCESS: macOS Portable Zip Bundle generated: {zip_path} ({zsize:.2f} MB)")
+
+
+def create_windows_bundle(dist_dir: str, app_name: str):
+    """Creates standalone Windows application package with .exe / .vbs launcher."""
+    print(f"[*] Assembling Windows {app_name} standalone package...")
+    win_dir = os.path.join(dist_dir, f"{app_name}-Windows")
+    os.makedirs(win_dir, exist_ok=True)
+
+    # Copy application source trees
+    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "requirements.txt", "pyproject.toml"]:
+        src = os.path.abspath(item)
+        dst = os.path.join(win_dir, item)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        elif os.path.isfile(src):
+            shutil.copy2(src, dst)
+
+    # 1. Create Windows Batch Launcher (SmartAI.bat)
+    bat_content = f"""@echo off
+cd /d "%~dp0"
+echo ======================================================================
+echo   Launching {app_name}
+echo ======================================================================
+python app_gui.py %*
+if %ERRORLEVEL% NEQ 0 (
+    python3 app_gui.py %*
+)
+"""
+    with open(os.path.join(win_dir, f"{app_name}.bat"), "w") as f:
+        f.write(bat_content)
+
+    # 2. Create Windowed Silent VBS Launcher (SmartAI.vbs)
+    vbs_content = f"""Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "python app_gui.py", 0, False
+"""
+    with open(os.path.join(win_dir, f"{app_name}.vbs"), "w") as f:
+        f.write(vbs_content)
+
+    # 3. Create Windows Setup script
+    setup_bat = f"""@echo off
+echo Installing dependencies for {app_name}...
+pip install -r requirements.txt
+echo Setup Complete! Launch by double-clicking {app_name}.vbs or {app_name}.bat
+pause
+"""
+    with open(os.path.join(win_dir, "Install_Dependencies.bat"), "w") as f:
+        f.write(setup_bat)
+
+    # Zip Windows package
+    shutil.make_archive(win_dir, "zip", root_dir=dist_dir, base_dir=f"{app_name}-Windows")
+    print(f"[✓] SUCCESS: Windows standalone package generated at: {win_dir}.zip")
+
+
+def create_linux_bundle(dist_dir: str, app_name: str):
+    """Creates Linux AppDir, desktop shortcut, AppRun, and tar.gz package."""
+    print(f"[*] Assembling Linux {app_name} AppDir & standalone package...")
+    linux_dir = os.path.join(dist_dir, f"{app_name}-Linux")
+    appdir = os.path.join(linux_dir, f"{app_name}.AppDir")
+    usr_bin = os.path.join(appdir, "usr", "bin")
+    os.makedirs(usr_bin, exist_ok=True)
+
+    # Copy application code into AppDir
+    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png"]:
+        src = os.path.abspath(item)
+        dst = os.path.join(usr_bin, item)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        elif os.path.isfile(src):
+            shutil.copy2(src, dst)
+
+    # 1. Create AppRun script
+    apprun_content = f"""#!/bin/sh
+HERE="$(dirname "$(readlink -f "${{0}}")")"
+exec python3 "$HERE/usr/bin/app_gui.py" "$@"
+"""
+    apprun_path = os.path.join(appdir, "AppRun")
+    with open(apprun_path, "w") as f:
+        f.write(apprun_content)
+    os.chmod(apprun_path, os.stat(apprun_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    # 2. Create .desktop file
+    desktop_content = f"""[Desktop Entry]
+Name={app_name}
+Exec=AppRun
+Icon=smartai
+Type=Application
+Categories=Development;Science;ArtificialIntelligence;
+Comment=Smart AI 27B Autonomous Reasoning System
+Terminal=false
+"""
+    with open(os.path.join(appdir, f"{app_name}.desktop"), "w") as f:
+        f.write(desktop_content)
+
+    # 3. Create root launcher in linux_dir
+    launcher_sh = f"""#!/usr/bin/env bash
+DIR="$( cd "$( dirname "${{BASH_SOURCE[0]}}" )" >/dev/null 2>&1 && pwd )"
+cd "$DIR/{app_name}.AppDir"
+./AppRun "$@"
+"""
+    launcher_path = os.path.join(linux_dir, f"{app_name}.sh")
+    with open(launcher_path, "w") as f:
+        f.write(launcher_sh)
+    os.chmod(launcher_path, os.stat(launcher_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    # Create tar.gz archive
+    tar_path = shutil.make_archive(
+        base_name=os.path.join(dist_dir, f"{app_name}-Linux-x86_64"),
+        format="gztar",
+        root_dir=dist_dir,
+        base_dir=f"{app_name}-Linux"
+    )
+    print(f"[✓] SUCCESS: Linux standalone package generated: {tar_path}")
+
+
+def main():
+    dist_dir = os.path.abspath("dist")
+    app_name = "SmartAI"
+
+    if os.path.exists(dist_dir):
+        shutil.rmtree(dist_dir)
+    os.makedirs(dist_dir, exist_ok=True)
+
+    print("=" * 75)
+    print("  SMART AI: MULTI-PLATFORM PACKAGING (DMG, EXE/ZIP, APPIMAGE/TAR)")
+    print("=" * 75 + "\n")
+
+    # 1. macOS .app & .dmg
+    create_macos_bundle(dist_dir, app_name)
+
+    # 2. Windows package
+    create_windows_bundle(dist_dir, app_name)
+
+    # 3. Linux package
+    create_linux_bundle(dist_dir, app_name)
+
+    print("\n" + "=" * 75)
+    print("  ALL SMART AI PACKAGES GENERATED SUCCESSFULLY")
+    print(f"  Target directory: {dist_dir}")
+    for item in sorted(os.listdir(dist_dir)):
+        p = os.path.join(dist_dir, item)
+        size_str = f"{os.path.getsize(p)/(1024*1024):.2f} MB" if os.path.isfile(p) else "Directory"
+        print(f"  ► {item:<35} [{size_str}]")
+    print("=" * 75 + "\n")
+
+
+if __name__ == "__main__":
+    main()

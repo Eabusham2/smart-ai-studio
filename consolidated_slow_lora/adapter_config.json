@@ -1,0 +1,1 @@
+{"r": 32, "lora_alpha": 64, "peft_type": "LORA", "target_modules": ["q_proj", "v_proj"]}
