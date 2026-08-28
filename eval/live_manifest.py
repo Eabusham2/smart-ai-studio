@@ -84,6 +84,10 @@ def generate_live_manifest(settings: Optional[Settings] = None, output_path: Opt
     with open(manifest_file, "w", encoding="utf-8") as f:
         json.dump(manifest_data, f, indent=2)
 
+    master_manifest_path = os.path.join(out_dir, "master_manifest.json")
+    with open(master_manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest_data, f, indent=2)
+
     return manifest_data
 
 
