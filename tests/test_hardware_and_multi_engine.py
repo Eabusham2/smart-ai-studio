@@ -103,10 +103,11 @@ class TestHardwareAndMultiEngine(unittest.TestCase):
             self.assertIn("mlx", preset["artifacts"])
             self.assertIn("name", preset)
             self.assertIn("precision", preset)
-        # Check Ternary Qwen 3.8B & 27B presets
-        self.assertIn("Qwen 3.8", MODEL_PRESETS["model_2"]["name"])
-        self.assertIn("Dolphin Vision", MODEL_PRESETS["model_3"]["name"])
-        self.assertIn("Ternary Qwen 27B", MODEL_PRESETS["model_4"]["name"])
+        # Check Qwen Uncensored & Axon presets
+        self.assertIn("Qwen", MODEL_PRESETS["model_1"]["name"])
+        self.assertIn("Axon", MODEL_PRESETS["model_2"]["name"])
+        self.assertIn("Qwen 3.8B", MODEL_PRESETS["model_3"]["name"])
+        self.assertIn("Dolphin Vision", MODEL_PRESETS["model_4"]["name"])
 
     def test_07_downloader_cache_and_availability(self):
         """Verify downloader checks local cache and returns proper status dictionary."""

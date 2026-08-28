@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 class MLXReasoningBackend:
     def __init__(
         self,
-        model_path: str = "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+        model_path: str = "orcarouter/Qwen3.8-27B-Uncensored-MLX",
         adapter_path: Optional[str] = None
     ):
         self.model_path = model_path

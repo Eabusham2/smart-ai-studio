@@ -72,14 +72,15 @@ try:
         small_model: bool = Field(default=False, description="Use lightweight local model fallback")
         kv_bits: int = Field(default=4, description="KV-cache quantization bitwidth (4-bit for 16GB M1 Mac)")
 
-        # Hardware & Model Configuration (Dedicated 27B Ternary Architecture)
-        base_model_path: str = Field(default="prism-ml/Ternary-Bonsai-27B-mlx-2bit", description="Path/ID for 27B Ternary base model")
-        mlx_model_path: str = Field(default="prism-ml/Ternary-Bonsai-27B-mlx-2bit", description="Path/ID for Apple MLX 27B 2-bit/1.58-bit model")
+        # Hardware & Model Configuration (Dedicated 27B Qwen3.8 Architectures)
+        base_model_path: str = Field(default="orcarouter/Qwen3.8-27B-Uncensored-MLX", description="Path/ID for 27B Uncensored MLX model")
+        mlx_model_path: str = Field(default="orcarouter/Qwen3.8-27B-Uncensored-MLX", description="Path/ID for Apple MLX 27B 2-bit uncensored model")
         lora_adapter_path: Optional[str] = Field(default=None, description="Path to consolidated Slow-LoRA adapter")
-        small_model_path: str = Field(default="prism-ml/Ternary-Bonsai-mlx-2bit", description="Model checkpoint ID")
+        small_model_path: str = Field(default="h34v7/Ternary-Qwen3.5-3.8B-mlx", description="Model checkpoint ID")
         flash_model_path: str = Field(default="Qwen/Qwen-3.8B-Flash-Next-1.58bit", description="Qwen 3.8 Flash Next 1.58-bit model checkpoint")
         ternary_qwen_3_8b_path: str = Field(default="h34v7/Ternary-Qwen3.5-3.8B-mlx", description="Ternary Qwen 3.8B Fast checkpoint")
-        ternary_qwen_27b_path: str = Field(default="Qwen/Qwen2.5-27B-Ternary-mlx", description="Ternary Qwen 27B Pro checkpoint")
+        ternary_qwen_27b_path: str = Field(default="jayPark777/Qwen3.8-27B-Axon-MLQT", description="Ternary Qwen 27B Axon MLQT {-1,0,+1} checkpoint")
+        gguf_model_path: str = Field(default="jayPark777/Qwen3.8-27B-Axon-MLQT", description="GGUF / Ternary Qwen 27B Axon MLQT checkpoint")
         flash_qwen_7b_path: str = Field(default="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", description="Flash Next Qwen 7B Coder checkpoint")
         vision_model_path: str = Field(default="mlx-community/nanoLLaVA-1.5-mlx", description="Uncensored Multimodal Vision checkpoint")
         vision_mmproj_path: Optional[str] = Field(default=None, description="GGUF vision clip projector path")
@@ -129,13 +130,14 @@ except ImportError:
         small_model: bool = os.getenv("SMALL_MODEL", "false").lower() in ("1", "true", "yes")
         kv_bits: int = int(os.getenv("KV_BITS", "4"))
 
-        base_model_path: str = os.getenv("BASE_MODEL_PATH", "prism-ml/Ternary-Bonsai-27B-mlx-2bit")
-        mlx_model_path: str = os.getenv("MLX_MODEL_PATH", "prism-ml/Ternary-Bonsai-27B-mlx-2bit")
+        base_model_path: str = os.getenv("BASE_MODEL_PATH", "orcarouter/Qwen3.8-27B-Uncensored-MLX")
+        mlx_model_path: str = os.getenv("MLX_MODEL_PATH", "orcarouter/Qwen3.8-27B-Uncensored-MLX")
         lora_adapter_path: Optional[str] = os.getenv("LORA_ADAPTER_PATH", None)
-        small_model_path: str = os.getenv("SMALL_MODEL_PATH", "prism-ml/Ternary-Bonsai-27B-mlx-2bit")
+        small_model_path: str = os.getenv("SMALL_MODEL_PATH", "h34v7/Ternary-Qwen3.5-3.8B-mlx")
         flash_model_path: str = os.getenv("FLASH_MODEL_PATH", "Qwen/Qwen-3.8B-Flash-Next-1.58bit")
         ternary_qwen_3_8b_path: str = os.getenv("TERNARY_QWEN_3_8B_PATH", "h34v7/Ternary-Qwen3.5-3.8B-mlx")
-        ternary_qwen_27b_path: str = os.getenv("TERNARY_QWEN_27B_PATH", "Qwen/Qwen2.5-27B-Ternary-mlx")
+        ternary_qwen_27b_path: str = os.getenv("TERNARY_QWEN_27B_PATH", "jayPark777/Qwen3.8-27B-Axon-MLQT")
+        gguf_model_path: str = os.getenv("GGUF_MODEL_PATH", "jayPark777/Qwen3.8-27B-Axon-MLQT")
         flash_qwen_7b_path: str = os.getenv("FLASH_QWEN_7B_PATH", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
         vision_model_path: str = os.getenv("VISION_MODEL_PATH", "mlx-community/nanoLLaVA-1.5-mlx")
         vision_mmproj_path: Optional[str] = os.getenv("VISION_MMPROJ_PATH", None)
@@ -171,27 +173,48 @@ except ImportError:
 MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
     "model_1": {
         "id": "model_1",
-        "key": "ternary_bonsai_27b",
-        "name": "Ternary Bonsai 27B",
-        "short_name": "Ternary Bonsai 27B",
-        "tag": "🌿 Bonsai 27B",
-        "type": "ternary",
-        "base_params": "27.4B",
-        "raw_params": 27_400_000_000,
-        "precision": "1.58-Bit BitLinear",
-        "max_context": 262_144,
-        "vram": "~5.8 GB / 16 GB",
+        "key": "qwen_27b_uncensored_mlx",
+        "name": "Qwen3.8-27B Uncensored (MLX 2-Bit)",
+        "short_name": "Qwen 27B Uncensored (MLX)",
+        "tag": "🔥 Qwen 27B Uncensored",
+        "type": "mlx_2bit",
+        "base_params": "27B",
+        "raw_params": 27_000_000_000,
+        "precision": "2-Bit Uncensored MLX",
+        "max_context": 131_072,
+        "vram": "~5.6 GB / 16 GB",
         "accent": "#38bdf8",
         "artifacts": {
-            "mlx": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
-            "gguf": "bartowski/Bonsai-27B-GGUF",
-            "bitnet": "microsoft/bitnet-b1.58-27b",
-            "torch": "prism-ml/Ternary-Bonsai-27B"
+            "mlx": "orcarouter/Qwen3.8-27B-Uncensored-MLX",
+            "gguf": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+            "bitnet": "orcarouter/Qwen3.8-27B-Uncensored",
+            "torch": "orcarouter/Qwen3.8-27B-Uncensored"
         },
-        "default_repo_id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
+        "default_repo_id": "orcarouter/Qwen3.8-27B-Uncensored-MLX"
     },
     "model_2": {
         "id": "model_2",
+        "key": "qwen_27b_axon_mlqt",
+        "name": "Qwen3.8-27B Axon (Ternary {-1,0,+1} MLQT / GGUF)",
+        "short_name": "Qwen 27B Axon (Ternary/GGUF)",
+        "tag": "🧠 Qwen 27B Axon {-1,0,+1}",
+        "type": "ternary_gguf",
+        "base_params": "27B",
+        "raw_params": 27_000_000_000,
+        "precision": "True {-1,0,+1} BitLinear / MLQT",
+        "max_context": 131_072,
+        "vram": "~5.8 GB / 16 GB",
+        "accent": "#22c55e",
+        "artifacts": {
+            "gguf": "jayPark777/Qwen3.8-27B-Axon-MLQT",
+            "mlx": "jayPark777/Qwen3.8-27B-Axon-mlx",
+            "bitnet": "jayPark777/Qwen3.8-27B-Axon-MLQT",
+            "torch": "jayPark777/Qwen3.8-27B-Axon-MLQT"
+        },
+        "default_repo_id": "jayPark777/Qwen3.8-27B-Axon-MLQT"
+    },
+    "model_3": {
+        "id": "model_3",
         "key": "ternary_qwen_3_8b",
         "name": "Ternary Qwen 3.8B (Fast)",
         "short_name": "Ternary Qwen 3.8B",
@@ -202,7 +225,7 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "precision": "1.58-Bit Ternary",
         "max_context": 131_072,
         "vram": "~1.8 GB / 16 GB",
-        "accent": "#22c55e",
+        "accent": "#facc15",
         "artifacts": {
             "mlx": "h34v7/Ternary-Qwen3.5-3.8B-mlx",
             "gguf": "Qwen/Qwen2.5-3.8B-Instruct-GGUF",
@@ -211,8 +234,8 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         },
         "default_repo_id": "h34v7/Ternary-Qwen3.5-3.8B-mlx"
     },
-    "model_3": {
-        "id": "model_3",
+    "model_4": {
+        "id": "model_4",
         "key": "uncensored_vision",
         "name": "Dolphin Vision 2.9 (Uncensored Multimodal)",
         "short_name": "Dolphin Vision 2.9",
@@ -231,27 +254,6 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         },
         "mmproj": "mmproj-model-f16.gguf",
         "default_repo_id": "mlx-community/nanoLLaVA-1.5-mlx"
-    },
-    "model_4": {
-        "id": "model_4",
-        "key": "ternary_qwen_27b",
-        "name": "Ternary Qwen 27B (Pro 1.58-Bit)",
-        "short_name": "Ternary Qwen 27B",
-        "tag": "🏆 Qwen 27B Pro",
-        "type": "ternary",
-        "base_params": "27B",
-        "raw_params": 27_000_000_000,
-        "precision": "1.58-Bit Ternary",
-        "max_context": 131_072,
-        "vram": "~6.0 GB / 16 GB",
-        "accent": "#facc15",
-        "artifacts": {
-            "mlx": "Qwen/Qwen2.5-27B-Ternary-mlx",
-            "gguf": "Qwen/Qwen2.5-27B-Instruct-GGUF",
-            "bitnet": "microsoft/bitnet-b1.58-27b",
-            "torch": "Qwen/Qwen2.5-27B-Instruct"
-        },
-        "default_repo_id": "Qwen/Qwen2.5-27B-Ternary-mlx"
     },
     "model_5": {
         "id": "model_5",

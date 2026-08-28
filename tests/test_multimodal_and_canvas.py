@@ -99,15 +99,16 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         root.withdraw()
         app = SmartAIChatbotApp(root, settings=self.settings)
 
-        # 3 Tabs Verification
+        # Multi-tab Verification
         self.assertIn("model_1", app.models_config)
         self.assertIn("model_2", app.models_config)
         self.assertIn("model_3", app.models_config)
-        self.assertIn("Dolphin Vision", app.models_config["model_3"]["name"])
+        self.assertIn("model_4", app.models_config)
+        self.assertIn("Dolphin Vision", app.models_config["model_4"]["name"])
 
-        # Switch to Model 3
-        app._on_switch_model_tab("model_3")
-        self.assertEqual(app.active_tab_id, "model_3")
+        # Switch to Model 4 (Dolphin Vision)
+        app._on_switch_model_tab("model_4")
+        self.assertEqual(app.active_tab_id, "model_4")
         self.assertIn("Dolphin Vision", app.lbl_model_status.cget("text"))
 
         # Canvas Drawer Toggle

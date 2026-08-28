@@ -115,7 +115,7 @@ class TestLiveAIDemonstration(unittest.TestCase):
         # 3. Test Model Switching
         app._on_switch_model_tab("model_2")
         self.assertEqual(app.active_tab_id, "model_2")
-        self.assertIn("Qwen 3.8 Flash Next", app.lbl_model_status.cget("text"))
+        self.assertIn("Qwen 27B Axon", app.lbl_model_status.cget("text"))
 
         root.destroy()
 

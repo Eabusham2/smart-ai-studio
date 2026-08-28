@@ -122,32 +122,45 @@ class SmartAIChatbotApp:
         # Built-in Default Models Configuration (Expanded 5 Presets)
         self.models_config = {
             "model_1": {
-                "name": "Ternary Bonsai 27B (1.58-Bit)",
-                "short_name": "Ternary Bonsai 27B",
-                "repo_id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+                "name": "Qwen3.8-27B Uncensored (MLX 2-Bit)",
+                "short_name": "Qwen 27B Uncensored (MLX)",
+                "repo_id": "orcarouter/Qwen3.8-27B-Uncensored-MLX",
                 "model_path": None,
-                "precision": "27.4B Base (1.58-Bit)",
-                "raw_params": 27_400_000_000,
-                "base_params": "27.4B",
-                "max_context": 262_144,
-                "vram": "5.8 GB / 16 GB",
-                "tag": "🌿 Bonsai 27B",
+                "precision": "2-Bit Uncensored MLX",
+                "raw_params": 27_000_000_000,
+                "base_params": "27B",
+                "max_context": 131_072,
+                "vram": "5.6 GB / 16 GB",
+                "tag": "🔥 Qwen 27B Uncensored",
                 "accent": self.C["accent_cyan"]
             },
             "model_2": {
-                "name": "Qwen 3.8 Flash Next (1.58-Bit)",
-                "short_name": "Qwen 3.8 Flash Next",
+                "name": "Qwen3.8-27B Axon (Ternary {-1,0,+1} MLQT / GGUF)",
+                "short_name": "Qwen 27B Axon (Ternary/GGUF)",
+                "repo_id": "jayPark777/Qwen3.8-27B-Axon-MLQT",
+                "model_path": None,
+                "precision": "True {-1,0,+1} BitLinear / MLQT",
+                "raw_params": 27_000_000_000,
+                "base_params": "27B",
+                "max_context": 131_072,
+                "vram": "5.8 GB / 16 GB",
+                "tag": "🧠 Qwen 27B Axon {-1,0,+1}",
+                "accent": self.C["accent_green"]
+            },
+            "model_3": {
+                "name": "Ternary Qwen 3.8B (Fast)",
+                "short_name": "Ternary Qwen 3.8B",
                 "repo_id": "h34v7/Ternary-Qwen3.5-3.8B-mlx",
                 "model_path": None,
-                "precision": "3.8B Base (1.58-Bit)",
+                "precision": "1.58-Bit Ternary",
                 "raw_params": 3_800_000_000,
                 "base_params": "3.8B",
                 "max_context": 131_072,
                 "vram": "1.8 GB / 16 GB",
-                "tag": "⚡ Qwen 3.8 Flash Next",
-                "accent": self.C["accent_green"]
+                "tag": "⚡ Qwen 3.8B Fast",
+                "accent": self.C["accent_yellow"]
             },
-            "model_3": {
+            "model_4": {
                 "name": "Dolphin Vision 2.9 (Uncensored Multimodal)",
                 "short_name": "Dolphin Vision 2.9",
                 "repo_id": "cognitivecomputations/dolphin-2.9.2-qwen2-7b",
@@ -159,19 +172,6 @@ class SmartAIChatbotApp:
                 "vram": "4.8 GB / 16 GB",
                 "tag": "👁️ Dolphin Vision 2.9",
                 "accent": self.C["accent_orange"]
-            },
-            "model_4": {
-                "name": "Ternary Qwen 27B (Pro 1.58-Bit)",
-                "short_name": "Ternary Qwen 27B",
-                "repo_id": "Qwen/Qwen2.5-27B-Ternary-mlx",
-                "model_path": None,
-                "precision": "27.0B Base (1.58-Bit)",
-                "raw_params": 27_000_000_000,
-                "base_params": "27B",
-                "max_context": 131_072,
-                "vram": "6.0 GB / 16 GB",
-                "tag": "🏆 Qwen 27B Pro",
-                "accent": self.C["accent_yellow"]
             },
             "model_5": {
                 "name": "Flash Next Qwen 7B (Coder)",
