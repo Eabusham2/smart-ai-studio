@@ -1,4 +1,4 @@
-name: CI & Multi-Platform Release Pipeline
+name: CI & Auto-Release on Commit Pipeline
 
 on:
   push:
@@ -7,12 +7,17 @@ on:
       - 'v*'
   pull_request:
     branches: [ master, main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   test:
-    name: Run Test Suites
+    name: Run Test Suite (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ['3.10', '3.11']
@@ -38,9 +43,9 @@ jobs:
           python -m pytest tests/ -v
 
   build-and-release:
-    name: Build Multi-Platform Release Artifacts
+    name: Build & Auto-Publish Release Packages
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
 
     steps:
@@ -57,13 +62,39 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build Application Packages
+      - name: Build Application Packages (macOS, Windows, Linux)
         run: |
           python build_app.py
 
-      - name: Create GitHub Release
+      - name: Upload Build Artifacts to Workflow Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartAI-Packages
+          path: |
+            dist/SmartAI-macOS-arm64.zip
+            dist/SmartAI-Windows.zip
+            dist/SmartAI-Linux-x86_64.tar.gz
+
+      - name: Determine Release Tag & Title
+        id: release_info
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            TITLE="Smart AI Studio ${TAG_NAME}"
+            PRERELEASE=false
+          else
+            TAG_NAME="latest"
+            TITLE="Smart AI Studio — Latest Build (${GITHUB_SHA::7})"
+            PRERELEASE=false
+          fi
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_title=${TITLE}" >> $GITHUB_OUTPUT
+
+      - name: Publish or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          name: ${{ steps.release_info.outputs.release_title }}
           files: |
             dist/SmartAI-macOS-arm64.zip
             dist/SmartAI-Windows.zip
