@@ -131,17 +131,26 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.assertEqual(self.app.active_tab_id, "model_1")
         self.assertIn("Ternary Bonsai", self.app.lbl_model_status.cget("text"))
 
-    def test_model_unload_and_load_controls(self):
-        """Test manual and automated model load and unload purging VRAM."""
-        initial_state = self.app.is_model_loaded
-        
-        # Toggle 1
-        self.app._on_toggle_load_unload()
-        self.assertNotEqual(self.app.is_model_loaded, initial_state)
-
-        # Toggle 2 (restores state)
-        self.app._on_toggle_load_unload()
-        self.assertEqual(self.app.is_model_loaded, initial_state)
+    def test_custom_model_importer(self):
+        """Test dynamically registering and switching to a custom user-imported model."""
+        custom_id = "custom_test_model"
+        self.app.models_config[custom_id] = {
+            "name": "Llama 3.2 3B (Custom)",
+            "short_name": "Llama 3.2 3B",
+            "repo_id": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+            "model_path": None,
+            "precision": "3.2B Custom",
+            "raw_params": 3_200_000_000,
+            "base_params": "3.2B",
+            "max_context": 65_536,
+            "vram": "2.2 GB / 16 GB",
+            "tag": "🧩 Llama 3.2 3B",
+            "accent": "#c084fc"
+        }
+        self.app.chat_history[custom_id] = []
+        self.app._on_switch_model_tab(custom_id)
+        self.assertEqual(self.app.active_tab_id, custom_id)
+        self.assertIn("Llama 3.2 3B", self.app.lbl_model_status.cget("text"))
 
 
 if __name__ == "__main__":

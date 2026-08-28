@@ -88,16 +88,19 @@ class ProReasoningEngine:
             max_draft_tokens=self.settings.speculative_tokens
         )
 
-    def load_model(self, model_name: str) -> Dict[str, Any]:
+    def load_model(self, model_name: str, model_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Enforces strict single-model mutual exclusion with zero memory leak:
         Completely purges any loaded model from VRAM and RAM before loading the new model.
+        Supports custom user-imported local paths and HuggingFace repositories.
         """
         with self._model_lock:
             self.unload_model()  # Strictly unload previous model first
             self.active_model_name = model_name
 
-            if "qwen" in model_name.lower():
+            if model_path:
+                target_path = model_path
+            elif "qwen" in model_name.lower():
                 target_path = self.settings.flash_model_path
             elif "dolphin" in model_name.lower():
                 target_path = "cognitivecomputations/dolphin-2.9.2-qwen2-7b"

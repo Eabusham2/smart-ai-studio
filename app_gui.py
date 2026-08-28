@@ -1,7 +1,7 @@
 """
 Smart AI Studio — High-Readability Single-Chat Studio with Live Real-Time Token Streaming,
-ChatGPT-Style Side-by-Side Interactive AI Canvas, Live Steer (Cmd/Ctrl+Enter), Task Queue,
-Dynamic Unit Scaling, and a Clean Single-Row Top Navigation Bar.
+ChatGPT-Style Side-by-Side Interactive AI Canvas, Custom Model Importer, Live Steer (Cmd/Ctrl+Enter),
+Task Queue, Dynamic Unit Scaling, and a Clean Single-Row Top Navigation Bar.
 """
 
 import ast
@@ -64,7 +64,8 @@ _COLORS = {
     "bg_chat":       "#080c14",   # Chat area background
     "bg_card":       "#172033",   # Badge & card background
     "bg_card_hover": "#22304d",   # Hover state
-    "bg_input":      "#0f172a",   # Input box background
+    "bg_input":      "#0b1120",   # Input box background
+    "bg_input_inner":"#04070d",   # Inner text field
     "bg_user_bubble":"#1e293b",   # User message bubble
     "bg_ai_bubble":  "#0f172a",   # AI message bubble
     "border":        "#1e293b",   # Card / panel borders
@@ -106,21 +107,24 @@ _FONT_TINY_BOLD = (_FONT_FAMILY, 10, "bold")
 _FONT_MONO = (_FONT_MONO_FAMILY, 13)     # Clear 13pt monospace for code
 _FONT_INLINE_MONO = (_FONT_MONO_FAMILY, 12)
 
+CUSTOM_MODELS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "custom_models.json")
+
 
 class SmartAIChatbotApp:
-    """Clean, high-readability single-chat studio with real-time streaming, AI Canvas, steer & queue."""
+    """Clean, high-readability single-chat studio with real-time streaming, AI Canvas, custom model importer, steer & queue."""
 
     def __init__(self, root: tk.Tk, settings: Optional[Settings] = None):
         self.root = root
         self.settings = settings or get_settings()
         self.C = _COLORS
 
-        # Models Configuration
+        # Built-in Default Models Configuration
         self.models_config = {
             "model_1": {
                 "name": "Ternary Bonsai (1.58-Bit)",
                 "short_name": "Ternary Bonsai",
                 "repo_id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+                "model_path": None,
                 "precision": "27.4B Base (1.58-Bit)",
                 "raw_params": 27_400_000_000,
                 "base_params": "27.4B",
@@ -133,6 +137,7 @@ class SmartAIChatbotApp:
                 "name": "Qwen 3.8 Flash Next (1.58-Bit)",
                 "short_name": "Qwen 3.8 Flash Next",
                 "repo_id": "Qwen/Qwen-3.8B-Flash-Next-1.58bit",
+                "model_path": None,
                 "precision": "3.8B Base (1.58-Bit)",
                 "raw_params": 3_800_000_000,
                 "base_params": "3.8B",
@@ -145,6 +150,7 @@ class SmartAIChatbotApp:
                 "name": "Dolphin Vision 2.9 (Uncensored Multimodal)",
                 "short_name": "Dolphin Vision 2.9",
                 "repo_id": "cognitivecomputations/dolphin-2.9.2-qwen2-7b",
+                "model_path": None,
                 "precision": "7.0B Multimodal (Vision)",
                 "raw_params": 7_000_000_000,
                 "base_params": "7.0B",
@@ -154,6 +160,7 @@ class SmartAIChatbotApp:
                 "accent": self.C["accent_orange"]
             }
         }
+        self._load_saved_custom_models()
         self.active_tab_id = "model_1"
 
         # Core Engines & Tools
@@ -200,6 +207,31 @@ class SmartAIChatbotApp:
         self._send_welcome_messages()
 
     # ─────────────────────────────────────────────────────
+    #  PERSISTENT CUSTOM MODEL LOADER & SAVER
+    # ─────────────────────────────────────────────────────
+    def _load_saved_custom_models(self):
+        """Loads user-imported models from disk."""
+        if os.path.exists(CUSTOM_MODELS_FILE):
+            try:
+                with open(CUSTOM_MODELS_FILE, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                if isinstance(saved, dict):
+                    for mid, mdata in saved.items():
+                        self.models_config[mid] = mdata
+            except Exception:
+                pass
+
+    def _save_custom_models(self):
+        """Saves user-imported models to disk."""
+        os.makedirs(os.path.dirname(CUSTOM_MODELS_FILE), exist_ok=True)
+        custom_only = {k: v for k, v in self.models_config.items() if k.startswith("custom_")}
+        try:
+            with open(CUSTOM_MODELS_FILE, "w", encoding="utf-8") as f:
+                json.dump(custom_only, f, indent=2)
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────
     #  WINDOW INITIALIZATION
     # ─────────────────────────────────────────────────────
     def _init_window(self):
@@ -238,13 +270,13 @@ class SmartAIChatbotApp:
         sys.exit(0)
 
     # ─────────────────────────────────────────────────────
-    #  MASTER UI STRUCTURE (CLEAN, SINGLE CHAT, NO MULTI-ROW CLUTTER)
+    #  MASTER UI STRUCTURE
     # ─────────────────────────────────────────────────────
     def _build_ui(self):
         self.main_container = tk.Frame(self.root, bg=self.C["bg_app"])
         self.main_container.pack(fill="both", expand=True)
 
-        # 1. SINGLE SLEEK TOP HEADER ROW (Height: 48px)
+        # 1. TOP HEADER BAR (Height: 50px)
         self._build_single_top_bar()
 
         # 2. SLIDE-OUT RESOURCE VIEWER (Hidden by default)
@@ -273,17 +305,17 @@ class SmartAIChatbotApp:
         self._build_ai_canvas_panel()
 
     # ─────────────────────────────────────────────────────
-    #  1. SINGLE SLEEK TOP HEADER ROW
+    #  1. SINGLE SLEEK TOP HEADER ROW (WELL-ORGANIZED BUTTONS)
     # ─────────────────────────────────────────────────────
     def _build_single_top_bar(self):
-        self.hud_bar = tk.Frame(self.main_container, bg=self.C["bg_hud"], height=48)
+        self.hud_bar = tk.Frame(self.main_container, bg=self.C["bg_hud"], height=50)
         self.hud_bar.pack(fill="x", side="top")
         self.hud_bar.pack_propagate(False)
 
         # Alias for backward test compatibility
         self.tab_bar = self.hud_bar
 
-        # Left Section: Brand Logo + Model Selector Dropdown + Workspace Folder
+        # Left Section: Brand + Model Selector Dropdown + ➕ Import Model + Workspace Folder
         left_box = tk.Frame(self.hud_bar, bg=self.C["bg_hud"])
         left_box.pack(side="left", padx=14, pady=6)
 
@@ -292,49 +324,46 @@ class SmartAIChatbotApp:
             bg=self.C["bg_hud"], fg=self.C["accent_cyan"]
         ).pack(side="left", padx=(0, 10))
 
-        # Model Selector MenuButton / Dropdown
+        # Model Selector Dropdown
         self.model_var = tk.StringVar(value=self.models_config[self.active_tab_id]["short_name"])
         self.btn_model_menu = tk.Menubutton(
             left_box, textvariable=self.model_var, font=_FONT_TAB,
             bg=self.C["bg_card"], fg=self.C["accent_cyan"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+            relief="flat", bd=0, padx=12, pady=5, cursor="hand2",
             highlightbackground=self.C["border"], highlightthickness=1
         )
-        self.btn_model_menu.pack(side="left", padx=(0, 8))
-
-        menu = tk.Menu(self.btn_model_menu, tearoff=0, bg=self.C["bg_card"], fg=self.C["text_main"], font=_FONT_SMALL)
-        for tid, info in self.models_config.items():
-            menu.add_command(
-                label=f"{info['tag']}  ({info['base_params']})",
-                command=lambda t=tid: self._on_switch_model_tab(t)
-            )
-        self.btn_model_menu["menu"] = menu
+        self.btn_model_menu.pack(side="left", padx=(0, 6))
+        self._refresh_model_menu()
 
         # Tab button aliases for test suite
         self.tab_buttons: Dict[str, tk.Button] = {}
         for tid in self.models_config.keys():
             self.tab_buttons[tid] = self.btn_model_menu
 
-        # Workspace folder pill
-        btn_folder = tk.Button(
-            left_box, text="📂", font=_FONT_SMALL,
-            bg=self.C["bg_card"], fg=self.C["text_muted"],
-            activebackground=self.C["bg_card_hover"], activeforeground=self.C["accent_cyan"],
-            relief="flat", bd=0, padx=6, pady=3, cursor="hand2",
+        # ➕ Import Model Button
+        self.btn_import_model = tk.Button(
+            left_box, text="➕ Import Model", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_purple"],
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightbackground=self.C["border"], highlightthickness=1,
-            command=self._on_select_workspace_folder
+            command=self._on_import_custom_model_dialog
         )
-        btn_folder.pack(side="left", padx=(0, 4))
+        self.btn_import_model.pack(side="left", padx=(0, 8))
 
+        # Workspace folder button
         disp_folder = os.path.basename(self.workspace_dir) or self.workspace_dir
         self.lbl_workspace = tk.Label(
             left_box, text=f"📁 {disp_folder}", font=_FONT_SMALL,
-            bg=self.C["bg_hud"], fg=self.C["text_muted"]
+            bg=self.C["bg_card"], fg=self.C["text_muted"], padx=8, pady=4,
+            relief="flat", bd=0, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1
         )
         self.lbl_workspace.pack(side="left")
+        self.lbl_workspace.bind("<Button-1>", lambda e: self._on_select_workspace_folder())
 
-        # Right Section: Status Badges, Canvas Toggle, Reset, Load/Unload
+        # Right Section: Status Chips + Action Buttons
         right_box = tk.Frame(self.hud_bar, bg=self.C["bg_hud"])
         right_box.pack(side="right", padx=14, pady=6)
 
@@ -366,10 +395,10 @@ class SmartAIChatbotApp:
 
         # Reset & Reinstall
         self.btn_reset_reinstall = tk.Button(
-            right_box, text="🔄 Reset & Reinstall", font=_FONT_TINY_BOLD,
+            right_box, text="🔄 Reset", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_yellow"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
-            relief="flat", bd=0, padx=9, pady=4, cursor="hand2",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightbackground=self.C["border"], highlightthickness=1,
             command=self._on_reset_and_reinstall_single_confirm
         )
@@ -381,53 +410,46 @@ class SmartAIChatbotApp:
             right_box, text="⚡ Load Model", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_cyan"],
             activebackground=self.C["bg_card_hover"], activeforeground=self.C["accent_orange"],
-            relief="flat", bd=0, padx=9, pady=4, cursor="hand2",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightbackground=self.C["border"], highlightthickness=1,
             command=self._on_toggle_load_unload
         )
         self.btn_load_unload.pack(side="left", padx=3)
 
-        # Clear Chat Button
-        self.btn_reset_chat = tk.Button(
-            right_box, text="🗑️ Clear", font=_FONT_TINY_BOLD,
-            bg=self.C["bg_card"], fg=self.C["text_muted"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
-            command=self._on_reset_chat_confirm
-        )
-        self.btn_reset_chat.pack(side="left", padx=3)
-
-        # Export Button
-        self.btn_export_chat = tk.Button(
-            right_box, text="💾", font=_FONT_TINY_BOLD,
-            bg=self.C["bg_card"], fg=self.C["accent_green"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
-            command=self._on_export_chat_button
-        )
-        self.btn_export_chat.pack(side="left", padx=3)
-
         # Resources toggle
         self.btn_toggle_resources = tk.Button(
             right_box, text="⚙", font=_FONT_TINY_BOLD,
-            bg=self.C["bg_card"], fg=self.C["accent_cyan"],
+            bg=self.C["bg_card"], fg=self.C["text_muted"],
             activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
+            padx=6, pady=4, cursor="hand2",
             highlightbackground=self.C["border"], highlightthickness=1,
             command=self._on_toggle_resource_viewer
         )
         self.btn_toggle_resources.pack(side="left", padx=3)
 
         # Status Label
-        cached = is_model_cached_locally(curr_info["repo_id"])
-        status_txt = f"⚡ Ready to Load ({curr_info['short_name']})" if cached else f"○ Not Downloaded ({curr_info['short_name']})"
+        cached = is_model_cached_locally(curr_info["repo_id"]) if curr_info.get("repo_id") else (os.path.exists(curr_info.get("model_path") or "") if curr_info.get("model_path") else False)
+        status_txt = f"⚡ Ready ({curr_info['short_name']})" if cached else f"○ Not Downloaded ({curr_info['short_name']})"
         self.lbl_model_status = tk.Label(
             right_box, text=status_txt, font=_FONT_TINY_BOLD,
-            bg=self.C["bg_hud"], fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"], padx=6
+            bg=self.C["bg_hud"], fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"], padx=4
         )
         self.lbl_model_status.pack(side="left")
+
+    def _refresh_model_menu(self):
+        """Rebuilds the model dropdown menu dynamically with all built-in and custom models."""
+        menu = tk.Menu(self.btn_model_menu, tearoff=0, bg=self.C["bg_card"], fg=self.C["text_main"], font=_FONT_SMALL)
+        for tid, info in self.models_config.items():
+            menu.add_command(
+                label=f"{info['tag']}  ({info['base_params']})",
+                command=lambda t=tid: self._on_switch_model_tab(t)
+            )
+        menu.add_separator()
+        menu.add_command(
+            label="➕ Import Custom Model...",
+            command=self._on_import_custom_model_dialog
+        )
+        self.btn_model_menu["menu"] = menu
 
     def _make_badge(self, parent: tk.Frame, text: str, fg_color: str) -> tk.Label:
         lbl = tk.Label(
@@ -437,6 +459,143 @@ class SmartAIChatbotApp:
         )
         lbl.pack(side="left", padx=2)
         return lbl
+
+    # ─────────────────────────────────────────────────────
+    #  CUSTOM MODEL IMPORTER DIALOG (IMPORT YOUR OWN MODEL)
+    # ─────────────────────────────────────────────────────
+    def _on_import_custom_model_dialog(self):
+        """Opens a clean dialog to import custom local or HuggingFace AI models."""
+        modal = tk.Toplevel(self.root)
+        modal.title("Import Custom AI Model")
+        modal.geometry("560x420")
+        modal.minsize(500, 380)
+        modal.configure(bg=self.C["bg_hud"])
+        modal.transient(self.root)
+        modal.grab_set()
+
+        # Header
+        hdr = tk.Frame(modal, bg=self.C["bg_hud"])
+        hdr.pack(fill="x", padx=20, pady=(16, 10))
+
+        tk.Label(
+            hdr, text="➕ Import Custom Model", font=_FONT_H2,
+            bg=self.C["bg_hud"], fg=self.C["accent_purple"]
+        ).pack(anchor="w")
+        tk.Label(
+            hdr, text="Add any local weights folder, MLX model, GGUF, or Hugging Face repository.",
+            font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]
+        ).pack(anchor="w", pady=(2, 0))
+
+        body = tk.Frame(modal, bg=self.C["bg_hud"])
+        body.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # 1. Model Name
+        tk.Label(body, text="Model Display Name:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
+        ent_name = tk.Entry(body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_name.pack(fill="x", pady=(2, 10), ipady=4)
+        ent_name.insert(0, "Llama 3.2 3B Instruct")
+
+        # 2. Source Type (HuggingFace vs Local Path)
+        source_var = tk.StringVar(value="hf")
+
+        radio_frame = tk.Frame(body, bg=self.C["bg_hud"])
+        radio_frame.pack(fill="x", pady=(0, 6))
+
+        tk.Radiobutton(radio_frame, text="HuggingFace Repo ID", variable=source_var, value="hf", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left", padx=(0, 16))
+        tk.Radiobutton(radio_frame, text="Local Folder / File", variable=source_var, value="local", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left")
+
+        # 3. Path / Repo ID
+        tk.Label(body, text="Repository ID or Local Path:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
+        path_frame = tk.Frame(body, bg=self.C["bg_hud"])
+        path_frame.pack(fill="x", pady=(2, 10))
+
+        ent_path = tk.Entry(path_frame, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_path.pack(side="left", fill="x", expand=True, ipady=4)
+        ent_path.insert(0, "mlx-community/Llama-3.2-3B-Instruct-4bit")
+
+        def _browse_local():
+            if source_var.get() == "local":
+                d = filedialog.askdirectory(title="Select Local Model Weights Directory")
+                if d:
+                    ent_path.delete(0, "end")
+                    ent_path.insert(0, d)
+            else:
+                messagebox.showinfo("Browse", "Switch source type to 'Local Folder / File' to browse your disk.")
+
+        btn_browse = tk.Button(path_frame, text="📁 Browse...", font=_FONT_TINY_BOLD, bg=self.C["bg_card"], fg=self.C["accent_cyan"], relief="flat", bd=0, padx=8, cursor="hand2", command=_browse_local)
+        btn_browse.pack(side="right", padx=(6, 0))
+
+        # 4. Parameters scale (e.g. 3B, 7B, 14B)
+        param_frame = tk.Frame(body, bg=self.C["bg_hud"])
+        param_frame.pack(fill="x", pady=(0, 14))
+
+        tk.Label(param_frame, text="Parameters (e.g. 3B, 7B):", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
+        ent_param = tk.Entry(param_frame, width=10, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_param.pack(side="left", padx=8, ipady=3)
+        ent_param.insert(0, "3B")
+
+        # Action Buttons
+        btn_bar = tk.Frame(modal, bg=self.C["bg_hud"])
+        btn_bar.pack(fill="x", padx=20, pady=(0, 16))
+
+        def _save_imported_model():
+            m_name = ent_name.get().strip() or "Custom Model"
+            m_path_or_id = ent_path.get().strip()
+            m_param_str = ent_param.get().strip() or "7B"
+
+            if not m_path_or_id:
+                messagebox.showerror("Error", "Please specify a HuggingFace Repository ID or Local Path.")
+                return
+
+            custom_id = f"custom_{int(time.time())}"
+            raw_param = 7_000_000_000
+            try:
+                num_match = re.search(r"([\d\.]+)", m_param_str)
+                if num_match:
+                    val = float(num_match.group(1))
+                    if "m" in m_param_str.lower():
+                        raw_param = int(val * 1_000_000)
+                    else:
+                        raw_param = int(val * 1_000_000_000)
+            except Exception:
+                pass
+
+            is_local = os.path.exists(m_path_or_id)
+            new_model = {
+                "name": f"{m_name} (Custom)",
+                "short_name": m_name,
+                "repo_id": m_path_or_id if not is_local else None,
+                "model_path": m_path_or_id if is_local else None,
+                "precision": f"{m_param_str} Custom",
+                "raw_params": raw_param,
+                "base_params": m_param_str,
+                "max_context": 65_536,
+                "vram": "4.0 GB / 16 GB",
+                "tag": f"🧩 {m_name}",
+                "accent": self.C["accent_purple"]
+            }
+
+            self.models_config[custom_id] = new_model
+            self.chat_history[custom_id] = []
+            self.tab_buttons[custom_id] = self.btn_model_menu
+            self._save_custom_models()
+            self._refresh_model_menu()
+            modal.destroy()
+
+            # Switch to newly imported model
+            self._on_switch_model_tab(custom_id)
+            self._append_ai_message(
+                f"🧩 **Custom Model Imported**: Successfully registered `{m_name}`.\n\n"
+                f"• **Source**: `{m_path_or_id}`\n"
+                f"• **Scale**: {m_param_str} Parameters\n"
+                f"• Click **'⚡ Load Model'** to initialize."
+            )
+
+        btn_cancel = tk.Button(btn_bar, text="Cancel", font=_FONT_SMALL, bg=self.C["bg_card"], fg=self.C["text_muted"], relief="flat", bd=0, padx=14, pady=6, cursor="hand2", command=modal.destroy)
+        btn_cancel.pack(side="right", padx=(8, 0))
+
+        btn_import = tk.Button(btn_bar, text="➕ Import & Select", font=_FONT_BOLD, bg=self.C["accent_purple"], fg="#000000", activebackground="#dfb5ff", relief="flat", bd=0, padx=16, pady=6, cursor="hand2", command=_save_imported_model)
+        btn_import.pack(side="right")
 
     # ─────────────────────────────────────────────────────
     #  SLIDE-OUT RESOURCE VIEWER DRAWER
@@ -492,7 +651,7 @@ class SmartAIChatbotApp:
     def _on_toggle_resource_viewer(self):
         if self.show_resources:
             self.res_drawer.pack_forget()
-            self.btn_toggle_resources.configure(fg=self.C["accent_cyan"])
+            self.btn_toggle_resources.configure(fg=self.C["text_muted"])
             self.show_resources = False
         else:
             self.res_drawer.pack(fill="x", after=self.hud_bar)
@@ -524,7 +683,6 @@ class SmartAIChatbotApp:
         self.chat_streams: Dict[str, tk.Text] = {}
         self.chat_scrolls: Dict[str, tk.Scrollbar] = {}
 
-        # Build one unified scrollable text widget
         cf = tk.Frame(self.chat_container_frame, bg=self.C["bg_chat"])
         cf.pack(fill="both", expand=True)
 
@@ -545,7 +703,6 @@ class SmartAIChatbotApp:
 
         self._configure_stream_tags(self.chat_stream)
 
-        # Alias for all model IDs so tests and model switching seamlessly reuse the single chat
         for tid in self.models_config.keys():
             self.chat_frames[tid] = cf
             self.chat_streams[tid] = self.chat_stream
@@ -594,7 +751,6 @@ class SmartAIChatbotApp:
     def _build_ai_canvas_panel(self):
         self.canvas_panel = tk.Frame(self.content_paned, bg=self.C["canvas_bg"])
 
-        # Canvas Top Action Bar
         hdr = tk.Frame(self.canvas_panel, bg=self.C["canvas_hdr"], height=42)
         hdr.pack(fill="x", side="top")
         hdr.pack_propagate(False)
@@ -645,7 +801,6 @@ class SmartAIChatbotApp:
         )
         btn_close.pack(side="right", padx=8)
 
-        # Canvas Editor Container
         editor_frame = tk.Frame(self.canvas_panel, bg=self.C["canvas_bg"])
         editor_frame.pack(fill="both", expand=True)
 
@@ -661,7 +816,6 @@ class SmartAIChatbotApp:
         self.txt_canvas.pack(fill="both", expand=True)
         scroll_y.configure(command=self.txt_canvas.yview)
 
-        # Initial Canvas content
         self.txt_canvas.insert("1.0", "# ✦ Smart AI Canvas\n# Code, documents, and artifacts generated by the AI will appear here.\n# You can edit, run, or save them directly.\n\ndef solve():\n    print('Hello from Smart AI Canvas!')\n")
 
     def _on_toggle_canvas_viewer(self):
@@ -717,47 +871,43 @@ class SmartAIChatbotApp:
             self._append_ai_message(f"💾 **Canvas Saved**: File written to `{path}`.")
 
     # ─────────────────────────────────────────────────────
-    #  4. ROCK-SOLID BOTTOM INPUT AREA (ALWAYS VISIBLE & PROMINENT)
+    #  4. ROCK-SOLID BOTTOM INPUT AREA (BEAUTIFUL CARD LAYOUT)
     # ─────────────────────────────────────────────────────
     def _build_bottom_input_area(self):
         self.input_container = tk.Frame(
-            self.main_container, bg=self.C["bg_hud"],
+            self.main_container, bg=self.C["bg_input"],
             highlightbackground=self.C["border"], highlightthickness=1
         )
         self.input_container.pack(fill="x", side="bottom", padx=20, pady=(0, 16))
 
-        # Left Buttons: Attach + Learn
-        left_ctrls = tk.Frame(self.input_container, bg=self.C["bg_hud"])
-        left_ctrls.pack(side="left", padx=(10, 4), pady=8)
+        # Top Row: [📎] [Text Input Area] [▶ Send]
+        top_row = tk.Frame(self.input_container, bg=self.C["bg_input"])
+        top_row.pack(fill="x", padx=12, pady=(10, 4))
 
         btn_attach = tk.Button(
-            left_ctrls, text="📎", font=(_FONT_FAMILY, 15),
-            bg=self.C["bg_hud"], fg=self.C["text_muted"],
-            activebackground=self.C["bg_card"], activeforeground=self.C["accent_cyan"],
-            relief="flat", bd=0, padx=6, cursor="hand2",
+            top_row, text="📎", font=(_FONT_FAMILY, 15),
+            bg=self.C["bg_card"], fg=self.C["text_muted"],
+            activebackground=self.C["bg_card_hover"], activeforeground=self.C["accent_cyan"],
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1,
             command=self._on_upload_file
         )
-        btn_attach.pack(side="top", pady=(0, 2))
+        btn_attach.pack(side="left", padx=(0, 8))
 
-        btn_learn = tk.Button(
-            left_ctrls, text="🎓", font=_FONT_TINY_BOLD,
-            bg=self.C["bg_card"], fg=self.C["accent_purple"],
-            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
-            relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
-            command=self._on_prompt_learn
+        # Input Text Box (3 lines, High Contrast White on Obsidian Dark)
+        text_wrapper = tk.Frame(
+            top_row, bg=self.C["bg_input_inner"],
+            highlightbackground=self.C["border"], highlightthickness=1
         )
-        btn_learn.pack(side="top")
+        text_wrapper.pack(side="left", fill="both", expand=True)
 
-        # Multi-Line Text Input Area (Fixed Height 3 lines, High-Contrast White Text)
         self.txt_input = tk.Text(
-            self.input_container, height=3, bg=self.C["bg_input"], fg=self.C["text_main"],
+            text_wrapper, height=3, bg=self.C["bg_input_inner"], fg=self.C["text_main"],
             insertbackground="#ffffff", font=_FONT_MAIN, bd=0,
-            padx=14, pady=8, highlightthickness=0, wrap="word"
+            padx=12, pady=8, highlightthickness=0, wrap="word"
         )
-        self.txt_input.pack(fill="both", side="left", expand=True, padx=6, pady=8)
+        self.txt_input.pack(fill="both", expand=True)
 
-        # Placeholder binding
         self._placeholder_active = True
         self.txt_input.insert("1.0", "Type your message or instruction... (Press Enter to send, ⌘+Enter to steer)")
         self.txt_input.configure(fg=self.C["text_muted"])
@@ -769,37 +919,80 @@ class SmartAIChatbotApp:
         self.txt_input.bind("<Command-Return>", self._on_steer_shortcut)
         self.txt_input.bind("<Control-Return>", self._on_steer_shortcut)
 
-        # Right Action Buttons: ▶ Send, 🎯 Steer, ⏹ Stop
-        btn_box = tk.Frame(self.input_container, bg=self.C["bg_hud"])
-        btn_box.pack(side="right", padx=(4, 12), pady=8)
-
+        # Prominent Send Button
         self.btn_send = tk.Button(
-            btn_box, text="  ▶ Send  ", font=_FONT_BOLD,
+            top_row, text="  ▶ Send  ", font=_FONT_BOLD,
             bg=self.C["accent_cyan"], fg="#000000",
             activebackground="#70e2ff", activeforeground="#000000",
-            relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
+            relief="flat", bd=0, padx=18, pady=10, cursor="hand2",
             command=self._on_send_message
         )
-        self.btn_send.pack(side="top", pady=(0, 3))
+        self.btn_send.pack(side="right", padx=(8, 0))
+
+        # Bottom Row: Action Pills & Keyboard Shortcuts Hint
+        bottom_row = tk.Frame(self.input_container, bg=self.C["bg_input"])
+        bottom_row.pack(fill="x", padx=12, pady=(0, 8))
+
+        left_actions = tk.Frame(bottom_row, bg=self.C["bg_input"])
+        left_actions.pack(side="left")
+
+        btn_learn = tk.Button(
+            left_actions, text="🎓 Learn Mode", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_purple"],
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1,
+            command=self._on_prompt_learn
+        )
+        btn_learn.pack(side="left", padx=(0, 4))
 
         steer_key = "⌘⏎" if platform.system() == "Darwin" else "Ctrl+⏎"
         self.btn_steer = tk.Button(
-            btn_box, text=f"🎯 Steer ({steer_key})", font=_FONT_TINY_BOLD,
+            left_actions, text=f"🎯 Steer ({steer_key})", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_purple"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
-            relief="flat", bd=0, padx=8, pady=2, cursor="hand2",
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightbackground=self.C["border"], highlightthickness=1,
             command=self._on_steer_button_pressed
         )
-        self.btn_steer.pack(side="top", pady=(0, 2))
+        self.btn_steer.pack(side="left", padx=(0, 4))
 
         self.btn_stop = tk.Button(
-            btn_box, text="⏹ Stop", font=_FONT_SMALL,
+            left_actions, text="⏹ Stop", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["text_muted"],
-            relief="flat", bd=0, padx=8, pady=2, state="disabled",
+            relief="flat", bd=0, padx=8, pady=3, state="disabled",
+            highlightbackground=self.C["border"], highlightthickness=1,
             command=self._on_stop_generation
         )
-        self.btn_stop.pack(side="top")
+        self.btn_stop.pack(side="left", padx=(0, 4))
+
+        # Clear Chat Button
+        self.btn_reset_chat = tk.Button(
+            left_actions, text="🗑️ Clear Chat", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["text_muted"],
+            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
+            padx=8, pady=3, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1,
+            command=self._on_reset_chat_confirm
+        )
+        self.btn_reset_chat.pack(side="left", padx=(0, 4))
+
+        # Export Button
+        self.btn_export_chat = tk.Button(
+            left_actions, text="💾 Export Chat", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_green"],
+            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
+            padx=8, pady=3, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1,
+            command=self._on_export_chat_button
+        )
+        self.btn_export_chat.pack(side="left")
+
+        # Right Side: Keyboard Hint
+        tk.Label(
+            bottom_row, text="↵ Send • ⌘↵ Steer • ⇧↵ New line", font=_FONT_TINY,
+            bg=self.C["bg_input"], fg=self.C["text_muted"]
+        ).pack(side="right")
 
     def _on_input_focus_in(self, event):
         if self._placeholder_active:
@@ -894,7 +1087,11 @@ class SmartAIChatbotApp:
     # ─────────────────────────────────────────────────────
     def _on_reset_and_reinstall_single_confirm(self):
         target_info = self.models_config[self.active_tab_id]
-        repo_id = target_info["repo_id"]
+        repo_id = target_info.get("repo_id")
+
+        if not repo_id:
+            messagebox.showinfo("Reset", f"{target_info['name']} is a local model. No HuggingFace cache to purge.")
+            return
 
         confirm = messagebox.askyesno(
             "Reset & Reinstall Model",
@@ -912,6 +1109,9 @@ class SmartAIChatbotApp:
     def _on_download_hf_model(self):
         target_info = self.models_config[self.active_tab_id]
         repo_id = target_info.get("repo_id", "")
+
+        if not repo_id:
+            return
 
         self._append_ai_message(f"⬇️ **HuggingFace Downloader**: Initializing download for `{repo_id}` ({target_info['name']})...")
         self.lbl_model_status.configure(text=f"⬇️ Connecting to HF: {target_info['short_name']}...", fg=self.C["accent_yellow"])
@@ -938,15 +1138,16 @@ class SmartAIChatbotApp:
             f"• Click **'⚡ Load Model'** to load weights into Apple Silicon unified memory."
         )
         self.lbl_model_status.configure(text=f"⚡ Ready to Load ({target_info['short_name']})", fg=self.C["accent_cyan"])
-        self.btn_reset_reinstall.configure(state="normal", text="🔄 Reset & Reinstall")
+        self.btn_reset_reinstall.configure(state="normal", text="🔄 Reset")
 
     def _on_download_hf_failed(self, target_info: Dict[str, Any], error: str):
         self._append_ai_message(f"⚠️ **Download Failed** for `{target_info['name']}`: {error}")
         self.lbl_model_status.configure(text=f"✗ Download Failed ({target_info['short_name']})", fg=self.C["accent_red"])
-        self.btn_reset_reinstall.configure(state="normal", text="🔄 Reset & Reinstall")
+        self.btn_reset_reinstall.configure(state="normal", text="🔄 Reset")
 
     def _on_toggle_load_unload(self):
         target_info = self.models_config[self.active_tab_id]
+        m_path = target_info.get("model_path") or target_info.get("repo_id")
 
         if self.is_model_loaded:
             self.engine.unload_model()
@@ -958,7 +1159,7 @@ class SmartAIChatbotApp:
             self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}` purged from unified memory.")
         else:
             self.lbl_model_status.configure(text=f"⏳ Loading {target_info['short_name']}...", fg=self.C["accent_yellow"])
-            load_res = self.engine.load_model(target_info["name"])
+            load_res = self.engine.load_model(target_info["name"], model_path=m_path)
             if load_res.get("status") == "loaded":
                 self.is_model_loaded = True
                 self.lbl_model_status.configure(text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"])
@@ -971,19 +1172,22 @@ class SmartAIChatbotApp:
                 self.lbl_model_status.configure(text=f"○ Not Downloaded ({target_info['short_name']})", fg=self.C["accent_yellow"])
                 self.btn_load_unload.configure(text="⚡ Load Model", fg=self.C["accent_cyan"])
                 self._append_ai_message(
-                    f"⚠️ Model weights for `{target_info['name']}` are not yet downloaded.\n\n"
-                    f"• Click **'🔄 Reset & Reinstall'** in the top bar to retrieve the weights."
+                    f"⚠️ Model weights for `{target_info['name']}` are not yet loaded or downloaded.\n\n"
+                    f"• Click **'🔄 Reset'** in the top bar to retrieve the weights if from HuggingFace."
                 )
 
     def _on_switch_model_tab(self, target_tab_id: str):
+        if target_tab_id not in self.models_config:
+            return
         self.active_tab_id = target_tab_id
         target_info = self.models_config[target_tab_id]
+        m_path = target_info.get("model_path") or target_info.get("repo_id")
 
         if hasattr(self, "model_var"):
             self.model_var.set(target_info["short_name"])
 
         self.engine.unload_model()
-        load_res = self.engine.load_model(target_info["name"])
+        load_res = self.engine.load_model(target_info["name"], model_path=m_path)
 
         if load_res.get("status") == "loaded":
             self.is_model_loaded = True
@@ -992,7 +1196,7 @@ class SmartAIChatbotApp:
             self.btn_load_unload.configure(text="⏏ Unload Model", fg=self.C["accent_orange"])
         else:
             self.is_model_loaded = False
-            cached = is_model_cached_locally(target_info["repo_id"])
+            cached = is_model_cached_locally(target_info["repo_id"]) if target_info.get("repo_id") else (os.path.exists(m_path or "") if m_path else False)
             status_txt = f"⚡ Ready to Load ({target_info['short_name']})" if cached else f"○ Not Downloaded ({target_info['short_name']})"
             self.lbl_model_status.configure(text=status_txt, fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"])
             self.lbl_vram.configure(text="💾 0.0 GB / 16 GB")
@@ -1011,6 +1215,7 @@ class SmartAIChatbotApp:
         ok, res = self.tools.execute_tool("export_chat_history", {"filename": "chat_history_export.md"})
         if ok:
             self._append_ai_message(f"💾 **Chat History Exported**: Saved to `{os.path.abspath('chat_history_export.md')}`.")
+            messagebox.showinfo("Chat Exported", f"Chat history saved to:\n{os.path.abspath('chat_history_export.md')}")
         else:
             self._append_ai_message("⚠️ Could not export chat history.")
 
@@ -1109,10 +1314,10 @@ class SmartAIChatbotApp:
         param_str = format_parameter_count(info.get("raw_params", 27_400_000_000))
         self.chat_stream.insert(
             "end",
-            f"Smart AI Studio ready to assist with autonomous reasoning and coding.\n\n"
-            f"• **Architecture**: {info['precision']} ({param_str} Parameters)\n"
-            f"• **Context Window**: {self.max_context_window:,} Tokens (Auto-Scaled for Unified RAM)\n"
-            f"• **Keyboard Shortcuts**: Press `⌘+Enter` (or `Ctrl+Enter`) to **Steer** live while typing, or `Enter` while generating to **Queue**.\n\n",
+            f"Smart AI Studio ready to assist with autonomous reasoning, coding, and tool execution.\n\n"
+            f"• **Active Model**: {info['name']} ({param_str} Parameters)\n"
+            f"• **Custom Models**: Click **'➕ Import Model'** in the top bar to add your own local or HuggingFace models.\n"
+            f"• **Live Steer**: Press `⌘+Enter` (or `Ctrl+Enter`) to steer the model while typing.\n\n",
             "ai_msg"
         )
         self.chat_stream.insert("end", "─" * 56 + "\n\n", "separator")
