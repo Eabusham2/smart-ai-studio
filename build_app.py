@@ -85,18 +85,59 @@ def create_macos_bundle(dist_dir: str, app_name: str):
 
     # 3. Write executable launch script
     launcher_script = f"""#!/usr/bin/env bash
+# macOS Smart AI Studio Universal App Launcher
+
+# 1. Expand PATH with Homebrew, Pyenv, Conda, and local Frameworks
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.pyenv/bin:$HOME/.local/bin:$HOME/miniconda3/bin:$HOME/anaconda3/bin:$PATH"
+
+# 2. Source user profile if available to inherit environment
+if [ -f "$HOME/.zprofile" ]; then source "$HOME/.zprofile" 2>/dev/null; fi
+if [ -f "$HOME/.zshrc" ]; then source "$HOME/.zshrc" 2>/dev/null; fi
+
 BUNDLE_DIR="$( cd "$( dirname "${{BASH_SOURCE[0]}}" )/../Resources/app" >/dev/null 2>&1 && pwd )"
 cd "$BUNDLE_DIR"
-if command -v python3 >/dev/null 2>&1; then
-    exec python3 app_gui.py "$@"
-elif [ -x "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" ]; then
-    exec "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" app_gui.py "$@"
-elif command -v python >/dev/null 2>&1; then
-    exec python app_gui.py "$@"
-else
-    osascript -e 'display dialog "Python 3 is required to launch Smart AI." buttons {{"OK"}} default button "OK" with icon stop'
-    exit 1
+
+LOG_FILE="/tmp/smartai_launch.log"
+echo "[$(date)] Launching Smart AI from $BUNDLE_DIR" > "$LOG_FILE"
+
+# 3. Find the best Python interpreter with tkinter and requirements
+PYTHON_CMD=""
+
+CANDIDATES=(
+    "$(which python3 2>/dev/null)"
+    "/opt/homebrew/bin/python3"
+    "/usr/local/bin/python3"
+    "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+    "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
+    "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3"
+    "$HOME/.pyenv/shims/python3"
+    "$(which python 2>/dev/null)"
+)
+
+for CAND in "${{CANDIDATES[@]}}"; do
+    if [ -n "$CAND" ] && [ -x "$CAND" ]; then
+        if "$CAND" -c "import tkinter" 2>/dev/null; then
+            PYTHON_CMD="$CAND"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+    PYTHON_CMD="$(which python3 2>/dev/null || echo "python3")"
 fi
+
+echo "Selected Python interpreter: $PYTHON_CMD" >> "$LOG_FILE"
+
+# 4. Execute app and catch any crash/errors
+"$PYTHON_CMD" app_gui.py "$@" >> "$LOG_FILE" 2>&1
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -ne 0 ]; then
+    ERR_SNIPPET="$(tail -n 6 "$LOG_FILE" 2>/dev/null | tr '"' "'")"
+    osascript -e "display dialog \\"Smart AI Studio encountered an error during launch:\\n\\n$ERR_SNIPPET\\n\\nFull log saved to: /tmp/smartai_launch.log\\" buttons {{\\"OK\\"}} default button \\"OK\\" with icon stop with title \\"Smart AI Launch Error\\""
+fi
+exit $EXIT_CODE
 """
     exec_path = os.path.join(macos_dir, app_name)
     with open(exec_path, "w") as f:
@@ -129,6 +170,15 @@ fi
             shutil.rmtree(dmg_temp, ignore_errors=True)
         os.makedirs(dmg_temp, exist_ok=True)
         shutil.copytree(app_bundle, os.path.join(dmg_temp, f"{app_name}.app"))
+        
+        # Copy quick launchers and helper scripts
+        for helper in ["Launch_SmartAI_macOS.command", "Fix_Mac_Permissions.command", "README.md"]:
+            helper_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), helper)
+            if os.path.exists(helper_path):
+                dest = os.path.join(dmg_temp, helper)
+                shutil.copy2(helper_path, dest)
+                if helper.endswith(".command"):
+                    os.chmod(dest, 0o755)
 
         if os.path.exists(dmg_path):
             try:
@@ -146,16 +196,16 @@ fi
             dmg_path
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
-        shutil.rmtree(dmg_temp, ignore_errors=True)
 
-        # Create portable macOS zip archive
+        # Create portable macOS zip archive from staging
         zip_path = os.path.join(dist_dir, f"{app_name}-macOS-arm64.zip")
         if os.path.exists(zip_path):
             try:
                 os.remove(zip_path)
             except Exception:
                 pass
-        shutil.make_archive(os.path.join(dist_dir, f"{app_name}-macOS-arm64"), 'zip', dist_dir, f"{app_name}.app")
+        shutil.make_archive(os.path.join(dist_dir, f"{app_name}-macOS-arm64"), 'zip', dmg_temp)
+        shutil.rmtree(dmg_temp, ignore_errors=True)
         if os.path.exists(zip_path):
             zsize = os.path.getsize(zip_path) / (1024 * 1024)
             print(f"[✓] SUCCESS: macOS Portable Zip Bundle generated: {zip_path} ({zsize:.2f} MB)")
