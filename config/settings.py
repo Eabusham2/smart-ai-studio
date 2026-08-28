@@ -9,8 +9,7 @@ import os
 import platform
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 
 def detect_system_platform() -> str:
@@ -79,6 +78,12 @@ try:
         lora_adapter_path: Optional[str] = Field(default=None, description="Path to consolidated Slow-LoRA adapter")
         small_model_path: str = Field(default="prism-ml/Ternary-Bonsai-mlx-2bit", description="Model checkpoint ID")
         flash_model_path: str = Field(default="Qwen/Qwen-3.8B-Flash-Next-1.58bit", description="Qwen 3.8 Flash Next 1.58-bit model checkpoint")
+        ternary_qwen_3_8b_path: str = Field(default="h34v7/Ternary-Qwen3.5-3.8B-mlx", description="Ternary Qwen 3.8B Fast checkpoint")
+        ternary_qwen_27b_path: str = Field(default="Qwen/Qwen2.5-27B-Ternary-mlx", description="Ternary Qwen 27B Pro checkpoint")
+        flash_qwen_7b_path: str = Field(default="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", description="Flash Next Qwen 7B Coder checkpoint")
+        vision_model_path: str = Field(default="mlx-community/nanoLLaVA-1.5-mlx", description="Uncensored Multimodal Vision checkpoint")
+        vision_mmproj_path: Optional[str] = Field(default=None, description="GGUF vision clip projector path")
+        auto_download: bool = Field(default=True, description="Automatically stream missing weights from Hugging Face")
 
         # Speculative Acceleration (Lossless Decoding Speedups)
         speculative_mode: str = Field(default="pld", description="Speculative decoding mode: pld, lookahead, dflash, eagle, medusa, none")
@@ -129,6 +134,12 @@ except ImportError:
         lora_adapter_path: Optional[str] = os.getenv("LORA_ADAPTER_PATH", None)
         small_model_path: str = os.getenv("SMALL_MODEL_PATH", "prism-ml/Ternary-Bonsai-27B-mlx-2bit")
         flash_model_path: str = os.getenv("FLASH_MODEL_PATH", "Qwen/Qwen-3.8B-Flash-Next-1.58bit")
+        ternary_qwen_3_8b_path: str = os.getenv("TERNARY_QWEN_3_8B_PATH", "h34v7/Ternary-Qwen3.5-3.8B-mlx")
+        ternary_qwen_27b_path: str = os.getenv("TERNARY_QWEN_27B_PATH", "Qwen/Qwen2.5-27B-Ternary-mlx")
+        flash_qwen_7b_path: str = os.getenv("FLASH_QWEN_7B_PATH", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
+        vision_model_path: str = os.getenv("VISION_MODEL_PATH", "mlx-community/nanoLLaVA-1.5-mlx")
+        vision_mmproj_path: Optional[str] = os.getenv("VISION_MMPROJ_PATH", None)
+        auto_download: bool = os.getenv("AUTO_DOWNLOAD", "true").lower() in ("1", "true", "yes")
 
         speculative_mode: str = os.getenv("SPECULATIVE_MODE", "pld")
         speculative_tokens: int = int(os.getenv("SPECULATIVE_TOKENS", "4"))
@@ -154,6 +165,116 @@ except ImportError:
         consolidation_weight_decay: float = float(os.getenv("CONSOLIDATION_WEIGHT_DECAY", "0.01"))
         episodic_replay_ratio: float = float(os.getenv("EPISODIC_REPLAY_RATIO", "0.25"))
         idle_sleep_threshold_minutes: int = int(os.getenv("IDLE_SLEEP_THRESHOLD_MINUTES", "30"))
+
+
+# Comprehensive Multi-Backend Model Registry Presets
+MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
+    "model_1": {
+        "id": "model_1",
+        "key": "ternary_bonsai_27b",
+        "name": "Ternary Bonsai 27B",
+        "short_name": "Ternary Bonsai 27B",
+        "tag": "🌿 Bonsai 27B",
+        "type": "ternary",
+        "base_params": "27.4B",
+        "raw_params": 27_400_000_000,
+        "precision": "1.58-Bit BitLinear",
+        "max_context": 262_144,
+        "vram": "~5.8 GB / 16 GB",
+        "accent": "#38bdf8",
+        "artifacts": {
+            "mlx": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            "gguf": "bartowski/Bonsai-27B-GGUF",
+            "bitnet": "microsoft/bitnet-b1.58-27b",
+            "torch": "prism-ml/Ternary-Bonsai-27B"
+        },
+        "default_repo_id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
+    },
+    "model_2": {
+        "id": "model_2",
+        "key": "ternary_qwen_3_8b",
+        "name": "Ternary Qwen 3.8B (Fast)",
+        "short_name": "Ternary Qwen 3.8B",
+        "tag": "⚡ Qwen 3.8B Fast",
+        "type": "ternary",
+        "base_params": "3.8B",
+        "raw_params": 3_800_000_000,
+        "precision": "1.58-Bit Ternary",
+        "max_context": 131_072,
+        "vram": "~1.8 GB / 16 GB",
+        "accent": "#22c55e",
+        "artifacts": {
+            "mlx": "h34v7/Ternary-Qwen3.5-3.8B-mlx",
+            "gguf": "Qwen/Qwen2.5-3.8B-Instruct-GGUF",
+            "bitnet": "microsoft/bitnet-b1.58-3.8B",
+            "torch": "Qwen/Qwen-3.8B-Flash-Next-1.58bit"
+        },
+        "default_repo_id": "h34v7/Ternary-Qwen3.5-3.8B-mlx"
+    },
+    "model_3": {
+        "id": "model_3",
+        "key": "uncensored_vision",
+        "name": "Dolphin Vision 2.9 (Uncensored Multimodal)",
+        "short_name": "Dolphin Vision 2.9",
+        "tag": "👁️ Dolphin Vision 2.9",
+        "type": "multimodal_vision",
+        "base_params": "7.0B Multimodal",
+        "raw_params": 7_000_000_000,
+        "precision": "4-bit Vision Projector",
+        "max_context": 65_536,
+        "vram": "~4.8 GB / 16 GB",
+        "accent": "#fb923c",
+        "artifacts": {
+            "mlx": "mlx-community/nanoLLaVA-1.5-mlx",
+            "gguf": "ggml-org/nanoLLaVA-GGUF",
+            "torch": "cognitivecomputations/dolphin-2.9.2-qwen2-7b"
+        },
+        "mmproj": "mmproj-model-f16.gguf",
+        "default_repo_id": "mlx-community/nanoLLaVA-1.5-mlx"
+    },
+    "model_4": {
+        "id": "model_4",
+        "key": "ternary_qwen_27b",
+        "name": "Ternary Qwen 27B (Pro 1.58-Bit)",
+        "short_name": "Ternary Qwen 27B",
+        "tag": "🏆 Qwen 27B Pro",
+        "type": "ternary",
+        "base_params": "27B",
+        "raw_params": 27_000_000_000,
+        "precision": "1.58-Bit Ternary",
+        "max_context": 131_072,
+        "vram": "~6.0 GB / 16 GB",
+        "accent": "#facc15",
+        "artifacts": {
+            "mlx": "Qwen/Qwen2.5-27B-Ternary-mlx",
+            "gguf": "Qwen/Qwen2.5-27B-Instruct-GGUF",
+            "bitnet": "microsoft/bitnet-b1.58-27b",
+            "torch": "Qwen/Qwen2.5-27B-Instruct"
+        },
+        "default_repo_id": "Qwen/Qwen2.5-27B-Ternary-mlx"
+    },
+    "model_5": {
+        "id": "model_5",
+        "key": "flash_next_qwen_7b",
+        "name": "Flash Next Qwen 7B (Coder)",
+        "short_name": "Qwen 7B Coder",
+        "tag": "💻 Qwen 7B Coder",
+        "type": "coding",
+        "base_params": "7.0B",
+        "raw_params": 7_000_000_000,
+        "precision": "4-bit Quantized",
+        "max_context": 65_536,
+        "vram": "~4.2 GB / 16 GB",
+        "accent": "#c084fc",
+        "artifacts": {
+            "mlx": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+            "gguf": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+            "bitnet": "microsoft/bitnet-b1.58-3.8B",
+            "torch": "Qwen/Qwen2.5-Coder-7B-Instruct"
+        },
+        "default_repo_id": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    }
+}
 
 
 _global_settings: Optional[Settings] = None

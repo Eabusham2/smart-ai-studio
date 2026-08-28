@@ -126,11 +126,14 @@ def main():
     parser.add_argument("--tests", type=str, help="Deterministic test assertions for RLVR sandbox")
     parser.add_argument("--small-model", action="store_true", help="Use lightweight local model fallback")
     parser.add_argument("--model-path", type=str, help="Path/ID for base model checkpoint")
-    parser.add_argument("--backend", type=str, choices=["auto", "torch", "mlx"], help="Inference and training engine backend")
+    parser.add_argument("--backend", choices=["auto", "mlx", "gguf", "bitnet", "torch", "mock"], default="auto", help="Inference backend (default: auto)")
     parser.add_argument("--mlx", action="store_true", help="Force Apple Silicon native MLX backend")
     parser.add_argument("--live", action="store_true", help="Execute live 27B Ternary AI with 4-bit KV caching for 16GB M1 Mac")
     parser.add_argument("--kv-bits", type=int, default=4, help="KV-cache quantization bitwidth (default: 4)")
     parser.add_argument("--adapter-path", type=str, help="Path to Slow-LoRA adapter")
+    parser.add_argument("--auto-download", action="store_true", default=True, help="Auto-download missing model weights")
+    parser.add_argument("--no-auto-download", dest="auto_download", action="store_false", help="Disable auto-downloading")
+    parser.add_argument("--dry-run-hardware", action="store_true", help="Profile host hardware accelerators and exit")
     parser.add_argument("--ui", action="store_true", help="Launch native Smart AI Desktop Application")
     parser.add_argument("--app", "--gui", dest="app", action="store_true", help="Launch native Desktop Application GUI")
     parser.add_argument("--db-path", "--database-path", "--db", dest="db_path", default="memory.db", help="SQLite database path (default: memory.db)")
@@ -139,8 +142,18 @@ def main():
 
     args = parser.parse_args()
 
+    if args.dry_run_hardware:
+        from core.hardware import detect_system_hardware, resolve_optimal_backend
+        hw = detect_system_hardware()
+        print("\n=== 🖥️ Host System Hardware Profile ===")
+        for k, v in hw.to_dict().items():
+            print(f"  • {k}: {v}")
+        print(f"\n  ► Resolved Optimal Backend for Ternary Model: {resolve_optimal_backend('ternary')}")
+        print(f"  ► Resolved Optimal Backend for Vision Model:  {resolve_optimal_backend('multimodal_vision')}\n")
+        return
+
     # Settings overrides
-    overrides = {"database_path": args.db_path}
+    overrides = {"database_path": args.db_path, "auto_download": args.auto_download}
     if args.live:
         overrides["live_mode"] = True
         overrides["base_model_path"] = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"

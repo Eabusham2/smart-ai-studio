@@ -15,8 +15,12 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from config.settings import Settings, get_settings
+from config.settings import Settings, get_settings, MODEL_PRESETS
+from core.downloader import ensure_model_available, is_model_available_locally
+from core.engines.bitnet_engine import BitNetReasoningBackend
+from core.engines.gguf_engine import GGUFReasoningBackend
 from core.entropy_router import EntropyRouter
+from core.hardware import resolve_optimal_backend, detect_system_hardware
 from core.hf_downloader import is_model_cached_locally
 from core.mlx_engine import MLXReasoningBackend
 from core.platform import get_auto_context_window_size
@@ -75,10 +79,13 @@ class ProReasoningEngine:
         )
 
         self.mlx_backend = None
+        self.gguf_backend = None
+        self.bitnet_backend = None
         self.model = None
         self.base_model = None
         self.tokenizer = None
         self.active_model_name = None
+        self.active_backend = None
         self._model_lock = threading.Lock()
 
         self.speculative_engine = SpeculativeEngine(
@@ -88,37 +95,63 @@ class ProReasoningEngine:
             max_draft_tokens=self.settings.speculative_tokens
         )
 
-    def load_model(self, model_name: str, model_path: Optional[str] = None) -> Dict[str, Any]:
+    def load_model(self, model_name: str, model_path: Optional[str] = None, backend: Optional[str] = None) -> Dict[str, Any]:
         """
         Enforces strict single-model mutual exclusion with zero memory leak:
         Completely purges any loaded model from VRAM and RAM before loading the new model.
-        Supports custom user-imported local paths and HuggingFace repositories.
+        Supports multi-engine execution (MLX, GGUF, BitNet, PyTorch) across presets and custom models.
         """
         with self._model_lock:
             self.unload_model()  # Strictly unload previous model first
             self.active_model_name = model_name
 
-            if model_path:
-                target_path = model_path
-            elif "qwen" in model_name.lower():
-                target_path = self.settings.flash_model_path
-            elif "dolphin" in model_name.lower():
-                target_path = "cognitivecomputations/dolphin-2.9.2-qwen2-7b"
-            else:
-                target_path = self.settings.mlx_model_path
+            # Determine target model type and optimal backend
+            model_type = "ternary"
+            if "vision" in model_name.lower() or "dolphin" in model_name.lower():
+                model_type = "multimodal_vision"
+            elif "coder" in model_name.lower() or "coding" in model_name.lower():
+                model_type = "coding"
 
-            # If model is not cached locally, do not attempt heavy unquantized load
-            if not is_model_cached_locally(target_path) and not os.path.exists(target_path):
-                return {
-                    "status": "not_downloaded",
-                    "model": model_name,
-                    "path": target_path,
-                    "message": f"Weights for {model_name} ({target_path}) are not downloaded yet."
-                }
+            resolved_backend, resolved_device = resolve_optimal_backend(model_type)
+            target_backend = backend or (self.backend if self.backend != "auto" else resolved_backend)
+            self.active_backend = target_backend
+
+            # Resolve target artifact path
+            target_path = model_path
+            mmproj_path = None
+
+            # Preset artifact mapping
+            for preset_id, preset in MODEL_PRESETS.items():
+                if preset["name"] == model_name or preset["short_name"] == model_name or preset["key"] == model_name:
+                    target_path = preset["artifacts"].get(target_backend, preset.get("default_repo_id", self.settings.mlx_model_path))
+                    mmproj_path = preset.get("mmproj")
+                    break
+
+            if not target_path:
+                if "qwen" in model_name.lower() and "3.8" in model_name:
+                    target_path = self.settings.ternary_qwen_3_8b_path
+                elif "qwen" in model_name.lower() and "27" in model_name:
+                    target_path = self.settings.ternary_qwen_27b_path
+                elif "dolphin" in model_name.lower() or "vision" in model_name.lower():
+                    target_path = self.settings.vision_model_path
+                else:
+                    target_path = self.settings.mlx_model_path
+
+            # Auto-download check if requested
+            if self.settings.auto_download:
+                ensure_res = ensure_model_available(target_path, backend=target_backend, auto_download=False)
+                if ensure_res.get("status") == "not_downloaded" and not os.path.exists(target_path):
+                    return {
+                        "status": "not_downloaded",
+                        "model": model_name,
+                        "path": target_path,
+                        "backend": target_backend,
+                        "message": f"Weights for {model_name} ({target_path}) are not downloaded yet."
+                    }
 
             try:
-                # 1. Native Apple Silicon MLX (Quantized BitLinear / 4-bit)
-                if platform.system() == "Darwin" and platform.machine() == "arm64":
+                # 1. Native Apple Silicon MLX
+                if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
                     self.mlx_backend = MLXReasoningBackend(
                         model_path=target_path,
                         adapter_path=self.lora_adapter_path
@@ -131,10 +164,38 @@ class ProReasoningEngine:
                             "path": target_path
                         }
                     else:
-                        return {"status": "not_downloaded", "model": model_name, "path": target_path}
+                        return {"status": "not_downloaded", "model": model_name, "backend": "mlx", "path": target_path}
 
-                # 2. CUDA on Linux / Windows only (strictly GPU memory bounds)
-                if self.device == "cuda":
+                # 2. GGUF / Llama.cpp Cross-Platform
+                if target_backend == "gguf":
+                    self.gguf_backend = GGUFReasoningBackend(
+                        model_path=target_path,
+                        mmproj_path=mmproj_path
+                    )
+                    if self.gguf_backend.load_model():
+                        return {
+                            "status": "loaded",
+                            "model": model_name,
+                            "backend": "gguf",
+                            "path": target_path
+                        }
+
+                # 3. BitNet 1.58-Bit Pure Ternary Integer Engine
+                if target_backend == "bitnet":
+                    self.bitnet_backend = BitNetReasoningBackend(
+                        model_path=target_path,
+                        device=resolved_device
+                    )
+                    if self.bitnet_backend.load_model():
+                        return {
+                            "status": "loaded",
+                            "model": model_name,
+                            "backend": "bitnet",
+                            "path": target_path
+                        }
+
+                # 4. PyTorch CUDA / MPS / CPU
+                if target_backend in ("torch", "cuda") and self.device == "cuda":
                     import torch
                     if torch.cuda.is_available():
                         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -148,7 +209,7 @@ class ProReasoningEngine:
                         self.model.eval()
                         return {"status": "loaded", "model": model_name, "backend": "cuda", "path": target_path}
 
-                return {"status": "not_downloaded", "model": model_name, "path": target_path}
+                return {"status": "not_downloaded", "model": model_name, "backend": target_backend, "path": target_path}
 
             except Exception as e:
                 return {"status": "error", "model": model_name, "error": str(e), "path": target_path}
@@ -156,7 +217,7 @@ class ProReasoningEngine:
     def unload_model(self) -> Dict[str, Any]:
         """
         Completely purges all model instances, tokenizers, and framework caches from memory.
-        Ensures strictly zero lingering VRAM or RAM footprint.
+        Ensures strictly zero lingering VRAM or RAM footprint across MLX, GGUF, BitNet, and PyTorch.
         """
         old_model = self.active_model_name
 
@@ -194,6 +255,22 @@ class ProReasoningEngine:
                 pass
             self.mlx_backend = None
 
+        if hasattr(self, "gguf_backend") and self.gguf_backend is not None:
+            try:
+                self.gguf_backend.unload_model()
+                del self.gguf_backend
+            except Exception:
+                pass
+            self.gguf_backend = None
+
+        if hasattr(self, "bitnet_backend") and self.bitnet_backend is not None:
+            try:
+                self.bitnet_backend.unload_model()
+                del self.bitnet_backend
+            except Exception:
+                pass
+            self.bitnet_backend = None
+
         if hasattr(self, "speculative_engine") and self.speculative_engine is not None:
             self.speculative_engine.target_model = None
             self.speculative_engine.tokenizer = None
@@ -201,7 +278,7 @@ class ProReasoningEngine:
         import gc
         gc.collect(2)
 
-        # Clear PyTorch CUDA / MPS (Metal Performance Shaders) cache
+        # Clear PyTorch CUDA / MPS cache
         try:
             import torch
             if torch.cuda.is_available():
@@ -223,12 +300,19 @@ class ProReasoningEngine:
             pass
 
         self.active_model_name = None
+        self.active_backend = None
         return {"status": "unloaded", "previous_model": old_model}
 
     def calculate_token_entropy(self, prompt: str) -> float:
         """Evaluates model next-token Shannon entropy across supported backends."""
         if self.mlx_backend and self.mlx_backend.is_mlx_available:
             return self.mlx_backend.calculate_token_entropy(prompt)
+
+        if self.gguf_backend and self.gguf_backend.is_gguf_available:
+            return self.gguf_backend.calculate_token_entropy(prompt)
+
+        if self.bitnet_backend and self.bitnet_backend.is_loaded:
+            return self.bitnet_backend.calculate_token_entropy(prompt)
 
         if self.model is None:
             return self.router.estimate_prompt_entropy_heuristic(prompt)
@@ -284,20 +368,47 @@ class ProReasoningEngine:
         top_p: float = 0.92,
         cancel_event: Optional[Any] = None
     ):
-        """Yields live tokens in real time from the active MLX model."""
-        if not (self.mlx_backend and self.mlx_backend.is_mlx_available):
+        """Yields live tokens in real time from the active MLX / GGUF / BitNet model."""
+        formatted_prompt = self._format_prompt_with_history(prompt, history)
+
+        # 1. MLX Streaming
+        if self.mlx_backend and self.mlx_backend.is_mlx_available:
+            for token in self.mlx_backend.stream_generate_tokens(
+                prompt=formatted_prompt,
+                max_tokens=self.settings.max_new_tokens,
+                temperature=temperature,
+                top_p=top_p
+            ):
+                if cancel_event and cancel_event.is_set():
+                    break
+                yield token
             return
 
-        formatted_prompt = self._format_prompt_with_history(prompt, history)
-        for token in self.mlx_backend.stream_generate_tokens(
-            prompt=formatted_prompt,
-            max_tokens=self.settings.max_new_tokens,
-            temperature=temperature,
-            top_p=top_p
-        ):
-            if cancel_event and cancel_event.is_set():
-                break
-            yield token
+        # 2. GGUF Streaming
+        if self.gguf_backend and self.gguf_backend.is_gguf_available:
+            for token in self.gguf_backend.stream_generate_tokens(
+                prompt=formatted_prompt,
+                max_tokens=self.settings.max_new_tokens,
+                temperature=temperature,
+                top_p=top_p
+            ):
+                if cancel_event and cancel_event.is_set():
+                    break
+                yield token
+            return
+
+        # 3. BitNet Streaming
+        if self.bitnet_backend and self.bitnet_backend.is_loaded:
+            for token in self.bitnet_backend.stream_generate_tokens(
+                prompt=formatted_prompt,
+                max_tokens=self.settings.max_new_tokens,
+                temperature=temperature,
+                top_p=top_p
+            ):
+                if cancel_event and cancel_event.is_set():
+                    break
+                yield token
+            return
 
     def generate_parallel_branches(self, prompt: str, branch_count: int = 16, history: Optional[List[Dict[str, str]]] = None) -> List[str]:
         """Samples candidate reasoning rollouts using auto-scaled context window based on host RAM."""
@@ -315,7 +426,31 @@ class ProReasoningEngine:
             if branches:
                 return branches
 
-        # 2. PyTorch CUDA / MPS / CPU Inference
+        # 2. GGUF / Llama.cpp Inference
+        if self.gguf_backend and self.gguf_backend.is_gguf_available:
+            branches = self.gguf_backend.generate_branches(
+                prompt=formatted_prompt,
+                branch_count=branch_count,
+                max_tokens=self.settings.max_new_tokens,
+                temperature=self.settings.search_temperature,
+                top_p=self.settings.search_top_p
+            )
+            if branches:
+                return branches
+
+        # 3. BitNet 1.58-Bit Pure Ternary Integer Inference
+        if self.bitnet_backend and self.bitnet_backend.is_loaded:
+            branches = self.bitnet_backend.generate_branches(
+                prompt=formatted_prompt,
+                branch_count=branch_count,
+                max_tokens=self.settings.max_new_tokens,
+                temperature=self.settings.search_temperature,
+                top_p=self.settings.search_top_p
+            )
+            if branches:
+                return branches
+
+        # 4. PyTorch CUDA / MPS / CPU Inference
         if self.model is not None and self.tokenizer is not None:
             try:
                 import torch

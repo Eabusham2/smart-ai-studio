@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-08-28 13:10:21",
+  "timestamp": "2026-08-28 13:17:43",
   "overall_accuracy_percent": 93.33,
   "overall_passed_samples": 56,
   "overall_total_samples": 60,
-  "total_evaluation_time_s": 2.76,
+  "total_evaluation_time_s": 2.8,
   "humaneval": {
     "dataset": "HumanEval-50",
     "total_samples": 50,
@@ -11,10 +11,10 @@
     "pass_at_1_accuracy": 92.0,
     "mean_entropy": 0.35,
     "mean_branch_count": 16.0,
-    "throughput_tok_per_sec": 853.2,
+    "throughput_tok_per_sec": 841.0,
     "total_tokens": 2162,
-    "total_duration_s": 2.53,
-    "peak_rss_mb": 306.0,
+    "total_duration_s": 2.57,
+    "peak_rss_mb": 306.8,
     "details": [
       {
         "id": "HumanEval/0",
@@ -35,7 +35,7 @@
       {
         "id": "HumanEval/2",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 18,
         "entropy": 0.35,
         "branch_count": 16
@@ -59,7 +59,7 @@
       {
         "id": "HumanEval/5",
         "passed": true,
-        "duration_s": 0.024,
+        "duration_s": 0.023,
         "tokens": 42,
         "entropy": 0.35,
         "branch_count": 16
@@ -67,7 +67,7 @@
       {
         "id": "HumanEval/6",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 88,
         "entropy": 0.35,
         "branch_count": 16
@@ -75,7 +75,7 @@
       {
         "id": "HumanEval/7",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 30,
         "entropy": 0.35,
         "branch_count": 16
@@ -91,7 +91,7 @@
       {
         "id": "HumanEval/9",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 50,
         "entropy": 0.35,
         "branch_count": 16
@@ -99,7 +99,7 @@
       {
         "id": "HumanEval/10",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.022,
         "tokens": 46,
         "entropy": 0.35,
         "branch_count": 16
@@ -107,7 +107,7 @@
       {
         "id": "HumanEval/11",
         "passed": true,
-        "duration_s": 0.024,
+        "duration_s": 0.023,
         "tokens": 38,
         "entropy": 0.35,
         "branch_count": 16
@@ -115,7 +115,7 @@
       {
         "id": "HumanEval/12",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 24,
         "entropy": 0.35,
         "branch_count": 16
@@ -123,7 +123,7 @@
       {
         "id": "HumanEval/13",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 32,
         "entropy": 0.35,
         "branch_count": 16
@@ -131,7 +131,7 @@
       {
         "id": "HumanEval/14",
         "passed": false,
-        "duration_s": 0.361,
+        "duration_s": 0.368,
         "tokens": 24,
         "entropy": 0.35,
         "branch_count": 16
@@ -139,7 +139,7 @@
       {
         "id": "HumanEval/15",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 26,
         "entropy": 0.35,
         "branch_count": 16
@@ -155,7 +155,7 @@
       {
         "id": "HumanEval/17",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 44,
         "entropy": 0.35,
         "branch_count": 16
@@ -171,7 +171,7 @@
       {
         "id": "HumanEval/19",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 64,
         "entropy": 0.35,
         "branch_count": 16
@@ -187,7 +187,7 @@
       {
         "id": "HumanEval/21",
         "passed": true,
-        "duration_s": 0.05,
+        "duration_s": 0.023,
         "tokens": 42,
         "entropy": 0.35,
         "branch_count": 16
@@ -195,7 +195,7 @@
       {
         "id": "HumanEval/22",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 34,
         "entropy": 0.35,
         "branch_count": 16
@@ -203,7 +203,7 @@
       {
         "id": "HumanEval/23",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 12,
         "entropy": 0.35,
         "branch_count": 16
@@ -219,7 +219,7 @@
       {
         "id": "HumanEval/25",
         "passed": true,
-        "duration_s": 0.024,
+        "duration_s": 0.023,
         "tokens": 72,
         "entropy": 0.35,
         "branch_count": 16
@@ -243,7 +243,7 @@
       {
         "id": "HumanEval/28",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 12,
         "entropy": 0.35,
         "branch_count": 16
@@ -251,7 +251,7 @@
       {
         "id": "HumanEval/29",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 26,
         "entropy": 0.35,
         "branch_count": 16
@@ -283,7 +283,7 @@
       {
         "id": "HumanEval/33",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 56,
         "entropy": 0.35,
         "branch_count": 16
@@ -291,7 +291,7 @@
       {
         "id": "HumanEval/34",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.022,
         "tokens": 12,
         "entropy": 0.35,
         "branch_count": 16
@@ -299,7 +299,7 @@
       {
         "id": "HumanEval/35",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 12,
         "entropy": 0.35,
         "branch_count": 16
@@ -307,7 +307,7 @@
       {
         "id": "HumanEval/36",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.022,
         "tokens": 56,
         "entropy": 0.35,
         "branch_count": 16
@@ -323,7 +323,7 @@
       {
         "id": "HumanEval/38",
         "passed": false,
-        "duration_s": 0.365,
+        "duration_s": 0.373,
         "tokens": 78,
         "entropy": 0.35,
         "branch_count": 16
@@ -339,7 +339,7 @@
       {
         "id": "HumanEval/40",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 68,
         "entropy": 0.35,
         "branch_count": 16
@@ -371,7 +371,7 @@
       {
         "id": "HumanEval/44",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 52,
         "entropy": 0.35,
         "branch_count": 16
@@ -387,7 +387,7 @@
       {
         "id": "HumanEval/46",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 52,
         "entropy": 0.35,
         "branch_count": 16
@@ -395,7 +395,7 @@
       {
         "id": "HumanEval/47",
         "passed": false,
-        "duration_s": 0.365,
+        "duration_s": 0.37,
         "tokens": 64,
         "entropy": 0.35,
         "branch_count": 16
@@ -403,7 +403,7 @@
       {
         "id": "HumanEval/48",
         "passed": false,
-        "duration_s": 0.364,
+        "duration_s": 0.394,
         "tokens": 46,
         "entropy": 0.35,
         "branch_count": 16
@@ -425,15 +425,15 @@
     "pass_at_1_accuracy": 100.0,
     "mean_entropy": 0.15,
     "mean_branch_count": 16.0,
-    "throughput_tok_per_sec": 1521.3,
+    "throughput_tok_per_sec": 1488.0,
     "total_tokens": 344,
     "total_duration_s": 0.23,
-    "peak_rss_mb": 306.0,
+    "peak_rss_mb": 306.8,
     "details": [
       {
         "id": "GSM8K/0",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 32,
         "entropy": 0.15,
         "branch_count": 16
@@ -441,7 +441,7 @@
       {
         "id": "GSM8K/1",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 32,
         "entropy": 0.15,
         "branch_count": 16
@@ -449,7 +449,7 @@
       {
         "id": "GSM8K/2",
         "passed": true,
-        "duration_s": 0.023,
+        "duration_s": 0.024,
         "tokens": 62,
         "entropy": 0.15,
         "branch_count": 16
@@ -457,7 +457,7 @@
       {
         "id": "GSM8K/3",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 28,
         "entropy": 0.15,
         "branch_count": 16
@@ -465,7 +465,7 @@
       {
         "id": "GSM8K/4",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 36,
         "entropy": 0.15,
         "branch_count": 16
@@ -473,7 +473,7 @@
       {
         "id": "MATH500/0",
         "passed": true,
-        "duration_s": 0.024,
+        "duration_s": 0.023,
         "tokens": 28,
         "entropy": 0.15,
         "branch_count": 16
@@ -481,7 +481,7 @@
       {
         "id": "MATH500/1",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 46,
         "entropy": 0.15,
         "branch_count": 16
@@ -505,7 +505,7 @@
       {
         "id": "MATH500/4",
         "passed": true,
-        "duration_s": 0.022,
+        "duration_s": 0.023,
         "tokens": 20,
         "entropy": 0.15,
         "branch_count": 16

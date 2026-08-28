@@ -63,12 +63,17 @@ venv.bak/
 *.bin
 *.safetensors
 *.gguf
+*.mlx
+*.sqlite3
+*.log
 memory.db
 memory.db-journal
 test_*.db
 test_*.svg
 test_*.md
 test_*.txt
+models/
+eval_results/*.json
 
 # macOS
 .DS_Store

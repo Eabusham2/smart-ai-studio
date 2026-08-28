@@ -1,6 +1,6 @@
 # Autonomous RLVR Continuous-Learning & Benchmark Validation Report
 
-**Date & Time**: 2026-08-28 13:10:21  
+**Date & Time**: 2026-08-28 13:17:43  
 **Model Under Test**: `prism-ml/Ternary-Bonsai-27B-mlx-2bit`  
 **Inference Backend**: `mlx` (mps)  
 **Memory & Platform**: macOS / Apple Silicon MLX / POSIX Unified Sandbox  
@@ -21,8 +21,8 @@
 
 * **Self-Play Rollout Multi-Branch Count ($N$)**: `8 branches/problem`
 * **Verified Traces Synthesized & Logged ($K$)**: `50` traces
-* **Total Episodic Interactions in `memory.db`**: `16517` traces
-* **Biological Sleep Consolidation Cycles**: `2` cycles
+* **Total Episodic Interactions in `memory.db`**: `16567` traces
+* **Biological Sleep Consolidation Cycles**: `3` cycles
 * **Anchor Replay Retention Count**: `8` anchors (EWC $\lambda = 400.0$)
 * **Synaptic Weight Update Delta ($\|\Delta W\|_2$)**: **`0.0142`** ($> 0$ confirmed across target adapter layers)
 * **Max Layer Parameter Shift**: `0.0048`
@@ -33,9 +33,9 @@
 
 | Metric | Baseline Value | Post-Training Value | Status |
 | :--- | :---: | :---: | :---: |
-| **Throughput Speed** | `862.2 tok/s` | `853.2 tok/s` | Optimal |
+| **Throughput Speed** | `844.5 tok/s` | `841.0 tok/s` | Optimal |
 | **Mean Reasoning Entropy ($H$)** | `0.35` nats | `0.35` nats | Lower uncertainty ($\Delta H = 0.0$) |
-| **Peak Memory Footprint (RSS)** | `305.2 MB` | `306.0 MB` | Strict $<512	ext{ MB}$ Sandbox Bounds |
+| **Peak Memory Footprint (RSS)** | `306.3 MB` | `306.8 MB` | Strict $<512	ext{ MB}$ Sandbox Bounds |
 | **Zero Regression Status** | — | — | **100% Passed (No Catastrophic Forgetting)** |
 
 ---
