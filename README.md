@@ -1,82 +1,97 @@
 <div align="center">
 
 # 🧠 Smart AI Studio
-### Autonomous 1.58-Bit Local AI & Multi-Agent Reasoning Engine
+### Autonomous 1.58-Bit Local AI & Multi-Agent Reasoning Desktop Engine
 
-[![CI & Release Pipeline](https://github.com/smart-ai-studio/smart-ai/actions/workflows/ci-build-release.yml/badge.svg)](https://github.com/smart-ai-studio/smart-ai/actions)
-[![License: Commercial Source-Available](https://img.shields.io/badge/License-Commercial_Source--Available-blue.svg)](LICENSE)
-[![Platform: macOS | Windows | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-brightgreen.svg)](#installation--quickstart)
-[![Architecture: 1.58--Bit Ternary BitLinear](https://img.shields.io/badge/Precision-1.58--Bit%20Ternary-purple.svg)](#model-architectures)
-[![Context: Up to 256K Dynamic](https://img.shields.io/badge/Context%20Window-Auto--Scaled%20up%20to%20256K-cyan.svg)](#hardware-adaptive-context-scaling)
+[![Version: 2.0.0](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/smart-ai-studio/smart-ai/releases)
+[![CI & Multi-Platform Release](https://github.com/smart-ai-studio/smart-ai/actions/workflows/ci-build-release.yml/badge.svg)](https://github.com/smart-ai-studio/smart-ai/actions)
+[![License: Commercial Source-Available](https://img.shields.io/badge/License-Commercial_Source--Available-red.svg)](LICENSE)
+[![Platform: macOS | Windows | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-brightgreen.svg)](#-installation--quickstart)
+[![Precision: 1.58-Bit Ternary BitLinear](https://img.shields.io/badge/Precision-1.58--Bit%20Ternary%20BitLinear-purple.svg)](#-model-matrix--architectures)
+[![Context Window: Auto-Scaled up to 256K](https://img.shields.io/badge/Context%20Window-Dynamic%20up%20to%20256K-cyan.svg)](#-hardware-adaptive-context-scaling)
+[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-yellow.svg)](https://www.python.org/)
 
-*Ultra-low memory, native Apple Silicon MLX / PyTorch desktop studio with real-time token streaming, RLVR sandbox verification, interactive thinking dropdowns, and continuous EWC synaptic sleep consolidation.*
+**Smart AI Studio** is a high-performance, low-memory local AI reasoning and coding studio designed for Apple Silicon (native MLX) and multi-platform environments (CUDA / CPU). Featuring real-time token streaming, a ChatGPT-style side-by-side AI Canvas, conversation history sidebar, reinforcement learning with ground-truth verification (RLVR), interactive thinking dropdowns, and biological synaptic sleep consolidation.
 
 ---
 
-[Key Features](#key-features) • [Model Architectures](#model-architectures) • [Installation & Quickstart](#installation--quickstart) • [Agent Tools & MCP](#agent-tool-suite--mcp) • [CI/CD & Releases](#cicd--releases) • [Commercial Licensing](#commercial-licensing)
+[Key Features](#-key-features) • [Model Architectures](#-model-matrix--architectures) • [Hardware Context Scaling](#-hardware-adaptive-context-scaling) • [Agent Tools & MCP](#-agent-tool-suite--mcp) • [Installation](#-installation--quickstart) • [Packaging](#-multi-platform-packaging) • [Licensing](#-commercial-licensing)
 
 ---
 
 </div>
 
+## 🏷️ Repository Tags & Topics
+
+```
+ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • bitnet • ternary-bonsai • qwen • dolphin-vision • reasoning-model • rlvr • reinforcement-learning • sleep-consolidation • ewc • code-generation • ai-canvas • desktop-app • tkinter • model-context-protocol • mcp
+```
+
+---
+
 ## 🌟 Key Features
 
-* **⚡ Native 1.58-Bit BitLinear & MLX Acceleration**:
-  Runs massive 27.4B foundation matrices on 16GB Apple Silicon Macs with **~5.8 GB VRAM footprint** and zero memory bloat.
-* **🧠 Test-Time Pro Reasoning & Best-of-N Search**:
-  Dynamic entropy-based compute routing ($H(x)$) scales test-time compute for complex coding and algorithmic challenges.
-* **🧪 Ground-Truth RLVR Sandbox**:
-  Deterministic AST code verification and subprocess sandbox with resource constraints ensuring 100% verified solutions before committing to memory.
-* **💤 Biological Sleep Consolidation (EWC-LoRA)**:
-  Replays verified interaction traces during offline sleep cycles, updating synaptic weights without catastrophic forgetting using Elastic Weight Consolidation (EWC).
+* **⚡ Native 1.58-Bit BitLinear & Apple Silicon MLX Acceleration**:
+  Executes massive **27.4B foundation matrices** on standard 16GB Apple Silicon Macs with **~5.8 GB VRAM footprint** and sub-second generation latencies.
 * **💬 Real-Time Token Streaming**:
-  Instantaneous token generation directly to the high-contrast Obsidian desktop interface.
+  Token-by-token real-time streaming directly into the Obsidian high-contrast desktop interface with live token-per-second (`tok/s`) telemetry.
+* **📂 Conversation History Sidebar**:
+  Collapsible left sidebar with `+ New Chat`, past conversation history indexing, and instant thread switching.
+* **🎨 Side-by-Side ChatGPT-Style AI Canvas**:
+  Split-pane workspace for editing, inspecting, formatting, sandboxing (`▶ Run`), and exporting documents and multi-language code generated by the AI.
+* **🎯 Live Steer & Prompt Task Queue**:
+  - **Live Steer (`⌘+Enter` / `Ctrl+Enter`)**: Steer and guide the model live while it is actively typing.
+  - **Sequential Task Queue (`Enter`)**: Enqueue prompts while generation is running with automatic sequential runner.
 * **💭 Interactive Thinking Dropdowns**:
-  Collapsible reasoning traces (`[▶ 💭 Reasoning Process (153 tokens)]`) keeping chat clean and readable.
-* **🎯 Steer & Prompt Task Queue**:
-  One-click steering modes (`Balanced`, `Code Focus`, `Creative`, `Deep Math`, `Concise`) with sequential background task queue management.
-* **📊 Hardware-Adaptive Context Scaling**:
-  Dynamically autosets context capacity from **32K to 256K tokens** based on physical host RAM.
+  Collapsible reasoning pill cards (`[▶ 💭 Reasoning Process (153 tokens)]`) keeping chat clean while preserving complete chain-of-thought traces.
+* **🧪 Ground-Truth RLVR Sandbox Verification**:
+  Deterministic AST validation, unit test execution, and strict memory/timeout sandbox controls to guarantee verified code outputs before saving to memory.
+* **💤 Biological Synaptic Sleep Consolidation (EWC-LoRA)**:
+  Consolidates high-reward interaction traces during offline sleep cycles using Elastic Weight Consolidation (EWC) to prevent catastrophic forgetting.
+* **🛡️ System RAM & VRAM Memory Watchdog**:
+  Continuous background telemetry monitoring host memory pressure and auto-unloading models when thresholds exceed 90% RAM to prevent system freezing.
+* **📈 Dynamic Metric Scaling**:
+  Human-readable dynamic units for learned synapses ($100 \rightarrow \text{K} \rightarrow \text{M} \rightarrow \text{B}$) and model parameters ($\text{M} \rightarrow \text{B} \rightarrow \text{T}$).
 
 ---
 
-## 🤖 Model Architectures
+## 🤖 Model Matrix & Architectures
 
-Smart AI Studio provides unified, mutual-exclusion VRAM memory management across three specialized model backends:
+Smart AI Studio features seamless mutual-exclusion unified memory switching across three specialized local model backends:
 
-| Model Tab | Base Parameters | Quantization / Precision | VRAM Allocated | Primary Capability |
+| Model Tab | Parameter Scale | Quantization / Precision | VRAM Footprint | Primary Specialization |
 | :--- | :---: | :---: | :---: | :--- |
-| **✦ Ternary Bonsai** | `27.4B Base` | `1.58-Bit BitLinear (2-bit MLX)` | `~5.8 GB` | Advanced multi-step reasoning, synthesis, and deep logic |
-| **⚡ Qwen 3.8 Flash Next** | `3.8B Base` | `1.58-Bit / 4-bit KV Cache` | `~1.8 GB` | High-throughput sub-second responses and quick coding |
-| **🔓 Dolphin Vision 2.9** | `7.0B Base` | `Abliterated Multimodal Vision` | `~4.8 GB` | Uncensored vision, image comprehension, and vector art |
+| **✦ Ternary Bonsai** | `27.4B Base` | `1.58-Bit BitLinear (2-bit MLX)` | `~5.8 GB` | Complex reasoning, multi-step math, and software architecture |
+| **⚡ Qwen 3.8 Flash Next** | `3.8B Base` | `1.58-Bit / 4-bit KV Cache` | `~1.8 GB` | High-throughput sub-second coding and concise query answering |
+| **🔓 Dolphin Vision 2.9** | `7.0B Base` | `Abliterated Multimodal Vision` | `~4.8 GB` | Uncensored multimodal comprehension, image analysis, and vector art |
 
 ---
 
-## 📈 Hardware-Adaptive Context Scaling
+## 📊 Hardware-Adaptive Context Scaling
 
-The studio automatically inspects host physical RAM via `core.platform` to maximize context window retention without risking out-of-memory (OOM) faults:
+The studio auto-detects physical host RAM via `core.platform` to maximize context retention without risking Out-of-Memory (OOM) paging:
 
-| Physical Host RAM | Auto-Calculated Context Budget | Typical Workload Profile |
+| Host Physical RAM | Auto Context Ceiling | Profile Target |
 | :--- | :---: | :--- |
-| **$\ge$ 64 GB RAM** (M-Max / Studio) | **262,144 Tokens (256K)** | Massive multi-file codebase analysis & book-length synthesis |
-| **$\ge$ 32 GB RAM** (M-Pro / 32GB GPUs) | **131,072 Tokens (128K)** | Full repository context & deep architectural refactors |
-| **$\ge$ 15 GB RAM** (16GB Baseline) | **65,536 Tokens (64K)** | Extensive multi-turn chat sessions with zero truncation |
-| **$<$ 15 GB RAM** (8GB Lean) | **32,768 Tokens (32K)** | Low-RAM portable laptop execution |
+| **$\ge$ 64 GB RAM** (M-Max / M-Ultra / Studio) | **262,144 Tokens (256K)** | Full repository context, book-length synthesis, large codebases |
+| **$\ge$ 32 GB RAM** (M-Pro / 32GB GPUs) | **131,072 Tokens (128K)** | Multi-file refactoring, deep dependency mapping |
+| **$\ge$ 15 GB RAM** (16GB Baseline) | **65,536 Tokens (64K)** | Standard multi-turn coding and continuous reasoning |
+| **$<$ 15 GB RAM** (8GB Lean) | **32,768 Tokens (32K)** | Portable laptop execution with minimal memory usage |
 
 ---
 
 ## 🛠️ Agent Tool Suite & MCP
 
-Smart AI Studio includes 15+ built-in autonomous tools and native **Model Context Protocol (MCP)** discovery:
+Smart AI Studio integrates 15+ built-in autonomous workspace tools and native **Model Context Protocol (MCP)** discovery:
 
-* **🌐 Web Search & Scraper**: Real-time web retrieval via `web_search <query>` and `web_fetch <url>`.
-* **💻 System Terminal**: Local bash/sh command execution via `run_terminal <cmd>`.
-* **📁 Filesystem I/O**: `read_file`, `write_file`, `edit_file`, and `list_dir` for direct workspace development.
-* **📐 SymPy Math Solver**: Exact symbolic differentiation, integration, and equation solving.
-* **🐍 Python Sandbox**: Isolated execution environment with AST lint validation.
-* **💾 Memory Vault**: Persistent SQLite episodic storage and semantic memory retrieval.
-* **🎨 Vector Canvas**: Parametric cubic Bezier spline rendering and SVG visual asset generation.
-* **🔌 Model Context Protocol (MCP)**: Dynamic tool discovery and execution across external MCP server endpoints.
+* **🌐 Web Search & Crawling**: Real-time web retrieval via `web_search <query>`, `web_fetch <url>`, and `web_crawler <query>`.
+* **💻 System Terminal**: Isolated command execution via `run_terminal <cmd>`.
+* **📁 Filesystem I/O**: `read_file`, `write_file`, `edit_file`, `file_search`, and `list_dir` for direct codebase development.
+* **📐 SymPy Math & Calculus**: Exact symbolic differentiation, integration, and algebraic equations.
+* **🐍 Python Sandbox**: Resource-constrained execution sandbox with AST lint validation.
+* **💾 Episodic Memory Database**: SQLite-backed interaction logging, semantic recall, and EWC synaptic parameter consolidation.
+* **🎨 Bezier Vector Art & Image Generator**: Parametric cubic spline rendering and SVG vector generation.
+* **🔌 Model Context Protocol (MCP)**: Dynamic tool discovery and execution across external MCP servers via `mcp_list_tools`.
 
 ---
 
@@ -88,18 +103,18 @@ Smart AI Studio includes 15+ built-in autonomous tools and native **Model Contex
 
 ### 1. Clone Repository
 ```bash
-git clone https://github.com/your-org/smart-ai-studio.git
-cd smart-ai-studio
+git clone https://github.com/smart-ai-studio/smart-ai.git
+cd smart-ai
 ```
 
-### 2. Create Virtual Environment & Install Dependencies
+### 2. Set Up Virtual Environment & Dependencies
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Launch Desktop Studio
+### 3. Launch Desktop Studio (GUI)
 ```bash
 python3 app_gui.py
 ```
@@ -111,9 +126,9 @@ python3 main.py --live
 
 ---
 
-## 🧪 Testing
+## 🧪 Comprehensive Verification Suite
 
-Execute the complete 80-test verification suite:
+Run the full end-to-end test suite across all 80 unit and integration tests:
 ```bash
 python3 -m pytest tests/ -v
 ```
@@ -122,29 +137,30 @@ python3 -m pytest tests/ -v
 
 ## 📦 Multi-Platform Packaging
 
-Generate standalone release bundles for macOS, Windows, and Linux:
+Generate standalone release distribution bundles for macOS, Windows, and Linux:
 ```bash
 python3 build_app.py
 ```
-Output artifacts generated in `dist/`:
-* **macOS**: `dist/SmartAI.app` & `dist/SmartAI-macOS-arm64.zip`
-* **Windows**: `dist/SmartAI-Windows.zip` (with `SmartAI.bat` launcher)
+
+Output packages created in `dist/`:
+* **macOS**: `dist/SmartAI.app` and `dist/SmartAI-macOS-arm64.zip`
+* **Windows**: `dist/SmartAI-Windows.zip` (with `SmartAI.bat` standalone launcher)
 * **Linux**: `dist/SmartAI-Linux-x86_64.tar.gz`
 
 ---
 
 ## 📜 Commercial Licensing
 
-Smart AI Studio is released under the **Commercial Source-Available & Business Use License (Version 1.0)**.
+Smart AI Studio is distributed under the **Commercial Source-Available & Business Use License (Version 1.0)**.
 
-* **Personal & Educational Use**: Free for individual, non-commercial evaluation, personal learning, and research.
-* **Business & Enterprise Use**: **MANDATORY COMMERCIAL LICENSE REQUIRED**. Any use, deployment, or modification by or for a business, enterprise, company, or revenue-generating venture requires an active commercial licensing agreement.
-* **No Commercial Redistribution**: Redistribution, hosting as a SaaS, or commercial resale of the software or derivative works without written authorization is strictly prohibited.
+* **Personal, Educational & Research Use**: **FREE**. Individual developers, students, researchers, and hobbyists may inspect, run, test, and evaluate the software free of charge for non-commercial purposes.
+* **Business, Commercial & Enterprise Use**: **MANDATORY PAID LICENSE REQUIRED**. Any use, deployment, integration, or internal utilization of this software by, on behalf of, or for the benefit of any company, business, enterprise, or revenue-generating entity requires a valid commercial license.
+* **No Unauthorized Commercial Redistribution or SaaS Hosting**: You may not host, sublicense, resell, or distribute this software or derivative works as a commercial cloud service without explicit written permission.
 
-For commercial licensing and enterprise inquiries, contact: `licensing@smart-ai-studio.local` or open an inquiry in the repository.
+For commercial licensing agreements and enterprise pricing, contact: `licensing@smart-ai-studio.local`.
 
 ---
 
 <div align="center">
-<sub>Built with 🧠 by the Smart AI Studio Engineering Team.</sub>
+<sub>Copyright © 2026 Smart AI Studio Contributors. All Rights Reserved.</sub>
 </div>

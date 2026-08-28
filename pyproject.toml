@@ -3,11 +3,53 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "autonomous-reasoning-engine"
-version = "0.1.0"
-description = "Local 1.58-Bit 27B Autonomous Reasoning System with Pro Search, RLVR Sandbox Verification, and EWC Sleep Consolidation"
+name = "smart-ai-studio"
+version = "2.0.0"
+description = "Autonomous 1.58-Bit Local AI Desktop Studio with Real-Time Streaming, ChatGPT-Style Canvas, RLVR Sandbox, and EWC Sleep Consolidation"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "Commercial Source-Available License (v1.0)" }
+authors = [
+    { name = "Smart AI Studio Contributors" }
+]
+keywords = [
+    "ai",
+    "llm",
+    "local-ai",
+    "mlx",
+    "apple-silicon",
+    "1-58bit",
+    "bitlinear",
+    "bitnet",
+    "ternary-bonsai",
+    "qwen",
+    "dolphin-vision",
+    "reasoning-model",
+    "rlvr",
+    "reinforcement-learning",
+    "sleep-consolidation",
+    "ewc",
+    "code-generation",
+    "ai-canvas",
+    "desktop-app",
+    "tkinter",
+    "model-context-protocol",
+    "mcp"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Code Generators",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "torch>=2.2.0",
     "transformers>=4.40.0",
@@ -29,6 +71,12 @@ mlx = [
     "mlx-lm>=0.18.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
+[project.urls]
+Homepage = "https://github.com/smart-ai-studio/smart-ai"
+Documentation = "https://github.com/smart-ai-studio/smart-ai#readme"
+Repository = "https://github.com/smart-ai-studio/smart-ai.git"
+Issues = "https://github.com/smart-ai-studio/smart-ai/issues"
+Changelog = "https://github.com/smart-ai-studio/smart-ai/releases"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
