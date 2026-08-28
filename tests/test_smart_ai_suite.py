@@ -154,7 +154,7 @@ class TestSmartAISuite(unittest.TestCase):
         self.assertIsNotNone(self.app.lbl_synapses)
         self.assertIsNotNone(self.app.lbl_context)
         self.assertIsNotNone(self.app.lbl_vram)
-        self.assertIn("1.58-Bit", self.app.lbl_params.cget("text"))
+        self.assertIn("Base", self.app.lbl_params.cget("text"))
 
     def test_gui_chat_stream_and_tool_call_rendering(self):
         """Verify rendering of user messages, assistant responses, and tool pills in chat."""
@@ -172,7 +172,7 @@ class TestSmartAISuite(unittest.TestCase):
         self.app._append_user_message("Old test prompt")
         self.app._on_new_chat()
         chat_text = self.app.chat_stream.get("1.0", "end")
-        self.assertIn("Smart AI Studio", chat_text)
+        self.assertEqual(self.app.total_tokens_used, 0)
         self.assertNotIn("Old test prompt", chat_text)
 
 

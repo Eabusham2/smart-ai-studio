@@ -113,8 +113,8 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         # Canvas Drawer Toggle
         app._on_toggle_canvas_viewer()
         self.assertTrue(app.show_canvas)
-        app._draw_workflow_dag_on_canvas()
-        app._draw_bezier_spline_on_canvas()
+        app._open_in_canvas("def hello_canvas(): return True")
+        self.assertIn("hello_canvas", app.txt_canvas.get("1.0", "end"))
 
         app._on_toggle_canvas_viewer()
         self.assertFalse(app.show_canvas)

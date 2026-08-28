@@ -1,10 +1,11 @@
 """
 HuggingFace Auto-Downloader & Local Weight Cache Manager.
 Downloads real model checkpoints directly from HuggingFace Hub with live progress streaming,
-inspects local cache presence, and supports auto-loading into Apple Silicon MLX.
+inspects local cache presence, supports cache purge, and auto-loads into Apple Silicon MLX.
 """
 
 import os
+import shutil
 import threading
 from typing import Any, Callable, Dict, Optional
 
@@ -33,13 +34,29 @@ def is_model_cached_locally(repo_id: str) -> bool:
     return False
 
 
+def purge_local_model_cache(repo_id: str) -> bool:
+    """Purges the local snapshot cache for the given model repo to allow a clean reinstall."""
+    if not repo_id:
+        return False
+    try:
+        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        repo_folder = f"models--{repo_id.replace('/', '--')}"
+        full_path = os.path.join(cache_dir, repo_folder)
+        if os.path.exists(full_path):
+            shutil.rmtree(full_path, ignore_errors=True)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def download_model_from_hf(
     repo_id: str,
     progress_callback: Optional[Callable[[str, float], None]] = None,
     cancel_event: Optional[threading.Event] = None
 ) -> Dict[str, Any]:
     """
-    Downloads model weights from HuggingFace Hub with real-time status updates.
+    Downloads model weights from HuggingFace Hub with real-time status updates and clean resumption.
     """
     if not repo_id:
         return {"status": "error", "error": "No model repository ID specified"}
@@ -53,9 +70,9 @@ def download_model_from_hf(
         if progress_callback:
             progress_callback(f"Downloading snapshot for `{repo_id}`...", 20.0)
 
+        # Removed deprecated resume_download argument
         local_dir = snapshot_download(
             repo_id=repo_id,
-            resume_download=True,
             max_workers=4
         )
 
@@ -70,7 +87,7 @@ def download_model_from_hf(
     except Exception as e:
         error_msg = str(e)
         if progress_callback:
-            progress_callback(f"Download failed: {error_msg}", 0.0)
+            progress_callback(f"Download error: {error_msg}", 0.0)
         return {
             "status": "error",
             "repo_id": repo_id,

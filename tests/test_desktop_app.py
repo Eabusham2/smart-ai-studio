@@ -49,7 +49,7 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.assertIsNotNone(self.app.lbl_context)
 
         # Check HUD telemetry content
-        self.assertIn("1.58-Bit", self.app.lbl_params.cget("text"))
+        self.assertIn("Base", self.app.lbl_params.cget("text"))
         self.assertIn("Context:", self.app.lbl_context.cget("text"))
 
     def test_user_and_ai_message_rendering(self):
@@ -114,7 +114,8 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.app._append_user_message("Test message")
         self.app._on_new_chat()
         content = self.app.chat_stream.get("1.0", "end")
-        self.assertIn("Smart AI Studio", content)
+        self.assertEqual(self.app.total_tokens_used, 0)
+        self.assertEqual(content.strip(), "")
 
     def test_dual_model_tab_switching(self):
         """Test switching between Model 1 (Ternary Bonsai) and Model 2 (Qwen 3.8 Flash Next)."""
