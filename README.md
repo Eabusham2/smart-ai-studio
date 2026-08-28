@@ -3,8 +3,8 @@
 # 🧠 Smart AI Studio
 ### Autonomous 1.58-Bit Local AI & Multi-Agent Reasoning Desktop Engine
 
-[![Version: 2.0.0](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/smart-ai-studio/smart-ai/releases)
-[![CI & Multi-Platform Release](https://github.com/smart-ai-studio/smart-ai/actions/workflows/ci-build-release.yml/badge.svg)](https://github.com/smart-ai-studio/smart-ai/actions)
+[![Version: 2.0.0](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/Eabusham2/smart-ai-studio/releases)
+[![CI & Multi-Platform Release](https://github.com/Eabusham2/smart-ai-studio/actions/workflows/ci-build-release.yml/badge.svg)](https://github.com/Eabusham2/smart-ai-studio/actions)
 [![License: Commercial Source-Available](https://img.shields.io/badge/License-Commercial_Source--Available-red.svg)](LICENSE)
 [![Platform: macOS | Windows | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-brightgreen.svg)](#-installation--quickstart)
 [![Precision: 1.58-Bit Ternary BitLinear](https://img.shields.io/badge/Precision-1.58--Bit%20Ternary%20BitLinear-purple.svg)](#-model-matrix--architectures)
@@ -103,8 +103,8 @@ Smart AI Studio integrates 15+ built-in autonomous workspace tools and native **
 
 ### 1. Clone Repository
 ```bash
-git clone https://github.com/smart-ai-studio/smart-ai.git
-cd smart-ai
+git clone https://github.com/Eabusham2/smart-ai-studio.git
+cd smart-ai-studio
 ```
 
 ### 2. Set Up Virtual Environment & Dependencies

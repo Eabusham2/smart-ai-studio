@@ -72,11 +72,11 @@ mlx = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/smart-ai-studio/smart-ai"
-Documentation = "https://github.com/smart-ai-studio/smart-ai#readme"
-Repository = "https://github.com/smart-ai-studio/smart-ai.git"
-Issues = "https://github.com/smart-ai-studio/smart-ai/issues"
-Changelog = "https://github.com/smart-ai-studio/smart-ai/releases"
+Homepage = "https://github.com/Eabusham2/smart-ai-studio"
+Documentation = "https://github.com/Eabusham2/smart-ai-studio#readme"
+Repository = "https://github.com/Eabusham2/smart-ai-studio.git"
+Issues = "https://github.com/Eabusham2/smart-ai-studio/issues"
+Changelog = "https://github.com/Eabusham2/smart-ai-studio/releases"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
