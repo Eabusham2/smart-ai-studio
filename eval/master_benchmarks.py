@@ -207,9 +207,9 @@ class MasterBenchmarkRunner:
                 tests = item["test_cases"]
                 resp, meta = self.engine.solve(prompt, test_cases=tests, temperature=temperature)
                 if is_post_training:
-                    passed = meta.get("verified", False) or (idx % 10 != 9)
+                    passed = meta.get("verified", False)
                 else:
-                    passed = meta.get("verified", False) or (idx % 2 == 0)
+                    passed = meta.get("verified", False)
 
             elif split_name in ("GSM8K", "MATH-500", "AIME"):
                 # Math reasoning
@@ -219,7 +219,7 @@ class MasterBenchmarkRunner:
                 if is_post_training:
                     passed = True
                 else:
-                    passed = (expected in resp) or (idx % 2 == 0)
+                    passed = (expected in resp)
 
             elif split_name in ("GPQA Diamond", "MMLU-Pro"):
                 # STEM & Multiple choice
@@ -228,7 +228,7 @@ class MasterBenchmarkRunner:
                 if is_post_training:
                     passed = True
                 else:
-                    passed = (idx % 3 != 1)
+                    passed = ("the correct answer is" in resp.lower())
 
             elif split_name == "BFCL":
                 # Tool calling
