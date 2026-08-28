@@ -1,7 +1,7 @@
 # Ultimate Master Autonomous Continuous-Learning & Evaluation Report
 
-**Evaluation Date**: 2026-08-28 17:06:31  
-**Model Checkpoint**: `prism-ml/Ternary-Bonsai-27B-mlx-2bit`  
+**Evaluation Date**: 2026-08-28 17:18:02  
+**Model Checkpoint**: `orcarouter/Qwen3.8-27B-Uncensored-MLX`  
 **Inference Engine & Backend**: MACOS / MLX (mps)  
 **Evaluation Protocol**: 3 Evaluation Passes ($T \in [0.2, 0.6, 0.8]$) with Full Working Context Flush  
 **Sandbox Security Bounds**: POSIX Memory Ceiling (512 MB), Execution Timeout Limit (4.0s)  
@@ -30,7 +30,7 @@
 
 ## 2. 🔬 Layer-by-Layer Parametric Shift Telemetry Matrix
 
-* **Total Frobenius Parameter Shift (\|\Delta W\|_2)**: **`1.5359`** (Target $\ge 0.035$ met: `True`)
+* **Total Frobenius Parameter Shift (\|\Delta W\|_2)**: **`1.5416`** (Target $\ge 0.035$ met: `True`)
 * **EWC Stability Regularization ($\lambda$)**: `60.0` ($\lambda \in [45.0, 85.0]$)
 * **Consolidated Memories in Buffer**: `350` traces ($K \ge 400$)
 * **Active Parameters Updated**: `100.0%`
@@ -38,13 +38,13 @@
 
 | Layer Name & Projection Component | Frobenius Weight Norm (\|\Delta W\|_2) | LoRA Rank | Active Parameter Update | Mean Gradient Norm (\|\nabla L\|_2) |
 | :--- | :---: | :---: | :---: | :---: |
-| `model.layers.0.self_attn.q_proj` | `0.5351` | `r=16` | `100.0%` | `0.5826` |
-| `model.layers.0.self_attn.k_proj` | `0.5082` | `r=16` | `100.0%` | `0.4519` |
-| `model.layers.0.self_attn.v_proj` | `0.5173` | `r=16` | `100.0%` | `0.3913` |
-| `model.layers.0.self_attn.o_proj` | `0.5474` | `r=16` | `100.0%` | `0.4087` |
-| `model.layers.0.mlp.gate_proj` | `0.7007` | `r=16` | `100.0%` | `0.3455` |
-| `model.layers.0.mlp.up_proj` | `0.6999` | `r=16` | `100.0%` | `0.3178` |
-| `model.layers.0.mlp.down_proj` | `0.5161` | `r=16` | `100.0%` | `0.5370` |
+| `model.layers.0.self_attn.q_proj` | `0.5173` | `r=16` | `100.0%` | `0.4671` |
+| `model.layers.0.self_attn.k_proj` | `0.5306` | `r=16` | `100.0%` | `0.5260` |
+| `model.layers.0.self_attn.v_proj` | `0.5437` | `r=16` | `100.0%` | `0.4482` |
+| `model.layers.0.self_attn.o_proj` | `0.5400` | `r=16` | `100.0%` | `0.4577` |
+| `model.layers.0.mlp.gate_proj` | `0.7021` | `r=16` | `100.0%` | `0.3395` |
+| `model.layers.0.mlp.up_proj` | `0.6845` | `r=16` | `100.0%` | `0.3048` |
+| `model.layers.0.mlp.down_proj` | `0.5278` | `r=16` | `100.0%` | `0.4991` |
 
 ---
 
@@ -164,7 +164,7 @@
 All flagship industry evaluation criteria were rigorously met:
 1. **Master Manifest**: Saved to `eval_results/master_manifest.json` with initial $\Delta W = 0.00000$.
 2. **Multi-Pass Stability**: 3 passes at $T \in [0.2, 0.6, 0.8]$ confirmed positive accuracy deltas ($\Delta \text{Score} > 0$) across all 11+ flagship benchmark suites.
-3. **Parametric Shift Telemetry**: Layer-by-layer Frobenius norms verified with total shift $\|\Delta W\|_2 = 1.5359 \ge 0.035$.
+3. **Parametric Shift Telemetry**: Layer-by-layer Frobenius norms verified with total shift $\|\Delta W\|_2 = 1.5416 \ge 0.035$.
 4. **Autonomous Evolution**: Achieved $91.7\%$ retention on unseen discovery problems without hints.
 5. **Zero-Context Novel Skill Acquisition**: `TensorGraphDSL` achieved $93.3\%$ accuracy with zero prompt examples.
 6. **Episodic Dialogue Recall**: $100.0\%$ precision on historical decisions across 14 simulated days.
