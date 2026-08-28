@@ -39,7 +39,12 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.app = SmartAIChatbotApp(self.root, settings=self.settings)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        import gc
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_chatbot_ui_initialization(self):
         """Verify chat stream, telemetry badges, and session list are initialized."""

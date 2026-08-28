@@ -36,7 +36,12 @@ class TestQwenReasoningCapabilities(unittest.TestCase):
         self.verifier = GroundTruthVerifier(sandbox_timeout=4.0)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        import gc
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_qwen_chat_template_formatting(self):
         """Validates standard Qwen chat template formatting."""

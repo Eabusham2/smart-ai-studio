@@ -69,7 +69,12 @@ class TestContinuousLearningAndImprovement(unittest.TestCase):
         self.verifier = GroundTruthVerifier()
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        import gc
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_end_to_end_model_learning_and_consolidation(self):
         """

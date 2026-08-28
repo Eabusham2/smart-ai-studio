@@ -15,7 +15,12 @@ class TestEpisodicMemoryDB(unittest.TestCase):
         self.db = EpisodicMemoryDB(db_path=self.db_path)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        import gc
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_database_initialization(self):
         stats = self.db.get_stats()

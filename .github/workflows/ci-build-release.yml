@@ -111,6 +111,7 @@ jobs:
             dist/SmartAI-Linux-x86_64.tar.gz
           draft: false
           prerelease: false
+          make_latest: true
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

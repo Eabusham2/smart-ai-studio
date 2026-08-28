@@ -40,7 +40,12 @@ class TestSmartAISuite(unittest.TestCase):
         self.tools = AgentToolRegistry(db_path=self.db_path, workspace_dir=self.temp_dir.name)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        import gc
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     # -------------------------------------------------------------
     # TOOL TESTS

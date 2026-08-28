@@ -25,7 +25,12 @@ class TestConsolidation(unittest.TestCase):
         )
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        import gc
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_ewc_loss_calculation(self):
         calculator = EWCLossCalculator(lambda_ewc=400.0)
