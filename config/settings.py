@@ -102,7 +102,7 @@ try:
         docker_image: str = Field(default="python:3.10-slim", description="Docker base image for sandbox")
 
         # Memory & Elastic Weight Consolidation (EWC)
-        database_path: str = Field(default="memory.db", description="SQLite episodic memory database path")
+        database_path: str = Field(default_factory=lambda: os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "memory.db")), description="SQLite episodic memory database path")
         ewc_lambda: float = Field(default=400.0, description="Synaptic quadratic penalty multiplier")
         consolidation_lr: float = Field(default=2e-5, description="Learning rate for slow-LoRA sleep consolidation")
         consolidation_weight_decay: float = Field(default=0.01, description="Weight decay for AdamW in sleep cycle")
@@ -148,7 +148,7 @@ except ImportError:
         use_docker_sandbox: bool = os.getenv("USE_DOCKER_SANDBOX", "false").lower() in ("1", "true", "yes")
         docker_image: str = os.getenv("DOCKER_IMAGE", "python:3.10-slim")
 
-        database_path: str = os.getenv("DATABASE_PATH", "memory.db")
+        database_path: str = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "memory.db"))
         ewc_lambda: float = float(os.getenv("EWC_LAMBDA", "400.0"))
         consolidation_lr: float = float(os.getenv("CONSOLIDATION_LR", "0.00002"))
         consolidation_weight_decay: float = float(os.getenv("CONSOLIDATION_WEIGHT_DECAY", "0.01"))

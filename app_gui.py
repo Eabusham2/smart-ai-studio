@@ -18,6 +18,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
+from config.paths import get_custom_models_file, get_portable_data_dir, inspect_mlx_model_folder
 from config.settings import Settings, get_settings
 from consolidation.daemon import SleepConsolidationDaemon
 from core.autonomous_learner import AutonomousLearner
@@ -107,7 +108,7 @@ _FONT_TINY_BOLD = (_FONT_FAMILY, 10, "bold")
 _FONT_MONO = (_FONT_MONO_FAMILY, 13)     # Clear 13pt monospace for code
 _FONT_INLINE_MONO = (_FONT_MONO_FAMILY, 12)
 
-CUSTOM_MODELS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "custom_models.json")
+CUSTOM_MODELS_FILE = get_custom_models_file()
 
 
 class SmartAIChatbotApp:
@@ -464,35 +465,46 @@ class SmartAIChatbotApp:
     #  CUSTOM MODEL IMPORTER DIALOG (IMPORT YOUR OWN MODEL)
     # ─────────────────────────────────────────────────────
     def _on_import_custom_model_dialog(self):
-        """Opens a clean dialog to import custom local or HuggingFace AI models."""
+        """Opens an interactive dialog to import custom local MLX model folders or HuggingFace repositories."""
         modal = tk.Toplevel(self.root)
         modal.title("Import Custom AI Model")
-        modal.geometry("560x420")
-        modal.minsize(500, 380)
+        modal.geometry("600x480")
+        modal.minsize(540, 420)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
         modal.grab_set()
 
         # Header
         hdr = tk.Frame(modal, bg=self.C["bg_hud"])
-        hdr.pack(fill="x", padx=20, pady=(16, 10))
+        hdr.pack(fill="x", padx=20, pady=(16, 8))
 
         tk.Label(
             hdr, text="➕ Import Custom Model", font=_FONT_H2,
             bg=self.C["bg_hud"], fg=self.C["accent_purple"]
         ).pack(anchor="w")
         tk.Label(
-            hdr, text="Add any local weights folder, MLX model, GGUF, or Hugging Face repository.",
+            hdr, text="Add any local MLX model directory, GGUF/SafeTensors weights, or Hugging Face repository.",
             font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]
         ).pack(anchor="w", pady=(2, 0))
 
         body = tk.Frame(modal, bg=self.C["bg_hud"])
-        body.pack(fill="both", expand=True, padx=20, pady=10)
+        body.pack(fill="both", expand=True, padx=20, pady=6)
+
+        # Quick Local MLX Folder Button
+        top_btn_bar = tk.Frame(body, bg=self.C["bg_hud"])
+        top_btn_bar.pack(fill="x", pady=(0, 10))
+
+        lbl_status_inspect = tk.Label(
+            body, text="💡 Tip: Select a local MLX folder to auto-detect architecture, parameters, and precision.",
+            font=_FONT_TINY, bg=self.C["bg_card"], fg=self.C["accent_cyan"], padx=8, pady=4,
+            relief="flat", bd=0, highlightbackground=self.C["border"], highlightthickness=1
+        )
+        lbl_status_inspect.pack(fill="x", pady=(0, 10))
 
         # 1. Model Name
         tk.Label(body, text="Model Display Name:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
         ent_name = tk.Entry(body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
-        ent_name.pack(fill="x", pady=(2, 10), ipady=4)
+        ent_name.pack(fill="x", pady=(2, 8), ipady=4)
         ent_name.insert(0, "Llama 3.2 3B Instruct")
 
         # 2. Source Type (HuggingFace vs Local Path)
@@ -502,46 +514,77 @@ class SmartAIChatbotApp:
         radio_frame.pack(fill="x", pady=(0, 6))
 
         tk.Radiobutton(radio_frame, text="HuggingFace Repo ID", variable=source_var, value="hf", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left", padx=(0, 16))
-        tk.Radiobutton(radio_frame, text="Local Folder / File", variable=source_var, value="local", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left")
+        tk.Radiobutton(radio_frame, text="Local MLX Model Folder / File", variable=source_var, value="local", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left")
 
         # 3. Path / Repo ID
         tk.Label(body, text="Repository ID or Local Path:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
         path_frame = tk.Frame(body, bg=self.C["bg_hud"])
-        path_frame.pack(fill="x", pady=(2, 10))
+        path_frame.pack(fill="x", pady=(2, 8))
 
         ent_path = tk.Entry(path_frame, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_path.pack(side="left", fill="x", expand=True, ipady=4)
         ent_path.insert(0, "mlx-community/Llama-3.2-3B-Instruct-4bit")
 
-        def _browse_local():
-            if source_var.get() == "local":
-                d = filedialog.askdirectory(title="Select Local Model Weights Directory")
-                if d:
-                    ent_path.delete(0, "end")
-                    ent_path.insert(0, d)
-            else:
-                messagebox.showinfo("Browse", "Switch source type to 'Local Folder / File' to browse your disk.")
+        # 4. Parameters scale & Precision
+        param_frame = tk.Frame(body, bg=self.C["bg_hud"])
+        param_frame.pack(fill="x", pady=(0, 8))
 
-        btn_browse = tk.Button(path_frame, text="📁 Browse...", font=_FONT_TINY_BOLD, bg=self.C["bg_card"], fg=self.C["accent_cyan"], relief="flat", bd=0, padx=8, cursor="hand2", command=_browse_local)
+        tk.Label(param_frame, text="Parameters:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
+        ent_param = tk.Entry(param_frame, width=8, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_param.pack(side="left", padx=(6, 16), ipady=3)
+        ent_param.insert(0, "3B")
+
+        tk.Label(param_frame, text="Precision:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
+        ent_prec = tk.Entry(param_frame, width=14, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_prec.pack(side="left", padx=6, ipady=3)
+        ent_prec.insert(0, "4-bit MLX")
+
+        def _on_folder_selected(selected_dir: str):
+            if not selected_dir:
+                return
+            source_var.set("local")
+            info = inspect_mlx_model_folder(selected_dir)
+            if info.get("valid"):
+                ent_name.delete(0, "end")
+                ent_name.insert(0, info["name"])
+                ent_path.delete(0, "end")
+                ent_path.insert(0, info["path"])
+                ent_param.delete(0, "end")
+                ent_param.insert(0, info["param_str"])
+                ent_prec.delete(0, "end")
+                ent_prec.insert(0, info["precision"])
+                lbl_status_inspect.configure(
+                    text=f"✓ Detected {info['model_type']} ({info['param_str']}, {info['precision']}, {info['context_window']:,} max context)",
+                    fg=self.C["accent_green"]
+                )
+
+        def _browse_local():
+            d = filedialog.askdirectory(title="Select Local MLX Model Weights Directory")
+            if d:
+                _on_folder_selected(d)
+
+        btn_browse = tk.Button(path_frame, text="📁 Browse MLX...", font=_FONT_TINY_BOLD, bg=self.C["bg_card"], fg=self.C["accent_cyan"], relief="flat", bd=0, padx=8, cursor="hand2", command=_browse_local)
         btn_browse.pack(side="right", padx=(6, 0))
 
-        # 4. Parameters scale (e.g. 3B, 7B, 14B)
-        param_frame = tk.Frame(body, bg=self.C["bg_hud"])
-        param_frame.pack(fill="x", pady=(0, 14))
-
-        tk.Label(param_frame, text="Parameters (e.g. 3B, 7B):", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
-        ent_param = tk.Entry(param_frame, width=10, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
-        ent_param.pack(side="left", padx=8, ipady=3)
-        ent_param.insert(0, "3B")
+        btn_quick_mlx = tk.Button(
+            top_btn_bar, text="📁 Select Local MLX Folder...", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_cyan"],
+            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
+            padx=10, pady=4, cursor="hand2",
+            highlightbackground=self.C["border"], highlightthickness=1,
+            command=_browse_local
+        )
+        btn_quick_mlx.pack(side="left")
 
         # Action Buttons
         btn_bar = tk.Frame(modal, bg=self.C["bg_hud"])
-        btn_bar.pack(fill="x", padx=20, pady=(0, 16))
+        btn_bar.pack(fill="x", padx=20, pady=(4, 16))
 
         def _save_imported_model():
             m_name = ent_name.get().strip() or "Custom Model"
             m_path_or_id = ent_path.get().strip()
             m_param_str = ent_param.get().strip() or "7B"
+            m_prec_str = ent_prec.get().strip() or "4-bit MLX"
 
             if not m_path_or_id:
                 messagebox.showerror("Error", "Please specify a HuggingFace Repository ID or Local Path.")
@@ -566,7 +609,7 @@ class SmartAIChatbotApp:
                 "short_name": m_name,
                 "repo_id": m_path_or_id if not is_local else None,
                 "model_path": m_path_or_id if is_local else None,
-                "precision": f"{m_param_str} Custom",
+                "precision": m_prec_str,
                 "raw_params": raw_param,
                 "base_params": m_param_str,
                 "max_context": 65_536,
@@ -587,7 +630,7 @@ class SmartAIChatbotApp:
             self._append_ai_message(
                 f"🧩 **Custom Model Imported**: Successfully registered `{m_name}`.\n\n"
                 f"• **Source**: `{m_path_or_id}`\n"
-                f"• **Scale**: {m_param_str} Parameters\n"
+                f"• **Scale**: {m_param_str} Parameters ({m_prec_str})\n"
                 f"• Click **'⚡ Load Model'** to initialize."
             )
 
