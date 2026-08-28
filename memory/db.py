@@ -199,3 +199,16 @@ class EpisodicMemoryDB:
                 "consolidation_cycles": consolidation_cycles,
                 "average_verified_surprise": round(float(avg_surprise), 4),
             }
+
+    def purge_all_for_reset(self) -> None:
+        """Purges all interactions and consolidation logs for clean-slate resets."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM interactions")
+            cursor.execute("DELETE FROM consolidation_logs")
+            try:
+                cursor.execute("DELETE FROM semantic_memory_index")
+                cursor.execute("DELETE FROM dialogue_sessions")
+            except Exception:
+                pass
+            conn.commit()

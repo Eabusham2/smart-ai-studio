@@ -74,7 +74,7 @@ class PlatformRouter:
         elif torch_available:
             backend = "torch"
         else:
-            backend = "mock"
+            backend = "torch"
 
         # Determine primary compute device
         if cuda_available:

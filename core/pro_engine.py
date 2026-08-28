@@ -599,7 +599,8 @@ class ProReasoningEngine:
         test_cases: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
         cancel_event: Optional[Any] = None,
-        force_branch_count: Optional[int] = None
+        force_branch_count: Optional[int] = None,
+        temperature: Optional[float] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Main reasoning loop with conversational history retention:

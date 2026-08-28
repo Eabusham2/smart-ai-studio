@@ -43,9 +43,9 @@ def detect_optimal_device() -> str:
 
 
 def detect_optimal_backend() -> str:
-    """Detects optimal inference/training engine: mlx, torch, or mock."""
+    """Detects optimal inference/training engine: mlx, gguf, bitnet, or torch."""
     env_backend = os.getenv("BACKEND", "").lower()
-    if env_backend in ("mlx", "torch", "mock"):
+    if env_backend in ("mlx", "gguf", "bitnet", "torch"):
         return env_backend
 
     if platform.system() == "Darwin" and platform.machine() == "arm64":
