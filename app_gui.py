@@ -1,7 +1,7 @@
 """
 Smart AI Studio — High-Readability Multi-Model Studio with Live Real-Time Token Streaming,
-ChatGPT-Style Side-by-Side Interactive AI Canvas, Live Steer (Cmd/Ctrl+Enter), Task Queue,
-Dynamic Unit Scaling (100 -> K -> M -> B -> T), and One-Click Reset & Reinstall.
+ChatGPT-Style Side-by-Side Interactive AI Canvas with Markdown/Code Preview,
+Live Steer (Cmd/Ctrl+Enter), Prompt Task Queue, Dynamic Unit Scaling, and In-Chat Code Actions.
 """
 
 import ast
@@ -64,19 +64,19 @@ def format_parameter_count(param_val: float) -> str:
 #  OBSIDIAN HIGH-CONTRAST PALETTE & TYPOGRAPHY
 # ─────────────────────────────────────────────────────────
 _COLORS = {
-    "bg_app":        "#0a0e17",   # Deep Obsidian background
-    "bg_hud":        "#101726",   # Top HUD bar background
-    "bg_resources":  "#131e33",   # Resource viewer drawer
-    "bg_tab_bar":    "#0e1626",   # Model tab navigation bar
-    "bg_tab_active": "#1f2b42",   # Active tab highlight
-    "bg_tab_idle":   "#0e1626",   # Idle tab
-    "bg_chat":       "#0a0e17",   # Chat area background
-    "bg_card":       "#182236",   # Badge & card background
-    "bg_card_hover": "#243452",   # Hover state
-    "bg_input":      "#101726",   # Input box background
+    "bg_app":        "#080c14",   # Deep Obsidian background
+    "bg_hud":        "#0f172a",   # Top HUD bar background
+    "bg_resources":  "#111c30",   # Resource viewer drawer
+    "bg_tab_bar":    "#0d1526",   # Model tab navigation bar
+    "bg_tab_active": "#1e293b",   # Active tab highlight
+    "bg_tab_idle":   "#0d1526",   # Idle tab
+    "bg_chat":       "#080c14",   # Chat area background
+    "bg_card":       "#172033",   # Badge & card background
+    "bg_card_hover": "#22304d",   # Hover state
+    "bg_input":      "#0f172a",   # Input box background
     "bg_user_bubble":"#1e293b",   # User message bubble
     "bg_ai_bubble":  "#0f172a",   # AI message bubble
-    "border":        "#243049",   # Card / panel borders
+    "border":        "#1e293b",   # Card / panel borders
     "text_main":     "#ffffff",   # 100% Crisp White primary text
     "text_muted":    "#94a3b8",   # Soft slate secondary text
     "accent_cyan":   "#38bdf8",   # Ternary Bonsai cyan
@@ -86,7 +86,7 @@ _COLORS = {
     "accent_yellow": "#facc15",   # Warnings & Queued
     "accent_red":    "#f87171",   # Errors
     "code_bg":       "#04070d",   # Obsidian code block container
-    "code_border":   "#243049",   # Code container border
+    "code_border":   "#1e293b",   # Code container border
     "code_fg":       "#f1f5f9",   # Code text foreground
     "bg_thinking":   "#0f172a",   # Thinking process card
     "bg_code":       "#04070d",   # Monospace code block
@@ -94,7 +94,7 @@ _COLORS = {
     "bg_tool":       "#062d1f",   # Tool execution card
     "bg_steer":      "#2e1065",   # Steer message background
     "bg_queue":      "#3b2d07",   # Queue message background
-    "canvas_bg":     "#070b12",   # AI Canvas background
+    "canvas_bg":     "#04070d",   # AI Canvas background
     "canvas_hdr":    "#0f172a",   # AI Canvas header
 }
 
@@ -175,12 +175,13 @@ class SmartAIChatbotApp:
         self.workspace_dir = os.path.abspath(os.getcwd())
         self.total_tokens_used = 0
         self.max_context_window = get_auto_context_window_size()
-        self.synapses_learned_count = 0.0  # Dynamic unit counter
-        self.synapses_learned_m = 0.0      # Legacy compatibility
+        self.synapses_learned_count = 0.0
+        self.synapses_learned_m = 0.0
         self.is_generating = False
         self.is_model_loaded = False
         self.show_resources = False
         self.show_canvas = False
+        self.canvas_preview_mode = False
         self.attached_file_path: Optional[str] = None
         self.cancel_event = threading.Event()
         self.chat_history: Dict[str, List[Dict[str, str]]] = {tid: [] for tid in self.models_config.keys()}
@@ -188,10 +189,12 @@ class SmartAIChatbotApp:
         # Prompt Task Queue
         self.prompt_queue: List[Tuple[str, str]] = []
 
-        # Thinking Dropdown Cache
+        # Thinking Dropdown & Code Snippet Caches
         self.thinking_cache: Dict[str, str] = {}
         self.thinking_expanded: Dict[str, bool] = {}
+        self.code_snippets: Dict[str, str] = {}
         self._think_counter = 0
+        self._code_counter = 0
 
         # System RAM Pressure Watchdog
         self.watchdog = SystemMemoryWatchdog(
@@ -210,7 +213,7 @@ class SmartAIChatbotApp:
         self._send_welcome_messages()
 
     # ─────────────────────────────────────────────────────
-    #  WINDOW INITIALIZATION
+    #  WINDOW INITIALIZATION & KEYBINDINGS
     # ─────────────────────────────────────────────────────
     def _init_window(self):
         self.root.title("Smart AI Studio — Autonomous Reasoning & Coding")
@@ -248,13 +251,13 @@ class SmartAIChatbotApp:
         sys.exit(0)
 
     # ─────────────────────────────────────────────────────
-    #  MASTER UI STRUCTURE (Reliable Packing Hierarchy)
+    #  MASTER UI STRUCTURE
     # ─────────────────────────────────────────────────────
     def _build_ui(self):
         self.main_container = tk.Frame(self.root, bg=self.C["bg_app"])
         self.main_container.pack(fill="both", expand=True)
 
-        # 1. TOP HUD BAR (Telemetry Badges, Folder, Export)
+        # 1. TOP HUD BAR (Telemetry Badges, Folder, Canvas Toggle, Export)
         self._build_hud_bar()
 
         # 2. SLIDE-OUT RESOURCE VIEWER DRAWER (Hidden by default)
@@ -263,18 +266,21 @@ class SmartAIChatbotApp:
         # 3. MODEL TAB & CONTROLS BAR (Single Reset & Reinstall, Load/Unload)
         self._build_model_tab_bar()
 
-        # 4. BOTTOM INPUT & ACTION BUTTONS (Pack bottom first to prevent clipping!)
+        # 4. BOTTOM INPUT AREA (Packed on bottom first so it's always visible!)
         self._build_input_area()
 
-        # 5. ATTACHED FILE PILL BAR (Hidden until file attached)
+        # 5. ATTACHED FILE PILL BAR (Appears above input when file is selected)
         self._build_attachment_bar()
 
-        # 6. CENTER WORKSPACE: CHAT FEED (Left) + AI CANVAS (Right)
+        # 6. QUEUE STATUS DRAWER BAR
+        self._build_queue_bar()
+
+        # 7. CENTER WORKSPACE: CHAT FEED (Left) + AI CANVAS (Right)
         self.content_paned = tk.PanedWindow(
             self.main_container, orient="horizontal", bg=self.C["border"],
             sashwidth=4, bd=0
         )
-        self.content_paned.pack(fill="both", expand=True, padx=16, pady=(8, 4))
+        self.content_paned.pack(fill="both", expand=True, padx=16, pady=(6, 4))
 
         # Build Chat Feed Container inside PanedWindow
         self._build_chat_container()
@@ -316,7 +322,7 @@ class SmartAIChatbotApp:
         )
         self.lbl_workspace.pack(side="left")
 
-        # Right: Telemetry & Actions
+        # Right: Telemetry Badges & Control Actions
         actions_frame = tk.Frame(self.hud_bar, bg=self.C["bg_hud"])
         actions_frame.pack(side="right", padx=16, pady=8)
 
@@ -340,7 +346,7 @@ class SmartAIChatbotApp:
             actions_frame, text="🎨 Canvas ▾", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_purple"],
             activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=8, pady=4, cursor="hand2",
+            padx=9, pady=4, cursor="hand2",
             command=self._on_toggle_canvas_viewer
         )
         self.btn_toggle_canvas.pack(side="left", padx=3)
@@ -457,7 +463,7 @@ class SmartAIChatbotApp:
         self.lbl_res_folder.configure(text=f"• Target Folder: {os.path.basename(self.workspace_dir)}")
 
     # ─────────────────────────────────────────────────────
-    #  MODEL TAB & CONTROLS BAR (Single Reset & Reinstall, Load/Unload)
+    #  MODEL TAB & CONTROLS BAR
     # ─────────────────────────────────────────────────────
     def _build_model_tab_bar(self):
         self.tab_bar = tk.Frame(self.main_container, bg=self.C["bg_tab_bar"], height=42)
@@ -520,7 +526,7 @@ class SmartAIChatbotApp:
     # ─────────────────────────────────────────────────────
     def _build_chat_container(self):
         self.chat_container_frame = tk.Frame(self.content_paned, bg=self.C["bg_chat"])
-        self.content_paned.add(self.chat_container_frame, stretch="always", minsize=420)
+        self.content_paned.add(self.chat_container_frame, stretch="always", minsize=440)
 
         self.chat_frames: Dict[str, tk.Frame] = {}
 
@@ -573,8 +579,11 @@ class SmartAIChatbotApp:
         stream.tag_configure("md_bullet", foreground=self.C["accent_cyan"], font=_FONT_MAIN)
         stream.tag_configure("md_inline_code", foreground=self.C["accent_cyan"], font=_FONT_INLINE_MONO, background=self.C["bg_inline_code"])
 
-        # Code Block Tags
+        # Code Block Tags & Actions
         stream.tag_configure("code_block", foreground=self.C["code_fg"], background=self.C["code_bg"], font=_FONT_MONO, lmargin1=16, lmargin2=16, spacing1=8, spacing3=8)
+        stream.tag_configure("code_hdr", foreground=self.C["accent_cyan"], font=_FONT_TINY_BOLD, background=self.C["code_bg"], lmargin1=16, lmargin2=16, spacing1=6, spacing3=2)
+        stream.tag_configure("code_action_copy", foreground=self.C["accent_green"], font=_FONT_TINY_BOLD, background=self.C["bg_card"])
+        stream.tag_configure("code_action_canvas", foreground=self.C["accent_purple"], font=_FONT_TINY_BOLD, background=self.C["bg_card"])
 
         # Interactive Thinking Dropdown Tags
         stream.tag_configure("think_dropdown_btn", foreground=self.C["accent_purple"], font=_FONT_TINY_BOLD, background=self.C["bg_card"], lmargin1=14, lmargin2=14, spacing1=4, spacing3=4)
@@ -586,55 +595,63 @@ class SmartAIChatbotApp:
         stream.tag_configure("separator", foreground=self.C["border"], font=_FONT_TINY)
 
     # ─────────────────────────────────────────────────────
-    #  CHATGPT-STYLE AI CANVAS (Side-by-Side Artifact & Document Studio)
+    #  CHATGPT-STYLE AI CANVAS (Interactive Document & Code Studio)
     # ─────────────────────────────────────────────────────
     def _build_ai_canvas_panel(self):
         self.canvas_panel = tk.Frame(self.content_paned, bg=self.C["canvas_bg"])
-        # Initially unmapped until toggled or requested by AI
 
-        # Canvas Top Bar
-        hdr = tk.Frame(self.canvas_panel, bg=self.C["canvas_hdr"], height=42)
+        # Canvas Top Action Bar
+        hdr = tk.Frame(self.canvas_panel, bg=self.C["canvas_hdr"], height=44)
         hdr.pack(fill="x", side="top")
         hdr.pack_propagate(False)
 
         tk.Label(
-            hdr, text="🎨 AI Canvas & Document Editor",
+            hdr, text="🎨 AI Canvas Studio",
             font=_FONT_H3, bg=self.C["canvas_hdr"], fg=self.C["accent_purple"]
-        ).pack(side="left", padx=14, pady=6)
+        ).pack(side="left", padx=12, pady=6)
 
         btn_run = tk.Button(
-            hdr, text="▶ Run in Sandbox", font=_FONT_TINY_BOLD,
+            hdr, text="▶ Run", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_green"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             command=self._on_canvas_run_code
         )
-        btn_run.pack(side="left", padx=4)
+        btn_run.pack(side="left", padx=3)
+
+        btn_preview = tk.Button(
+            hdr, text="👁️ Preview", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_cyan"],
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            command=self._on_canvas_toggle_preview
+        )
+        btn_preview.pack(side="left", padx=3)
+        self.btn_canvas_preview = btn_preview
 
         btn_copy = tk.Button(
             hdr, text="📋 Copy", font=_FONT_TINY_BOLD,
-            bg=self.C["bg_card"], fg=self.C["accent_cyan"],
+            bg=self.C["bg_card"], fg=self.C["text_main"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             command=self._on_canvas_copy
         )
-        btn_copy.pack(side="left", padx=4)
+        btn_copy.pack(side="left", padx=3)
 
         btn_save = tk.Button(
-            hdr, text="💾 Save to File", font=_FONT_TINY_BOLD,
+            hdr, text="💾 Save", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_yellow"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             command=self._on_canvas_save_file
         )
-        btn_save.pack(side="left", padx=4)
+        btn_save.pack(side="left", padx=3)
 
         btn_close = tk.Button(
-            hdr, text="✖ Close Canvas", font=_FONT_TINY_BOLD,
+            hdr, text="✖ Close", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["text_muted"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             command=self._on_toggle_canvas_viewer
         )
-        btn_close.pack(side="right", padx=10)
+        btn_close.pack(side="right", padx=8)
 
-        # Canvas Editor Body
+        # Canvas Editor Container
         editor_frame = tk.Frame(self.canvas_panel, bg=self.C["canvas_bg"])
         editor_frame.pack(fill="both", expand=True)
 
@@ -645,7 +662,7 @@ class SmartAIChatbotApp:
             editor_frame, bg=self.C["code_bg"], fg=self.C["code_fg"],
             insertbackground="#ffffff", font=_FONT_MONO, wrap="none",
             bd=0, padx=16, pady=16, highlightthickness=0,
-            yscrollcommand=scroll_y.set
+            spacing1=3, spacing3=3, yscrollcommand=scroll_y.set
         )
         self.txt_canvas.pack(fill="both", expand=True)
         scroll_y.configure(command=self.txt_canvas.yview)
@@ -659,7 +676,7 @@ class SmartAIChatbotApp:
             self.btn_toggle_canvas.configure(text="🎨 Canvas ▾", fg=self.C["accent_purple"])
             self.show_canvas = False
         else:
-            self.content_paned.add(self.canvas_panel, stretch="always", minsize=380)
+            self.content_paned.add(self.canvas_panel, stretch="always", minsize=400)
             self.btn_toggle_canvas.configure(text="🎨 Canvas ▴", fg="#ffffff")
             self.show_canvas = True
 
@@ -669,6 +686,16 @@ class SmartAIChatbotApp:
             self._on_toggle_canvas_viewer()
         self.txt_canvas.delete("1.0", "end")
         self.txt_canvas.insert("1.0", content)
+
+    def _on_canvas_toggle_preview(self):
+        """Toggles formatting in the AI Canvas."""
+        self.canvas_preview_mode = not self.canvas_preview_mode
+        if self.canvas_preview_mode:
+            self.btn_canvas_preview.configure(text="💻 Raw Code", fg=self.C["accent_green"])
+            self.txt_canvas.configure(font=_FONT_MAIN, wrap="word", bg=self.C["bg_card"])
+        else:
+            self.btn_canvas_preview.configure(text="👁️ Preview", fg=self.C["accent_cyan"])
+            self.txt_canvas.configure(font=_FONT_MONO, wrap="none", bg=self.C["code_bg"])
 
     def _on_canvas_run_code(self):
         code = self.txt_canvas.get("1.0", "end").strip()
@@ -695,6 +722,41 @@ class SmartAIChatbotApp:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             self._append_ai_message(f"💾 **Canvas Saved**: File written to `{path}`.")
+
+    # ─────────────────────────────────────────────────────
+    #  QUEUE DRAWER BAR
+    # ─────────────────────────────────────────────────────
+    def _build_queue_bar(self):
+        self.queue_bar = tk.Frame(self.main_container, bg=self.C["bg_hud"], height=28)
+        self.lbl_queue_indicator = tk.Label(
+            self.queue_bar, text="📋 Pending Tasks: None", font=_FONT_TINY,
+            bg=self.C["bg_hud"], fg=self.C["text_muted"], padx=10
+        )
+        self.lbl_queue_indicator.pack(side="left", padx=16)
+
+        self.btn_clear_queue = tk.Button(
+            self.queue_bar, text="✕ Clear All", font=_FONT_TINY,
+            bg=self.C["bg_card"], fg=self.C["accent_red"],
+            relief="flat", bd=0, padx=6, pady=1, cursor="hand2",
+            command=self._on_clear_queue
+        )
+        # Hidden when queue is empty
+
+    def _update_queue_ui(self):
+        q_len = len(self.prompt_queue)
+        if q_len > 0:
+            self.queue_bar.pack(fill="x", side="bottom", before=self.input_container, pady=(0, 2))
+            self.lbl_queue_indicator.configure(
+                text=f"📋 Active Task Queue: {q_len} pending task{'s' if q_len > 1 else ''} queued",
+                fg=self.C["accent_yellow"]
+            )
+            self.btn_clear_queue.pack(side="left", padx=4)
+        else:
+            self.queue_bar.pack_forget()
+
+    def _on_clear_queue(self):
+        self.prompt_queue.clear()
+        self._update_queue_ui()
 
     # ─────────────────────────────────────────────────────
     #  ATTACHED FILE BAR
@@ -819,7 +881,7 @@ class SmartAIChatbotApp:
         self.txt_input.focus_set()
 
     # ─────────────────────────────────────────────────────
-    #  SINGLE RESET & REINSTALL (ONE CLICK + ONE CONFIRM)
+    #  SINGLE RESET & REINSTALL
     # ─────────────────────────────────────────────────────
     def _on_reset_and_reinstall_single_confirm(self):
         """Single clear confirmation to purge cache and reinstall weights."""
@@ -1123,7 +1185,7 @@ class SmartAIChatbotApp:
             )
             self.chat_stream.tag_bind(btn_tag, "<Button-1>", lambda e, tid=think_id: self._on_toggle_thinking_dropdown(tid))
 
-        # Render Final Markdown & Code blocks (and auto-populate Canvas for substantial code/documents)
+        # Render Final Markdown & Code blocks with Copy and Canvas Actions
         parts = text.split("```")
         for i, part in enumerate(parts):
             if i % 2 == 0:
@@ -1132,16 +1194,42 @@ class SmartAIChatbotApp:
                 lines = part.split("\n", 1)
                 lang = lines[0].strip() if lines else "python"
                 code_content = lines[1] if len(lines) > 1 else part
-                self.chat_stream.insert("end", f"┌─── Code: {lang or 'python'} ───\n", "md_bold")
+
+                self._code_counter += 1
+                code_id = f"code_{self._code_counter}"
+                self.code_snippets[code_id] = code_content.strip()
+
+                tag_copy = f"tag_cp_{code_id}"
+                tag_canvas = f"tag_cv_{code_id}"
+
+                self.chat_stream.insert("end", f"┌─── Code: {lang or 'python'}  ", "code_hdr")
+                self.chat_stream.insert("end", " [📋 Copy] ", ("code_action_copy", tag_copy))
+                self.chat_stream.insert("end", " [🎨 Open in Canvas] ", ("code_action_canvas", tag_canvas))
+                self.chat_stream.insert("end", " ───\n", "code_hdr")
+
                 self.chat_stream.insert("end", f"{code_content.rstrip()}\n", "code_block")
                 self.chat_stream.insert("end", "└───\n\n", "separator")
 
-                # If the AI produced a substantial code block (> 4 lines), populate AI Canvas
+                # Bind interactive buttons
+                self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
+                self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
+
+                # If substantial code block, auto-populate AI Canvas
                 if len(code_content.splitlines()) > 4 and hasattr(self, "txt_canvas"):
                     self._open_in_canvas(code_content.strip())
 
         self.chat_stream.configure(state="disabled")
         self.chat_stream.see("end")
+
+    def _on_copy_code_snippet(self, code_id: str):
+        if code_id in self.code_snippets:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self.code_snippets[code_id])
+            messagebox.showinfo("Copied", "Code snippet copied to clipboard.")
+
+    def _on_open_snippet_in_canvas(self, code_id: str):
+        if code_id in self.code_snippets:
+            self._open_in_canvas(self.code_snippets[code_id])
 
     def _on_toggle_thinking_dropdown(self, think_id: str):
         """Expands or collapses the thinking reasoning box cleanly inside the chat stream."""
@@ -1232,6 +1320,7 @@ class SmartAIChatbotApp:
 
         if self.is_generating:
             self.prompt_queue.append((user_msg, raw_text))
+            self._update_queue_ui()
             self._append_queued_message(raw_text, len(self.prompt_queue))
             self.txt_input.delete("1.0", "end")
             return
@@ -1429,7 +1518,10 @@ class SmartAIChatbotApp:
         """Processes the next queued message if present."""
         if self.prompt_queue:
             next_user_msg, next_raw = self.prompt_queue.pop(0)
+            self._update_queue_ui()
             self.root.after(120, lambda m=next_user_msg, r=next_raw: self._run_queued_task(m, r))
+        else:
+            self._update_queue_ui()
 
     def _run_queued_task(self, user_msg: str, raw_text: str):
         if self.is_generating:
