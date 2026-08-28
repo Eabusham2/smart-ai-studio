@@ -61,6 +61,8 @@ def create_macos_bundle(dist_dir: str, app_name: str):
     <string>{app_name}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
     <key>CFBundleShortVersionString</key>
     <string>2.0.0</string>
     <key>CFBundleVersion</key>
@@ -69,6 +71,12 @@ def create_macos_bundle(dist_dir: str, app_name: str):
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Smart AI Studio Contributors. All rights reserved.</string>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
 </dict>
 </plist>
 """
@@ -94,6 +102,19 @@ fi
     with open(exec_path, "w") as f:
         f.write(launcher_script)
     os.chmod(exec_path, os.stat(exec_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    # 4. Clear macOS quarantine attributes & apply ad-hoc code signature
+    if platform.system() == "Darwin":
+        try:
+            # Clear quarantine attribute so Gatekeeper does not block or request admin
+            subprocess.run(["xattr", "-cr", app_bundle], capture_output=True)
+        except Exception:
+            pass
+        try:
+            # Ad-hoc code sign to satisfy macOS security runtime
+            subprocess.run(["codesign", "--force", "--deep", "-s", "-", app_bundle], capture_output=True)
+        except Exception:
+            pass
 
     print(f"[✓] macOS Application Bundle created at: {app_bundle}")
 

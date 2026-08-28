@@ -401,6 +401,13 @@ class AgentToolRegistry:
     def _tool_run_terminal(self, command: str) -> Tuple[bool, str]:
         if not command:
             return False, "Command required."
+        
+        # Security: Disallow sudo, root elevation, and dangerous system commands
+        forbidden_patterns = [r"\bsudo\b", r"\bsu\b", r"\bdoas\b", r"\bdscl\b", r"\bcsrutil\b", r"\bnvram\b", r"rm\s+-rf\s+/(?:\s|$)", r"chmod\s+777\s+/"]
+        for pat in forbidden_patterns:
+            if re.search(pat, command, re.IGNORECASE):
+                return False, "🛡️ Security Sandbox: Privileged/admin commands (`sudo`, `su`, system modifications) are strictly forbidden to protect your macOS system."
+
         try:
             start_t = time.perf_counter()
             res = subprocess.run(

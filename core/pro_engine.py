@@ -219,16 +219,6 @@ class ProReasoningEngine:
         except Exception:
             pass
 
-        # Trigger macOS OS memory zone pressure relief
-        if sys.platform == "darwin":
-            try:
-                import ctypes
-                libc = ctypes.CDLL("libc.dylib")
-                if hasattr(libc, "malloc_zone_pressure_relief"):
-                    libc.malloc_zone_pressure_relief(0, 0)
-            except Exception:
-                pass
-
         self.active_model_name = None
         return {"status": "unloaded", "previous_model": old_model}
 
