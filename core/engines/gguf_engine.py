@@ -76,7 +76,7 @@ class GGUFReasoningBackend:
         prompt: str,
         branch_count: int = 1,
         max_tokens: int = 1536,
-        temperature: float = 0.75,
+        temperature: Any = 0.75,
         top_p: float = 0.92,
         image_bytes: Optional[bytes] = None
     ) -> List[str]:
@@ -85,12 +85,13 @@ class GGUFReasoningBackend:
             return []
 
         branches = []
-        for _ in range(branch_count):
+        for b_idx in range(branch_count):
+            t_val = float(temperature[b_idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             try:
                 output = self.model(
                     prompt,
                     max_tokens=max_tokens,
-                    temperature=temperature,
+                    temperature=t_val,
                     top_p=top_p,
                     stop=["<|im_end|>", "</s>", "\nuser", "\nHuman:"]
                 )

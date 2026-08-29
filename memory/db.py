@@ -35,11 +35,16 @@ class EpisodicMemoryDB:
                     mode TEXT,
                     entropy REAL,
                     winning_branch INTEGER DEFAULT 0,
+                    winning_temp REAL DEFAULT 0.20,
                     test_cases TEXT,
                     consolidated INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            try:
+                cursor.execute("ALTER TABLE interactions ADD COLUMN winning_temp REAL DEFAULT 0.20")
+            except sqlite3.OperationalError:
+                pass
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS consolidation_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,17 +73,21 @@ class EpisodicMemoryDB:
         mode: str = "Instant",
         entropy: float = 0.0,
         winning_branch: int = 0,
-        test_cases: Optional[str] = None
+        test_cases: Optional[str] = None,
+        winning_temp: float = 0.20,
+        **kwargs
     ) -> int:
-        """Logs an interactive trace into episodic memory."""
+        """Logs an interactive trace into episodic memory with winning branch temperature."""
+        if "winning_temp" in kwargs:
+            winning_temp = kwargs["winning_temp"]
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO interactions (
                     prompt, completion, raw_branches, verified_reward, 
                     surprise_score, mode, entropy, winning_branch, 
-                    test_cases, consolidated, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                    winning_temp, test_cases, consolidated, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """, (
                 prompt,
                 completion,
@@ -88,6 +97,7 @@ class EpisodicMemoryDB:
                 mode,
                 float(entropy),
                 int(winning_branch),
+                float(winning_temp),
                 test_cases,
                 datetime.now(timezone.utc).isoformat()
             ))
@@ -97,7 +107,7 @@ class EpisodicMemoryDB:
     def get_unconsolidated_memories(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Retrieves unconsolidated interaction traces for UI table and inspector."""
         query = """
-            SELECT id, prompt, completion, verified_reward, surprise_score, mode, entropy, consolidated, created_at as timestamp
+            SELECT id, prompt, completion, verified_reward, surprise_score, mode, entropy, winning_branch, winning_temp, consolidated, created_at as timestamp
             FROM interactions
             ORDER BY id DESC LIMIT ?
         """

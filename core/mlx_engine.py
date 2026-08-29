@@ -48,6 +48,7 @@ class MLXReasoningBackend:
 
             self.model, self.tokenizer = mlx_lm.load(
                 self.model_path,
+                model_config={"kv_bits": 4, "kv_group_size": 64},
                 adapter_path=self.adapter_path if self.adapter_path and os.path.exists(self.adapter_path) else None
             )
             self.is_mlx_available = True
@@ -87,7 +88,7 @@ class MLXReasoningBackend:
         prompt: str,
         branch_count: int = 16,
         max_tokens: int = 512,
-        temperature: float = 0.75,
+        temperature: Any = 0.75,
         top_p: float = 0.92
     ) -> List[str]:
         """Generates candidate reasoning branches via MLX with strict memory reclamation."""
@@ -99,20 +100,38 @@ class MLXReasoningBackend:
             import mlx.core as mx
             import mlx_lm
 
-            # Setup sampler compatible with mlx_lm >= 0.20
-            sampler = None
             try:
                 from mlx_lm.sample_utils import make_sampler
-                sampler = make_sampler(temp=temperature, top_p=top_p)
+                has_make_sampler = True
             except Exception:
-                pass
+                has_make_sampler = False
 
             branches = []
-            count = max(1, min(branch_count, 1))  # 1 branch for low-latency interactive execution
-            for _ in range(count):
+            count = max(1, min(branch_count, 16))
+            import psutil
+            import gc
+            for b_idx in range(count):
+                # Check memory pressure before each branch
+                rss_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+                if rss_gb > 12.0:
+                    gc.collect()
+                    if hasattr(mx, "clear_cache"):
+                        mx.clear_cache()
+                    elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                        mx.metal.clear_cache()
+
+                # Determine branch-specific temperature from ladder if provided
+                if isinstance(temperature, (list, tuple)):
+                    t_val = float(temperature[b_idx % len(temperature)])
+                else:
+                    t_val = float(temperature)
+
                 kwargs = {"max_tokens": min(max_tokens, 512), "verbose": False}
-                if sampler is not None:
-                    kwargs["sampler"] = sampler
+                if has_make_sampler:
+                    try:
+                        kwargs["sampler"] = make_sampler(temp=t_val, top_p=top_p)
+                    except Exception:
+                        pass
 
                 response = mlx_lm.generate(
                     self.model,
@@ -122,11 +141,11 @@ class MLXReasoningBackend:
                 )
                 branches.append(response)
 
-            # Reclaim Metal cache after generation
-            if hasattr(mx, "clear_cache"):
-                mx.clear_cache()
-            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                mx.metal.clear_cache()
+                # Reclaim Metal cache after each branch
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                    mx.metal.clear_cache()
 
             return branches
         except Exception:

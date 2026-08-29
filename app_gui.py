@@ -1750,6 +1750,7 @@ class SmartAIChatbotApp:
                     mode=meta.get("mode", "Instant (N=1)"),
                     entropy=meta.get("entropy", 0.15),
                     winning_branch=meta.get("winning_branch", 0),
+                    winning_temp=meta.get("winning_temp", 0.20),
                     test_cases=""
                 )
 
