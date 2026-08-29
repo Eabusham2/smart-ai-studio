@@ -100,6 +100,7 @@ class AgentToolRegistry:
             {"name": "edit_image_rapid", "description": "Performs rapid multimodal image and text editing / transformation using Qwen Image Edit Rapid AIO GGUF.", "parameters": {"prompt": "string", "image_path": "optional string", "filename": "optional string"}},
             {"name": "render_bezier_art", "description": "Generates parametric Bezier curves and vector art canvas as SVG/PNG in workspace.", "parameters": {"curves": "optional list", "filename": "optional string"}},
             {"name": "export_chat_history", "description": "Exports conversation history to a clean readable Markdown (.md) file in the workspace.", "parameters": {"filename": "optional string"}},
+            {"name": "dsl_evaluator", "description": "Evaluates TensorGraphDSL (non-commutative matrix/tensor operators) or GlyphScript (symbolic logic rules and graph invariants) or executes code in Python sandbox.", "parameters": {"dsl_type": "string (tensorgraph, glyphscript, python)", "expression_or_code": "string", "assertions": "optional string"}},
         ]
 
     def get_tool_schemas(self) -> Dict[str, Any]:
@@ -164,16 +165,21 @@ class AgentToolRegistry:
                     theme=args.get("theme", "obsidian"),
                     filename=args.get("filename")
                 )
-            elif tool in ("html_diagram_builder", "diagram_builder", "interactive_diagram", "build_diagram", "make_diagram", "html_diagram"):
+            elif tool in ("html_diagram_builder", "diagram_builder", "interactive_diagram", "make_diagram", "system_architecture", "architecture_diagram"):
                 return self._tool_html_diagram_builder(
                     title=args.get("title", "Interactive System Architecture"),
                     diagram_type=args.get("diagram_type", "architecture"),
                     nodes=args.get("nodes"),
                     edges=args.get("edges"),
-                    description=args.get("description", "Interactive visual diagram with multi-select and auto-layout"),
                     auto_layout=args.get("auto_layout", "hierarchical"),
                     theme=args.get("theme", "obsidian"),
                     filename=args.get("filename")
+                )
+            elif tool in ("dsl_evaluator", "dsl_playground", "evaluate_dsl", "tensorgraph", "glyphscript"):
+                return self._tool_dsl_evaluator(
+                    dsl_type=args.get("dsl_type", "tensorgraph"),
+                    expression_or_code=args.get("expression_or_code", args.get("code", args.get("expression", ""))),
+                    assertions=args.get("assertions")
                 )
             elif tool in ("generate_image", "image_gen", "draw_image", "create_image"):
                 return self._tool_generate_image(args.get("prompt", ""), args.get("filename"), args.get("format", "png"))
@@ -1066,3 +1072,18 @@ class AgentToolRegistry:
             return True, f"### 💾 Chat History Exported Successfully\n\n• **File Location**: `{full_path}`\n• **Exported Turns**: {len(rows)} messages\n• **Format**: Clean GitHub-flavored Markdown"
         except Exception as e:
             return False, f"Failed to export chat history: {str(e)}"
+
+    def _tool_dsl_evaluator(self, dsl_type: str = "tensorgraph", expression_or_code: str = "", assertions: Optional[str] = None) -> Tuple[bool, str]:
+        """Evaluates TensorGraphDSL, GlyphScript, or executes code in RLVR sandbox."""
+        if not expression_or_code:
+            return False, "DSL expression or code required."
+        try:
+            from core.dsl_engine import InteractiveDSLPlayground
+            playground = InteractiveDSLPlayground()
+            res = playground.execute_dsl(dsl_type, expression_or_code, assertions)
+            if res["passed"]:
+                return True, f"### 🧪 {dsl_type.upper()} Execution Success ({res['execution_time_ms']:.1f}ms):\n```\n{res['stdout']}\n```"
+            else:
+                return False, f"### ⚠️ {dsl_type.upper()} Execution Failed:\n```\n{res['stderr']}\n```"
+        except Exception as e:
+            return False, f"DSL evaluation error: {str(e)}"

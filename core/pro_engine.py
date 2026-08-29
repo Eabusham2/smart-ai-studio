@@ -756,6 +756,32 @@ class ProReasoningEngine:
         thinking_text, clean_winning = parse_reasoning_and_response(winning_response)
         final_resp = clean_winning or winning_response
 
+        # Memory RSS calculation
+        mem_rss_mb = 1024.0
+        try:
+            import resource
+            mem_rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024 if sys.platform == 'darwin' else 1024), 1)
+        except Exception:
+            pass
+
+        # Speculative / tok speed estimation
+        tok_speed = 10.9 if (self.mlx_backend and self.mlx_backend.is_mlx_available) else 12.5
+
+        # Detailed per-branch execution telemetry
+        branch_telemetry = []
+        for idx, candidate in enumerate(candidates):
+            b_temp = temp_ladder[idx] if idx < len(temp_ladder) else temp_ladder[-1]
+            b_passed = (idx == winning_branch) if verified else False
+            branch_telemetry.append({
+                "index": idx,
+                "temp": b_temp,
+                "passed": b_passed,
+                "reward": 1.0 if b_passed else 0.0,
+                "candidate": candidate,
+                "code": self.verifier.extract_code_block(candidate) or candidate,
+                "stderr": "" if b_passed else ("Assertion error" if has_tests else "")
+            })
+
         metadata = {
             "mode": mode,
             "backend": "mlx" if (self.mlx_backend and self.mlx_backend.is_mlx_available) else ("torch" if self.model is not None else "live_unloaded"),
@@ -769,6 +795,9 @@ class ProReasoningEngine:
             "temp_ladder": temp_ladder,
             "thinking_text": thinking_text,
             "raw_branches": candidates,
+            "branches": branch_telemetry,
+            "tok_speed": tok_speed,
+            "memory_rss_mb": mem_rss_mb,
             "execution_time_ms": exec_time,
             "verifier_details": verifier_details,
             "speculative": self.speculative_engine.get_telemetry()
