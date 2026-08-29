@@ -66,23 +66,23 @@ _COLORS = {
     "bg_chat":       "#080c14",   # Chat area background
     "bg_card":       "#172033",   # Badge & card background
     "bg_card_hover": "#22304d",   # Hover state
-    "bg_input":      "#0b1120",   # Input box background
+    "bg_input":      "#0f172a",   # Input box background
     "bg_input_inner":"#04070d",   # Inner text field
     "bg_user_bubble":"#1e293b",   # User message bubble
     "bg_ai_bubble":  "#0f172a",   # AI message bubble
-    "border":        "#1e293b",   # Card / panel borders
+    "border":        "#293548",   # Card / panel borders
     "border_focus":  "#38bdf8",   # Input focus border
     "text_main":     "#ffffff",   # 100% Crisp White primary text
-    "text_muted":    "#94a3b8",   # Soft slate secondary text
-    "accent_cyan":   "#38bdf8",   # Cyan accent
-    "accent_green":  "#22c55e",   # Green accent
-    "accent_purple": "#c084fc",   # Purple accent
-    "accent_orange": "#fb923c",   # Orange accent
-    "accent_yellow": "#facc15",   # Yellow / warning accent
+    "text_muted":    "#e2e8f0",   # Crisp Slate 200 (high-contrast, easily readable)
+    "accent_cyan":   "#38bdf8",   # Sky Cyan accent
+    "accent_green":  "#4ade80",   # Bright Green accent
+    "accent_purple": "#d8b4fe",   # Vibrant Purple accent
+    "accent_orange": "#fb923c",   # Vibrant Orange accent
+    "accent_yellow": "#fef08a",   # Crisp Light Yellow
     "accent_red":    "#f87171",   # Red / error accent
     "code_bg":       "#04070d",   # Monospace code block container
-    "code_border":   "#1e293b",   # Code container border
-    "code_fg":       "#f1f5f9",   # Code text foreground
+    "code_border":   "#293548",   # Code container border
+    "code_fg":       "#ffffff",   # 100% White code text
     "bg_thinking":   "#0f172a",   # Thinking process card
     "bg_inline_code":"#1e293b",   # Inline code background
     "bg_tool":       "#062d1f",   # Tool execution card
@@ -334,6 +334,60 @@ class SmartAIChatbotApp:
                 self._icon_img = img
             except Exception:
                 pass
+
+        # High-contrast dark ttk Style configuration
+        try:
+            style = ttk.Style()
+            if "clam" in style.theme_names():
+                style.theme_use("clam")
+
+            # Treeview Styling
+            style.configure(
+                "Treeview",
+                background="#080c14",
+                foreground="#ffffff",
+                fieldbackground="#080c14",
+                font=_FONT_SMALL,
+                rowheight=26,
+                borderwidth=0
+            )
+            style.configure(
+                "Treeview.Heading",
+                background="#172033",
+                foreground="#38bdf8",
+                font=_FONT_TINY_BOLD,
+                relief="flat"
+            )
+            style.map(
+                "Treeview",
+                background=[("selected", "#0284c7")],
+                foreground=[("selected", "#ffffff")]
+            )
+            style.map(
+                "Treeview.Heading",
+                background=[("active", "#22304d")],
+                foreground=[("active", "#7dd3fc")]
+            )
+
+            # Combobox Styling
+            style.configure(
+                "TCombobox",
+                background="#172033",
+                foreground="#ffffff",
+                fieldbackground="#080c14",
+                selectbackground="#0284c7",
+                selectforeground="#ffffff",
+                arrowcolor="#38bdf8",
+                font=_FONT_SMALL
+            )
+            style.map(
+                "TCombobox",
+                fieldbackground=[("readonly", "#080c14"), ("disabled", "#080c14")],
+                selectbackground=[("readonly", "#0284c7")],
+                selectforeground=[("readonly", "#ffffff")]
+            )
+        except Exception:
+            pass
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_app)
 
@@ -922,7 +976,7 @@ class SmartAIChatbotApp:
         stream.tag_configure("user_header", foreground=self.C["accent_cyan"], font=_FONT_H3, spacing1=18, spacing3=4)
         stream.tag_configure("user_msg", foreground="#ffffff", font=_FONT_MAIN, background=self.C["bg_user_bubble"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
         stream.tag_configure("ai_header", foreground=self.C["accent_green"], font=_FONT_H3, spacing1=20, spacing3=4)
-        stream.tag_configure("ai_msg", foreground=self.C["text_main"], font=_FONT_MAIN, lmargin1=14, lmargin2=14, spacing1=3, spacing3=4)
+        stream.tag_configure("ai_msg", foreground="#ffffff", font=_FONT_MAIN, lmargin1=14, lmargin2=14, spacing1=3, spacing3=4)
 
         # Live Steer & Queue Tags
         stream.tag_configure("steer_header", foreground=self.C["accent_purple"], font=_FONT_H3, spacing1=16, spacing3=4)
@@ -935,24 +989,24 @@ class SmartAIChatbotApp:
         stream.tag_configure("md_h2", foreground=self.C["accent_purple"], font=_FONT_H2, spacing1=10, spacing3=4)
         stream.tag_configure("md_h3", foreground="#ffffff", font=_FONT_H3, spacing1=8, spacing3=2)
         stream.tag_configure("md_bold", foreground="#ffffff", font=_FONT_BOLD)
-        stream.tag_configure("md_italic", foreground=self.C["text_muted"], font=_FONT_ITALIC)
-        stream.tag_configure("md_quote", foreground=self.C["accent_yellow"], font=_FONT_ITALIC, lmargin1=24, lmargin2=24)
+        stream.tag_configure("md_italic", foreground="#f1f5f9", font=_FONT_ITALIC)
+        stream.tag_configure("md_quote", foreground="#fef08a", font=_FONT_ITALIC, lmargin1=24, lmargin2=24)
         stream.tag_configure("md_bullet", foreground=self.C["accent_cyan"], font=_FONT_MAIN)
-        stream.tag_configure("md_inline_code", foreground=self.C["accent_cyan"], font=_FONT_INLINE_MONO, background=self.C["bg_inline_code"])
+        stream.tag_configure("md_inline_code", foreground="#7dd3fc", font=_FONT_INLINE_MONO, background="#1e293b")
 
         # Code Block Tags & Actions
-        stream.tag_configure("code_block", foreground=self.C["code_fg"], background=self.C["code_bg"], font=_FONT_MONO, lmargin1=16, lmargin2=16, spacing1=8, spacing3=8)
+        stream.tag_configure("code_block", foreground="#ffffff", background=self.C["code_bg"], font=_FONT_MONO, lmargin1=16, lmargin2=16, spacing1=8, spacing3=8)
         stream.tag_configure("code_hdr", foreground=self.C["accent_cyan"], font=_FONT_TINY_BOLD, background=self.C["code_bg"], lmargin1=16, lmargin2=16, spacing1=6, spacing3=2)
-        stream.tag_configure("code_action_copy", foreground=self.C["accent_green"], font=_FONT_TINY_BOLD, background=self.C["bg_card"])
-        stream.tag_configure("code_action_canvas", foreground=self.C["accent_purple"], font=_FONT_TINY_BOLD, background=self.C["bg_card"])
+        stream.tag_configure("code_action_copy", foreground="#4ade80", font=_FONT_TINY_BOLD, background=self.C["bg_card"])
+        stream.tag_configure("code_action_canvas", foreground="#d8b4fe", font=_FONT_TINY_BOLD, background=self.C["bg_card"])
 
         # Interactive Thinking Dropdown Tags
-        stream.tag_configure("think_dropdown_btn", foreground=self.C["accent_purple"], font=_FONT_TINY_BOLD, background=self.C["bg_card"], lmargin1=14, lmargin2=14, spacing1=4, spacing3=4)
-        stream.tag_configure("think_body", foreground=self.C["text_muted"], font=_FONT_SMALL, background=self.C["bg_thinking"], lmargin1=24, lmargin2=24, spacing1=4, spacing3=6)
+        stream.tag_configure("think_dropdown_btn", foreground="#ffffff", font=_FONT_TINY_BOLD, background="#2e1d52", lmargin1=14, lmargin2=14, spacing1=4, spacing3=4)
+        stream.tag_configure("think_body", foreground="#f8fafc", font=_FONT_SMALL, background="#131d33", lmargin1=24, lmargin2=24, spacing1=4, spacing3=6)
 
         # Tool Pill Tags
-        stream.tag_configure("tool_pill", foreground=self.C["accent_green"], font=_FONT_TINY_BOLD, background=self.C["bg_card"], lmargin1=14, lmargin2=14, spacing1=6, spacing3=2)
-        stream.tag_configure("tool_output", foreground=self.C["text_muted"], font=_FONT_SMALL, background=self.C["bg_tool"], lmargin1=24, lmargin2=24, spacing1=2, spacing3=6)
+        stream.tag_configure("tool_pill", foreground="#ffffff", font=_FONT_TINY_BOLD, background="#14532d", lmargin1=14, lmargin2=14, spacing1=6, spacing3=2)
+        stream.tag_configure("tool_output", foreground="#a7f3d0", font=_FONT_SMALL, background="#091b14", lmargin1=24, lmargin2=24, spacing1=2, spacing3=6)
         stream.tag_configure("separator", foreground=self.C["border"], font=_FONT_TINY)
 
     # ─────────────────────────────────────────────────────
