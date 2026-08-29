@@ -60,17 +60,17 @@ def format_parameter_count(param_val: float) -> str:
 #  OBSIDIAN HIGH-CONTRAST PALETTE & TYPOGRAPHY
 # ─────────────────────────────────────────────────────────
 _COLORS = {
-    "bg_app":        "#080c14",   # Deep Obsidian background
-    "bg_hud":        "#0f172a",   # Sleek top navigation bar
-    "bg_resources":  "#111c30",   # Slide-out resource drawer
-    "bg_chat":       "#080c14",   # Chat area background
-    "bg_card":       "#172033",   # Badge & card background
-    "bg_card_hover": "#22304d",   # Hover state
-    "bg_input":      "#0f172a",   # Input box background
-    "bg_input_inner":"#04070d",   # Inner text field
+    "bg_app":        "#050811",   # Deep Obsidian background
+    "bg_hud":        "#0e1626",   # Sleek top navigation bar
+    "bg_resources":  "#141f36",   # Slide-out resource drawer
+    "bg_chat":       "#050811",   # Chat area background
+    "bg_card":       "#1e293b",   # High-contrast badge & button background
+    "bg_card_hover": "#334155",   # Hover state
+    "bg_input":      "#0e1626",   # Input box background
+    "bg_input_inner":"#020408",   # Inner text field
     "bg_user_bubble":"#1e293b",   # User message bubble
-    "bg_ai_bubble":  "#0f172a",   # AI message bubble
-    "border":        "#293548",   # Card / panel borders
+    "bg_ai_bubble":  "#050811",   # AI message bubble
+    "border":        "#334155",   # Card / panel borders
     "border_focus":  "#38bdf8",   # Input focus border
     "text_main":     "#ffffff",   # 100% Crisp White primary text
     "text_muted":    "#e2e8f0",   # Crisp Slate 200 (high-contrast, easily readable)
@@ -80,16 +80,16 @@ _COLORS = {
     "accent_orange": "#fb923c",   # Vibrant Orange accent
     "accent_yellow": "#fef08a",   # Crisp Light Yellow
     "accent_red":    "#f87171",   # Red / error accent
-    "code_bg":       "#04070d",   # Monospace code block container
-    "code_border":   "#293548",   # Code container border
+    "code_bg":       "#020408",   # Monospace code block container
+    "code_border":   "#334155",   # Code container border
     "code_fg":       "#ffffff",   # 100% White code text
-    "bg_thinking":   "#0f172a",   # Thinking process card
+    "bg_thinking":   "#131d33",   # Thinking process card
     "bg_inline_code":"#1e293b",   # Inline code background
-    "bg_tool":       "#062d1f",   # Tool execution card
+    "bg_tool":       "#091b14",   # Tool execution card
     "bg_steer":      "#2e1065",   # Steer message background
     "bg_queue":      "#3b2d07",   # Queue message background
-    "canvas_bg":     "#04070d",   # AI Canvas background
-    "canvas_hdr":    "#0f172a",   # AI Canvas header
+    "canvas_bg":     "#020408",   # AI Canvas background
+    "canvas_hdr":    "#0e1626",   # AI Canvas header
 }
 
 _FONT_FAMILY = "SF Pro Display" if platform.system() == "Darwin" else "Segoe UI"
@@ -471,7 +471,7 @@ class SmartAIChatbotApp:
             bg=self.C["bg_card"], fg=self.C["accent_cyan"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
             relief="flat", bd=0, padx=12, pady=5, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1
+            highlightthickness=0
         )
         self.btn_model_menu.pack(side="left", padx=(0, 6))
         self._refresh_model_menu()
@@ -487,7 +487,7 @@ class SmartAIChatbotApp:
             bg=self.C["bg_card"], fg=self.C["accent_purple"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            highlightthickness=0,
             command=self._on_import_custom_model_dialog
         )
         self.btn_import_model.pack(side="left", padx=(0, 8))
@@ -496,9 +496,9 @@ class SmartAIChatbotApp:
         disp_folder = os.path.basename(self.workspace_dir) or self.workspace_dir
         self.lbl_workspace = tk.Label(
             left_box, text=f"📁 {disp_folder}", font=_FONT_SMALL,
-            bg=self.C["bg_card"], fg=self.C["text_muted"], padx=8, pady=4,
+            bg="#0b1120", fg=self.C["text_muted"], padx=8, pady=4,
             relief="flat", bd=0, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1
+            highlightthickness=0
         )
         self.lbl_workspace.pack(side="left")
         self.lbl_workspace.bind("<Button-1>", lambda e: self._on_select_workspace_folder())
@@ -526,9 +526,9 @@ class SmartAIChatbotApp:
         self.btn_branch_vis = tk.Button(
             right_box, text="🌿 Branches", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_green"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightthickness=0,
             command=self._on_open_branch_visualizer
         )
         self.btn_branch_vis.pack(side="left", padx=2)
@@ -537,9 +537,9 @@ class SmartAIChatbotApp:
         self.btn_memory_exp = tk.Button(
             right_box, text="💾 Memory DB", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_cyan"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightthickness=0,
             command=self._on_open_memory_explorer
         )
         self.btn_memory_exp.pack(side="left", padx=2)
@@ -548,9 +548,9 @@ class SmartAIChatbotApp:
         self.btn_sleep_panel = tk.Button(
             right_box, text="💤 Sleep EWC", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_purple"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightthickness=0,
             command=self._on_open_sleep_consolidation_panel
         )
         self.btn_sleep_panel.pack(side="left", padx=2)
@@ -559,9 +559,9 @@ class SmartAIChatbotApp:
         self.btn_dsl_play = tk.Button(
             right_box, text="🧪 DSL", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_yellow"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightthickness=0,
             command=self._on_open_dsl_playground
         )
         self.btn_dsl_play.pack(side="left", padx=2)
@@ -570,9 +570,9 @@ class SmartAIChatbotApp:
         self.btn_toggle_canvas = tk.Button(
             right_box, text="🎨 Canvas ▾", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_purple"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=7, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightthickness=0,
             command=self._on_toggle_canvas_viewer
         )
         self.btn_toggle_canvas.pack(side="left", padx=2)
@@ -583,7 +583,7 @@ class SmartAIChatbotApp:
             bg=self.C["bg_card"], fg=self.C["accent_yellow"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            highlightthickness=0,
             command=self._on_reset_and_reinstall_single_confirm
         )
         self.btn_reset_reinstall.pack(side="left", padx=3)
@@ -595,7 +595,7 @@ class SmartAIChatbotApp:
             bg=self.C["bg_card"], fg=self.C["accent_cyan"],
             activebackground=self.C["bg_card_hover"], activeforeground=self.C["accent_orange"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            highlightthickness=0,
             command=self._on_toggle_load_unload
         )
         self.btn_load_unload.pack(side="left", padx=3)
@@ -604,9 +604,9 @@ class SmartAIChatbotApp:
         self.btn_toggle_resources = tk.Button(
             right_box, text="⚙", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["text_muted"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=6, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=6, pady=4, cursor="hand2",
+            highlightthickness=0,
             command=self._on_toggle_resource_viewer
         )
         self.btn_toggle_resources.pack(side="left", padx=3)
@@ -637,9 +637,9 @@ class SmartAIChatbotApp:
 
     def _make_badge(self, parent: tk.Frame, text: str, fg_color: str) -> tk.Label:
         lbl = tk.Label(
-            parent, text=text, font=_FONT_TINY_BOLD, bg=self.C["bg_card"],
+            parent, text=text, font=_FONT_TINY_BOLD, bg="#0b1120",
             fg=fg_color, padx=7, pady=3, relief="flat", bd=0,
-            highlightbackground=self.C["border"], highlightthickness=1
+            highlightthickness=0
         )
         lbl.pack(side="left", padx=2)
         return lbl
@@ -1222,7 +1222,7 @@ class SmartAIChatbotApp:
     def _build_bottom_input_area(self):
         self.input_container = tk.Frame(
             self.main_container, bg=self.C["bg_input"],
-            highlightbackground=self.C["border"], highlightthickness=1
+            bd=0, highlightthickness=0
         )
         self.input_container.pack(fill="x", side="bottom", padx=20, pady=(0, 16))
 
@@ -1232,10 +1232,10 @@ class SmartAIChatbotApp:
 
         btn_attach = tk.Button(
             top_row, text="📎", font=(_FONT_FAMILY, 15),
-            bg=self.C["bg_card"], fg=self.C["text_muted"],
+            bg=self.C["bg_card"], fg="#ffffff",
             activebackground=self.C["bg_card_hover"], activeforeground=self.C["accent_cyan"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            highlightthickness=0,
             command=self._on_upload_file
         )
         btn_attach.pack(side="left", padx=(0, 8))
@@ -1243,7 +1243,7 @@ class SmartAIChatbotApp:
         # Input Text Box (3 lines, High Contrast White on Obsidian Dark)
         text_wrapper = tk.Frame(
             top_row, bg=self.C["bg_input_inner"],
-            highlightbackground=self.C["border"], highlightthickness=1
+            bd=0, highlightthickness=0
         )
         text_wrapper.pack(side="left", fill="both", expand=True)
 
@@ -1271,6 +1271,7 @@ class SmartAIChatbotApp:
             bg=self.C["accent_cyan"], fg="#000000",
             activebackground="#70e2ff", activeforeground="#000000",
             relief="flat", bd=0, padx=18, pady=10, cursor="hand2",
+            highlightthickness=0,
             command=self._on_send_message
         )
         self.btn_send.pack(side="right", padx=(8, 0))
@@ -1287,7 +1288,7 @@ class SmartAIChatbotApp:
             bg=self.C["bg_card"], fg=self.C["accent_purple"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            highlightthickness=0,
             command=self._on_prompt_learn
         )
         btn_learn.pack(side="left", padx=(0, 4))
@@ -1295,19 +1296,20 @@ class SmartAIChatbotApp:
         steer_key = "⌘⏎" if platform.system() == "Darwin" else "Ctrl+⏎"
         self.btn_steer = tk.Button(
             left_actions, text=f"🎯 Steer ({steer_key})", font=_FONT_TINY_BOLD,
-            bg=self.C["bg_card"], fg=self.C["accent_purple"],
+            bg=self.C["bg_card"], fg=self.C["accent_cyan"],
             activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            highlightthickness=0,
             command=self._on_steer_button_pressed
         )
         self.btn_steer.pack(side="left", padx=(0, 4))
 
         self.btn_stop = tk.Button(
             left_actions, text="⏹ Stop", font=_FONT_TINY_BOLD,
-            bg=self.C["bg_card"], fg=self.C["text_muted"],
+            bg=self.C["bg_card"], fg=self.C["accent_red"],
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
             relief="flat", bd=0, padx=8, pady=3, state="disabled",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            highlightthickness=0,
             command=self._on_stop_generation
         )
         self.btn_stop.pack(side="left", padx=(0, 4))
@@ -1316,9 +1318,9 @@ class SmartAIChatbotApp:
         self.btn_reset_chat = tk.Button(
             left_actions, text="🗑️ Clear Chat", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["text_muted"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=8, pady=3, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            highlightthickness=0,
             command=self._on_reset_chat_confirm
         )
         self.btn_reset_chat.pack(side="left", padx=(0, 4))
@@ -1327,9 +1329,9 @@ class SmartAIChatbotApp:
         self.btn_export_chat = tk.Button(
             left_actions, text="💾 Export Chat", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["accent_green"],
-            activebackground=self.C["bg_card_hover"], relief="flat", bd=0,
-            padx=8, pady=3, cursor="hand2",
-            highlightbackground=self.C["border"], highlightthickness=1,
+            activebackground=self.C["bg_card_hover"], activeforeground="#ffffff",
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            highlightthickness=0,
             command=self._on_export_chat_button
         )
         self.btn_export_chat.pack(side="left")
@@ -1599,7 +1601,7 @@ class SmartAIChatbotApp:
             trimmed = line.strip()
 
             if trimmed in ("---", "***", "___"):
-                self.chat_stream.insert("end", "─" * 56 + "\n", "separator")
+                self.chat_stream.insert("end", "\n\n")
                 continue
 
             if trimmed.startswith("### "):
@@ -1609,7 +1611,7 @@ class SmartAIChatbotApp:
             elif trimmed.startswith("# "):
                 self.chat_stream.insert("end", f"{trimmed[2:]}\n", "md_h1")
             elif trimmed.startswith("> "):
-                self.chat_stream.insert("end", f"│ {trimmed[2:]}\n", "md_quote")
+                self.chat_stream.insert("end", f"  {trimmed[2:]}\n", "md_quote")
             elif trimmed.startswith(("- ", "* ", "• ")):
                 bullet_content = trimmed[2:]
                 self.chat_stream.insert("end", "  • ", "md_bullet")
@@ -1666,7 +1668,6 @@ class SmartAIChatbotApp:
             f"• **Live Steer**: Press `⌘+Enter` (or `Ctrl+Enter`) to steer the model while typing.\n\n",
             "ai_msg"
         )
-        self.chat_stream.insert("end", "─" * 56 + "\n\n", "separator")
         self.chat_stream.configure(state="disabled")
 
     def _append_user_message(self, text: str):
@@ -1674,24 +1675,21 @@ class SmartAIChatbotApp:
             self.chat_history[self.active_tab_id].append({"role": "user", "content": text})
         self.chat_stream.configure(state="normal")
         self.chat_stream.insert("end", f"\n👤 You  •  {datetime.now().strftime('%H:%M')}\n", "user_header")
-        self.chat_stream.insert("end", f"  {text.strip()}  \n", "user_msg")
-        self.chat_stream.insert("end", "\n", "separator")
+        self.chat_stream.insert("end", f"  {text.strip()}  \n\n", "user_msg")
         self.chat_stream.configure(state="disabled")
         self.chat_stream.see("end")
 
     def _append_steer_directive(self, steer_text: str):
         self.chat_stream.configure(state="normal")
         self.chat_stream.insert("end", f"\n🎯 Live Steer Directive  •  {datetime.now().strftime('%H:%M')}\n", "steer_header")
-        self.chat_stream.insert("end", f"  Steered: \"{steer_text.strip()}\"  \n", "steer_msg")
-        self.chat_stream.insert("end", "\n", "separator")
+        self.chat_stream.insert("end", f"  Steered: \"{steer_text.strip()}\"  \n\n", "steer_msg")
         self.chat_stream.configure(state="disabled")
         self.chat_stream.see("end")
 
     def _append_queued_message(self, text: str, pos: int):
         self.chat_stream.configure(state="normal")
         self.chat_stream.insert("end", f"\n📋 Queued Task (#{pos})  •  {datetime.now().strftime('%H:%M')}\n", "queue_header")
-        self.chat_stream.insert("end", f"  \"{text.strip()}\" (will execute automatically after current task)\n", "queue_msg")
-        self.chat_stream.insert("end", "\n", "separator")
+        self.chat_stream.insert("end", f"  \"{text.strip()}\" (will execute automatically after current task)\n\n", "queue_msg")
         self.chat_stream.configure(state="disabled")
         self.chat_stream.see("end")
 
@@ -1746,13 +1744,11 @@ class SmartAIChatbotApp:
                 tag_copy = f"tag_cp_{code_id}"
                 tag_canvas = f"tag_cv_{code_id}"
 
-                self.chat_stream.insert("end", f"┌─── Code: {lang or 'python'}  ", "code_hdr")
-                self.chat_stream.insert("end", " [📋 Copy] ", ("code_action_copy", tag_copy))
-                self.chat_stream.insert("end", " [🎨 Open in Canvas] ", ("code_action_canvas", tag_canvas))
-                self.chat_stream.insert("end", " ───\n", "code_hdr")
+                self.chat_stream.insert("end", f"  📄 {lang or 'python'}  ", "code_hdr")
+                self.chat_stream.insert("end", " [ 📋 Copy ] ", ("code_action_copy", tag_copy))
+                self.chat_stream.insert("end", " [ 🎨 Open in Canvas ] \n", ("code_action_canvas", tag_canvas))
 
-                self.chat_stream.insert("end", f"{code_content.rstrip()}\n", "code_block")
-                self.chat_stream.insert("end", "└───\n\n", "separator")
+                self.chat_stream.insert("end", f"{code_content.rstrip()}\n\n", "code_block")
 
                 self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
                 self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
@@ -1786,7 +1782,7 @@ class SmartAIChatbotApp:
 
         if not is_exp:
             idx = self.chat_stream.index(f"tag_btn_{think_id}.last")
-            self.chat_stream.insert(idx, f"\n┌── 💭 Chain-of-Thought Reasoning ──\n{content}\n└──\n\n", ("think_body", body_tag))
+            self.chat_stream.insert(idx, f"\n💭 Chain-of-Thought Reasoning:\n{content}\n\n", ("think_body", body_tag))
         else:
             ranges = self.chat_stream.tag_ranges(body_tag)
             if ranges:
