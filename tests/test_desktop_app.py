@@ -167,6 +167,29 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.assertEqual(self.app.active_tab_id, custom_id)
         self.assertIn("Llama 3.2 3B", self.app.lbl_model_status.cget("text"))
 
+    def test_theme_toggle_and_light_dark_palettes(self):
+        """Test toggling between light mode (black text on white) and dark mode (white text on black)."""
+        # Start in current theme
+        initial_theme = self.app.current_theme
+        
+        # Toggle theme
+        self.app._on_toggle_theme()
+        toggled_theme = self.app.current_theme
+        self.assertNotEqual(initial_theme, toggled_theme)
+
+        if toggled_theme == "light":
+            self.assertEqual(self.app.C["bg_chat"], "#ffffff")
+            self.assertEqual(self.app.C["text_main"], "#000000")
+            self.assertEqual(self.app.chat_stream.cget("bg"), "#ffffff")
+        else:
+            self.assertEqual(self.app.C["bg_chat"], "#000000")
+            self.assertEqual(self.app.C["text_main"], "#ffffff")
+            self.assertEqual(self.app.chat_stream.cget("bg"), "#000000")
+
+        # Toggle back
+        self.app._on_toggle_theme()
+        self.assertEqual(self.app.current_theme, initial_theme)
+
 
 if __name__ == "__main__":
     unittest.main()

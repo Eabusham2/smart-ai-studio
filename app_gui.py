@@ -56,41 +56,103 @@ def format_parameter_count(param_val: float) -> str:
         return f"{param_val / 1_000_000_000_000:.2f}T"
 
 
+def detect_system_theme() -> str:
+    """Detects whether macOS, Windows, or Linux is running in dark or light mode."""
+    if platform.system() == "Darwin":
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=1.0
+            )
+            if "Dark" in res.stdout:
+                return "dark"
+            return "light"
+        except Exception:
+            return "dark"
+    elif platform.system() == "Windows":
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return "light" if val == 1 else "dark"
+        except Exception:
+            return "dark"
+    return "dark"
+
+
 # ─────────────────────────────────────────────────────────
-#  OBSIDIAN HIGH-CONTRAST PALETTE & TYPOGRAPHY
+#  AUTO LIGHT / DARK DUAL-MODE PALETTES (BLACK/WHITE CLEAN)
 # ─────────────────────────────────────────────────────────
-_COLORS = {
-    "bg_app":        "#050811",   # Deep Obsidian background
-    "bg_hud":        "#0e1626",   # Sleek top navigation bar
-    "bg_resources":  "#141f36",   # Slide-out resource drawer
-    "bg_chat":       "#050811",   # Chat area background
-    "bg_card":       "#1e293b",   # High-contrast badge & button background
-    "bg_card_hover": "#334155",   # Hover state
-    "bg_input":      "#0e1626",   # Input box background
-    "bg_input_inner":"#020408",   # Inner text field
-    "bg_user_bubble":"#1e293b",   # User message bubble
-    "bg_ai_bubble":  "#050811",   # AI message bubble
-    "border":        "#334155",   # Card / panel borders
-    "border_focus":  "#38bdf8",   # Input focus border
-    "text_main":     "#ffffff",   # 100% Crisp White primary text
-    "text_muted":    "#e2e8f0",   # Crisp Slate 200 (high-contrast, easily readable)
-    "accent_cyan":   "#38bdf8",   # Sky Cyan accent
-    "accent_green":  "#4ade80",   # Bright Green accent
-    "accent_purple": "#d8b4fe",   # Vibrant Purple accent
-    "accent_orange": "#fb923c",   # Vibrant Orange accent
-    "accent_yellow": "#fef08a",   # Crisp Light Yellow
-    "accent_red":    "#f87171",   # Red / error accent
-    "code_bg":       "#020408",   # Monospace code block container
-    "code_border":   "#334155",   # Code container border
-    "code_fg":       "#ffffff",   # 100% White code text
-    "bg_thinking":   "#131d33",   # Thinking process card
-    "bg_inline_code":"#1e293b",   # Inline code background
-    "bg_tool":       "#091b14",   # Tool execution card
-    "bg_steer":      "#2e1065",   # Steer message background
-    "bg_queue":      "#3b2d07",   # Queue message background
-    "canvas_bg":     "#020408",   # AI Canvas background
-    "canvas_hdr":    "#0e1626",   # AI Canvas header
+_THEMES = {
+    "dark": {
+        "bg_app":        "#000000",   # Pure Black background
+        "bg_hud":        "#0a0a0a",   # Sleek top navigation bar
+        "bg_resources":  "#121212",   # Slide-out resource drawer
+        "bg_chat":       "#000000",   # Chat area background (Pure Black)
+        "bg_card":       "#18181b",   # High-contrast card (Zinc 900)
+        "bg_card_hover": "#27272a",   # Hover state (Zinc 800)
+        "bg_input":      "#0a0a0a",   # Input box background
+        "bg_input_inner":"#000000",   # Inner text field (Pure Black)
+        "bg_user_bubble":"#18181b",   # User message bubble
+        "bg_ai_bubble":  "#000000",   # AI message bubble
+        "border":        "#27272a",   # Card / panel borders
+        "border_focus":  "#38bdf8",   # Input focus border
+        "text_main":     "#ffffff",   # Pure White primary text
+        "text_muted":    "#d4d4d8",   # Crisp light grey secondary text (Zinc 300)
+        "accent_cyan":   "#38bdf8",   # Sky Cyan accent
+        "accent_green":  "#4ade80",   # Emerald Green accent
+        "accent_purple": "#c084fc",   # Purple accent
+        "accent_orange": "#fb923c",   # Orange accent
+        "accent_yellow": "#facc15",   # Yellow accent
+        "accent_red":    "#f87171",   # Red accent
+        "code_bg":       "#09090b",   # Monospace code block container
+        "code_border":   "#27272a",   # Code container border
+        "code_fg":       "#ffffff",   # Pure White code text
+        "bg_thinking":   "#121212",   # Thinking process card
+        "bg_inline_code":"#18181b",   # Inline code background
+        "bg_tool":       "#052e16",   # Tool execution card
+        "bg_steer":      "#2e1065",   # Steer message background
+        "bg_queue":      "#451a03",   # Queue message background
+        "canvas_bg":     "#000000",   # AI Canvas background
+        "canvas_hdr":    "#0a0a0a",   # AI Canvas header
+    },
+    "light": {
+        "bg_app":        "#ffffff",   # Pure White background
+        "bg_hud":        "#f4f4f5",   # Top bar (Zinc 100)
+        "bg_resources":  "#f4f4f5",   # Slide-out resource drawer
+        "bg_chat":       "#ffffff",   # Chat area background (Pure White)
+        "bg_card":       "#e4e4e7",   # Card background (Zinc 200)
+        "bg_card_hover": "#d4d4d8",   # Hover state (Zinc 300)
+        "bg_input":      "#f4f4f5",   # Input box background
+        "bg_input_inner":"#ffffff",   # Inner text field (Pure White)
+        "bg_user_bubble":"#f4f4f5",   # User message bubble (Zinc 100)
+        "bg_ai_bubble":  "#ffffff",   # AI message bubble (Pure White)
+        "border":        "#d4d4d8",   # Card / panel borders
+        "border_focus":  "#0284c7",   # Input focus border
+        "text_main":     "#000000",   # Pure Black primary text
+        "text_muted":    "#3f3f46",   # Crisp dark grey secondary text (Zinc 700)
+        "accent_cyan":   "#0284c7",   # Sky Blue accent
+        "accent_green":  "#15803d",   # Green accent
+        "accent_purple": "#7e22ce",   # Deep Purple accent
+        "accent_orange": "#c2410c",   # Deep Orange accent
+        "accent_yellow": "#a16207",   # Amber / Yellow accent
+        "accent_red":    "#b91c1c",   # Red accent
+        "code_bg":       "#f4f4f5",   # Monospace code block container
+        "code_border":   "#d4d4d8",   # Code container border
+        "code_fg":       "#000000",   # Pure Black code text
+        "bg_thinking":   "#f4f4f5",   # Thinking process card
+        "bg_inline_code":"#e4e4e7",   # Inline code background
+        "bg_tool":       "#dcfce7",   # Tool execution card (Light green)
+        "bg_steer":      "#f3e8ff",   # Steer message background (Light purple)
+        "bg_queue":      "#fef3c7",   # Queue message background (Light amber)
+        "canvas_bg":     "#ffffff",   # AI Canvas background
+        "canvas_hdr":    "#f4f4f5",   # AI Canvas header
+    }
 }
+
+_INITIAL_THEME = detect_system_theme()
+_COLORS = dict(_THEMES[_INITIAL_THEME])
 
 _FONT_FAMILY = "SF Pro Display" if platform.system() == "Darwin" else "Segoe UI"
 _FONT_MONO_FAMILY = "SF Mono" if platform.system() == "Darwin" else "Consolas"
@@ -118,7 +180,10 @@ class SmartAIChatbotApp:
     def __init__(self, root: tk.Tk, settings: Optional[Settings] = None):
         self.root = root
         self.settings = settings or get_settings()
-        self.C = _COLORS
+        self.current_theme = detect_system_theme()
+        self.C = dict(_THEMES[self.current_theme])
+        _COLORS.clear()
+        _COLORS.update(self.C)
 
         # Built-in Default Models Configuration (Expanded Multi-Modal & Uncensored Presets)
         self.models_config = {
@@ -335,26 +400,37 @@ class SmartAIChatbotApp:
             except Exception:
                 pass
 
-        # High-contrast dark ttk Style configuration
+        self._configure_ttk_styles()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close_app)
+
+    def _configure_ttk_styles(self):
+        """Configures ttk widget styles (Treeview, Combobox, Scrollbar) according to active light/dark theme."""
         try:
             style = ttk.Style()
             if "clam" in style.theme_names():
                 style.theme_use("clam")
 
+            is_dark = (self.current_theme == "dark")
+            bg_app = self.C["bg_app"]
+            bg_card = self.C["bg_card"]
+            fg_main = self.C["text_main"]
+            accent_cyan = self.C["accent_cyan"]
+            bg_inner = self.C["bg_input_inner"]
+
             # Treeview Styling
             style.configure(
                 "Treeview",
-                background="#080c14",
-                foreground="#ffffff",
-                fieldbackground="#080c14",
+                background=bg_app,
+                foreground=fg_main,
+                fieldbackground=bg_app,
                 font=_FONT_SMALL,
                 rowheight=26,
                 borderwidth=0
             )
             style.configure(
                 "Treeview.Heading",
-                background="#172033",
-                foreground="#38bdf8",
+                background=bg_card,
+                foreground=accent_cyan,
                 font=_FONT_TINY_BOLD,
                 relief="flat"
             )
@@ -365,31 +441,73 @@ class SmartAIChatbotApp:
             )
             style.map(
                 "Treeview.Heading",
-                background=[("active", "#22304d")],
-                foreground=[("active", "#7dd3fc")]
+                background=[("active", self.C["bg_card_hover"])],
+                foreground=[("active", accent_cyan)]
             )
 
             # Combobox Styling
             style.configure(
                 "TCombobox",
-                background="#172033",
-                foreground="#ffffff",
-                fieldbackground="#080c14",
+                background=bg_card,
+                foreground=fg_main,
+                fieldbackground=bg_inner,
                 selectbackground="#0284c7",
                 selectforeground="#ffffff",
-                arrowcolor="#38bdf8",
+                arrowcolor=accent_cyan,
                 font=_FONT_SMALL
             )
             style.map(
                 "TCombobox",
-                fieldbackground=[("readonly", "#080c14"), ("disabled", "#080c14")],
+                fieldbackground=[("readonly", bg_inner), ("disabled", bg_inner)],
                 selectbackground=[("readonly", "#0284c7")],
                 selectforeground=[("readonly", "#ffffff")]
             )
         except Exception:
             pass
 
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close_app)
+    def _on_toggle_theme(self):
+        """Toggles between Dark Mode and Light Mode with instant high-contrast visual refresh."""
+        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+        self._apply_theme_colors()
+
+    def _apply_theme_colors(self):
+        """Applies current light/dark theme colors dynamically across all UI widgets and ttk styles."""
+        self.C = dict(_THEMES[self.current_theme])
+        _COLORS.clear()
+        _COLORS.update(self.C)
+
+        is_dark = (self.current_theme == "dark")
+        fg_main = self.C["text_main"]
+        bg_app = self.C["bg_app"]
+        bg_hud = self.C["bg_hud"]
+        bg_card = self.C["bg_card"]
+        bg_input = self.C["bg_input"]
+        bg_inner = self.C["bg_input_inner"]
+
+        self.root.configure(bg=bg_app)
+        if hasattr(self, "main_container"):
+            self.main_container.configure(bg=bg_app)
+        if hasattr(self, "hud_bar"):
+            self.hud_bar.configure(bg=bg_hud)
+        if hasattr(self, "chat_stream"):
+            self.chat_stream.configure(bg=self.C["bg_chat"], fg=fg_main, insertbackground=fg_main)
+            self._configure_stream_tags(self.chat_stream)
+        if hasattr(self, "input_container"):
+            self.input_container.configure(bg=bg_input)
+        if hasattr(self, "txt_input"):
+            self.txt_input.configure(
+                bg=bg_inner,
+                fg=fg_main if not getattr(self, "_placeholder_active", False) else self.C["text_muted"],
+                insertbackground=fg_main
+            )
+        if hasattr(self, "btn_theme_toggle"):
+            self.btn_theme_toggle.configure(
+                text="☀️ Light" if is_dark else "🌙 Dark",
+                bg=bg_card,
+                fg=fg_main
+            )
+
+        self._configure_ttk_styles()
 
     def _on_close_app(self):
         """Cleanly halts all background threads, unloads models from VRAM, and terminates."""
@@ -610,6 +728,18 @@ class SmartAIChatbotApp:
             command=self._on_toggle_resource_viewer
         )
         self.btn_toggle_resources.pack(side="left", padx=3)
+
+        # Theme Toggle (☀️ Light / 🌙 Dark)
+        is_dark = (self.current_theme == "dark")
+        self.btn_theme_toggle = tk.Button(
+            right_box, text="☀️ Light" if is_dark else "🌙 Dark", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["text_main"],
+            activebackground=self.C["bg_card_hover"], activeforeground=self.C["text_main"],
+            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+            highlightthickness=0,
+            command=self._on_toggle_theme
+        )
+        self.btn_theme_toggle.pack(side="left", padx=3)
 
         # Status Label
         cached = is_model_cached_locally(curr_info["repo_id"]) if curr_info.get("repo_id") else (os.path.exists(curr_info.get("model_path") or "") if curr_info.get("model_path") else False)
@@ -973,40 +1103,48 @@ class SmartAIChatbotApp:
             self.chat_scrolls[tid] = scroll
 
     def _configure_stream_tags(self, stream: tk.Text):
+        is_dark = (self.current_theme == "dark")
+        fg_main = self.C["text_main"]
+        fg_muted = self.C["text_muted"]
+
         stream.tag_configure("user_header", foreground=self.C["accent_cyan"], font=_FONT_H3, spacing1=18, spacing3=4)
-        stream.tag_configure("user_msg", foreground="#ffffff", font=_FONT_MAIN, background=self.C["bg_user_bubble"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
+        stream.tag_configure("user_msg", foreground=fg_main, font=_FONT_MAIN, background=self.C["bg_user_bubble"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
         stream.tag_configure("ai_header", foreground=self.C["accent_green"], font=_FONT_H3, spacing1=20, spacing3=4)
-        stream.tag_configure("ai_msg", foreground="#ffffff", font=_FONT_MAIN, lmargin1=14, lmargin2=14, spacing1=3, spacing3=4)
+        stream.tag_configure("ai_msg", foreground=fg_main, font=_FONT_MAIN, lmargin1=14, lmargin2=14, spacing1=3, spacing3=4)
 
         # Live Steer & Queue Tags
         stream.tag_configure("steer_header", foreground=self.C["accent_purple"], font=_FONT_H3, spacing1=16, spacing3=4)
-        stream.tag_configure("steer_msg", foreground="#ffffff", font=_FONT_MAIN, background=self.C["bg_steer"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
+        stream.tag_configure("steer_msg", foreground=fg_main, font=_FONT_MAIN, background=self.C["bg_steer"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
         stream.tag_configure("queue_header", foreground=self.C["accent_yellow"], font=_FONT_H3, spacing1=16, spacing3=4)
-        stream.tag_configure("queue_msg", foreground="#ffffff", font=_FONT_MAIN, background=self.C["bg_queue"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
+        stream.tag_configure("queue_msg", foreground=fg_main, font=_FONT_MAIN, background=self.C["bg_queue"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
 
         # Markdown Tags
         stream.tag_configure("md_h1", foreground=self.C["accent_cyan"], font=_FONT_H1, spacing1=14, spacing3=6)
         stream.tag_configure("md_h2", foreground=self.C["accent_purple"], font=_FONT_H2, spacing1=10, spacing3=4)
-        stream.tag_configure("md_h3", foreground="#ffffff", font=_FONT_H3, spacing1=8, spacing3=2)
-        stream.tag_configure("md_bold", foreground="#ffffff", font=_FONT_BOLD)
-        stream.tag_configure("md_italic", foreground="#f1f5f9", font=_FONT_ITALIC)
-        stream.tag_configure("md_quote", foreground="#fef08a", font=_FONT_ITALIC, lmargin1=24, lmargin2=24)
+        stream.tag_configure("md_h3", foreground=fg_main, font=_FONT_H3, spacing1=8, spacing3=2)
+        stream.tag_configure("md_bold", foreground=fg_main, font=_FONT_BOLD)
+        stream.tag_configure("md_italic", foreground=fg_muted, font=_FONT_ITALIC)
+        stream.tag_configure("md_quote", foreground=self.C["accent_yellow"], font=_FONT_ITALIC, lmargin1=24, lmargin2=24)
         stream.tag_configure("md_bullet", foreground=self.C["accent_cyan"], font=_FONT_MAIN)
-        stream.tag_configure("md_inline_code", foreground="#7dd3fc", font=_FONT_INLINE_MONO, background="#1e293b")
+        stream.tag_configure("md_inline_code", foreground=self.C["accent_cyan"], font=_FONT_INLINE_MONO, background=self.C["bg_inline_code"])
 
         # Code Block Tags & Actions
-        stream.tag_configure("code_block", foreground="#ffffff", background=self.C["code_bg"], font=_FONT_MONO, lmargin1=16, lmargin2=16, spacing1=8, spacing3=8)
+        stream.tag_configure("code_block", foreground=self.C["code_fg"], background=self.C["code_bg"], font=_FONT_MONO, lmargin1=16, lmargin2=16, spacing1=8, spacing3=8)
         stream.tag_configure("code_hdr", foreground=self.C["accent_cyan"], font=_FONT_TINY_BOLD, background=self.C["code_bg"], lmargin1=16, lmargin2=16, spacing1=6, spacing3=2)
-        stream.tag_configure("code_action_copy", foreground="#4ade80", font=_FONT_TINY_BOLD, background=self.C["bg_card"])
-        stream.tag_configure("code_action_canvas", foreground="#d8b4fe", font=_FONT_TINY_BOLD, background=self.C["bg_card"])
+        stream.tag_configure("code_action_copy", foreground=self.C["accent_green"], font=_FONT_TINY_BOLD, background=self.C["bg_card"])
+        stream.tag_configure("code_action_canvas", foreground=self.C["accent_purple"], font=_FONT_TINY_BOLD, background=self.C["bg_card"])
 
         # Interactive Thinking Dropdown Tags
-        stream.tag_configure("think_dropdown_btn", foreground="#ffffff", font=_FONT_TINY_BOLD, background="#2e1d52", lmargin1=14, lmargin2=14, spacing1=4, spacing3=4)
-        stream.tag_configure("think_body", foreground="#f8fafc", font=_FONT_SMALL, background="#131d33", lmargin1=24, lmargin2=24, spacing1=4, spacing3=6)
+        think_btn_bg = "#2e1065" if is_dark else "#f3e8ff"
+        think_btn_fg = "#ffffff" if is_dark else "#7e22ce"
+        stream.tag_configure("think_dropdown_btn", foreground=think_btn_fg, font=_FONT_TINY_BOLD, background=think_btn_bg, lmargin1=14, lmargin2=14, spacing1=4, spacing3=4)
+        stream.tag_configure("think_body", foreground=fg_main, font=_FONT_SMALL, background=self.C["bg_thinking"], lmargin1=24, lmargin2=24, spacing1=4, spacing3=6)
 
         # Tool Pill Tags
-        stream.tag_configure("tool_pill", foreground="#ffffff", font=_FONT_TINY_BOLD, background="#14532d", lmargin1=14, lmargin2=14, spacing1=6, spacing3=2)
-        stream.tag_configure("tool_output", foreground="#a7f3d0", font=_FONT_SMALL, background="#091b14", lmargin1=24, lmargin2=24, spacing1=2, spacing3=6)
+        tool_pill_bg = "#052e16" if is_dark else "#dcfce7"
+        tool_pill_fg = "#4ade80" if is_dark else "#15803d"
+        stream.tag_configure("tool_pill", foreground=tool_pill_fg, font=_FONT_TINY_BOLD, background=tool_pill_bg, lmargin1=14, lmargin2=14, spacing1=6, spacing3=2)
+        stream.tag_configure("tool_output", foreground=tool_pill_fg, font=_FONT_SMALL, background=self.C["bg_tool"], lmargin1=24, lmargin2=24, spacing1=2, spacing3=6)
         stream.tag_configure("separator", foreground=self.C["border"], font=_FONT_TINY)
 
     # ─────────────────────────────────────────────────────
