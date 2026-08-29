@@ -93,8 +93,8 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         self.assertIn("total_gb", status)
         self.assertIn("used_percent", status)
 
-    def test_07_gui_three_tabs_and_canvas_toggle(self):
-        """Verify GUI initializes 3 tabs (including Dolphin Vision) and toggles Canvas."""
+    def test_07_gui_model_presets_and_canvas_toggle(self):
+        """Verify GUI initializes expanded presets (RealVisXL, Z-Image Turbo, LTX-Video, etc.) and toggles Canvas."""
         root = tk.Tk()
         root.withdraw()
         app = SmartAIChatbotApp(root, settings=self.settings)
@@ -104,12 +104,15 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         self.assertIn("model_2", app.models_config)
         self.assertIn("model_3", app.models_config)
         self.assertIn("model_4", app.models_config)
-        self.assertIn("Dolphin Vision", app.models_config["model_4"]["name"])
+        self.assertIn("model_7", app.models_config)
+        self.assertIn("RealVisXL", app.models_config["model_3"]["name"])
+        self.assertIn("Z-Image Turbo", app.models_config["model_4"]["name"])
+        self.assertIn("LTX-Video", app.models_config["model_7"]["name"])
 
-        # Switch to Model 4 (Dolphin Vision)
-        app._on_switch_model_tab("model_4")
-        self.assertEqual(app.active_tab_id, "model_4")
-        self.assertIn("Dolphin Vision", app.lbl_model_status.cget("text"))
+        # Switch to Model 3 (RealVisXL SDXL)
+        app._on_switch_model_tab("model_3")
+        self.assertEqual(app.active_tab_id, "model_3")
+        self.assertIn("RealVisXL", app.lbl_model_status.cget("text"))
 
         # Canvas Drawer Toggle
         app._on_toggle_canvas_viewer()
@@ -131,6 +134,49 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         ts_sample = "```typescript\nexport function greet(name: string): string {\n    return `Hello, ${name}!`;\n}\n```"
         extracted_ts = self.engine.verifier.extract_code_block(ts_sample)
         self.assertIn("export function greet", extracted_ts)
+
+    def test_09_diffusion_and_video_generation_tools(self):
+        """Verify high-res image diffusion, video motion synthesis, and rapid image edit tools."""
+        # 1. High-Res Image Diffusion (RealVisXL / Z-Image Turbo with LoRA Sliders)
+        ok, res = self.tools.execute_tool("generate_image_diffusion", {
+            "prompt": "Cybernetic futuristic sanctuary, ultra photoreal 8k",
+            "model_id": "SG161222/RealVisXL_V5.0",
+            "softer_lora_str": 1.0,
+            "harder_lora_str": 0.8,
+            "custom_lora": "mystic_xxx",
+            "custom_lora_str": 0.7,
+            "filename": "test_diffusion_art.png"
+        })
+        self.assertTrue(ok)
+        self.assertIn("High-Res Uncensored Image Synthesized", res)
+        self.assertIn("RealVisXL_V5.0", res)
+        self.assertIn("Softer LoRA", res)
+
+        # 2. Video & Audio Synthesis (LTX-Video 2.5 / Wan 2.2 / MiniMax-H3)
+        ok, res = self.tools.execute_tool("generate_video_diffusion", {
+            "prompt": "Fluid particle simulation in zero gravity",
+            "model_id": "dgrauet/ltx-2.5-mlx-q4",
+            "motion_scale": 0.8,
+            "filename": "test_video.mp4"
+        })
+        self.assertTrue(ok)
+        self.assertIn("High-Res Motion Video Synthesized", res)
+        self.assertIn("ltx-2.5", res)
+
+        # 3. Rapid Image Edit (Qwen Image Edit Rapid AIO GGUF)
+        ok, res = self.tools.execute_tool("edit_image_rapid", {
+            "prompt": "Change lighting to cyberpunk neon purple and add atmospheric rain",
+            "image_path": "test_diffusion_art.png",
+            "filename": "test_edit.png"
+        })
+        self.assertTrue(ok)
+        self.assertIn("Rapid Multimodal Image Edit Executed", res)
+        self.assertIn("Qwen-Image-Edit-Rapid-AIO-GGUF", res)
+
+        # Clean up
+        for f in ("test_diffusion_art.png", "test_diffusion_art.svg", "test_video.mp4", "test_edit.png"):
+            if os.path.exists(f):
+                os.remove(f)
 
 
 if __name__ == "__main__":

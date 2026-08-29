@@ -94,20 +94,21 @@ class TestHardwareAndMultiEngine(unittest.TestCase):
         self.assertIsNone(backend.model)
 
     def test_06_model_presets_registry_integrity(self):
-        """Verify 5 expanded presets exist in MODEL_PRESETS with all required multi-backend artifacts."""
-        required_presets = ["model_1", "model_2", "model_3", "model_4", "model_5"]
+        """Verify expanded multi-modal presets exist in MODEL_PRESETS with all required artifacts."""
+        required_presets = ["model_1", "model_2", "model_3", "model_4", "model_5", "model_6", "model_7", "model_8", "model_9"]
         for pid in required_presets:
             self.assertIn(pid, MODEL_PRESETS)
             preset = MODEL_PRESETS[pid]
             self.assertIn("artifacts", preset)
-            self.assertIn("mlx", preset["artifacts"])
+            self.assertGreater(len(preset["artifacts"]), 0)
             self.assertIn("name", preset)
             self.assertIn("precision", preset)
-        # Check Qwen Uncensored & Axon presets
+        # Check specific flagship and diffusion presets
         self.assertIn("Qwen", MODEL_PRESETS["model_1"]["name"])
-        self.assertIn("Axon", MODEL_PRESETS["model_2"]["name"])
-        self.assertIn("Qwen 3.8B", MODEL_PRESETS["model_3"]["name"])
-        self.assertIn("Dolphin Vision", MODEL_PRESETS["model_4"]["name"])
+        self.assertIn("Abliterated", MODEL_PRESETS["model_2"]["name"])
+        self.assertIn("RealVisXL", MODEL_PRESETS["model_3"]["name"])
+        self.assertIn("Z-Image Turbo", MODEL_PRESETS["model_4"]["name"])
+        self.assertIn("LTX-Video", MODEL_PRESETS["model_7"]["name"])
 
     def test_07_downloader_cache_and_availability(self):
         """Verify downloader checks local cache and returns proper status dictionary."""

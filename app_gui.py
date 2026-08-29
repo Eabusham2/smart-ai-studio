@@ -119,7 +119,7 @@ class SmartAIChatbotApp:
         self.settings = settings or get_settings()
         self.C = _COLORS
 
-        # Built-in Default Models Configuration (Expanded 5 Presets)
+        # Built-in Default Models Configuration (Expanded Multi-Modal & Uncensored Presets)
         self.models_config = {
             "model_1": {
                 "name": "Qwen3.8-27B Uncensored (MLX 2-Bit)",
@@ -135,60 +135,117 @@ class SmartAIChatbotApp:
                 "accent": self.C["accent_cyan"]
             },
             "model_2": {
-                "name": "Qwen3.8-27B Axon (Ternary {-1,0,+1} MLQT / GGUF)",
-                "short_name": "Qwen 27B Axon (Ternary/GGUF)",
-                "repo_id": "jayPark777/Qwen3.8-27B-Axon-MLQT",
+                "name": "Qwen3.8-27B Abliterated (Lowest Quant GGUF)",
+                "short_name": "Qwen 27B Abliterated (GGUF)",
+                "repo_id": "douyamv/Qwen3.8-27B-abliterated-GGUF",
                 "model_path": None,
-                "precision": "True {-1,0,+1} BitLinear / MLQT",
+                "precision": "Q2_K / Q3_K_M Lowest Quant GGUF",
                 "raw_params": 27_000_000_000,
                 "base_params": "27B",
                 "max_context": 131_072,
-                "vram": "5.8 GB / 16 GB",
-                "tag": "🧠 Qwen 27B Axon {-1,0,+1}",
-                "accent": self.C["accent_green"]
+                "vram": "5.4 GB / 16 GB",
+                "tag": "🔓 Qwen 27B Abliterated",
+                "accent": "#f43f5e"
             },
             "model_3": {
-                "name": "Ternary Qwen 3.8B (Fast)",
-                "short_name": "Ternary Qwen 3.8B",
-                "repo_id": "h34v7/Ternary-Qwen3.5-3.8B-mlx",
+                "name": "RealVisXL V5.0 (High-Res Photoreal Uncensored)",
+                "short_name": "RealVisXL V5.0 (SDXL)",
+                "repo_id": "SG161222/RealVisXL_V5.0",
                 "model_path": None,
-                "precision": "1.58-Bit Ternary",
-                "raw_params": 3_800_000_000,
-                "base_params": "3.8B",
-                "max_context": 131_072,
-                "vram": "1.8 GB / 16 GB",
-                "tag": "⚡ Qwen 3.8B Fast",
-                "accent": self.C["accent_yellow"]
+                "precision": "FP16 / SafeTensors (16GB RAM Optimized)",
+                "raw_params": 6_600_000_000,
+                "base_params": "6.6B SDXL",
+                "max_context": 4_096,
+                "vram": "6.2 GB / 16 GB",
+                "tag": "📸 RealVisXL V5.0 (SDXL)",
+                "accent": "#ec4899"
             },
             "model_4": {
-                "name": "Dolphin Vision 2.9 (Uncensored Multimodal)",
-                "short_name": "Dolphin Vision 2.9",
-                "repo_id": "cognitivecomputations/dolphin-2.9.2-qwen2-7b",
+                "name": "Z-Image Turbo NSFW v2 (Q8 GGUF High-Res)",
+                "short_name": "Z-Image Turbo NSFW v2",
+                "repo_id": "lesliemore/z-image-turbo-nsfw-v2-GGUF",
                 "model_path": None,
-                "precision": "7.0B Multimodal (Vision)",
-                "raw_params": 7_000_000_000,
-                "base_params": "7.0B",
-                "max_context": 65_536,
-                "vram": "4.8 GB / 16 GB",
-                "tag": "👁️ Dolphin Vision 2.9",
-                "accent": self.C["accent_orange"]
+                "precision": "Q8_0 GGUF Quantized",
+                "raw_params": 4_000_000_000,
+                "base_params": "4.0B",
+                "max_context": 4_096,
+                "vram": "4.5 GB / 16 GB",
+                "tag": "⚡ Z-Image Turbo Q8",
+                "accent": "#a855f7"
             },
             "model_5": {
-                "name": "Flash Next Qwen 7B (Coder)",
-                "short_name": "Qwen 7B Coder",
-                "repo_id": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                "name": "Qwen Image Edit Rapid AIO (Text & Image in GGUF)",
+                "short_name": "Qwen Image Edit AIO",
+                "repo_id": "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF",
                 "model_path": None,
-                "precision": "7.0B Coder (4-bit)",
+                "precision": "Rapid AIO GGUF (Text & Image In)",
                 "raw_params": 7_000_000_000,
                 "base_params": "7.0B",
-                "max_context": 65_536,
-                "vram": "4.2 GB / 16 GB",
-                "tag": "💻 Qwen 7B Coder",
-                "accent": self.C["accent_purple"]
+                "max_context": 32_768,
+                "vram": "5.2 GB / 16 GB",
+                "tag": "🎨 Qwen Image Edit Rapid",
+                "accent": "#06b6d4"
+            },
+            "model_6": {
+                "name": "Ideogram Instant Uncensored (16GB RAM Turbo)",
+                "short_name": "Ideogram Instant (16GB)",
+                "repo_id": "SG161222/RealVisXL_V5.0",
+                "model_path": None,
+                "precision": "4-Step Instant Diffusion",
+                "raw_params": 3_500_000_000,
+                "base_params": "3.5B",
+                "max_context": 2_048,
+                "vram": "3.8 GB / 16 GB",
+                "tag": "✨ Ideogram Instant NSFW",
+                "accent": "#eab308"
+            },
+            "model_7": {
+                "name": "LTX-Video 2.5 (MLX Q4 High-Res Video & Audio)",
+                "short_name": "LTX-Video 2.5 (MLX)",
+                "repo_id": "dgrauet/ltx-2.5-mlx-q4",
+                "model_path": None,
+                "precision": "Q4 Apple Silicon MLX Native",
+                "raw_params": 5_000_000_000,
+                "base_params": "5.0B",
+                "max_context": 8_192,
+                "vram": "5.8 GB / 16 GB",
+                "tag": "🎬 LTX-Video 2.5 Q4",
+                "accent": "#10b981"
+            },
+            "model_8": {
+                "name": "Wan 2.2 Remix (GGUF Q4 Motion Engine)",
+                "short_name": "Wan 2.2 Remix (GGUF)",
+                "repo_id": "freeguyfroverrrr/Wan-2.2-Remix-GGUF",
+                "model_path": None,
+                "precision": "Q4 GGUF Quantized",
+                "raw_params": 5_000_000_000,
+                "base_params": "5.0B",
+                "max_context": 8_192,
+                "vram": "5.9 GB / 16 GB",
+                "tag": "🎥 Wan 2.2 Remix Q4",
+                "accent": "#6366f1"
+            },
+            "model_9": {
+                "name": "MiniMax-H3 MLX 4-bit (AfterMidnight NSFW LoRA)",
+                "short_name": "MiniMax-H3 AfterMidnight",
+                "repo_id": "pipenetwork/MiniMax-H3-MLX-4bit",
+                "model_path": None,
+                "precision": "4-bit MLX + Rank 32 LoRA",
+                "raw_params": 4_000_000_000,
+                "base_params": "4.0B",
+                "max_context": 8_192,
+                "vram": "5.7 GB / 16 GB",
+                "tag": "🌙 MiniMax-H3 AfterMidnight",
+                "accent": "#8b5cf6"
             }
         }
         self._load_saved_custom_models()
         self.active_tab_id = "model_1"
+
+        # LoRA Slider Strength Parameters
+        self.softer_lora_str = 1.0   # Target to improve anatomy/detail (default: 1.0)
+        self.harder_lora_str = 0.8   # Softer + motion target, rank 32 (cap: 0.8)
+        self.custom_lora_str = 0.7   # Mystic XXX / secondary blend (default: 0.7)
 
         # Core Engines & Tools
         self.db = EpisodicMemoryDB(db_path=self.settings.database_path)
@@ -716,6 +773,44 @@ class SmartAIChatbotApp:
 
         self.lbl_res_arch = tk.Label(col2, text=f"• Platform: {platform.system()} {platform.machine()} (MLX Native)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_muted"], anchor="w")
         self.lbl_res_arch.pack(fill="x", pady=2)
+
+        # LoRA Conditioning & Slider Controls Frame
+        lora_box = tk.Frame(self.res_drawer, bg=self.C["bg_hud"], highlightbackground=self.C["border"], highlightthickness=1)
+        lora_box.pack(fill="x", padx=20, pady=(0, 10))
+
+        lora_hdr = tk.Frame(lora_box, bg=self.C["bg_hud"])
+        lora_hdr.pack(fill="x", padx=10, pady=(6, 2))
+        tk.Label(lora_hdr, text="🎛️ Multimodal & Diffusion LoRA Sliders (Anatomy, Motion & Detail)", font=_FONT_TINY_BOLD, bg=self.C["bg_hud"], fg=self.C["accent_purple"]).pack(side="left")
+
+        sliders_bar = tk.Frame(lora_box, bg=self.C["bg_hud"])
+        sliders_bar.pack(fill="x", padx=10, pady=(0, 6))
+
+        # Slider 1: Softer LoRA (Anatomy / Detail)
+        s1_frame = tk.Frame(sliders_bar, bg=self.C["bg_hud"])
+        s1_frame.pack(side="left", fill="x", expand=True, padx=4)
+        lbl_s1 = tk.Label(s1_frame, text=f"Softer LoRA (Anatomy): {self.softer_lora_str:.2f}x", font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_main"])
+        lbl_s1.pack(anchor="w")
+        scale_s1 = tk.Scale(s1_frame, from_=0.0, to=1.5, resolution=0.05, orient="horizontal", bg=self.C["bg_hud"], fg=self.C["accent_cyan"], highlightthickness=0, bd=0, showvalue=False, command=lambda v: [setattr(self, 'softer_lora_str', float(v)), lbl_s1.configure(text=f"Softer LoRA (Anatomy): {float(v):.2f}x")])
+        scale_s1.set(self.softer_lora_str)
+        scale_s1.pack(fill="x")
+
+        # Slider 2: Harder LoRA (Motion / Dynamics)
+        s2_frame = tk.Frame(sliders_bar, bg=self.C["bg_hud"])
+        s2_frame.pack(side="left", fill="x", expand=True, padx=4)
+        lbl_s2 = tk.Label(s2_frame, text=f"Harder LoRA (Motion R32): {self.harder_lora_str:.2f}x", font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_main"])
+        lbl_s2.pack(anchor="w")
+        scale_s2 = tk.Scale(s2_frame, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", bg=self.C["bg_hud"], fg=self.C["accent_orange"], highlightthickness=0, bd=0, showvalue=False, command=lambda v: [setattr(self, 'harder_lora_str', float(v)), lbl_s2.configure(text=f"Harder LoRA (Motion R32): {float(v):.2f}x")])
+        scale_s2.set(self.harder_lora_str)
+        scale_s2.pack(fill="x")
+
+        # Slider 3: Custom / Mystic LoRA
+        s3_frame = tk.Frame(sliders_bar, bg=self.C["bg_hud"])
+        s3_frame.pack(side="left", fill="x", expand=True, padx=4)
+        lbl_s3 = tk.Label(s3_frame, text=f"Mystic / Secondary LoRA: {self.custom_lora_str:.2f}x", font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_main"])
+        lbl_s3.pack(anchor="w")
+        scale_s3 = tk.Scale(s3_frame, from_=0.0, to=1.5, resolution=0.05, orient="horizontal", bg=self.C["bg_hud"], fg=self.C["accent_green"], highlightthickness=0, bd=0, showvalue=False, command=lambda v: [setattr(self, 'custom_lora_str', float(v)), lbl_s3.configure(text=f"Mystic / Secondary LoRA: {float(v):.2f}x")])
+        scale_s3.set(self.custom_lora_str)
+        scale_s3.pack(fill="x")
 
     def _on_toggle_resource_viewer(self):
         if self.show_resources:

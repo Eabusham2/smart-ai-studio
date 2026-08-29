@@ -355,11 +355,28 @@ class ProReasoningEngine:
             return self.router.estimate_prompt_entropy_heuristic(prompt)
 
     def _format_prompt_with_history(self, prompt: str, history: Optional[List[Dict[str, str]]] = None) -> str:
-        """Packs previous conversational turns within context window without warning pollution."""
+        """Packs previous conversational turns within context window with dynamic RAM pressure scaling."""
         max_context_tokens = get_auto_context_window_size()
+
+        # Real-time memory pressure guard for context window:
+        # Dynamically scale history tokens if free RAM is constrained on 16GB systems
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            free_gb = vm.available / (1024 ** 3)
+            if free_gb < 2.0:
+                # Under heavy memory pressure: restrict context window to safe bounds (8K tokens)
+                max_context_tokens = min(max_context_tokens, 8192)
+            elif free_gb < 3.5:
+                max_context_tokens = min(max_context_tokens, 16384)
+            elif free_gb < 5.0:
+                max_context_tokens = min(max_context_tokens, 32768)
+        except Exception:
+            pass
+
         reserved_gen_tokens = self.settings.max_new_tokens or 1536
         prompt_est_tokens = len(prompt.split()) * 2
-        history_token_budget = max_context_tokens - reserved_gen_tokens - prompt_est_tokens
+        history_token_budget = max(512, max_context_tokens - reserved_gen_tokens - prompt_est_tokens)
         history_char_budget = history_token_budget * 4
 
         if not history or len(history) <= 1:

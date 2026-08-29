@@ -194,87 +194,156 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
     },
     "model_2": {
         "id": "model_2",
-        "key": "qwen_27b_axon_mlqt",
-        "name": "Qwen3.8-27B Axon (Ternary {-1,0,+1} MLQT / GGUF)",
-        "short_name": "Qwen 27B Axon (Ternary/GGUF)",
-        "tag": "🧠 Qwen 27B Axon {-1,0,+1}",
-        "type": "ternary_gguf",
+        "key": "qwen_27b_abliterated_gguf",
+        "name": "Qwen3.8-27B Abliterated (Lowest Quant GGUF)",
+        "short_name": "Qwen 27B Abliterated (GGUF)",
+        "tag": "🔓 Qwen 27B Abliterated",
+        "type": "gguf_quant",
         "base_params": "27B",
         "raw_params": 27_000_000_000,
-        "precision": "True {-1,0,+1} BitLinear / MLQT",
+        "precision": "Q2_K / Q3_K_M Lowest Quant",
         "max_context": 131_072,
-        "vram": "~5.8 GB / 16 GB",
-        "accent": "#22c55e",
+        "vram": "~5.4 GB / 16 GB",
+        "accent": "#f43f5e",
         "artifacts": {
-            "gguf": "jayPark777/Qwen3.8-27B-Axon-MLQT",
-            "mlx": "jayPark777/Qwen3.8-27B-Axon-mlx",
-            "bitnet": "jayPark777/Qwen3.8-27B-Axon-MLQT",
-            "torch": "jayPark777/Qwen3.8-27B-Axon-MLQT"
+            "gguf": "douyamv/Qwen3.8-27B-abliterated-GGUF",
+            "mlx": "douyamv/Qwen3.8-27B-abliterated-MLX",
+            "torch": "douyamv/Qwen3.8-27B-abliterated"
         },
-        "default_repo_id": "jayPark777/Qwen3.8-27B-Axon-MLQT"
+        "default_repo_id": "douyamv/Qwen3.8-27B-abliterated-GGUF"
     },
     "model_3": {
         "id": "model_3",
-        "key": "ternary_qwen_3_8b",
-        "name": "Ternary Qwen 3.8B (Fast)",
-        "short_name": "Ternary Qwen 3.8B",
-        "tag": "⚡ Qwen 3.8B Fast",
-        "type": "ternary",
-        "base_params": "3.8B",
-        "raw_params": 3_800_000_000,
-        "precision": "1.58-Bit Ternary",
-        "max_context": 131_072,
-        "vram": "~1.8 GB / 16 GB",
-        "accent": "#facc15",
+        "key": "realvisxl_v5_image_gen",
+        "name": "RealVisXL V5.0 (High-Res Photoreal Uncensored)",
+        "short_name": "RealVisXL V5.0 (SDXL)",
+        "tag": "📸 RealVisXL V5.0 (SDXL)",
+        "type": "image_diffusion",
+        "base_params": "6.6B SDXL",
+        "raw_params": 6_600_000_000,
+        "precision": "FP16 / SafeTensors (16GB RAM Optimized)",
+        "max_context": 4_096,
+        "vram": "~6.2 GB / 16 GB",
+        "accent": "#ec4899",
         "artifacts": {
-            "mlx": "h34v7/Ternary-Qwen3.5-3.8B-mlx",
-            "gguf": "Qwen/Qwen2.5-3.8B-Instruct-GGUF",
-            "bitnet": "microsoft/bitnet-b1.58-3.8B",
-            "torch": "Qwen/Qwen-3.8B-Flash-Next-1.58bit"
+            "torch": "SG161222/RealVisXL_V5.0",
+            "diffusers": "SG161222/RealVisXL_V5.0"
         },
-        "default_repo_id": "h34v7/Ternary-Qwen3.5-3.8B-mlx"
+        "default_repo_id": "SG161222/RealVisXL_V5.0"
     },
     "model_4": {
         "id": "model_4",
-        "key": "uncensored_vision",
-        "name": "Dolphin Vision 2.9 (Uncensored Multimodal)",
-        "short_name": "Dolphin Vision 2.9",
-        "tag": "👁️ Dolphin Vision 2.9",
-        "type": "multimodal_vision",
-        "base_params": "7.0B Multimodal",
-        "raw_params": 7_000_000_000,
-        "precision": "4-bit Vision Projector",
-        "max_context": 65_536,
-        "vram": "~4.8 GB / 16 GB",
-        "accent": "#fb923c",
+        "key": "z_image_turbo_nsfw_v2",
+        "name": "Z-Image Turbo NSFW v2 (Q8 GGUF High-Res)",
+        "short_name": "Z-Image Turbo NSFW v2",
+        "tag": "⚡ Z-Image Turbo Q8",
+        "type": "image_diffusion_gguf",
+        "base_params": "4.0B Diffusion",
+        "raw_params": 4_000_000_000,
+        "precision": "Q8_0 GGUF Quantized",
+        "max_context": 4_096,
+        "vram": "~4.5 GB / 16 GB",
+        "accent": "#a855f7",
         "artifacts": {
-            "mlx": "mlx-community/nanoLLaVA-1.5-mlx",
-            "gguf": "ggml-org/nanoLLaVA-GGUF",
-            "torch": "cognitivecomputations/dolphin-2.9.2-qwen2-7b"
+            "gguf": "lesliemore/z-image-turbo-nsfw-v2-GGUF",
+            "torch": "lesliemore/z-image-turbo-nsfw-v2"
         },
-        "mmproj": "mmproj-model-f16.gguf",
-        "default_repo_id": "mlx-community/nanoLLaVA-1.5-mlx"
+        "default_repo_id": "lesliemore/z-image-turbo-nsfw-v2-GGUF"
     },
     "model_5": {
         "id": "model_5",
-        "key": "flash_next_qwen_7b",
-        "name": "Flash Next Qwen 7B (Coder)",
-        "short_name": "Qwen 7B Coder",
-        "tag": "💻 Qwen 7B Coder",
-        "type": "coding",
-        "base_params": "7.0B",
+        "key": "qwen_image_edit_rapid",
+        "name": "Qwen Image Edit Rapid AIO (Text & Image in GGUF)",
+        "short_name": "Qwen Image Edit AIO",
+        "tag": "🎨 Qwen Image Edit Rapid",
+        "type": "image_edit_rapid",
+        "base_params": "7.0B Multimodal",
         "raw_params": 7_000_000_000,
-        "precision": "4-bit Quantized",
-        "max_context": 65_536,
-        "vram": "~4.2 GB / 16 GB",
-        "accent": "#c084fc",
+        "precision": "Rapid AIO GGUF (Text & Image In)",
+        "max_context": 32_768,
+        "vram": "~5.2 GB / 16 GB",
+        "accent": "#06b6d4",
         "artifacts": {
-            "mlx": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
-            "gguf": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-            "bitnet": "microsoft/bitnet-b1.58-3.8B",
-            "torch": "Qwen/Qwen2.5-Coder-7B-Instruct"
+            "gguf": "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF",
+            "torch": "Phil2Sat/Qwen-Image-Edit-Rapid-AIO"
         },
-        "default_repo_id": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+        "default_repo_id": "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF"
+    },
+    "model_6": {
+        "id": "model_6",
+        "key": "ideogram_instant_sdxl",
+        "name": "Ideogram Instant Uncensored (16GB RAM Turbo)",
+        "short_name": "Ideogram Instant (16GB)",
+        "tag": "✨ Ideogram Instant NSFW",
+        "type": "image_diffusion_turbo",
+        "base_params": "3.5B Turbo",
+        "raw_params": 3_500_000_000,
+        "precision": "4-Step Instant Diffusion",
+        "max_context": 2_048,
+        "vram": "~3.8 GB / 16 GB",
+        "accent": "#eab308",
+        "artifacts": {
+            "torch": "stabilityai/sdxl-turbo",
+            "diffusers": "SG161222/RealVisXL_V5.0"
+        },
+        "default_repo_id": "SG161222/RealVisXL_V5.0"
+    },
+    "model_7": {
+        "id": "model_7",
+        "key": "ltx_video_mlx",
+        "name": "LTX-Video 2.5 (MLX Q4 High-Res Video & Audio)",
+        "short_name": "LTX-Video 2.5 (MLX)",
+        "tag": "🎬 LTX-Video 2.5 Q4",
+        "type": "video_mlx",
+        "base_params": "5.0B Video",
+        "raw_params": 5_000_000_000,
+        "precision": "Q4 Apple Silicon MLX Native",
+        "max_context": 8_192,
+        "vram": "~5.8 GB / 16 GB",
+        "accent": "#10b981",
+        "artifacts": {
+            "mlx": "dgrauet/ltx-2.5-mlx-q4",
+            "torch": "Lightricks/LTX-Video"
+        },
+        "default_repo_id": "dgrauet/ltx-2.5-mlx-q4"
+    },
+    "model_8": {
+        "id": "model_8",
+        "key": "wan_remix_video",
+        "name": "Wan 2.2 Remix (GGUF Q4 Motion Engine)",
+        "short_name": "Wan 2.2 Remix (GGUF)",
+        "tag": "🎥 Wan 2.2 Remix Q4",
+        "type": "video_gguf",
+        "base_params": "5.0B Video",
+        "raw_params": 5_000_000_000,
+        "precision": "Q4 GGUF Quantized",
+        "max_context": 8_192,
+        "vram": "~5.9 GB / 16 GB",
+        "accent": "#6366f1",
+        "artifacts": {
+            "gguf": "freeguyfroverrrr/Wan-2.2-Remix-GGUF",
+            "torch": "Wan-AI/Wan2.1-T2V-1.3B"
+        },
+        "default_repo_id": "freeguyfroverrrr/Wan-2.2-Remix-GGUF"
+    },
+    "model_9": {
+        "id": "model_9",
+        "key": "minimax_h3_aftermidnight",
+        "name": "MiniMax-H3 MLX 4-bit (AfterMidnight NSFW LoRA)",
+        "short_name": "MiniMax-H3 AfterMidnight",
+        "tag": "🌙 MiniMax-H3 AfterMidnight",
+        "type": "video_audio_lora",
+        "base_params": "4.0B Video/Audio",
+        "raw_params": 4_000_000_000,
+        "precision": "4-bit MLX + Rank 32 LoRA",
+        "max_context": 8_192,
+        "vram": "~5.7 GB / 16 GB",
+        "accent": "#8b5cf6",
+        "artifacts": {
+            "mlx": "pipenetwork/MiniMax-H3-MLX-4bit",
+            "lora": "SexGod1979/AfterMidnight-MiniMax-H3-NSFW"
+        },
+        "default_repo_id": "pipenetwork/MiniMax-H3-MLX-4bit"
     }
 }
 
