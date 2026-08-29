@@ -226,7 +226,7 @@ def create_linux_bundle(dist_dir: str, app_name: str):
     os.makedirs(usr_bin, exist_ok=True)
 
     # Copy application code into AppDir
-    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png"]:
+    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(usr_bin, item)
         if os.path.isdir(src):
@@ -270,7 +270,20 @@ cd "$DIR/{app_name}.AppDir"
         f.write(launcher_sh)
     os.chmod(launcher_path, os.stat(launcher_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    # Create tar.gz archive
+    # 4. Create Linux/Unix Dependency Setup script
+    install_sh = f"""#!/usr/bin/env bash
+echo "Installing Python dependencies for {app_name} on Unix/Linux..."
+python3 -m pip install --upgrade pip
+pip3 install -r requirements.txt
+echo "Dependencies installed successfully!"
+echo "Launch with: ./{app_name}.sh"
+"""
+    install_path = os.path.join(linux_dir, "install_dependencies.sh")
+    with open(install_path, "w") as f:
+        f.write(install_sh)
+    os.chmod(install_path, os.stat(install_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    # Create Linux x86_64 tar.gz archive
     tar_path = shutil.make_archive(
         base_name=os.path.join(dist_dir, f"{app_name}-Linux-x86_64"),
         format="gztar",
@@ -278,6 +291,15 @@ cd "$DIR/{app_name}.AppDir"
         base_dir=f"{app_name}-Linux"
     )
     print(f"[✓] SUCCESS: Linux standalone package generated: {tar_path}")
+
+    # Create Generic Unix / POSIX tar.gz archive (BSD / Solaris / Generic Unix)
+    unix_tar_path = shutil.make_archive(
+        base_name=os.path.join(dist_dir, f"{app_name}-Unix-POSIX"),
+        format="gztar",
+        root_dir=dist_dir,
+        base_dir=f"{app_name}-Linux"
+    )
+    print(f"[✓] SUCCESS: Unix/POSIX standalone package generated: {unix_tar_path}")
 
 
 def main():

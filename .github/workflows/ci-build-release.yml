@@ -85,6 +85,7 @@ jobs:
             dist/SmartAI-macOS-arm64.zip
             dist/SmartAI-Windows.zip
             dist/SmartAI-Linux-x86_64.tar.gz
+            dist/SmartAI-Unix-POSIX.tar.gz
 
       - name: Determine Release Tag & Title
         id: release_info
@@ -109,6 +110,7 @@ jobs:
             dist/SmartAI-macOS-arm64.zip
             dist/SmartAI-Windows.zip
             dist/SmartAI-Linux-x86_64.tar.gz
+            dist/SmartAI-Unix-POSIX.tar.gz
           draft: false
           prerelease: false
           make_latest: true
