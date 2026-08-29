@@ -178,13 +178,13 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.assertNotEqual(initial_theme, toggled_theme)
 
         if toggled_theme == "light":
-            self.assertEqual(self.app.C["bg_chat"], "#ffffff")
-            self.assertEqual(self.app.C["text_main"], "#000000")
-            self.assertEqual(self.app.chat_stream.cget("bg"), "#ffffff")
+            self.assertEqual(self.app.C["btn_bg"], "#ffffff")
+            self.assertEqual(self.app.C["btn_fg"], "#000000")
+            self.assertEqual(self.app.chat_stream.cget("bg"), self.app.C["bg_chat"])
         else:
-            self.assertEqual(self.app.C["bg_chat"], "#000000")
-            self.assertEqual(self.app.C["text_main"], "#ffffff")
-            self.assertEqual(self.app.chat_stream.cget("bg"), "#000000")
+            self.assertEqual(self.app.C["btn_bg"], "#000000")
+            self.assertEqual(self.app.C["btn_fg"], "#ffffff")
+            self.assertEqual(self.app.chat_stream.cget("bg"), self.app.C["bg_chat"])
 
         # Toggle back
         self.app._on_toggle_theme()

@@ -82,88 +82,88 @@ def detect_system_theme() -> str:
 
 
 # ─────────────────────────────────────────────────────────
-#  AUTO LIGHT / DARK DUAL-MODE PALETTES (PURE BLACK / WHITE)
+#  AUTO LIGHT / DARK DUAL-MODE PALETTES (PURE B&W BUTTONS)
 # ─────────────────────────────────────────────────────────
 _THEMES = {
     "dark": {
-        "bg_app":        "#000000",   # Pure Black background
-        "bg_hud":        "#000000",   # Pure Black top bar
-        "bg_resources":  "#000000",   # Pure Black resource drawer
-        "bg_chat":       "#000000",   # Pure Black chat stream
-        "bg_card":       "#000000",   # Pure Black cards / buttons
-        "bg_card_hover": "#000000",   # Pure Black hover
-        "btn_bg":        "#000000",   # Pure Black buttons
-        "btn_fg":        "#ffffff",   # Pure White button text
-        "btn_hover":     "#000000",   # Pure Black hover
-        "btn_primary_bg":"#000000",   # Pure Black Send/Run button
-        "btn_primary_fg":"#ffffff",   # Pure White text
-        "btn_primary_hover":"#000000",
-        "badge_bg":      "#000000",   # Pure Black badge
-        "badge_fg":      "#ffffff",   # Pure White badge text
-        "bg_input":      "#000000",   # Pure Black input container
-        "bg_input_inner":"#000000",   # Pure Black input field
-        "bg_user_bubble":"#000000",   # Pure Black user bubble
-        "bg_ai_bubble":  "#000000",   # Pure Black AI bubble
-        "border":        "#000000",   # Pure Black border
-        "border_focus":  "#000000",   # Pure Black border
-        "text_main":     "#ffffff",   # Pure White primary text
-        "text_muted":    "#ffffff",   # Pure White secondary text
-        "accent_cyan":   "#ffffff",   # Pure White
-        "accent_green":  "#ffffff",   # Pure White
-        "accent_purple": "#ffffff",   # Pure White
-        "accent_orange": "#ffffff",   # Pure White
-        "accent_yellow": "#ffffff",   # Pure White
-        "accent_red":    "#ffffff",   # Pure White
-        "code_bg":       "#000000",   # Pure Black code block
-        "code_border":   "#000000",   # Pure Black border
-        "code_fg":       "#ffffff",   # Pure White code text
-        "bg_thinking":   "#000000",   # Pure Black thinking box
-        "bg_inline_code":"#000000",   # Pure Black inline code
-        "bg_tool":       "#000000",   # Pure Black tool box
-        "bg_steer":      "#000000",   # Pure Black steer box
-        "bg_queue":      "#000000",   # Pure Black queue box
-        "canvas_bg":     "#000000",   # Pure Black canvas
-        "canvas_hdr":    "#000000",   # Pure Black canvas header
+        "bg_app":        "#09090b",   # Sleek Obsidian background
+        "bg_hud":        "#0a0a0a",   # Sleek top navigation bar
+        "bg_resources":  "#121212",   # Slide-out resource drawer
+        "bg_chat":       "#09090b",   # Chat area background
+        "bg_card":       "#18181b",   # High-contrast card (Zinc 900)
+        "bg_card_hover": "#27272a",   # Hover state (Zinc 800)
+        "btn_bg":        "#000000",   # Pure Black Button
+        "btn_fg":        "#ffffff",   # Pure White Button Text
+        "btn_hover":     "#000000",   # Pure Black Button Hover
+        "btn_primary_bg":"#ffffff",   # Pure White Button (Send/Run)
+        "btn_primary_fg":"#000000",   # Pure Black Text (Send/Run)
+        "btn_primary_hover":"#ffffff",
+        "badge_bg":      "#000000",   # Pure Black Badge
+        "badge_fg":      "#ffffff",   # Pure White Badge Text
+        "bg_input":      "#0a0a0a",   # Input box background
+        "bg_input_inner":"#121212",   # Inner text field
+        "bg_user_bubble":"#18181b",   # User message bubble
+        "bg_ai_bubble":  "#09090b",   # AI message bubble
+        "border":        "#27272a",   # Card / panel borders
+        "border_focus":  "#38bdf8",   # Input focus border
+        "text_main":     "#f8fafc",   # Primary text
+        "text_muted":    "#94a3b8",   # Secondary text
+        "accent_cyan":   "#38bdf8",   # Sky Cyan accent
+        "accent_green":  "#4ade80",   # Emerald Green accent
+        "accent_purple": "#c084fc",   # Purple accent
+        "accent_orange": "#fb923c",   # Orange accent
+        "accent_yellow": "#facc15",   # Yellow accent
+        "accent_red":    "#f87171",   # Red accent
+        "code_bg":       "#0f172a",   # Monospace code block container
+        "code_border":   "#1e293b",   # Code container border
+        "code_fg":       "#f8fafc",   # Code text
+        "bg_thinking":   "#131d33",   # Thinking process card
+        "bg_inline_code":"#1e293b",   # Inline code background
+        "bg_tool":       "#091b14",   # Tool execution card
+        "bg_steer":      "#2e1065",   # Steer message background
+        "bg_queue":      "#451a03",   # Queue message background
+        "canvas_bg":     "#09090b",   # AI Canvas background
+        "canvas_hdr":    "#0a0a0a",   # AI Canvas header
     },
     "light": {
-        "bg_app":        "#ffffff",   # Pure White background
-        "bg_hud":        "#ffffff",   # Pure White top bar
-        "bg_resources":  "#ffffff",   # Pure White resource drawer
-        "bg_chat":       "#ffffff",   # Pure White chat stream
-        "bg_card":       "#ffffff",   # Pure White cards / buttons
-        "bg_card_hover": "#ffffff",   # Pure White hover
-        "btn_bg":        "#ffffff",   # Pure White buttons
-        "btn_fg":        "#000000",   # Pure Black button text
-        "btn_hover":     "#ffffff",   # Pure White hover
-        "btn_primary_bg":"#ffffff",   # Pure White Send/Run button
-        "btn_primary_fg":"#000000",   # Pure Black text
-        "btn_primary_hover":"#ffffff",
-        "badge_bg":      "#ffffff",   # Pure White badge
-        "badge_fg":      "#000000",   # Pure Black badge text
-        "bg_input":      "#ffffff",   # Pure White input container
-        "bg_input_inner":"#ffffff",   # Pure White input field
-        "bg_user_bubble":"#ffffff",   # Pure White user bubble
-        "bg_ai_bubble":  "#ffffff",   # Pure White AI bubble
-        "border":        "#ffffff",   # Pure White border
-        "border_focus":  "#ffffff",   # Pure White border
-        "text_main":     "#000000",   # Pure Black primary text
-        "text_muted":    "#000000",   # Pure Black secondary text
-        "accent_cyan":   "#000000",   # Pure Black
-        "accent_green":  "#000000",   # Pure Black
-        "accent_purple": "#000000",   # Pure Black
-        "accent_orange": "#000000",   # Pure Black
-        "accent_yellow": "#000000",   # Pure Black
-        "accent_red":    "#000000",   # Pure Black
-        "code_bg":       "#ffffff",   # Pure White code block
-        "code_border":   "#ffffff",   # Pure White border
-        "code_fg":       "#000000",   # Pure Black code text
-        "bg_thinking":   "#ffffff",   # Pure White thinking box
-        "bg_inline_code":"#ffffff",   # Pure White inline code
-        "bg_tool":       "#ffffff",   # Pure White tool box
-        "bg_steer":      "#ffffff",   # Pure White steer box
-        "bg_queue":      "#ffffff",   # Pure White queue box
-        "canvas_bg":     "#ffffff",   # Pure White canvas
-        "canvas_hdr":    "#ffffff",   # Pure White canvas header
+        "bg_app":        "#f8fafc",   # Soft Light background
+        "bg_hud":        "#f1f5f9",   # Top bar (Slate 100)
+        "bg_resources":  "#f1f5f9",   # Slide-out resource drawer
+        "bg_chat":       "#f8fafc",   # Chat area background
+        "bg_card":       "#f1f5f9",   # Card background
+        "bg_card_hover": "#e2e8f0",   # Hover state
+        "btn_bg":        "#ffffff",   # Pure White Button
+        "btn_fg":        "#000000",   # Pure Black Button Text
+        "btn_hover":     "#ffffff",   # Pure White Button Hover
+        "btn_primary_bg":"#000000",   # Pure Black Button (Send/Run)
+        "btn_primary_fg":"#ffffff",   # Pure White Text (Send/Run)
+        "btn_primary_hover":"#000000",
+        "badge_bg":      "#ffffff",   # Pure White Badge
+        "badge_fg":      "#000000",   # Pure Black Badge Text
+        "bg_input":      "#f1f5f9",   # Input box background
+        "bg_input_inner":"#ffffff",   # Inner text field
+        "bg_user_bubble":"#f1f5f9",   # User message bubble
+        "bg_ai_bubble":  "#f8fafc",   # AI message bubble
+        "border":        "#e2e8f0",   # Card / panel borders
+        "border_focus":  "#0284c7",   # Input focus border
+        "text_main":     "#0f172a",   # Primary text
+        "text_muted":    "#64748b",   # Secondary text
+        "accent_cyan":   "#0284c7",   # Sky Blue accent
+        "accent_green":  "#15803d",   # Green accent
+        "accent_purple": "#7e22ce",   # Deep Purple accent
+        "accent_orange": "#c2410c",   # Deep Orange accent
+        "accent_yellow": "#a16207",   # Amber / Yellow accent
+        "accent_red":    "#b91c1c",   # Red accent
+        "code_bg":       "#f1f5f9",   # Monospace code block container
+        "code_border":   "#e2e8f0",   # Code container border
+        "code_fg":       "#0f172a",   # Code text
+        "bg_thinking":   "#f1f5f9",   # Thinking process card
+        "bg_inline_code":"#e2e8f0",   # Inline code background
+        "bg_tool":       "#dcfce7",   # Tool execution card
+        "bg_steer":      "#f3e8ff",   # Steer message background
+        "bg_queue":      "#fef3c7",   # Queue message background
+        "canvas_bg":     "#f8fafc",   # AI Canvas background
+        "canvas_hdr":    "#f1f5f9",   # AI Canvas header
     }
 }
 
@@ -1189,43 +1189,43 @@ class SmartAIChatbotApp:
     def _configure_stream_tags(self, stream: tk.Text):
         is_dark = (self.current_theme == "dark")
         fg_main = self.C["text_main"]
-        bg_main = self.C["bg_chat"]
+        fg_muted = self.C["text_muted"]
 
-        stream.tag_configure("user_header", foreground=fg_main, font=_FONT_H3, spacing1=18, spacing3=4)
-        stream.tag_configure("user_msg", foreground=fg_main, font=_FONT_MAIN, background=bg_main, lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
-        stream.tag_configure("ai_header", foreground=fg_main, font=_FONT_H3, spacing1=20, spacing3=4)
+        stream.tag_configure("user_header", foreground=self.C["accent_cyan"], font=_FONT_H3, spacing1=18, spacing3=4)
+        stream.tag_configure("user_msg", foreground=fg_main, font=_FONT_MAIN, background=self.C["bg_user_bubble"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
+        stream.tag_configure("ai_header", foreground=self.C["accent_green"], font=_FONT_H3, spacing1=20, spacing3=4)
         stream.tag_configure("ai_msg", foreground=fg_main, font=_FONT_MAIN, lmargin1=14, lmargin2=14, spacing1=3, spacing3=4)
 
         # Live Steer & Queue Tags
-        stream.tag_configure("steer_header", foreground=fg_main, font=_FONT_H3, spacing1=16, spacing3=4)
-        stream.tag_configure("steer_msg", foreground=fg_main, font=_FONT_MAIN, background=bg_main, lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
-        stream.tag_configure("queue_header", foreground=fg_main, font=_FONT_H3, spacing1=16, spacing3=4)
-        stream.tag_configure("queue_msg", foreground=fg_main, font=_FONT_MAIN, background=bg_main, lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
+        stream.tag_configure("steer_header", foreground=self.C["accent_purple"], font=_FONT_H3, spacing1=16, spacing3=4)
+        stream.tag_configure("steer_msg", foreground=fg_main, font=_FONT_MAIN, background=self.C["bg_steer"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
+        stream.tag_configure("queue_header", foreground=self.C["accent_yellow"], font=_FONT_H3, spacing1=16, spacing3=4)
+        stream.tag_configure("queue_msg", foreground=fg_main, font=_FONT_MAIN, background=self.C["bg_queue"], lmargin1=14, lmargin2=14, rmargin=60, spacing1=8, spacing3=8)
 
         # Markdown Tags
-        stream.tag_configure("md_h1", foreground=fg_main, font=_FONT_H1, spacing1=14, spacing3=6)
-        stream.tag_configure("md_h2", foreground=fg_main, font=_FONT_H2, spacing1=10, spacing3=4)
+        stream.tag_configure("md_h1", foreground=self.C["accent_cyan"], font=_FONT_H1, spacing1=14, spacing3=6)
+        stream.tag_configure("md_h2", foreground=self.C["accent_purple"], font=_FONT_H2, spacing1=10, spacing3=4)
         stream.tag_configure("md_h3", foreground=fg_main, font=_FONT_H3, spacing1=8, spacing3=2)
         stream.tag_configure("md_bold", foreground=fg_main, font=_FONT_BOLD)
-        stream.tag_configure("md_italic", foreground=fg_main, font=_FONT_ITALIC)
-        stream.tag_configure("md_quote", foreground=fg_main, font=_FONT_ITALIC, lmargin1=24, lmargin2=24)
-        stream.tag_configure("md_bullet", foreground=fg_main, font=_FONT_MAIN)
-        stream.tag_configure("md_inline_code", foreground=fg_main, font=_FONT_INLINE_MONO, background=bg_main)
+        stream.tag_configure("md_italic", foreground=fg_muted, font=_FONT_ITALIC)
+        stream.tag_configure("md_quote", foreground=self.C["accent_yellow"], font=_FONT_ITALIC, lmargin1=24, lmargin2=24)
+        stream.tag_configure("md_bullet", foreground=self.C["accent_cyan"], font=_FONT_MAIN)
+        stream.tag_configure("md_inline_code", foreground=self.C["accent_cyan"], font=_FONT_INLINE_MONO, background=self.C["bg_inline_code"])
 
-        # Code Block Tags & Actions
-        stream.tag_configure("code_block", foreground=fg_main, background=bg_main, font=_FONT_MONO, lmargin1=16, lmargin2=16, spacing1=8, spacing3=8)
-        stream.tag_configure("code_hdr", foreground=fg_main, font=_FONT_TINY_BOLD, background=bg_main, lmargin1=16, lmargin2=16, spacing1=6, spacing3=2)
-        stream.tag_configure("code_action_copy", foreground=fg_main, font=_FONT_TINY_BOLD, background=bg_main)
-        stream.tag_configure("code_action_canvas", foreground=fg_main, font=_FONT_TINY_BOLD, background=bg_main)
+        # Code Block Tags & Actions (Pure B&W Action Buttons)
+        stream.tag_configure("code_block", foreground=self.C["code_fg"], background=self.C["code_bg"], font=_FONT_MONO, lmargin1=16, lmargin2=16, spacing1=8, spacing3=8)
+        stream.tag_configure("code_hdr", foreground=self.C["accent_cyan"], font=_FONT_TINY_BOLD, background=self.C["code_bg"], lmargin1=16, lmargin2=16, spacing1=6, spacing3=2)
+        stream.tag_configure("code_action_copy", foreground=self.C["btn_fg"], font=_FONT_TINY_BOLD, background=self.C["btn_bg"])
+        stream.tag_configure("code_action_canvas", foreground=self.C["btn_fg"], font=_FONT_TINY_BOLD, background=self.C["btn_bg"])
 
-        # Interactive Thinking Dropdown Tags
-        stream.tag_configure("think_dropdown_btn", foreground=fg_main, font=_FONT_TINY_BOLD, background=bg_main, lmargin1=14, lmargin2=14, spacing1=4, spacing3=4)
-        stream.tag_configure("think_body", foreground=fg_main, font=_FONT_SMALL, background=bg_main, lmargin1=24, lmargin2=24, spacing1=4, spacing3=6)
+        # Interactive Thinking Dropdown Tags (Pure B&W Pill)
+        stream.tag_configure("think_dropdown_btn", foreground=self.C["btn_fg"], font=_FONT_TINY_BOLD, background=self.C["btn_bg"], lmargin1=14, lmargin2=14, spacing1=4, spacing3=4)
+        stream.tag_configure("think_body", foreground=fg_main, font=_FONT_SMALL, background=self.C["bg_thinking"], lmargin1=24, lmargin2=24, spacing1=4, spacing3=6)
 
-        # Tool Pill Tags
-        stream.tag_configure("tool_pill", foreground=fg_main, font=_FONT_TINY_BOLD, background=bg_main, lmargin1=14, lmargin2=14, spacing1=6, spacing3=2)
-        stream.tag_configure("tool_output", foreground=fg_main, font=_FONT_SMALL, background=bg_main, lmargin1=24, lmargin2=24, spacing1=2, spacing3=6)
-        stream.tag_configure("separator", foreground=bg_main, font=_FONT_TINY)
+        # Tool Pill Tags (Pure B&W Pill)
+        stream.tag_configure("tool_pill", foreground=self.C["btn_fg"], font=_FONT_TINY_BOLD, background=self.C["btn_bg"], lmargin1=14, lmargin2=14, spacing1=6, spacing3=2)
+        stream.tag_configure("tool_output", foreground=fg_main, font=_FONT_SMALL, background=self.C["bg_tool"], lmargin1=24, lmargin2=24, spacing1=2, spacing3=6)
+        stream.tag_configure("separator", foreground=self.C["border"], font=_FONT_TINY)
 
     # ─────────────────────────────────────────────────────
     #  3. CHATGPT-STYLE SIDE-BY-SIDE AI CANVAS
