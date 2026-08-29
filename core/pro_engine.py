@@ -27,7 +27,7 @@ from core.hf_downloader import is_model_cached_locally
 from core.mlx_engine import MLXReasoningBackend
 from core.platform import get_auto_context_window_size
 from core.speculative_engine import SpeculativeEngine
-from core.verifier import GroundTruthVerifier, VerificationResult
+from core.verifier import GroundTruthVerifier, VerificationResult, get_sandbox_preexec
 
 
 def get_ladder_temperatures(

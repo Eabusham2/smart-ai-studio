@@ -29,23 +29,34 @@ class VerificationResult:
     stderr: Optional[str] = None
 
 
+def get_sandbox_preexec(max_memory_mb: int = 512):
+    """Applies POSIX virtual memory limits on Unix systems; no-op on Windows."""
+    if sys.platform != "win32":
+        try:
+            import resource
+            def preexec():
+                max_bytes = max_memory_mb * 1024 * 1024
+                try:
+                    import platform as _plat
+                    if hasattr(resource, "RLIMIT_AS") and _plat.system() != "Darwin":
+                        resource.setrlimit(resource.RLIMIT_AS, (max_bytes, max_bytes))
+                    if hasattr(resource, "RLIMIT_DATA"):
+                        resource.setrlimit(resource.RLIMIT_DATA, (max_bytes, max_bytes))
+                    if hasattr(resource, "RLIMIT_CORE"):
+                        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+                except Exception:
+                    pass
+            return preexec
+        except Exception:
+            return None
+    return None
+
+
 def _limit_sandbox_resources(max_memory_mb: int = 512):
     """Sets OS-level memory and execution resource bounds for subprocess sandboxing."""
-    try:
-        import resource
-        max_bytes = max_memory_mb * 1024 * 1024
-        # Virtual memory limit (RLIMIT_AS) — skip on macOS where it crashes dyld
-        import platform as _plat
-        if hasattr(resource, "RLIMIT_AS") and _plat.system() != "Darwin":
-            resource.setrlimit(resource.RLIMIT_AS, (max_bytes, max_bytes))
-        # Data segment limit (RLIMIT_DATA)
-        if hasattr(resource, "RLIMIT_DATA"):
-            resource.setrlimit(resource.RLIMIT_DATA, (max_bytes, max_bytes))
-        # Core dump limit = 0
-        if hasattr(resource, "RLIMIT_CORE"):
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    except Exception:
-        pass
+    preexec = get_sandbox_preexec(max_memory_mb)
+    if preexec:
+        preexec()
 
 
 class GroundTruthVerifier:
@@ -126,9 +137,7 @@ class GroundTruthVerifier:
         """Executes test harness in local isolated subprocess with memory and time caps."""
         try:
             # Set memory limits on POSIX platforms where preexec_fn is supported
-            preexec = None
-            if sys.platform != "win32":
-                preexec = lambda: _limit_sandbox_resources(self.max_memory_mb)
+            preexec = get_sandbox_preexec(self.max_memory_mb)
 
             res = subprocess.run(
                 [sys.executable, "-c", test_harness],
