@@ -36,6 +36,7 @@ import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from core.html_diagram_maker import HTMLDiagramBuilder
 from core.visual_maker import InteractiveVisualMaker
 
 
@@ -46,12 +47,13 @@ class AgentToolRegistry:
         self.db_path = os.path.abspath(db_path)
         self.workspace_dir = os.path.abspath(workspace_dir or os.getcwd())
         self.visual_maker = InteractiveVisualMaker(workspace_dir=self.workspace_dir)
+        self.diagram_builder = HTMLDiagramBuilder(workspace_dir=self.workspace_dir)
         self.mcp_servers: Dict[str, Dict[str, Any]] = {
             "filesystem": {"status": "connected", "tools": ["read_file", "write_file", "edit_file", "list_dir", "file_search", "grep_search"]},
             "system_terminal": {"status": "connected", "tools": ["run_terminal", "system_monitor", "process_list", "git_status_diff"]},
             "memory_vault": {"status": "connected", "tools": ["read_chat_history", "sql_query", "save_user_memory", "sqlite_schema_inspector"]},
             "web_intel": {"status": "connected", "tools": ["web_search", "web_fetch"]},
-            "compute_engine": {"status": "connected", "tools": ["python_sandbox", "math_calculate", "json_csv_analyzer", "ast_lint_checker", "interactive_visual_maker"]},
+            "compute_engine": {"status": "connected", "tools": ["python_sandbox", "math_calculate", "json_csv_analyzer", "ast_lint_checker", "interactive_visual_maker", "html_diagram_builder"]},
         }
 
     def set_workspace_dir(self, new_path: str) -> bool:
@@ -59,6 +61,7 @@ class AgentToolRegistry:
         if new_path and os.path.exists(new_path):
             self.workspace_dir = os.path.abspath(new_path)
             self.visual_maker.workspace_dir = self.workspace_dir
+            self.diagram_builder.workspace_dir = self.workspace_dir
             return True
         return False
 
@@ -90,6 +93,7 @@ class AgentToolRegistry:
             {"name": "ast_lint_checker", "description": "Performs Python AST syntax validation and code structure analysis.", "parameters": {"path": "optional string", "code": "optional string"}},
             {"name": "sqlite_schema_inspector", "description": "Inspects database tables, column types, foreign keys, and indexes.", "parameters": {"table": "optional string"}},
             {"name": "interactive_visual_maker", "description": "Creates interactive visual widgets, multi-series charts, neural net graphs, mathematical simulations, and dashboards with live parameter sliders and tooltips like Gemini & ChatGPT.", "parameters": {"visual_type": "string (chart, diagram, neural_net, simulation, dashboard)", "title": "string", "data_or_spec": "optional dict/json", "description": "optional string", "theme": "optional string", "filename": "optional string"}},
+            {"name": "html_diagram_builder", "description": "Generates interactive HTML diagrams and system architecture DAGs with multi-select (Shift/Cmd or Marquee drag), auto-layout (DAG, Force, Grid, Circular), draggable nodes, search filtering, and node property inspection.", "parameters": {"title": "string", "diagram_type": "optional string (architecture, flowchart, neural_dag, decision_tree, workflow)", "nodes": "optional list of dicts", "edges": "optional list of dicts", "auto_layout": "optional string", "theme": "optional string", "filename": "optional string"}},
             {"name": "generate_image", "description": "Generates a graphical visual, diagram, or canvas art and saves to workspace as PNG/SVG.", "parameters": {"prompt": "string", "filename": "optional string", "format": "optional string"}},
             {"name": "generate_image_diffusion", "description": "Generates high-resolution uncensored images via SDXL RealVisXL V5.0, Z-Image Turbo Q8 GGUF, or Ideogram Instant with LoRA sliders (softer anatomy @ 1.0, harder motion @ 0.8, mystic blend).", "parameters": {"prompt": "string", "model_id": "optional string", "softer_lora_str": "optional float", "harder_lora_str": "optional float", "custom_lora": "optional string", "custom_lora_str": "optional float", "filename": "optional string"}},
             {"name": "generate_video_diffusion", "description": "Generates video and audio motion clips via LTX-Video 2.5 MLX Q4, Wan 2.2 Remix GGUF, or MiniMax-H3 AfterMidnight NSFW LoRA.", "parameters": {"prompt": "string", "model_id": "optional string", "motion_scale": "optional float", "frames": "optional int", "filename": "optional string"}},
@@ -157,6 +161,17 @@ class AgentToolRegistry:
                     title=args.get("title", "Interactive Visualizer"),
                     data_or_spec=args.get("data_or_spec"),
                     description=args.get("description", "Interactive visual artifact powered by Smart AI Studio"),
+                    theme=args.get("theme", "obsidian"),
+                    filename=args.get("filename")
+                )
+            elif tool in ("html_diagram_builder", "diagram_builder", "interactive_diagram", "build_diagram", "make_diagram", "html_diagram"):
+                return self._tool_html_diagram_builder(
+                    title=args.get("title", "Interactive System Architecture"),
+                    diagram_type=args.get("diagram_type", "architecture"),
+                    nodes=args.get("nodes"),
+                    edges=args.get("edges"),
+                    description=args.get("description", "Interactive visual diagram with multi-select and auto-layout"),
+                    auto_layout=args.get("auto_layout", "hierarchical"),
                     theme=args.get("theme", "obsidian"),
                     filename=args.get("filename")
                 )
@@ -822,6 +837,30 @@ class AgentToolRegistry:
             title=title,
             data_or_spec=data_or_spec,
             description=description,
+            theme=theme,
+            filename=filename
+        )
+        return ok, report
+
+    def _tool_html_diagram_builder(
+        self,
+        title: str = "Interactive System Architecture",
+        diagram_type: str = "architecture",
+        nodes: Optional[List[Dict[str, Any]]] = None,
+        edges: Optional[List[Dict[str, Any]]] = None,
+        description: str = "Interactive visual diagram with multi-select, auto-layout, and node inspector",
+        auto_layout: str = "hierarchical",
+        theme: str = "obsidian",
+        filename: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Generates interactive HTML diagram with multi-select, draggable nodes, and auto-layout."""
+        ok, report, html_path = self.diagram_builder.create_diagram(
+            title=title,
+            diagram_type=diagram_type,
+            nodes=nodes,
+            edges=edges,
+            description=description,
+            auto_layout=auto_layout,
             theme=theme,
             filename=filename
         )
