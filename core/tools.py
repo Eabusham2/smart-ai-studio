@@ -34,8 +34,9 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from core.visual_maker import InteractiveVisualMaker
 
 
 class AgentToolRegistry:
@@ -44,18 +45,20 @@ class AgentToolRegistry:
     def __init__(self, db_path: str = "memory.db", workspace_dir: Optional[str] = None):
         self.db_path = os.path.abspath(db_path)
         self.workspace_dir = os.path.abspath(workspace_dir or os.getcwd())
+        self.visual_maker = InteractiveVisualMaker(workspace_dir=self.workspace_dir)
         self.mcp_servers: Dict[str, Dict[str, Any]] = {
             "filesystem": {"status": "connected", "tools": ["read_file", "write_file", "edit_file", "list_dir", "file_search", "grep_search"]},
             "system_terminal": {"status": "connected", "tools": ["run_terminal", "system_monitor", "process_list", "git_status_diff"]},
             "memory_vault": {"status": "connected", "tools": ["read_chat_history", "sql_query", "save_user_memory", "sqlite_schema_inspector"]},
             "web_intel": {"status": "connected", "tools": ["web_search", "web_fetch"]},
-            "compute_engine": {"status": "connected", "tools": ["python_sandbox", "math_calculate", "json_csv_analyzer", "ast_lint_checker"]},
+            "compute_engine": {"status": "connected", "tools": ["python_sandbox", "math_calculate", "json_csv_analyzer", "ast_lint_checker", "interactive_visual_maker"]},
         }
 
     def set_workspace_dir(self, new_path: str) -> bool:
         """Dynamically updates the workspace directory for all file, code, and terminal tools."""
         if new_path and os.path.exists(new_path):
             self.workspace_dir = os.path.abspath(new_path)
+            self.visual_maker.workspace_dir = self.workspace_dir
             return True
         return False
 
@@ -86,7 +89,7 @@ class AgentToolRegistry:
             {"name": "git_status_diff", "description": "Inspects git repository status, uncommitted diffs, and recent commits.", "parameters": {}},
             {"name": "ast_lint_checker", "description": "Performs Python AST syntax validation and code structure analysis.", "parameters": {"path": "optional string", "code": "optional string"}},
             {"name": "sqlite_schema_inspector", "description": "Inspects database tables, column types, foreign keys, and indexes.", "parameters": {"table": "optional string"}},
-            {"name": "process_list", "description": "Lists top active system processes with CPU and memory usage.", "parameters": {}},
+            {"name": "interactive_visual_maker", "description": "Creates interactive visual widgets, multi-series charts, neural net graphs, mathematical simulations, and dashboards with live parameter sliders and tooltips like Gemini & ChatGPT.", "parameters": {"visual_type": "string (chart, diagram, neural_net, simulation, dashboard)", "title": "string", "data_or_spec": "optional dict/json", "description": "optional string", "theme": "optional string", "filename": "optional string"}},
             {"name": "generate_image", "description": "Generates a graphical visual, diagram, or canvas art and saves to workspace as PNG/SVG.", "parameters": {"prompt": "string", "filename": "optional string", "format": "optional string"}},
             {"name": "generate_image_diffusion", "description": "Generates high-resolution uncensored images via SDXL RealVisXL V5.0, Z-Image Turbo Q8 GGUF, or Ideogram Instant with LoRA sliders (softer anatomy @ 1.0, harder motion @ 0.8, mystic blend).", "parameters": {"prompt": "string", "model_id": "optional string", "softer_lora_str": "optional float", "harder_lora_str": "optional float", "custom_lora": "optional string", "custom_lora_str": "optional float", "filename": "optional string"}},
             {"name": "generate_video_diffusion", "description": "Generates video and audio motion clips via LTX-Video 2.5 MLX Q4, Wan 2.2 Remix GGUF, or MiniMax-H3 AfterMidnight NSFW LoRA.", "parameters": {"prompt": "string", "model_id": "optional string", "motion_scale": "optional float", "frames": "optional int", "filename": "optional string"}},
@@ -148,6 +151,15 @@ class AgentToolRegistry:
                 return self._tool_process_list()
             elif tool in ("mcp_list_tools", "list_mcp_servers", "mcp"):
                 return True, json.dumps(self.mcp_servers, indent=2)
+            elif tool in ("interactive_visual_maker", "visual_maker", "visualize", "make_visual", "interactive_chart", "create_visual"):
+                return self._tool_interactive_visual_maker(
+                    visual_type=args.get("visual_type", "chart"),
+                    title=args.get("title", "Interactive Visualizer"),
+                    data_or_spec=args.get("data_or_spec"),
+                    description=args.get("description", "Interactive visual artifact powered by Smart AI Studio"),
+                    theme=args.get("theme", "obsidian"),
+                    filename=args.get("filename")
+                )
             elif tool in ("generate_image", "image_gen", "draw_image", "create_image"):
                 return self._tool_generate_image(args.get("prompt", ""), args.get("filename"), args.get("format", "png"))
             elif tool in ("generate_image_diffusion", "diffusion_image", "realvis", "z_image", "sdxl_image"):
@@ -794,6 +806,26 @@ class AgentToolRegistry:
                 return True, "### 📊 Active Windows Processes:\n```\n" + "\n".join(lines) + "\n```"
         except Exception as e:
             return False, f"Process list error: {str(e)}"
+
+    def _tool_interactive_visual_maker(
+        self,
+        visual_type: str = "chart",
+        title: str = "Interactive Visualization",
+        data_or_spec: Optional[Union[Dict[str, Any], List[Any], str]] = None,
+        description: str = "Interactive visual artifact powered by Smart AI Studio",
+        theme: str = "obsidian",
+        filename: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Creates interactive visual widgets, charts, simulations, and dashboards like Gemini & ChatGPT."""
+        ok, report, html_path, svg_path = self.visual_maker.create_visualization(
+            visual_type=visual_type,
+            title=title,
+            data_or_spec=data_or_spec,
+            description=description,
+            theme=theme,
+            filename=filename
+        )
+        return ok, report
 
     def _tool_generate_image(self, prompt: str, filename: Optional[str] = None, format: str = "png") -> Tuple[bool, str]:
         """Generates graphical visual artifact, diagram, or canvas art and saves to workspace."""

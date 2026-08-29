@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
@@ -941,6 +942,22 @@ class SmartAIChatbotApp:
         btn_preview.pack(side="left", padx=3)
         self.btn_canvas_preview = btn_preview
 
+        btn_browser = tk.Button(
+            hdr, text="🌐 Browser", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_cyan"],
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            command=self._on_canvas_open_browser
+        )
+        btn_browser.pack(side="left", padx=3)
+
+        btn_visual = tk.Button(
+            hdr, text="📊 Visualizer", font=_FONT_TINY_BOLD,
+            bg=self.C["bg_card"], fg=self.C["accent_purple"],
+            relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            command=self._on_canvas_make_visual
+        )
+        btn_visual.pack(side="left", padx=3)
+
         btn_copy = tk.Button(
             hdr, text="📋 Copy", font=_FONT_TINY_BOLD,
             bg=self.C["bg_card"], fg=self.C["text_main"],
@@ -1015,6 +1032,64 @@ class SmartAIChatbotApp:
         ok, res = self.tools.execute_tool("python_sandbox", {"code": code})
         self._append_tool_call("python_sandbox", "Canvas Code Execution", res)
 
+    def _on_canvas_open_browser(self):
+        """Opens current canvas HTML/SVG content or saved artifact in user's default web browser."""
+        content = self.txt_canvas.get("1.0", "end").strip()
+        if not content:
+            messagebox.showinfo("Canvas Empty", "Please generate or load an interactive visualizer or HTML/SVG content first.")
+            return
+
+        # Check if content points to an existing file
+        if os.path.exists(content) and content.endswith((".html", ".htm", ".svg")):
+            webbrowser.open(f"file://{os.path.abspath(content)}")
+            return
+
+        # Create or update preview HTML in workspace
+        preview_file = os.path.join(self.workspace_dir, "canvas_interactive_preview.html")
+        if not content.startswith("<!DOCTYPE") and not content.startswith("<html") and not content.startswith("<svg"):
+            # Wrap standard code / text into styled HTML document
+            html_wrapped = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Smart AI Canvas Preview</title>
+    <style>
+        body {{ background: #080c14; color: #f8fafc; font-family: system-ui, sans-serif; padding: 30px; }}
+        pre {{ background: #0f172a; border: 1px solid #1e293b; padding: 20px; border-radius: 12px; font-family: monospace; overflow: auto; }}
+    </style>
+</head>
+<body>
+    <h2>✦ Smart AI Canvas Live Artifact</h2>
+    <pre>{content}</pre>
+</body>
+</html>"""
+            content = html_wrapped
+
+        with open(preview_file, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        webbrowser.open(f"file://{os.path.abspath(preview_file)}")
+        self._append_ai_message(f"🌐 **Browser Preview Opened**: Interactive visualizer launched at [`{preview_file}`](file://{os.path.abspath(preview_file)}).")
+
+    def _on_canvas_make_visual(self):
+        """Triggers the Interactive Visual Maker to generate a rich chart or simulation on Canvas."""
+        ok, res = self.tools.execute_tool("interactive_visual_maker", {
+            "visual_type": "chart",
+            "title": "Smart AI Studio • Real-Time Metrics & Neural Performance",
+            "description": "Interactive Multi-Series Telemetry & Reasoning Accuracy Dashboard",
+            "theme": "obsidian",
+            "filename": f"interactive_dashboard_{int(time.time())}.html"
+        })
+        self._append_tool_call("interactive_visual_maker", "Interactive Visual Maker", res)
+        # Extract HTML file path if present
+        match = re.search(r'file://([^\s\)]+\.html)', res)
+        if match:
+            html_path = match.group(1)
+            if os.path.exists(html_path):
+                with open(html_path, "r", encoding="utf-8") as f:
+                    self._open_in_canvas(f.read())
+                webbrowser.open(f"file://{html_path}")
+
     def _on_canvas_copy(self):
         code = self.txt_canvas.get("1.0", "end").strip()
         self.root.clipboard_clear()
@@ -1027,7 +1102,7 @@ class SmartAIChatbotApp:
             initialdir=self.workspace_dir,
             title="Save Canvas Content as File",
             defaultextension=".py",
-            filetypes=[("Python Script", "*.py"), ("Markdown Document", "*.md"), ("Text File", "*.txt"), ("All Files", "*.*")]
+            filetypes=[("Python Script", "*.py"), ("HTML Document", "*.html"), ("Markdown Document", "*.md"), ("SVG Vector", "*.svg"), ("All Files", "*.*")]
         )
         if path:
             with open(path, "w", encoding="utf-8") as f:
