@@ -35,15 +35,20 @@ from memory.db import EpisodicMemoryDB
 #  DYNAMIC UNIT FORMATTERS (100 -> K -> M -> B -> T)
 # ─────────────────────────────────────────────────────────
 def format_added_synapses(count: float) -> str:
-    """Formats added/learned synapses dynamically: 100 -> K -> M -> B."""
-    if count < 1000:
-        return f"+{int(count)} Synapses"
+    """Formats added/learned parameters dynamically: 100 -> K -> M -> B -> Params."""
+    if count == 0:
+        return "+0 Params"
+    elif count < 1000:
+        return f"+{int(count)} Params"
     elif count < 1_000_000:
-        return f"+{count / 1000:.1f}K Synapses"
+        return f"+{count / 1000:.1f}K Params"
     elif count < 1_000_000_000:
-        return f"+{count / 1_000_000:.2f}M Synapses"
+        return f"+{count / 1_000_000:.2f}M Params"
     else:
-        return f"+{count / 1_000_000_000:.2f}B Synapses"
+        return f"+{count / 1_000_000_000:.2f}B Params"
+
+
+format_added_params = format_added_synapses
 
 
 def format_parameter_count(param_val: float) -> str:
@@ -789,8 +794,9 @@ class SmartAIChatbotApp:
         right_box.pack(side="right", padx=14, pady=6)
 
         curr_info = self.models_config[self.active_tab_id]
-        param_str = format_parameter_count(curr_info.get("raw_params", 27_400_000_000))
-        self.lbl_params = self._make_badge(right_box, f"🧠 {param_str} Base")
+        total_p = curr_info.get("raw_params", 27_400_000_000) + self.synapses_learned_count
+        param_str = format_parameter_count(total_p)
+        self.lbl_params = self._make_badge(right_box, f"🧠 {param_str} Total Params")
 
         syn_str = format_added_synapses(self.synapses_learned_count)
         self.lbl_synapses = self._make_badge(right_box, f"📈 {syn_str}")
@@ -1889,8 +1895,9 @@ class SmartAIChatbotApp:
             self.lbl_vram.configure(text="💾 0.0 GB / 16 GB")
             self.btn_load_unload.configure(text="⚡ Load Model", fg=self.C["accent_cyan"])
 
-        param_str = format_parameter_count(target_info.get("raw_params", 27_400_000_000))
-        self.lbl_params.configure(text=f"🧠 {param_str} Base")
+        total_p = target_info.get("raw_params", 27_400_000_000) + self.synapses_learned_count
+        param_str = format_parameter_count(total_p)
+        self.lbl_params.configure(text=f"🧠 {param_str} Total Params")
         self._update_resource_view_metrics()
 
     def _on_reset_chat_confirm(self):
@@ -2420,6 +2427,11 @@ class SmartAIChatbotApp:
     def _update_telemetry(self, tps: float = 0.0):
         ctx_pct = min(100.0, (self.total_tokens_used / self.max_context_window) * 100)
         self.lbl_context.configure(text=f"📊 Context: {self.total_tokens_used:,} / {self.max_context_window:,} ({ctx_pct:.0f}%)")
+        curr_info = self.models_config.get(self.active_tab_id, {})
+        total_p = curr_info.get("raw_params", 27_400_000_000) + self.synapses_learned_count
+        param_str = format_parameter_count(total_p)
+        if hasattr(self, "lbl_params"):
+            self.lbl_params.configure(text=f"🧠 {param_str} Total Params")
         if hasattr(self, "lbl_synapses"):
             syn_str = format_added_synapses(self.synapses_learned_count)
             self.lbl_synapses.configure(text=f"📈 {syn_str}")
@@ -2427,7 +2439,7 @@ class SmartAIChatbotApp:
             self.lbl_tps.configure(text=f"⚡ {tps:.1f} tok/s")
         if hasattr(self, "lbl_res_synapses"):
             syn_str = format_added_synapses(self.synapses_learned_count)
-            self.lbl_res_synapses.configure(text=f"• Learned Weights: {syn_str} (EWC Replay Active)")
+            self.lbl_res_synapses.configure(text=f"• +Params Learned: {syn_str} (EWC Replay Active)")
 
     def _on_clear_chat(self):
         self.chat_stream.configure(state="normal")

@@ -60,7 +60,7 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.assertIsNotNone(self.app.lbl_context)
 
         # Check HUD telemetry content
-        self.assertIn("Base", self.app.lbl_params.cget("text"))
+        self.assertIn("Total Params", self.app.lbl_params.cget("text"))
         self.assertIn("Context:", self.app.lbl_context.cget("text"))
 
     def test_user_and_ai_message_rendering(self):

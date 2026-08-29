@@ -169,7 +169,7 @@ class TestSmartAISuite(unittest.TestCase):
         self.assertIsNotNone(self.app.lbl_synapses)
         self.assertIsNotNone(self.app.lbl_context)
         self.assertIsNotNone(self.app.lbl_vram)
-        self.assertIn("Base", self.app.lbl_params.cget("text"))
+        self.assertIn("Total Params", self.app.lbl_params.cget("text"))
 
     def test_gui_chat_stream_and_tool_call_rendering(self):
         """Verify rendering of user messages, assistant responses, and tool pills in chat."""
