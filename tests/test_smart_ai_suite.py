@@ -18,13 +18,17 @@ from core.tools import AgentToolRegistry
 class TestSmartAISuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.root = tk.Tk()
-        cls.root.withdraw()
+        try:
+            cls.root = tk.Tk()
+            cls.root.withdraw()
+        except Exception:
+            cls.root = None
 
     @classmethod
     def tearDownClass(cls):
         try:
-            cls.root.destroy()
+            if cls.root:
+                cls.root.destroy()
         except Exception:
             pass
 
@@ -36,7 +40,10 @@ class TestSmartAISuite(unittest.TestCase):
             device="cpu",
             mlx_model_path="prism-ml/Ternary-Bonsai-27B-mlx-2bit"
         )
-        self.app = SmartAIChatbotApp(self.root, settings=self.settings)
+        if self.root:
+            self.app = SmartAIChatbotApp(self.root, settings=self.settings)
+        else:
+            self.app = None
         self.tools = AgentToolRegistry(db_path=self.db_path, workspace_dir=self.temp_dir.name)
 
     def tearDown(self):
@@ -142,7 +149,8 @@ class TestSmartAISuite(unittest.TestCase):
         self.assertIn("system_terminal", mcp_out)
 
         # Log a record into SQLite database first
-        self.app.db.log_interaction("Test Prompt", "Test Answer", ["Test Answer"], 1.0, 0.5, "Instant", 0.1, 0, "")
+        from memory.db import EpisodicMemoryDB
+        EpisodicMemoryDB(self.db_path).log_interaction("Test Prompt", "Test Answer", ["Test Answer"], 1.0, 0.5, "Instant", 0.1, 0, "")
 
         # SQL query on memory.db
         ok, sql_out = self.tools.execute_tool("sql_query", {"query": "SELECT id, prompt FROM interactions LIMIT 5"})
@@ -154,6 +162,8 @@ class TestSmartAISuite(unittest.TestCase):
     # -------------------------------------------------------------
     def test_gui_telemetry_hud_and_elements(self):
         """Verify Smart AI telemetry badges, buttons, and HUD are constructed."""
+        if not self.app:
+            self.skipTest("Headless environment without display server")
         self.assertIsNotNone(self.app.main_container)
         self.assertIsNotNone(self.app.lbl_params)
         self.assertIsNotNone(self.app.lbl_synapses)
@@ -163,6 +173,8 @@ class TestSmartAISuite(unittest.TestCase):
 
     def test_gui_chat_stream_and_tool_call_rendering(self):
         """Verify rendering of user messages, assistant responses, and tool pills in chat."""
+        if not self.app:
+            self.skipTest("Headless environment without display server")
         self.app._append_user_message("Calculate derivative of x^2")
         self.app._append_tool_call("math_calculate", "expr='x^2'", "2*x")
         self.app._append_ai_message("The derivative of x^2 with respect to x is 2x.")
@@ -174,6 +186,8 @@ class TestSmartAISuite(unittest.TestCase):
 
     def test_gui_new_conversation_reset(self):
         """Verify starting a new conversation clears stream and resets context tokens."""
+        if not self.app:
+            self.skipTest("Headless environment without display server")
         self.app._append_user_message("Old test prompt")
         self.app._on_new_chat()
         chat_text = self.app.chat_stream.get("1.0", "end")

@@ -18,17 +18,23 @@ class TestDesktopAppGUI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Create hidden root window for headless testing
-        cls.root = tk.Tk()
-        cls.root.withdraw()
+        try:
+            cls.root = tk.Tk()
+            cls.root.withdraw()
+        except Exception:
+            cls.root = None
 
     @classmethod
     def tearDownClass(cls):
         try:
-            cls.root.destroy()
+            if cls.root:
+                cls.root.destroy()
         except Exception:
             pass
 
     def setUp(self):
+        if self.root is None:
+            self.skipTest("Graphical display or Tkinter window server not available in this environment")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.temp_dir.name, "test_gui_memory.db")
         self.settings = Settings(
