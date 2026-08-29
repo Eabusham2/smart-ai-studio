@@ -95,9 +95,9 @@ _THEMES = {
         "btn_bg":        "#000000",   # Pure Solid Black Button
         "btn_fg":        "#ffffff",   # Pure Solid White Text
         "btn_hover":     "#000000",
-        "btn_primary_bg":"#000000",   # Pure Solid Black Button
-        "btn_primary_fg":"#ffffff",   # Pure Solid White Text
-        "btn_primary_hover":"#000000",
+        "btn_primary_bg":"#ffffff",   # Pure Solid White Button (Send/Run)
+        "btn_primary_fg":"#000000",   # Pure Solid Black Text (Send/Run)
+        "btn_primary_hover":"#ffffff",
         "badge_bg":      "#000000",   # Pure Solid Black Badge
         "badge_fg":      "#ffffff",   # Pure Solid White Text
         "bg_input":      "#0e1626",   # Input box background
@@ -106,8 +106,8 @@ _THEMES = {
         "bg_ai_bubble":  "#080c14",   # AI message bubble
         "border":        "#1e293b",   # Card / panel borders
         "border_focus":  "#38bdf8",   # Input focus border
-        "text_main":     "#f8fafc",   # Primary text
-        "text_muted":    "#94a3b8",   # Secondary text
+        "text_main":     "#ffffff",   # Pure Solid White Primary Text
+        "text_muted":    "#ffffff",   # Pure Solid White Secondary Text
         "accent_cyan":   "#38bdf8",   # Sky Cyan accent
         "accent_green":  "#4ade80",   # Emerald Green accent
         "accent_purple": "#c084fc",   # Purple accent
@@ -116,7 +116,7 @@ _THEMES = {
         "accent_red":    "#f87171",   # Red accent
         "code_bg":       "#0f172a",   # Monospace code block container
         "code_border":   "#1e293b",   # Code container border
-        "code_fg":       "#f8fafc",   # Code text
+        "code_fg":       "#ffffff",   # Pure Solid White Code text
         "bg_thinking":   "#131d33",   # Thinking process card
         "bg_inline_code":"#1e293b",   # Inline code background
         "bg_tool":       "#091b14",   # Tool execution card
@@ -135,19 +135,19 @@ _THEMES = {
         "btn_bg":        "#ffffff",   # Pure Solid White Button
         "btn_fg":        "#000000",   # Pure Solid Black Text
         "btn_hover":     "#ffffff",
-        "btn_primary_bg":"#ffffff",   # Pure Solid White Button
-        "btn_primary_fg":"#000000",   # Pure Solid Black Text
-        "btn_primary_hover":"#ffffff",
+        "btn_primary_bg":"#000000",   # Pure Solid Black Button (Send/Run)
+        "btn_primary_fg":"#ffffff",   # Pure Solid White Text (Send/Run)
+        "btn_primary_hover":"#000000",
         "badge_bg":      "#ffffff",   # Pure Solid White Badge
         "badge_fg":      "#000000",   # Pure Solid Black Text
         "bg_input":      "#f1f5f9",   # Input box background
-        "bg_input_inner":"#f8fafc",   # Inner text field
+        "bg_input_inner":"#ffffff",   # Inner text field
         "bg_user_bubble":"#f1f5f9",   # User message bubble
         "bg_ai_bubble":  "#f8fafc",   # AI message bubble
         "border":        "#e2e8f0",   # Card / panel borders
         "border_focus":  "#0284c7",   # Input focus border
-        "text_main":     "#0f172a",   # Primary text
-        "text_muted":    "#64748b",   # Secondary text
+        "text_main":     "#000000",   # Pure Solid Black Primary Text
+        "text_muted":    "#000000",   # Pure Solid Black Secondary Text
         "accent_cyan":   "#0284c7",   # Sky Blue accent
         "accent_green":  "#15803d",   # Green accent
         "accent_purple": "#7e22ce",   # Deep Purple accent
@@ -156,7 +156,7 @@ _THEMES = {
         "accent_red":    "#b91c1c",   # Red accent
         "code_bg":       "#f1f5f9",   # Monospace code block container
         "code_border":   "#e2e8f0",   # Code container border
-        "code_fg":       "#0f172a",   # Code text
+        "code_fg":       "#000000",   # Pure Solid Black Code text
         "bg_thinking":   "#f1f5f9",   # Thinking process card
         "bg_inline_code":"#e2e8f0",   # Inline code background
         "bg_tool":       "#dcfce7",   # Tool execution card
@@ -188,6 +188,82 @@ _FONT_MONO = (_FONT_MONO_FAMILY, 13)     # Clear 13pt monospace for code
 _FONT_INLINE_MONO = (_FONT_MONO_FAMILY, 12)
 
 CUSTOM_MODELS_FILE = get_custom_models_file()
+
+
+# ─────────────────────────────────────────────────────────
+#  SOLID B&W BUTTON COMPONENT (BYPASSES MACOS AQUA GREYING)
+# ─────────────────────────────────────────────────────────
+class SolidButton(tk.Label):
+    """
+    Cross-platform solid button implemented on tk.Label.
+    Bypasses macOS Aqua NSButton native rendering which forces grey backgrounds and grey text.
+    Guarantees 100% pixel-perfect solid background and crisp foreground colors on macOS, Linux, and Windows.
+    """
+    def __init__(self, parent, text="", command=None, bg=None, fg=None,
+                 font=None, padx=10, pady=5, cursor="hand2", state="normal", **kwargs):
+        self._command = command
+        self._state = state
+        self._normal_bg = bg if bg is not None else _COLORS.get("btn_bg", "#000000")
+        self._normal_fg = fg if fg is not None else _COLORS.get("btn_fg", "#ffffff")
+        self._hover_bg = kwargs.pop("activebackground", self._normal_bg)
+        self._hover_fg = kwargs.pop("activeforeground", self._normal_fg)
+        relief = kwargs.pop("relief", "flat")
+        bd = kwargs.pop("bd", kwargs.pop("borderwidth", 0))
+        kwargs.pop("highlightbackground", None)
+        kwargs.pop("highlightthickness", None)
+        
+        super().__init__(
+            parent, text=text, font=font, bg=self._normal_bg, fg=self._normal_fg,
+            padx=padx, pady=pady, cursor=cursor if state == "normal" else "arrow",
+            relief=relief, bd=bd, **kwargs
+        )
+        
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    def _on_click(self, event=None):
+        if self._state == "normal" and self._command:
+            self._command()
+
+    def _on_enter(self, event=None):
+        if self._state == "normal":
+            super().configure(bg=self._hover_bg, fg=self._hover_fg)
+
+    def _on_leave(self, event=None):
+        if self._state == "normal":
+            super().configure(bg=self._normal_bg, fg=self._normal_fg)
+
+    def invoke(self):
+        """Simulates button click (for test suite compatibility)."""
+        if self._state == "normal" and self._command:
+            self._command()
+
+    def configure(self, **kwargs):
+        if "command" in kwargs:
+            self._command = kwargs.pop("command")
+        if "state" in kwargs:
+            self._state = kwargs.pop("state")
+            if self._state == "disabled":
+                kwargs["cursor"] = "arrow"
+            else:
+                kwargs["cursor"] = "hand2"
+        if "bg" in kwargs:
+            self._normal_bg = kwargs["bg"]
+        if "fg" in kwargs:
+            self._normal_fg = kwargs["fg"]
+        if "activebackground" in kwargs:
+            self._hover_bg = kwargs.pop("activebackground")
+        if "activeforeground" in kwargs:
+            self._hover_fg = kwargs.pop("activeforeground")
+        kwargs.pop("highlightbackground", None)
+        kwargs.pop("highlightthickness", None)
+        super().configure(**kwargs)
+
+    config = configure
+
+
+tk.Button = SolidButton
 
 
 class SmartAIChatbotApp:
