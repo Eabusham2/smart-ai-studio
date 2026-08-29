@@ -86,25 +86,25 @@ def detect_system_theme() -> str:
 # ─────────────────────────────────────────────────────────
 _THEMES = {
     "dark": {
-        "bg_app":        "#09090b",   # Sleek Obsidian background
-        "bg_hud":        "#0a0a0a",   # Sleek top navigation bar
-        "bg_resources":  "#121212",   # Slide-out resource drawer
-        "bg_chat":       "#09090b",   # Chat area background
-        "bg_card":       "#18181b",   # High-contrast card (Zinc 900)
-        "bg_card_hover": "#27272a",   # Hover state (Zinc 800)
-        "btn_bg":        "#000000",   # Pure Black Button
-        "btn_fg":        "#ffffff",   # Pure White Button Text
-        "btn_hover":     "#000000",   # Pure Black Button Hover
-        "btn_primary_bg":"#ffffff",   # Pure White Button (Send/Run)
-        "btn_primary_fg":"#000000",   # Pure Black Text (Send/Run)
-        "btn_primary_hover":"#ffffff",
-        "badge_bg":      "#000000",   # Pure Black Badge
-        "badge_fg":      "#ffffff",   # Pure White Badge Text
-        "bg_input":      "#0a0a0a",   # Input box background
-        "bg_input_inner":"#121212",   # Inner text field
-        "bg_user_bubble":"#18181b",   # User message bubble
-        "bg_ai_bubble":  "#09090b",   # AI message bubble
-        "border":        "#27272a",   # Card / panel borders
+        "bg_app":        "#080c14",   # Deep navy midnight background (Reverted)
+        "bg_hud":        "#0e1626",   # Navy top bar (Reverted)
+        "bg_resources":  "#0e1626",   # Slide-out resource drawer
+        "bg_chat":       "#080c14",   # Chat area background
+        "bg_card":       "#172033",   # Card container
+        "bg_card_hover": "#1e293b",   # Hover state
+        "btn_bg":        "#000000",   # Pure Solid Black Button
+        "btn_fg":        "#ffffff",   # Pure Solid White Text
+        "btn_hover":     "#000000",
+        "btn_primary_bg":"#000000",   # Pure Solid Black Button
+        "btn_primary_fg":"#ffffff",   # Pure Solid White Text
+        "btn_primary_hover":"#000000",
+        "badge_bg":      "#000000",   # Pure Solid Black Badge
+        "badge_fg":      "#ffffff",   # Pure Solid White Text
+        "bg_input":      "#0e1626",   # Input box background
+        "bg_input_inner":"#080c14",   # Inner text field
+        "bg_user_bubble":"#172033",   # User message bubble
+        "bg_ai_bubble":  "#080c14",   # AI message bubble
+        "border":        "#1e293b",   # Card / panel borders
         "border_focus":  "#38bdf8",   # Input focus border
         "text_main":     "#f8fafc",   # Primary text
         "text_muted":    "#94a3b8",   # Secondary text
@@ -122,26 +122,26 @@ _THEMES = {
         "bg_tool":       "#091b14",   # Tool execution card
         "bg_steer":      "#2e1065",   # Steer message background
         "bg_queue":      "#451a03",   # Queue message background
-        "canvas_bg":     "#09090b",   # AI Canvas background
-        "canvas_hdr":    "#0a0a0a",   # AI Canvas header
+        "canvas_bg":     "#080c14",   # AI Canvas background
+        "canvas_hdr":    "#0e1626",   # AI Canvas header
     },
     "light": {
-        "bg_app":        "#f8fafc",   # Soft Light background
-        "bg_hud":        "#f1f5f9",   # Top bar (Slate 100)
+        "bg_app":        "#f8fafc",   # Soft Light background (Reverted)
+        "bg_hud":        "#f1f5f9",   # Top bar (Slate 100) (Reverted)
         "bg_resources":  "#f1f5f9",   # Slide-out resource drawer
         "bg_chat":       "#f8fafc",   # Chat area background
         "bg_card":       "#f1f5f9",   # Card background
         "bg_card_hover": "#e2e8f0",   # Hover state
-        "btn_bg":        "#ffffff",   # Pure White Button
-        "btn_fg":        "#000000",   # Pure Black Button Text
-        "btn_hover":     "#ffffff",   # Pure White Button Hover
-        "btn_primary_bg":"#000000",   # Pure Black Button (Send/Run)
-        "btn_primary_fg":"#ffffff",   # Pure White Text (Send/Run)
-        "btn_primary_hover":"#000000",
-        "badge_bg":      "#ffffff",   # Pure White Badge
-        "badge_fg":      "#000000",   # Pure Black Badge Text
+        "btn_bg":        "#ffffff",   # Pure Solid White Button
+        "btn_fg":        "#000000",   # Pure Solid Black Text
+        "btn_hover":     "#ffffff",
+        "btn_primary_bg":"#ffffff",   # Pure Solid White Button
+        "btn_primary_fg":"#000000",   # Pure Solid Black Text
+        "btn_primary_hover":"#ffffff",
+        "badge_bg":      "#ffffff",   # Pure Solid White Badge
+        "badge_fg":      "#000000",   # Pure Solid Black Text
         "bg_input":      "#f1f5f9",   # Input box background
-        "bg_input_inner":"#ffffff",   # Inner text field
+        "bg_input_inner":"#f8fafc",   # Inner text field
         "bg_user_bubble":"#f1f5f9",   # User message bubble
         "bg_ai_bubble":  "#f8fafc",   # AI message bubble
         "border":        "#e2e8f0",   # Card / panel borders
@@ -526,6 +526,7 @@ class SmartAIChatbotApp:
                 try:
                     btn.configure(
                         bg=btn_bg, fg=btn_fg,
+                        highlightbackground=btn_bg,
                         activebackground=btn_hover, activeforeground=btn_fg
                     )
                 except Exception:
@@ -537,7 +538,7 @@ class SmartAIChatbotApp:
             if hasattr(self, badge_name):
                 b = getattr(self, badge_name)
                 try:
-                    b.configure(bg=badge_bg, fg=badge_fg)
+                    b.configure(bg=badge_bg, fg=badge_fg, highlightbackground=badge_bg)
                 except Exception:
                     pass
 
@@ -561,16 +562,18 @@ class SmartAIChatbotApp:
         if hasattr(self, "btn_send"):
             self.btn_send.configure(
                 bg=btn_p_bg, fg=btn_p_fg,
+                highlightbackground=btn_p_bg,
                 activebackground=btn_p_hover, activeforeground=btn_p_fg
             )
 
-        bottom_buttons = ["btn_steer", "btn_stop", "btn_reset_chat", "btn_export_chat"]
+        bottom_buttons = ["btn_attach", "btn_steer", "btn_stop", "btn_reset_chat", "btn_export_chat"]
         for btn_name in bottom_buttons:
             if hasattr(self, btn_name):
                 btn = getattr(self, btn_name)
                 try:
                     btn.configure(
                         bg=btn_bg, fg=btn_fg,
+                        highlightbackground=btn_bg,
                         activebackground=btn_hover, activeforeground=btn_fg
                     )
                 except Exception:
@@ -669,6 +672,7 @@ class SmartAIChatbotApp:
         self.btn_model_menu = tk.Menubutton(
             left_box, textvariable=self.model_var, font=_FONT_TAB,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=12, pady=5, cursor="hand2",
             highlightthickness=0
@@ -685,6 +689,7 @@ class SmartAIChatbotApp:
         self.btn_import_model = tk.Button(
             left_box, text="➕ Import Model", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -725,6 +730,7 @@ class SmartAIChatbotApp:
         self.btn_branch_vis = tk.Button(
             right_box, text="🌿 Branches", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -736,6 +742,7 @@ class SmartAIChatbotApp:
         self.btn_memory_exp = tk.Button(
             right_box, text="💾 Memory DB", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -747,6 +754,7 @@ class SmartAIChatbotApp:
         self.btn_sleep_panel = tk.Button(
             right_box, text="💤 Sleep EWC", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -758,6 +766,7 @@ class SmartAIChatbotApp:
         self.btn_dsl_play = tk.Button(
             right_box, text="🧪 DSL", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -769,6 +778,7 @@ class SmartAIChatbotApp:
         self.btn_toggle_canvas = tk.Button(
             right_box, text="🎨 Canvas ▾", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -780,6 +790,7 @@ class SmartAIChatbotApp:
         self.btn_reset_reinstall = tk.Button(
             right_box, text="🔄 Reset", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -792,6 +803,7 @@ class SmartAIChatbotApp:
         self.btn_load_unload = tk.Button(
             right_box, text="⚡ Load Model", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -803,6 +815,7 @@ class SmartAIChatbotApp:
         self.btn_toggle_resources = tk.Button(
             right_box, text="⚙", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=6, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -815,6 +828,7 @@ class SmartAIChatbotApp:
         self.btn_theme_toggle = tk.Button(
             right_box, text="☀️ Light" if is_dark else "🌙 Dark", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -1245,6 +1259,7 @@ class SmartAIChatbotApp:
         btn_run = tk.Button(
             hdr, text="▶ Run", font=_FONT_TINY_BOLD,
             bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"],
+            highlightbackground=self.C["btn_primary_bg"],
             activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1255,6 +1270,7 @@ class SmartAIChatbotApp:
         btn_preview = tk.Button(
             hdr, text="👁️ Preview", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1266,6 +1282,7 @@ class SmartAIChatbotApp:
         btn_browser = tk.Button(
             hdr, text="🌐 Browser", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1276,6 +1293,7 @@ class SmartAIChatbotApp:
         btn_visual = tk.Button(
             hdr, text="📊 Visualizer", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1286,6 +1304,7 @@ class SmartAIChatbotApp:
         btn_dsl_c = tk.Button(
             hdr, text="🧪 DSL Sandbox", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1296,6 +1315,7 @@ class SmartAIChatbotApp:
         btn_copy = tk.Button(
             hdr, text="📋 Copy", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1306,6 +1326,7 @@ class SmartAIChatbotApp:
         btn_save = tk.Button(
             hdr, text="💾 Save", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1316,6 +1337,7 @@ class SmartAIChatbotApp:
         btn_close = tk.Button(
             hdr, text="✖ Close", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1467,6 +1489,7 @@ class SmartAIChatbotApp:
         btn_attach = tk.Button(
             top_row, text="📎", font=(_FONT_FAMILY, 15),
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
             highlightthickness=0,
@@ -1503,6 +1526,7 @@ class SmartAIChatbotApp:
         self.btn_send = tk.Button(
             top_row, text="  ▶ Send  ", font=_FONT_BOLD,
             bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"],
+            highlightbackground=self.C["btn_primary_bg"],
             activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"],
             relief="flat", bd=0, padx=18, pady=10, cursor="hand2",
             highlightthickness=0,
@@ -1520,6 +1544,7 @@ class SmartAIChatbotApp:
         btn_learn = tk.Button(
             left_actions, text="🎓 Learn Mode", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1531,6 +1556,7 @@ class SmartAIChatbotApp:
         self.btn_steer = tk.Button(
             left_actions, text=f"🎯 Steer ({steer_key})", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1541,6 +1567,7 @@ class SmartAIChatbotApp:
         self.btn_stop = tk.Button(
             left_actions, text="⏹ Stop", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, state="disabled",
             highlightthickness=0,
@@ -1552,6 +1579,7 @@ class SmartAIChatbotApp:
         self.btn_reset_chat = tk.Button(
             left_actions, text="🗑️ Clear Chat", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
@@ -1559,10 +1587,11 @@ class SmartAIChatbotApp:
         )
         self.btn_reset_chat.pack(side="left", padx=(0, 4))
 
-        # Export Button
+        # Export Chat Button
         self.btn_export_chat = tk.Button(
             left_actions, text="💾 Export Chat", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             highlightthickness=0,
