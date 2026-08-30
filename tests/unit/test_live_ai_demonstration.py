@@ -116,14 +116,9 @@ class TestLiveAIDemonstration(unittest.TestCase):
         self.assertIn("Thought for", content)
         self.assertIn("128.0 tok/s", content)
 
-        # 3. Test Model Switching
-        app._on_switch_model_tab("model_2")
-        self.assertEqual(app.active_tab_id, "model_2")
-        self.assertTrue(
-            "Qwen 27B" in app.lbl_model_status.cget("text") or
-            "Abliterated" in app.lbl_model_status.cget("text") or
-            "Axon" in app.lbl_model_status.cget("text")
-        )
+        # 3. Test Model Info
+        self.assertEqual(app.active_tab_id, "model_1")
+        self.assertIn("Ternary-Bonsai-27B", app.models_config["model_1"]["name"])
 
         if hasattr(app, "watchdog") and app.watchdog:
             app.watchdog.stop_monitoring()

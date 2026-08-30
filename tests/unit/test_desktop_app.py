@@ -135,22 +135,34 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.assertIn("Smart AI Studio", content)
 
     def test_dual_model_tab_switching(self):
-        """Test switching between Model 1 (Qwen 27B Uncensored) and Model 2."""
+        """Test model tab state with default Ternary Bonsai 27B model and custom imported model."""
         self.assertEqual(self.app.active_tab_id, "model_1")
+        self.assertIn("Ternary Bonsai 27B", self.app.lbl_model_status.cget("text"))
         
-        # Switch to Model 2
-        self.app._on_switch_model_tab("model_2")
-        self.assertEqual(self.app.active_tab_id, "model_2")
-        self.assertTrue(
-            "Qwen 27B" in self.app.lbl_model_status.cget("text") or
-            "Abliterated" in self.app.lbl_model_status.cget("text") or
-            "Axon" in self.app.lbl_model_status.cget("text")
-        )
+        # Add and switch to a custom model
+        custom_id = "custom_test_switch"
+        self.app.models_config[custom_id] = {
+            "name": "Custom Model (MLX)",
+            "short_name": "Custom Model",
+            "repo_id": "test/custom-model",
+            "model_path": None,
+            "precision": "4-Bit MLX",
+            "raw_params": 7_000_000_000,
+            "base_params": "7.0B",
+            "max_context": 32_768,
+            "vram": "4.5 GB / 16 GB",
+            "tag": "✨ Custom Model",
+            "accent": "#10b981"
+        }
+        self.app.chat_history[custom_id] = []
+        self.app._on_switch_model_tab(custom_id)
+        self.assertEqual(self.app.active_tab_id, custom_id)
+        self.assertIn("Custom Model", self.app.lbl_model_status.cget("text"))
         
         # Switch back to Model 1
         self.app._on_switch_model_tab("model_1")
         self.assertEqual(self.app.active_tab_id, "model_1")
-        self.assertIn("Qwen 27B Uncensored", self.app.lbl_model_status.cget("text"))
+        self.assertIn("Ternary Bonsai 27B", self.app.lbl_model_status.cget("text"))
 
     def test_custom_model_importer(self):
         """Test dynamically registering and switching to a custom user-imported model."""

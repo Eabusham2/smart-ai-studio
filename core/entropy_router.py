@@ -89,6 +89,11 @@ class EntropyRouter:
         prompt_lower = prompt.lower()
         complexity_score = 0.15
 
+        # Conversational / greeting triggers (ultra-low entropy)
+        greetings = ["hi", "hello", "hey", "good morning", "good evening", "howdy", "sup", "what's up", "yo"]
+        if prompt_lower.strip() in greetings or any(prompt_lower.startswith(g + " ") for g in greetings) or prompt_lower.startswith(("hi,", "hello,")):
+            return 0.10
+
         # Ambiguity / high-entropy triggers
         high_entropy_keywords = [
             "regex", "regular expression", "dynamic programming", "optimize",

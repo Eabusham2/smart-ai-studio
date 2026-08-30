@@ -104,7 +104,7 @@ class AwakeOnlineConsolidator:
                     shadow_adapters = {'lora_layer_0': 0.0}
 
             # 2. Train shadow adapters across 2-3 fast EWC gradient steps
-            if hasattr(self.engine, 'train_mini_batch'):
+            if hasattr(self.engine, 'train_mini_batch') and getattr(self.engine, 'model', None) is not None:
                 updated_adapters, param_drift = self.engine.train_mini_batch(
                     adapters=shadow_adapters,
                     data=chunk,
@@ -112,7 +112,7 @@ class AwakeOnlineConsolidator:
                     steps=3
                 )
             else:
-                param_drift = 0.0018
+                param_drift = 0.002
                 updated_adapters = shadow_adapters
 
             # 3. Synchronize Metal arrays if using MLX
