@@ -1501,6 +1501,7 @@ class SmartAIChatbotApp:
         )
         scroll.pack(side="right", fill="y")
 
+        is_dark = (self.current_theme == "dark")
         self.chat_stream = tk.Text(
             cf, bg=self.C["bg_chat"], fg=self.C["text_main"],
             font=_FONT_MAIN, wrap="word", bd=0, padx=28, pady=16,
