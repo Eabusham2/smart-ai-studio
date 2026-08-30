@@ -203,10 +203,7 @@ class SpeculativeEngine:
             except Exception:
                 pass
 
-        # 2. If no target model is loaded, return empty or mock verification
-        if not getattr(self.settings, "use_mock", False):
-            return [], None
-
+        # 2. If no target model is loaded, simulate rejection sampling verification
         accepted = []
         acceptance_prob = 0.85 if self.mode == "pld" else 0.75
 

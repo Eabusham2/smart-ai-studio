@@ -93,6 +93,24 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         self.assertIn("total_gb", status)
         self.assertIn("used_percent", status)
 
+    def test_06b_detailed_memory_breakdown_and_dynamic_scaling(self):
+        """Verify granular memory breakdown across App, Model Metal, and System RAM with dynamic scaling."""
+        breakdown = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+        self.assertIn("app_rss_gb", breakdown)
+        self.assertIn("model_metal_active_gb", breakdown)
+        self.assertIn("model_metal_peak_gb", breakdown)
+        self.assertIn("total_allocated_gb", breakdown)
+        self.assertIn("system_used_gb", breakdown)
+        self.assertIn("system_total_gb", breakdown)
+        self.assertTrue(breakdown["dynamic_scaling_active"])
+
+        # Test system monitor tool format
+        ok, res = self.tools.execute_tool("system_monitor", {})
+        self.assertTrue(ok)
+        self.assertIn("Process Memory", res)
+        self.assertIn("Model Metal Active Buffer", res)
+        self.assertIn("Host System RAM Used", res)
+
     def test_07_gui_model_presets_and_canvas_toggle(self):
         """Verify GUI initializes expanded presets (RealVisXL, Z-Image Turbo, LTX-Video, etc.) and toggles Canvas."""
         try:

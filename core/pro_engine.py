@@ -324,6 +324,7 @@ class ProReasoningEngine:
                 self.mlx_backend.is_mlx_available = False
             except Exception:
                 pass
+            self.mlx_backend = None
 
         if hasattr(self, "gguf_backend") and self.gguf_backend is not None:
             try:

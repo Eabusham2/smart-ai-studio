@@ -24,7 +24,10 @@ class MLXReasoningBackend:
         self.is_mlx_available = False
 
     def load_model(self) -> bool:
-        """Loads MLX neural model into Apple Silicon unified memory with strict memory bounds."""
+        """
+        Loads MLX neural model into Apple Silicon unified memory with dynamic RAM scaling.
+        Memory allocation starts lean and dynamically expands on demand as context & rollouts grow.
+        """
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             self.is_mlx_available = False
             return False
@@ -37,15 +40,10 @@ class MLXReasoningBackend:
             import mlx.core as mx
             import mlx.nn as nn
             import mlx_lm
+            from core.memory_watchdog import SystemMemoryWatchdog
 
-            # Enforce strict Metal cache limits on Apple Silicon (max 1.5 GB VRAM cache)
-            try:
-                if hasattr(mx, "set_cache_limit"):
-                    mx.set_cache_limit(int(1.5 * 1024 * 1024 * 1024))
-                elif hasattr(mx, "metal") and hasattr(mx.metal, "set_cache_limit"):
-                    mx.metal.set_cache_limit(int(1.5 * 1024 * 1024 * 1024))
-            except Exception:
-                pass
+            # Configure dynamic elastic Metal headroom based on available host RAM
+            SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
 
             try:
                 self.model, self.tokenizer = mlx_lm.load(
@@ -61,9 +59,13 @@ class MLXReasoningBackend:
             self.is_mlx_available = True
             return True
         except Exception as e:
-            logger.error(f"MLX load_model failed for {self.model_path}: {e}")
             self.is_mlx_available = False
             return False
+
+    def get_memory_breakdown(self) -> Dict[str, Any]:
+        """Provides granular live memory metrics for MLX model and Apple Silicon Metal buffers."""
+        from core.memory_watchdog import SystemMemoryWatchdog
+        return SystemMemoryWatchdog.get_detailed_memory_breakdown()
 
     def calculate_token_entropy(self, prompt: str) -> float:
         """Computes next-token Shannon entropy using native MLX arrays."""

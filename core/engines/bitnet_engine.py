@@ -71,11 +71,14 @@ class BitNetReasoningBackend:
     def load_model(self) -> bool:
         """Initializes BitNet ternary network architecture."""
         try:
-            # Check if transformers / HF model can be loaded
-            from transformers import AutoTokenizer
-            try:
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-            except Exception:
+            # Check if local transformers tokenizer exists
+            if os.path.exists(self.model_path):
+                try:
+                    from transformers import AutoTokenizer
+                    self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, local_files_only=True)
+                except Exception:
+                    self.tokenizer = None
+            else:
                 self.tokenizer = None
 
             # Build BitNet Transformer Blocks

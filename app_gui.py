@@ -479,18 +479,24 @@ class SmartAIChatbotApp:
         self._start_event_queue_polling()
 
     def _update_memory_hud_badge(self):
-        """Updates top HUD memory badge with live macOS system RAM and app process memory."""
+        """Updates top HUD memory badge with granular App, Model Metal, and System RAM metrics."""
         if not hasattr(self, "lbl_vram"):
             return
         try:
-            mem = SystemMemoryWatchdog.get_system_memory_status()
-            used_gb = mem.get("used_gb", 0.0)
-            total_gb = mem.get("total_gb", 16.0)
-            proc_gb = mem.get("process_rss_gb", 0.0)
-            if proc_gb > 0.1:
-                self.lbl_vram.configure(text=f"💾 {used_gb:.1f}/{total_gb:.0f} GB ({proc_gb:.1f} GB App)")
+            mem = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+            app_gb = mem.get("app_rss_gb", 0.0)
+            model_gb = mem.get("model_metal_active_gb", 0.0)
+            sys_used = mem.get("system_used_gb", 0.0)
+            sys_total = mem.get("system_total_gb", 16.0)
+
+            if model_gb > 0.05:
+                text = f"💾 App: {app_gb:.1f}G | Model: {model_gb:.1f}G | Sys: {sys_used:.1f}/{sys_total:.0f}G"
+            elif getattr(self, "is_model_loaded", False):
+                text = f"💾 App: {app_gb:.1f}G | Model: Standby | Sys: {sys_used:.1f}/{sys_total:.0f}G"
             else:
-                self.lbl_vram.configure(text=f"💾 {used_gb:.1f}/{total_gb:.0f} GB RAM")
+                text = f"💾 App: {app_gb:.1f}G | Model: Off | Sys: {sys_used:.1f}/{sys_total:.0f}G"
+
+            self.lbl_vram.configure(text=text)
         except Exception:
             pass
 
@@ -882,7 +888,9 @@ class SmartAIChatbotApp:
         self.lbl_context = self._make_badge(
             right_box, f"📊 Context: {self.total_tokens_used:,} / {self.max_context_window:,} ({ctx_pct:.0f}%)"
         )
-        self.lbl_vram = self._make_badge(right_box, "💾 0.0 GB / 16 GB")
+        self.lbl_vram = self._make_badge(right_box, "💾 App: 0.0G | Model: Off | Sys: 0.0/16G")
+        self.lbl_vram.configure(cursor="hand2")
+        self.lbl_vram.bind("<Button-1>", lambda e: self._on_show_memory_telemetry_dialog())
         self.lbl_tps = self._make_badge(right_box, "⚡ — tok/s")
 
         # Load / Unload Model Button
@@ -3566,6 +3574,75 @@ assert glyph_res["invariants_passed"] == True
         opt_dsl.bind("<<ComboboxSelected>>", _on_mode_change)
         btn_run.configure(command=_execute)
         btn_canvas.configure(command=_send_to_canvas)
+
+    def _on_show_memory_telemetry_dialog(self):
+        """Displays interactive granular memory telemetry modal (App vs Model vs System RAM)."""
+        modal = tk.Toplevel(self.root)
+        modal.title("💾 System & AI Model Memory Telemetry")
+        modal.geometry("560x420")
+        modal.configure(bg=self.C["bg_main"])
+        modal.transient(self.root)
+        modal.grab_set()
+
+        hdr = tk.Frame(modal, bg=self.C["bg_header"], padx=16, pady=12)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="📊 Live Memory Allocation Profile", font=_FONT_TITLE_BOLD, bg=self.C["bg_header"], fg=self.C["text_primary"]).pack(anchor="w")
+        tk.Label(hdr, text="Dynamic Unified RAM scaling & real-time Metal allocation telemetry", font=_FONT_SMALL, bg=self.C["bg_header"], fg=self.C["text_muted"]).pack(anchor="w")
+
+        body = tk.Frame(modal, bg=self.C["bg_main"], padx=16, pady=12)
+        body.pack(fill="both", expand=True)
+
+        lbl_info = tk.Label(body, text="", font=_FONT_CODE, bg=self.C["bg_chat"], fg=self.C["text_primary"], justify="left", padx=12, pady=12, relief="flat", bd=1)
+        lbl_info.pack(fill="both", expand=True)
+
+        def _refresh_telemetry():
+            try:
+                mem = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+                text = (
+                    f"• App Process Resident (RSS) : {mem['app_rss_gb']:.2f} GB (Python GUI & Runtime)\n"
+                    f"• Model Metal Active Tensor  : {mem['model_metal_active_gb']:.2f} GB (Weights in RAM)\n"
+                    f"• Model Metal Peak Buffer    : {mem['model_metal_peak_gb']:.2f} GB (Rollout Peak)\n"
+                    f"• Metal Cache Memory         : {mem['model_metal_cache_gb']:.2f} GB (Dynamic Cache Pool)\n"
+                    f"─────────────────────────────────────────────────────────────\n"
+                    f"• Total App + Model Memory   : {mem['total_allocated_gb']:.2f} GB\n"
+                    f"• Host System RAM Used       : {mem['system_used_gb']:.1f} GB / {mem['system_total_gb']:.1f} GB ({mem['system_percent']:.1f}%)\n"
+                    f"• Host System RAM Available  : {mem['system_free_gb']:.1f} GB Free\n"
+                    f"─────────────────────────────────────────────────────────────\n"
+                    f"• RAM Allocation Strategy    : {mem['allocation_strategy']}\n"
+                    f"• Dynamic Scaling Status     : Active (Elastic on-demand KV expansion)"
+                )
+                lbl_info.configure(text=text)
+            except Exception:
+                pass
+            if modal.winfo_exists():
+                modal.after(1000, _refresh_telemetry)
+
+        _refresh_telemetry()
+
+        footer = tk.Frame(modal, bg=self.C["bg_header"], padx=16, pady=10)
+        footer.pack(fill="x")
+
+        def _trim_cache():
+            SystemMemoryWatchdog.reclaim_process_memory()
+            _refresh_telemetry()
+
+        btn_trim = tk.Button(
+            footer, text="🧹 Trim Cache", font=_FONT_SMALL_BOLD,
+            bg=self.C["accent_primary"], fg="#FFFFFF",
+            activebackground=self.C["accent_hover"], activeforeground="#FFFFFF",
+            relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
+            command=_trim_cache
+        )
+        btn_trim.pack(side="left", padx=4)
+
+        btn_close = tk.Button(
+            footer, text="Close", font=_FONT_SMALL,
+            bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
+            relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
+            command=modal.destroy
+        )
+        btn_close.pack(side="right", padx=4)
 
 
 

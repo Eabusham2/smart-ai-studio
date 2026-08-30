@@ -552,12 +552,15 @@ class AgentToolRegistry:
                 return False, f"Failed to parse mathematical expression: {str(e)}"
 
     def _tool_system_monitor(self) -> Tuple[bool, str]:
-        """Gathers system, CPU, RAM, Disk, and platform hardware metrics."""
+        """Gathers granular system, CPU, App RSS, Model Metal RAM, and platform hardware metrics."""
         try:
+            from core.memory_watchdog import SystemMemoryWatchdog
+            mem = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+
             sys_info = {
                 "OS": f"{platform.system()} {platform.release()} ({platform.machine()})",
                 "Python": sys.version.split()[0],
-                "Platform": "Apple Silicon (Metal MPS / MLX)" if (platform.system() == "Darwin" and platform.machine() == "arm64") else "Standard Architecture",
+                "Platform": "Apple Silicon (Metal Unified Memory / MLX)" if (platform.system() == "Darwin" and platform.machine() == "arm64") else "Standard Architecture",
                 "Workspace": self.workspace_dir,
                 "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
@@ -569,14 +572,16 @@ class AgentToolRegistry:
             out = "### 📊 System Hardware & Telemetry Profile\n\n"
             for k, v in sys_info.items():
                 out += f"• **{k}:** {v}\n"
-            out += f"• **Disk Storage:** {disk_str}\n"
-            # Dynamic memory info
-            try:
-                import resource
-                mem_used_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024) if sys.platform == 'darwin' else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-                out += f"• **Process Memory:** {mem_used_mb:.0f} MB (Current RSS)\n"
-            except Exception:
-                out += "• **Process Memory:** N/A\n"
+            out += f"• **Disk Storage:** {disk_str}\n\n"
+
+            out += "#### 💾 Memory Allocation & Dynamic RAM Telemetry\n"
+            out += f"• **Process Memory (App RSS):** `{mem['app_rss_gb']:.2f} GB` (Python GUI & Runtime)\n"
+            out += f"• **Model Metal Active Buffer:** `{mem['model_metal_active_gb']:.2f} GB` (Active Neural Weights)\n"
+            out += f"• **Model Metal Peak Allocated:** `{mem['model_metal_peak_gb']:.2f} GB` (Peak Rollout Buffer)\n"
+            out += f"• **Total App + Model Allocated:** `{mem['total_allocated_gb']:.2f} GB`\n"
+            out += f"• **Host System RAM Used:** `{mem['system_used_gb']:.1f} GB` / `{mem['system_total_gb']:.1f} GB` ({mem['system_percent']:.1f}%)\n"
+            out += f"• **Host Available RAM:** `{mem['system_free_gb']:.1f} GB`\n"
+            out += f"• **Allocation Strategy:** `{mem['allocation_strategy']}`\n"
             out += "• **AI Model Precision:** 1.58-Bit Ternary BitLinear\n"
             return True, out
         except Exception as e:
