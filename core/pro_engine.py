@@ -512,6 +512,16 @@ class ProReasoningEngine:
                 yield token
             return
 
+        # 4. Fallback Token Generator
+        ans, meta = self.solve(prompt, history=history, cancel_event=cancel_event, temperature=temperature)
+        words = ans.split(" ")
+        for i, word in enumerate(words):
+            if cancel_event and cancel_event.is_set():
+                break
+            suffix = " " if i < len(words) - 1 else ""
+            yield word + suffix
+            time.sleep(0.012)
+
     def generate_parallel_branches(
         self,
         prompt: str,

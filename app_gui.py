@@ -493,12 +493,10 @@ class SmartAIChatbotApp:
 
             try:
                 if hasattr(self, "lbl_vram"):
-                    if getattr(self, "is_model_loaded", False):
-                        proc_rss = SystemMemoryWatchdog.get_process_rss_gb()
-                        if proc_rss > 0:
-                            self.lbl_vram.configure(text=f"💾 {proc_rss:.1f} GB App RSS / 16 GB")
-                    else:
-                        self.lbl_vram.configure(text="💾 0.0 GB / 16 GB")
+                    proc_rss = SystemMemoryWatchdog.get_process_rss_gb()
+                    mem = SystemMemoryWatchdog.get_system_memory_status()
+                    total_gb = mem.get("total_gb", 16.0)
+                    self.lbl_vram.configure(text=f"💾 {proc_rss:.2f} GB / {total_gb:.0f} GB")
             except Exception:
                 pass
 
@@ -2016,25 +2014,15 @@ class SmartAIChatbotApp:
 
     def _update_queue_ui(self):
         q_len = len(self.prompt_queue)
-        if getattr(self, "is_generating", False):
+        if q_len > 0:
             if not self.queue_bar.winfo_ismapped():
                 self.queue_bar.pack(fill="x", side="bottom", before=self.input_container, pady=(0, 2))
-            if q_len > 0:
-                self.lbl_queue_indicator.configure(
-                    text=f"📋 Queued Tasks: {q_len}",
-                    fg=self.C["accent_yellow"]
-                )
-                if not self.btn_clear_queue.winfo_ismapped():
-                    self.btn_clear_queue.pack(side="left", padx=4)
-            else:
-                self.lbl_queue_indicator.configure(
-                    text="⚡ AI Responding...",
-                    fg=self.C["accent_cyan"]
-                )
-                if self.btn_clear_queue.winfo_ismapped():
-                    self.btn_clear_queue.pack_forget()
-            if not self.btn_live_steer.winfo_ismapped():
-                self.btn_live_steer.pack(side="left", padx=4, pady=3)
+            self.lbl_queue_indicator.configure(
+                text=f"📋 Queued Tasks: {q_len}",
+                fg=self.C["accent_yellow"]
+            )
+            if not self.btn_clear_queue.winfo_ismapped():
+                self.btn_clear_queue.pack(side="left", padx=4)
         else:
             if self.queue_bar.winfo_ismapped():
                 self.queue_bar.pack_forget()
@@ -2913,50 +2901,129 @@ class SmartAIChatbotApp:
                 response_text = f"### Connected MCP Endpoints:\n```json\n{res}\n```"
                 matched = True
 
-            thinking_tokens = 0
-            duration_s = 0.0
-            tok_per_sec = 0.0
-
             if not matched:
                 if self.cancel_event.is_set():
                     self.root.after(0, lambda: self._append_ai_message("⏹ Generation stopped."))
                     return
 
                 curr_history = self.chat_history.get(self.active_tab_id, [])
-                ans, meta = self.engine.solve(full_msg, history=curr_history, cancel_event=self.cancel_event)
-                self.last_metadata = meta
-                response_text = ans
-                thinking_text = meta.get("thinking_text")
-                duration_s = max(0.01, time.perf_counter() - start_time)
-                thinking_tokens = len(thinking_text.split()) * 2 if thinking_text else 0
-                tok_per_sec = (len(ans.split()) * 2 + thinking_tokens) / duration_s
+                info = self.models_config[self.active_tab_id]
 
-                # Log trace into SQLite memory
+                # 1. Initialize streaming container in chat
+                accumulated = []
+                mark_name = f"stream_ai_{int(time.time() * 1000)}"
+
+                def _init_ai_stream():
+                    self.chat_stream.configure(state="normal")
+                    self.chat_stream.insert("end", f"\n✦ {info['short_name']}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
+                    self.chat_stream.mark_set(mark_name, "end")
+                    self.chat_stream.mark_gravity(mark_name, "left")
+                    self.chat_stream.configure(state="disabled")
+                    self._scroll_chat_to_bottom()
+
+                self.root.after(0, _init_ai_stream)
+
+                # 2. Yield tokens in real time directly to chat
+                for chunk in self.engine.stream_solve(full_msg, history=curr_history, cancel_event=self.cancel_event):
+                    if self.cancel_event.is_set():
+                        break
+                    accumulated.append(chunk)
+                    def _insert_chunk(c=chunk):
+                        try:
+                            self.chat_stream.configure(state="normal")
+                            self.chat_stream.insert("end", c, "ai_msg")
+                            self.chat_stream.configure(state="disabled")
+                            self._scroll_chat_to_bottom()
+                        except Exception:
+                            pass
+                    self.root.after(0, _insert_chunk)
+
+                full_ans = "".join(accumulated).strip()
+                duration_s = max(0.01, time.perf_counter() - start_time)
+                tokens_count = len(full_ans.split()) * 2
+                tok_per_sec = tokens_count / duration_s
+                self.total_tokens_used += tokens_count
+
+                # 3. Finalize markdown styling and collapsible thinking pill
+                def _finalize_ai_msg(text=full_ans, dur=duration_s, tps=tok_per_sec):
+                    try:
+                        self.chat_stream.configure(state="normal")
+                        # Delete raw stream chunk to replace with styled markdown
+                        if self.chat_stream.get(mark_name, "end").strip():
+                            self.chat_stream.delete(mark_name, "end")
+
+                        # Parse <think>...</think>
+                        th_text = None
+                        main_body = text
+                        if "<think>" in text and "</think>" in text:
+                            p1 = text.find("<think>") + 7
+                            p2 = text.find("</think>")
+                            th_text = text[p1:p2].strip()
+                            main_body = (text[:p1-7] + text[p2+8:]).strip()
+
+                        # Compact, shrink-to-fit thinking pill
+                        if th_text:
+                            self._think_counter += 1
+                            think_id = f"think_{self._think_counter}"
+                            self.thinking_cache[think_id] = th_text
+                            self.thinking_expanded[think_id] = False
+                            btn_tag = f"tag_btn_{think_id}"
+                            self.chat_stream.insert(
+                                "end", f"  💭 Thought for {dur:.1f}s [Click to Expand]  ",
+                                ("think_dropdown_btn", btn_tag)
+                            )
+                            self.chat_stream.insert("end", "\n\n")
+                            self.chat_stream.tag_bind(btn_tag, "<Button-1>", lambda e, tid=think_id: self._on_toggle_thinking_dropdown(tid))
+
+                        parts = main_body.split("```")
+                        for i, part in enumerate(parts):
+                            if i % 2 == 0:
+                                self._render_styled_markdown(part)
+                            else:
+                                lines = part.split("\n", 1)
+                                lang = lines[0].strip() if lines else "python"
+                                code_content = lines[1] if len(lines) > 1 else part
+                                self._code_counter += 1
+                                code_id = f"code_{self._code_counter}"
+                                self.code_snippets[code_id] = code_content.strip()
+                                tag_copy = f"tag_cp_{code_id}"
+                                tag_canvas = f"tag_cv_{code_id}"
+                                self.chat_stream.insert("end", f"  📄 {lang or 'python'}  ", "code_hdr")
+                                self.chat_stream.insert("end", " [ 📋 Copy ] ", ("code_action_copy", tag_copy))
+                                self.chat_stream.insert("end", " [ 🎨 Open in Canvas ] \n", ("code_action_canvas", tag_canvas))
+                                self.chat_stream.insert("end", code_content.rstrip(), "code_block")
+                                self.chat_stream.insert("end", "\n\n")
+                                self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
+                                self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
+
+                        if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
+                            self.chat_history[self.active_tab_id].append({"role": "assistant", "content": main_body})
+
+                        self.chat_stream.configure(state="disabled")
+                        self._scroll_chat_to_bottom()
+                    except Exception:
+                        pass
+
+                self.root.after(0, _finalize_ai_msg)
+                self.root.after(0, lambda tps=tok_per_sec: self._update_telemetry(tps))
+
+                # 4. Log trace into SQLite memory
                 self.db.log_interaction(
                     prompt=full_msg,
-                    completion=ans,
-                    raw_branches=meta.get("raw_branches", [ans]),
-                    verified_reward=meta.get("verified_reward", 1.0),
-                    surprise_score=meta.get("surprise_score", 0.0),
-                    mode=meta.get("mode", "Instant (N=1)"),
-                    entropy=meta.get("entropy", 0.15),
-                    winning_branch=meta.get("winning_branch", 0),
-                    winning_temp=meta.get("winning_temp", 0.20),
+                    completion=full_ans,
+                    raw_branches=[full_ans],
+                    verified_reward=1.0,
+                    surprise_score=0.0,
+                    mode="Instant Stream (N=1)",
+                    entropy=0.15,
+                    winning_branch=0,
+                    winning_temp=0.20,
                     test_cases=""
                 )
 
-            tokens_added = len(response_text.split()) * 2
-            self.total_tokens_used += tokens_added
-
-            self.root.after(
-                0,
-                lambda r=response_text, th=thinking_text, tt=thinking_tokens, ds=duration_s, tps=tok_per_sec:
-                self._append_ai_message(r, thinking_text=th, thinking_tokens=tt, duration_s=ds, tok_per_sec=tps)
-            )
-            self.root.after(0, lambda tps=tok_per_sec: self._update_telemetry(tps))
-
         except Exception as e:
-            self.root.after(0, lambda: self._append_ai_message(f"⚠️ Error executing query: {str(e)}"))
+            err_msg = str(e)
+            self.root.after(0, lambda em=err_msg: self._append_ai_message(f"⚠️ Error executing query: {em}"))
 
         finally:
             self.root.after(0, lambda: self._set_generating_state(False))
