@@ -173,12 +173,16 @@ def main():
     settings = get_settings(**overrides)
     db = EpisodicMemoryDB(db_path=settings.database_path)
 
-    if args.app:
+    if args.app or getattr(args, "ui", False):
+        from config.paths import terminate_existing_app_instances
+        terminate_existing_app_instances()
         from app_gui import launch_app
         launch_app(settings=settings)
         return
 
     if args.ui:
+        from config.paths import terminate_existing_app_instances
+        terminate_existing_app_instances()
         from app_gui import launch_app
         launch_app(settings=settings)
         return

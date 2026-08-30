@@ -24,7 +24,7 @@ from app_gui import SmartAIChatbotApp
 class TestLiveAIDemonstration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.settings = get_settings()
+        cls.settings = get_settings(use_mock=True)
         cls.engine = ProReasoningEngine(settings=cls.settings)
         cls.db_fd, cls.db_path = tempfile.mkstemp(suffix=".db")
         cls.db = EpisodicMemoryDB(db_path=cls.db_path)
@@ -113,7 +113,7 @@ class TestLiveAIDemonstration(unittest.TestCase):
         app._append_ai_message("Hello! Ready to help.", thinking_tokens=32, duration_s=0.25, tok_per_sec=128.0)
         content = app.chat_stream.get("1.0", "end")
         self.assertIn("Hello from test", content)
-        self.assertIn("Reasoning Process", content)
+        self.assertIn("Thought for", content)
         self.assertIn("128.0 tok/s", content)
 
         # 3. Test Model Switching
@@ -125,6 +125,8 @@ class TestLiveAIDemonstration(unittest.TestCase):
             "Axon" in app.lbl_model_status.cget("text")
         )
 
+        if hasattr(app, "watchdog") and app.watchdog:
+            app.watchdog.stop_monitoring()
         root.destroy()
 
     def test_06_convex_temperature_ladder(self):

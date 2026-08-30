@@ -22,7 +22,7 @@ from app_gui import SmartAIChatbotApp
 class TestUIAndDSLSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.settings = get_settings()
+        cls.settings = get_settings(use_mock=True)
         cls.db_fd, cls.db_path = tempfile.mkstemp(suffix=".db")
         cls.tools = AgentToolRegistry(db_path=cls.db_path)
         cls.playground = InteractiveDSLPlayground(sandbox_timeout=3.0, max_memory_mb=512)

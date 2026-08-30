@@ -62,8 +62,9 @@ class SleepConsolidationDaemon:
                 self.tokenizer = AutoTokenizer.from_pretrained(model_path)
                 self.base_model = AutoModelForCausalLM.from_pretrained(
                     model_path,
-                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float16,
                     device_map=self.device if torch.cuda.is_available() else None,
+                    low_cpu_mem_usage=True,
                     trust_remote_code=True
                 )
                 lora_config = LoraConfig(

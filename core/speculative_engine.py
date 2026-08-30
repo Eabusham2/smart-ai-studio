@@ -203,7 +203,10 @@ class SpeculativeEngine:
             except Exception:
                 pass
 
-        # 2. Mock / Simulated Speculative Verification (High acceptance for structured patterns)
+        # 2. If no target model is loaded, return empty or mock verification
+        if not getattr(self.settings, "use_mock", False):
+            return [], None
+
         accepted = []
         acceptance_prob = 0.85 if self.mode == "pld" else 0.75
 

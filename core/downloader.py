@@ -128,9 +128,9 @@ def ensure_model_available(
             }
 
     except Exception as e:
-        # Fallback if offline or network unavailable during test
+        # Fallback if offline or network unavailable during download
         if progress_callback:
-            progress_callback(1.0, f"ℹ️ Offline / Mock Mode Active for `{repo_or_file_id}`")
+            progress_callback(1.0, f"ℹ️ Offline storage active for `{repo_or_file_id}` ({e})")
         return {
             "status": "ready_fallback",
             "path": target_dir,

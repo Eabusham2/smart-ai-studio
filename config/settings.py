@@ -69,6 +69,7 @@ try:
         backend: str = Field(default_factory=detect_optimal_backend, description="Inference engine backend: mlx, torch")
         device: str = Field(default_factory=detect_optimal_device, description="Compute device: cuda, mps, cpu")
         live_mode: bool = Field(default=True, description="Enable live neural model execution")
+        use_mock: bool = Field(default=False, description="Enable mock mode for testing without GPU/neural weights")
         small_model: bool = Field(default=False, description="Use lightweight local model fallback")
         kv_bits: int = Field(default=4, description="KV-cache quantization bitwidth (4-bit for 16GB M1 Mac)")
 
@@ -127,6 +128,7 @@ except ImportError:
         backend: str = field(default_factory=detect_optimal_backend)
         device: str = field(default_factory=detect_optimal_device)
         live_mode: bool = os.getenv("LIVE_MODE", "true").lower() in ("1", "true", "yes")
+        use_mock: bool = os.getenv("USE_MOCK", "false").lower() in ("1", "true", "yes")
         small_model: bool = os.getenv("SMALL_MODEL", "false").lower() in ("1", "true", "yes")
         kv_bits: int = int(os.getenv("KV_BITS", "4"))
 
@@ -182,7 +184,7 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "raw_params": 27_000_000_000,
         "precision": "2-Bit Uncensored MLX",
         "max_context": 131_072,
-        "vram": "~5.6 GB / 16 GB",
+        "vram": "~14.5 GB / 16 GB",
         "accent": "#38bdf8",
         "artifacts": {
             "mlx": "orcarouter/Qwen3.8-27B-Uncensored-MLX",
@@ -203,7 +205,7 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "raw_params": 27_000_000_000,
         "precision": "Q2_K / Q3_K_M Lowest Quant",
         "max_context": 131_072,
-        "vram": "~5.4 GB / 16 GB",
+        "vram": "~14.2 GB / 16 GB",
         "accent": "#f43f5e",
         "artifacts": {
             "gguf": "douyamv/Qwen3.8-27B-abliterated-GGUF",

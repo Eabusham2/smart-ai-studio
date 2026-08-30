@@ -24,7 +24,7 @@ from app_gui import SmartAIChatbotApp
 class TestMultimodalAndCanvasSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.settings = get_settings()
+        cls.settings = get_settings(use_mock=True)
         cls.engine = ProReasoningEngine(settings=cls.settings)
         cls.db_fd, cls.db_path = tempfile.mkstemp(suffix=".db")
         cls.db = EpisodicMemoryDB(db_path=cls.db_path)

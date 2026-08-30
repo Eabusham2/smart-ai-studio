@@ -143,3 +143,40 @@ def inspect_mlx_model_folder(folder_path: str) -> Dict[str, Any]:
         "has_weights": has_weights,
         "weight_files_count": len(weight_files)
     }
+
+
+def terminate_existing_app_instances():
+    """
+    Finds and terminates any other running Smart AI Studio instances
+    to prevent multiple apps running simultaneously and eating system memory.
+    """
+    my_pid = os.getpid()
+    try:
+        import psutil
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                pid = proc.info['pid']
+                if pid == my_pid:
+                    continue
+                cmdline = proc.info.get('cmdline') or []
+                cmd = " ".join(cmdline)
+                if ("main.py" in cmd or "app_gui.py" in cmd) and ("python" in cmd.lower()):
+                    proc.kill()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if sys.platform != "win32":
+        try:
+            import subprocess
+            out = subprocess.check_output(["pgrep", "-f", "python.*(main.py|app_gui.py)"]).decode().strip()
+            for line in out.splitlines():
+                try:
+                    pid = int(line.strip())
+                    if pid != my_pid:
+                        os.kill(pid, 9)  # SIGKILL
+                except Exception:
+                    pass
+        except Exception:
+            pass

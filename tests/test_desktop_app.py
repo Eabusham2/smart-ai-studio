@@ -40,11 +40,17 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.settings = Settings(
             database_path=self.db_path,
             device="cpu",
-            mlx_model_path="prism-ml/Ternary-Bonsai-27B-mlx-2bit"
+            mlx_model_path="prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            use_mock=True
         )
         self.app = SmartAIChatbotApp(self.root, settings=self.settings)
 
     def tearDown(self):
+        if hasattr(self, "app") and self.app:
+            if hasattr(self.app, "watchdog") and self.app.watchdog:
+                self.app.watchdog.stop_monitoring()
+            if hasattr(self.app, "engine") and self.app.engine:
+                self.app.engine.unload_model()
         import gc
         gc.collect()
         try:
