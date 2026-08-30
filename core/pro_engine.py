@@ -376,13 +376,13 @@ class ProReasoningEngine:
 
     def calculate_token_entropy(self, prompt: str) -> float:
         """Evaluates model next-token Shannon entropy across supported backends."""
-        if self.mlx_backend and self.mlx_backend.is_mlx_available:
+        if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
             return self.mlx_backend.calculate_token_entropy(prompt)
 
-        if self.gguf_backend and self.gguf_backend.is_gguf_available:
+        if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "llm", None) is not None:
             return self.gguf_backend.calculate_token_entropy(prompt)
 
-        if self.bitnet_backend and self.bitnet_backend.is_loaded:
+        if self.bitnet_backend and getattr(self.bitnet_backend, "is_loaded", False) and getattr(self.bitnet_backend, "model", None) is not None:
             return self.bitnet_backend.calculate_token_entropy(prompt)
 
         if self.model is None:
@@ -475,7 +475,8 @@ class ProReasoningEngine:
         formatted_prompt = self._format_prompt_with_history(prompt, history)
 
         # 1. MLX Streaming
-        if self.mlx_backend and self.mlx_backend.is_mlx_available:
+        if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
+            has_yielded = False
             for token in self.mlx_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
                 max_tokens=self.settings.max_new_tokens,
@@ -484,11 +485,14 @@ class ProReasoningEngine:
             ):
                 if cancel_event and cancel_event.is_set():
                     break
+                has_yielded = True
                 yield token
-            return
+            if has_yielded:
+                return
 
         # 2. GGUF Streaming
-        if self.gguf_backend and self.gguf_backend.is_gguf_available:
+        if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "llm", None) is not None:
+            has_yielded = False
             for token in self.gguf_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
                 max_tokens=self.settings.max_new_tokens,
@@ -497,11 +501,14 @@ class ProReasoningEngine:
             ):
                 if cancel_event and cancel_event.is_set():
                     break
+                has_yielded = True
                 yield token
-            return
+            if has_yielded:
+                return
 
         # 3. BitNet Streaming
-        if self.bitnet_backend and self.bitnet_backend.is_loaded:
+        if self.bitnet_backend and getattr(self.bitnet_backend, "is_loaded", False) and getattr(self.bitnet_backend, "model", None) is not None:
+            has_yielded = False
             for token in self.bitnet_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
                 max_tokens=self.settings.max_new_tokens,
@@ -510,8 +517,10 @@ class ProReasoningEngine:
             ):
                 if cancel_event and cancel_event.is_set():
                     break
+                has_yielded = True
                 yield token
-            return
+            if has_yielded:
+                return
 
         # 4. Fallback Token Generator
         ans, meta = self.solve(prompt, history=history, cancel_event=cancel_event, temperature=temperature)
@@ -521,7 +530,7 @@ class ProReasoningEngine:
                 break
             suffix = " " if i < len(words) - 1 else ""
             yield word + suffix
-            time.sleep(0.012)
+            time.sleep(0.008)
 
     def generate_parallel_branches(
         self,
@@ -535,7 +544,7 @@ class ProReasoningEngine:
         ladder = temperatures if temperatures is not None else get_ladder_temperatures(branch_count)
 
         # 1. Apple Silicon Native MLX Inference
-        if self.mlx_backend and self.mlx_backend.is_mlx_available:
+        if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
             branches = self.mlx_backend.generate_branches(
                 prompt=formatted_prompt,
                 branch_count=branch_count,

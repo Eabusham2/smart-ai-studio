@@ -479,22 +479,21 @@ class SmartAIChatbotApp:
         self._start_event_queue_polling()
 
     def _update_memory_hud_badge(self):
-        """Updates top HUD memory badge with granular App, Model Metal, and System RAM metrics."""
+        """Updates top HUD memory badge with exactly 2 figures: AI RAM (App + Model) and Total Used System RAM."""
         if not hasattr(self, "lbl_vram"):
             return
         try:
             mem = SystemMemoryWatchdog.get_detailed_memory_breakdown()
-            app_gb = mem.get("app_rss_gb", 0.0)
-            model_gb = mem.get("model_metal_active_gb", 0.0)
+            ai_ram = mem.get("total_allocated_gb", 0.0)
             sys_used = mem.get("system_used_gb", 0.0)
             sys_total = mem.get("system_total_gb", 16.0)
 
-            if model_gb > 0.05:
-                text = f"💾 App: {app_gb:.1f}G | Model: {model_gb:.1f}G | Sys: {sys_used:.1f}/{sys_total:.0f}G"
+            if ai_ram > 0.05:
+                text = f"💾 AI RAM: {ai_ram:.1f}G | Total RAM: {sys_used:.1f}/{sys_total:.0f}G"
             elif getattr(self, "is_model_loaded", False):
-                text = f"💾 App: {app_gb:.1f}G | Model: Standby | Sys: {sys_used:.1f}/{sys_total:.0f}G"
+                text = f"💾 AI RAM: Ready | Total RAM: {sys_used:.1f}/{sys_total:.0f}G"
             else:
-                text = f"💾 App: {app_gb:.1f}G | Model: Off | Sys: {sys_used:.1f}/{sys_total:.0f}G"
+                text = f"💾 AI RAM: Standby | Total RAM: {sys_used:.1f}/{sys_total:.0f}G"
 
             self.lbl_vram.configure(text=text)
         except Exception:
@@ -1506,10 +1505,22 @@ class SmartAIChatbotApp:
             cf, bg=self.C["bg_chat"], fg=self.C["text_main"],
             font=_FONT_MAIN, wrap="word", bd=0, padx=28, pady=16,
             highlightthickness=0, spacing1=6, spacing3=6,
-            yscrollcommand=scroll.set, cursor="arrow"
+            yscrollcommand=scroll.set, cursor="xterm",
+            exportselection=True,
+            selectbackground=self.C.get("accent_cyan", "#38bdf8"),
+            selectforeground="#000000" if not is_dark else "#ffffff",
+            inactiveselectbackground=self.C.get("bg_card", "#27272a")
         )
         self.chat_stream.pack(fill="both", expand=True)
         scroll.configure(command=self.chat_stream.yview)
+
+        # Selection & Copy Key Bindings
+        self.chat_stream.bind("<Command-c>", lambda e: self._on_copy_chat_selection(e))
+        self.chat_stream.bind("<Control-c>", lambda e: self._on_copy_chat_selection(e))
+        self.chat_stream.bind("<Command-a>", lambda e: self._on_select_all_chat(e))
+        self.chat_stream.bind("<Control-a>", lambda e: self._on_select_all_chat(e))
+        self.chat_stream.bind("<Button-2>", lambda e: self._show_chat_context_menu(e))
+        self.chat_stream.bind("<Button-3>", lambda e: self._show_chat_context_menu(e))
 
         self._configure_stream_tags(self.chat_stream)
 
@@ -1517,6 +1528,34 @@ class SmartAIChatbotApp:
             self.chat_frames[tid] = cf
             self.chat_streams[tid] = self.chat_stream
             self.chat_scrolls[tid] = scroll
+
+    def _on_copy_chat_selection(self, event=None):
+        try:
+            sel = self.chat_stream.get("sel.first", "sel.last")
+            if sel:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(sel)
+                return "break"
+        except Exception:
+            pass
+
+    def _on_select_all_chat(self, event=None):
+        try:
+            self.chat_stream.tag_add("sel", "1.0", "end")
+            return "break"
+        except Exception:
+            pass
+
+    def _show_chat_context_menu(self, event):
+        menu = tk.Menu(self.root, tearoff=0, bg=self.C["btn_bg"], fg=self.C["btn_fg"], font=_FONT_SMALL)
+        menu.add_command(label="📋 Copy Selection", command=self._on_copy_chat_selection)
+        menu.add_command(label="🔍 Select All", command=self._on_select_all_chat)
+        menu.add_separator()
+        menu.add_command(label="💾 Export Chat to Markdown", command=self._on_export_chat_button)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def _configure_stream_tags(self, stream: tk.Text):
         is_dark = (self.current_theme == "dark")
@@ -1527,6 +1566,9 @@ class SmartAIChatbotApp:
         sel_bg = self.C.get("accent_cyan", "#38bdf8")
         sel_fg = "#000000" if not is_dark else "#ffffff"
         stream.tag_configure("sel", background=sel_bg, foreground=sel_fg)
+
+        # Turn Divider Tag
+        stream.tag_configure("turn_divider", foreground=self.C.get("border", "#3f3f46"), font=_FONT_TINY)
 
         stream.tag_configure("user_header", foreground=self.C["accent_cyan"], font=_FONT_H3)
         stream.tag_configure("user_msg", foreground=fg_main, font=_FONT_MAIN)
@@ -1976,10 +2018,6 @@ class SmartAIChatbotApp:
             )
 
     def _on_send_button_clicked(self):
-        if not self.is_model_loaded:
-            self._on_toggle_load_unload()
-            return
-
         text = self.txt_input.get("1.0", "end-1c").strip()
         has_text = bool(text and not getattr(self, "_placeholder_active", False) and "Ask anything" not in text and "Model is unloaded" not in text)
 
@@ -2711,7 +2749,9 @@ class SmartAIChatbotApp:
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
             self.chat_history[self.active_tab_id].append({"role": "user", "content": text})
         self.chat_stream.configure(state="normal")
-        self.chat_stream.insert("end", f"\n👤 You  •  {datetime.now().strftime('%H:%M')}\n", "user_header")
+        # Add stylish turn divider between turns
+        self.chat_stream.insert("end", "\n" + "─" * 72 + "\n\n", "turn_divider")
+        self.chat_stream.insert("end", f"👤 You  •  {datetime.now().strftime('%H:%M')}\n", "user_header")
         self.chat_stream.insert("end", text.strip(), "user_msg")
         self.chat_stream.insert("end", "\n\n")
         self.chat_stream.configure(state="disabled")
@@ -3099,8 +3139,12 @@ class SmartAIChatbotApp:
                     self.root.after(0, _insert_chunk)
 
                 full_ans = "".join(accumulated).strip()
+                if not full_ans and not self.cancel_event.is_set():
+                    ans, meta = self.engine.solve(full_msg, history=curr_history, cancel_event=self.cancel_event)
+                    full_ans = ans.strip() if ans else "I am ready. How can I help you today?"
+
                 duration_s = max(0.01, time.perf_counter() - start_time)
-                tokens_count = len(full_ans.split()) * 2
+                tokens_count = max(1, len(full_ans.split()) * 2)
                 tok_per_sec = tokens_count / duration_s
                 self.total_tokens_used += tokens_count
 
@@ -3108,9 +3152,15 @@ class SmartAIChatbotApp:
                 def _finalize_ai_msg(text=full_ans, dur=duration_s, tps=tok_per_sec):
                     try:
                         self.chat_stream.configure(state="normal")
+                        if not text:
+                            text = "I am ready. How can I assist you?"
+
                         # Delete raw stream chunk to replace with styled markdown
-                        if self.chat_stream.get(mark_name, "end").strip():
-                            self.chat_stream.delete(mark_name, "end")
+                        try:
+                            if mark_name in self.chat_stream.mark_names():
+                                self.chat_stream.delete(mark_name, "end")
+                        except Exception:
+                            pass
 
                         # Parse <think>...</think>
                         th_text = None
@@ -3129,7 +3179,7 @@ class SmartAIChatbotApp:
                             self.thinking_expanded[think_id] = False
                             btn_tag = f"tag_btn_{think_id}"
                             self.chat_stream.insert(
-                                "end", f"  💭 Thought for {dur:.1f}s [Click to Expand]  ",
+                                "end", f"  ▶ 💭 Thought for {dur:.1f}s [Click to Expand]  ",
                                 ("think_dropdown_btn", btn_tag)
                             )
                             self.chat_stream.insert("end", "\n\n")
@@ -3161,8 +3211,14 @@ class SmartAIChatbotApp:
 
                         self.chat_stream.configure(state="disabled")
                         self._scroll_chat_to_bottom()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        try:
+                            self.chat_stream.configure(state="normal")
+                            self.chat_stream.insert("end", f"\n{text}\n\n", "ai_msg")
+                            self.chat_stream.configure(state="disabled")
+                            self._scroll_chat_to_bottom()
+                        except Exception:
+                            pass
 
                 self.root.after(0, _finalize_ai_msg)
                 self.root.after(0, lambda tps=tok_per_sec: self._update_telemetry(tps))
