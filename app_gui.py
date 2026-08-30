@@ -461,12 +461,12 @@ class SmartAIChatbotApp:
         # Thread-Safe Event Queue for Background Worker & Watchdog Callbacks
         self._event_queue: queue.Queue = queue.Queue()
 
-        # System RAM Pressure Watchdog with Proactive Reclaim (94% limit)
+        # System RAM Pressure Watchdog with Proactive Reclaim (98.5% limit, up to 15.8GB)
         self.watchdog = SystemMemoryWatchdog(
-            check_interval_seconds=2.5,
-            max_ram_usage_percent=94.0,
-            min_free_ram_gb=0.8,
-            max_process_ram_gb=12.0,
+            check_interval_seconds=3.0,
+            max_ram_usage_percent=98.5,
+            min_free_ram_gb=0.15,
+            max_process_ram_gb=15.8,
             on_pressure_callback=lambda s: self._event_queue.put(("memory_pressure", s))
         )
         self.watchdog.start_monitoring()
@@ -556,8 +556,20 @@ class SmartAIChatbotApp:
     # ─────────────────────────────────────────────────────
     def _init_window(self):
         self.root.title("Smart AI Studio — Autonomous Local AI")
-        self.root.geometry("1240x840")
-        self.root.minsize(980, 640)
+        
+        # Calculate dynamic large starting size to fit all controls comfortably
+        try:
+            screen_w = self.root.winfo_screenwidth()
+            screen_h = self.root.winfo_screenheight()
+            init_w = max(1360, min(1600, int(screen_w * 0.90)))
+            init_h = max(860, min(1000, int(screen_h * 0.88)))
+            x = max(10, (screen_w - init_w) // 2)
+            y = max(10, (screen_h - init_h) // 2)
+            self.root.geometry(f"{init_w}x{init_h}+{x}+{y}")
+        except Exception:
+            self.root.geometry("1380x880")
+
+        self.root.minsize(1050, 680)
         self.root.configure(bg=self.C["bg_app"])
 
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.png")
@@ -569,8 +581,117 @@ class SmartAIChatbotApp:
             except Exception:
                 pass
 
+        # Zoom Management & Keyboard Shortcuts
+        self.zoom_scale = 1.0
+        self.root.bind("<Command-plus>", lambda e: self._on_zoom_in())
+        self.root.bind("<Command-equal>", lambda e: self._on_zoom_in())
+        self.root.bind("<Control-plus>", lambda e: self._on_zoom_in())
+        self.root.bind("<Control-equal>", lambda e: self._on_zoom_in())
+        self.root.bind("<Command-minus>", lambda e: self._on_zoom_out())
+        self.root.bind("<Control-minus>", lambda e: self._on_zoom_out())
+        self.root.bind("<Command-0>", lambda e: self._on_zoom_reset())
+        self.root.bind("<Control-0>", lambda e: self._on_zoom_reset())
+
         self._configure_ttk_styles()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_app)
+
+    def _on_zoom_in(self):
+        """Increases UI text and element zoom scale."""
+        self._apply_zoom(min(1.6, self.zoom_scale + 0.1))
+
+    def _on_zoom_out(self):
+        """Decreases UI text and element zoom scale."""
+        self._apply_zoom(max(0.75, self.zoom_scale - 0.1))
+
+    def _on_zoom_reset(self):
+        """Resets UI zoom scale to 100%."""
+        self._apply_zoom(1.0)
+
+    def _apply_zoom(self, new_scale: float):
+        """Scales font sizes across chat stream, code blocks, and input fields."""
+        self.zoom_scale = round(new_scale, 2)
+        pct = int(self.zoom_scale * 100)
+        if hasattr(self, "lbl_zoom") and self.lbl_zoom:
+            try:
+                self.lbl_zoom.configure(text=f"🔍 {pct}%")
+            except Exception:
+                pass
+
+        scale = self.zoom_scale
+        scaled_main = (_FONT_FAMILY, max(10, int(14 * scale)))
+        scaled_h1 = (_FONT_FAMILY, max(14, int(18 * scale)), "bold")
+        scaled_h2 = (_FONT_FAMILY, max(12, int(16 * scale)), "bold")
+        scaled_h3 = (_FONT_FAMILY, max(11, int(14 * scale)), "bold")
+        scaled_bold = (_FONT_FAMILY, max(10, int(14 * scale)), "bold")
+        scaled_bold_italic = (_FONT_FAMILY, max(10, int(14 * scale)), "bold", "italic")
+        scaled_italic = (_FONT_FAMILY, max(10, int(14 * scale)), "italic")
+        scaled_small = (_FONT_FAMILY, max(9, int(12 * scale)))
+        scaled_tiny = (_FONT_FAMILY, max(8, int(10 * scale)))
+        scaled_tiny_bold = (_FONT_FAMILY, max(8, int(10 * scale)), "bold")
+        scaled_mono = (_FONT_MONO_FAMILY, max(10, int(13 * scale)))
+        scaled_inline_mono = (_FONT_MONO_FAMILY, max(9, int(12 * scale)))
+        scaled_input = (_FONT_FAMILY, max(11, int(15 * scale)))
+
+        for stream in self.chat_streams.values():
+            try:
+                stream.tag_configure("user_header", font=scaled_h3)
+                stream.tag_configure("user_msg", font=scaled_main)
+                stream.tag_configure("ai_header", font=scaled_h3)
+                stream.tag_configure("ai_msg", font=scaled_main)
+                stream.tag_configure("steer_header", font=scaled_h3)
+                stream.tag_configure("steer_msg", font=scaled_main)
+                stream.tag_configure("queue_header", font=scaled_h3)
+                stream.tag_configure("queue_msg", font=scaled_main)
+                stream.tag_configure("md_h1", font=scaled_h1)
+                stream.tag_configure("md_h2", font=scaled_h2)
+                stream.tag_configure("md_h3", font=scaled_h3)
+                stream.tag_configure("md_bold", font=scaled_bold)
+                stream.tag_configure("md_bold_italic", font=scaled_bold_italic)
+                stream.tag_configure("md_italic", font=scaled_italic)
+                stream.tag_configure("md_quote", font=scaled_italic)
+                stream.tag_configure("md_bullet", font=scaled_main)
+                stream.tag_configure("md_inline_code", font=scaled_inline_mono)
+                stream.tag_configure("code_block", font=scaled_mono)
+                stream.tag_configure("code_hdr", font=scaled_tiny_bold)
+                stream.tag_configure("code_action_copy", font=scaled_tiny_bold)
+                stream.tag_configure("code_action_canvas", font=scaled_tiny_bold)
+                stream.tag_configure("think_dropdown_btn", font=scaled_tiny_bold)
+                stream.tag_configure("think_body", font=scaled_small)
+                stream.tag_configure("tool_pill", font=scaled_tiny_bold)
+                stream.tag_configure("tool_output", font=scaled_small)
+                stream.tag_configure("separator", font=scaled_tiny)
+            except Exception:
+                pass
+
+        if hasattr(self, "txt_input") and self.txt_input:
+            try:
+                self.txt_input.configure(font=scaled_input)
+            except Exception:
+                pass
+
+        if hasattr(self, "txt_canvas") and self.txt_canvas:
+            try:
+                self.txt_canvas.configure(font=scaled_mono)
+            except Exception:
+                pass
+
+    def _on_show_zoom_menu(self):
+        """Displays popup menu with zoom presets and shortcuts."""
+        menu = tk.Menu(self.root, tearoff=0, bg=self.C["btn_bg"], fg=self.C["btn_fg"], font=_FONT_SMALL)
+        menu.add_command(label="➕ Zoom In (+10%)  [Cmd +]", command=self._on_zoom_in)
+        menu.add_command(label="➖ Zoom Out (-10%) [Cmd -]", command=self._on_zoom_out)
+        menu.add_separator()
+        menu.add_command(label="85% (Compact)", command=lambda: self._apply_zoom(0.85))
+        menu.add_command(label="100% (Default) [Cmd 0]", command=lambda: self._apply_zoom(1.0))
+        menu.add_command(label="115% (Comfortable)", command=lambda: self._apply_zoom(1.15))
+        menu.add_command(label="130% (Large)", command=lambda: self._apply_zoom(1.30))
+        menu.add_command(label="150% (Extra Large)", command=lambda: self._apply_zoom(1.50))
+        try:
+            x = self.btn_zoom.winfo_rootx()
+            y = self.btn_zoom.winfo_rooty() + self.btn_zoom.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
 
     def _configure_ttk_styles(self):
         """Configures ttk widget styles (Treeview, Combobox, Scrollbar) according to active light/dark theme."""
@@ -1003,6 +1124,19 @@ class SmartAIChatbotApp:
             command=self._on_toggle_resource_viewer
         )
         self.btn_toggle_resources.pack(side="left", padx=2)
+
+        # Zoom Controls Button (🔍 100%)
+        self.btn_zoom = tk.Button(
+            right_box, text="🔍 100%", font=_FONT_TINY_BOLD,
+            bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            highlightbackground=self.C["btn_bg"],
+            activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
+            relief="flat", bd=0, padx=6, pady=4, cursor="hand2",
+            highlightthickness=0,
+            command=self._on_show_zoom_menu
+        )
+        self.btn_zoom.pack(side="left", padx=2)
+        self.lbl_zoom = self.btn_zoom
 
         # Theme Toggle (☀️ Light / 🌙 Dark)
         is_dark = (self.current_theme == "dark")
@@ -2417,22 +2551,28 @@ class SmartAIChatbotApp:
             self._append_ai_message("⚠️ Could not export chat history.")
 
     def _on_memory_pressure_emergency(self, status: Dict[str, Any]):
-        if self.is_model_loaded:
+        # Proactively trim transient caches without unloading active model
+        SystemMemoryWatchdog.reclaim_process_memory()
+        self._update_memory_hud_badge()
+
+        # Only unload if system is at absolute critical limit (>99.0%) and not actively generating
+        used_pct = status.get("used_percent", 0.0)
+        free_gb = status.get("free_gb", 1.0)
+        if used_pct >= 99.0 and free_gb < 0.10 and not getattr(self, "is_generating", False) and getattr(self, "is_model_loaded", False):
             self.engine.unload_model()
             self.is_model_loaded = False
-            self.lbl_model_status.configure(text="⚠️ Auto-Unloaded (Memory Watchdog)", fg=self.C["accent_red"])
+            self.lbl_model_status.configure(text="⚠️ Standby (Memory Pressure)", fg=self.C["accent_yellow"])
             self._update_memory_hud_badge()
             self._update_model_action_buttons()
             self._update_input_lock_state()
             self._update_resource_view_metrics()
             used_gb = status.get("used_gb", 0.0)
             total_gb = status.get("total_gb", 16.0)
-            used_pct = status.get("used_percent", 94.0)
             proc_gb = status.get("process_rss_gb", 0.0)
             self._append_ai_message(
                 f"🛡️ **System Memory Watchdog**: Total host RAM utilization reached {used_pct:.1f}% "
-                f"({used_gb:.1f} GB / {total_gb:.1f} GB across host OS and active apps; app process: {proc_gb:.1f} GB).\n\n"
-                f"• Automatically unloaded neural model to preserve system responsiveness."
+                f"({used_gb:.1f} GB / {total_gb:.1f} GB; app process: {proc_gb:.1f} GB).\n\n"
+                f"• Cleaned transient caches to preserve responsiveness while keeping model ready."
             )
 
     def _on_remove_workspace_folder(self):

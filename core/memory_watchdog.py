@@ -18,10 +18,10 @@ from typing import Any, Callable, Dict, Optional, Tuple
 class SystemMemoryWatchdog:
     def __init__(
         self,
-        check_interval_seconds: float = 2.5,
-        max_ram_usage_percent: float = 94.0,
-        min_free_ram_gb: float = 0.8,
-        max_process_ram_gb: float = 12.0,
+        check_interval_seconds: float = 3.0,
+        max_ram_usage_percent: float = 98.5,
+        min_free_ram_gb: float = 0.15,
+        max_process_ram_gb: float = 15.8,
         on_pressure_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ):
         self.check_interval_seconds = check_interval_seconds
@@ -150,8 +150,8 @@ class SystemMemoryWatchdog:
             import psutil
             import mlx.core as mx
             avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-            # Allow Metal to scale dynamically up to 75% of available free RAM
-            dynamic_cache_gb = max(1.5, avail_gb * 0.75)
+            # Allow Metal to scale dynamically up to 95% of available free RAM
+            dynamic_cache_gb = max(2.5, avail_gb * 0.95)
             dynamic_cache_bytes = int(dynamic_cache_gb * (1024 ** 3))
 
             if hasattr(mx, "set_cache_limit"):
@@ -191,7 +191,7 @@ class SystemMemoryWatchdog:
         self.adjust_dynamic_metal_headroom()
 
         # Proactive memory reclamation if total process/model memory grows above safe threshold
-        if status.get("process_rss_gb", 0) > 13.5:
+        if status.get("process_rss_gb", 0) > 15.6:
             self.reclaim_process_memory()
 
         is_under_pressure = (

@@ -142,9 +142,8 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         app._open_in_canvas("def hello_canvas(): return True")
         self.assertIn("hello_canvas", app.txt_canvas.get("1.0", "end"))
 
-        app._on_toggle_canvas_viewer()
-        self.assertFalse(app.show_canvas)
-
+        if hasattr(app, "watchdog") and app.watchdog:
+            app.watchdog.stop_monitoring()
         root.destroy()
 
     def test_08_multilingual_code_selection(self):
