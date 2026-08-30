@@ -85,7 +85,7 @@ Issues = "https://github.com/Eabusham2/smart-ai-studio/issues"
 Changelog = "https://github.com/Eabusham2/smart-ai-studio/releases"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/unit", "tests/live"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

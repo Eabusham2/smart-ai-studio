@@ -47,18 +47,20 @@ class SleepConsolidationDaemon:
 
     def _init_model_and_lora(self) -> None:
         """Initializes Slow-LoRA trainable synaptic adapter."""
+        if not getattr(self.settings, "use_mock", False):
+            try:
+                import torch
+                import torch.nn as nn
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                from peft import LoraConfig, get_peft_model, PeftModel
 
-        try:
-            import torch
-            import torch.nn as nn
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            from peft import LoraConfig, get_peft_model, PeftModel
+                model_path = self.settings.small_model_path if self.settings.small_model else self.base_model_path
+                
+                # Check if model is cached locally before trying to load heavy checkpoint
+                from core.hf_downloader import is_model_cached_locally
+                if not is_model_cached_locally(model_path) and not os.path.exists(model_path):
+                    raise FileNotFoundError(f"Model checkpoint not found or cached locally: {model_path}")
 
-            model_path = self.settings.small_model_path if self.settings.small_model else self.base_model_path
-            
-            # Check if model is cached locally before trying to load heavy checkpoint
-            from core.hf_downloader import is_model_cached_locally
-            if is_model_cached_locally(model_path) or os.path.exists(model_path):
                 self.tokenizer = AutoTokenizer.from_pretrained(model_path)
                 self.base_model = AutoModelForCausalLM.from_pretrained(
                     model_path,
@@ -75,12 +77,15 @@ class SleepConsolidationDaemon:
                     bias="none",
                     task_type="CAUSAL_LM"
                 )
-                if os.path.exists(self.lora_adapter_path):
-                    self.model = PeftModel.from_pretrained(
-                        self.base_model,
-                        self.lora_adapter_path,
-                        is_trainable=True
-                    )
+                if self.lora_adapter_path and os.path.exists(self.lora_adapter_path):
+                    try:
+                        self.model = PeftModel.from_pretrained(
+                            self.base_model,
+                            self.lora_adapter_path,
+                            is_trainable=True
+                        )
+                    except Exception as e:
+                        raise ValueError(f"Corrupted or invalid LoRA adapter at '{self.lora_adapter_path}': {e}") from e
                 else:
                     self.model = get_peft_model(self.base_model, lora_config)
 
@@ -89,58 +94,60 @@ class SleepConsolidationDaemon:
                     lr=self.settings.consolidation_lr,
                     weight_decay=self.settings.consolidation_weight_decay
                 )
-            else:
-                raise FileNotFoundError("Model not cached locally")
-        except Exception:
-            # Robust PyTorch Slow-LoRA fallback for offline / mock testing
-            import torch
-            import torch.nn as nn
+                return
+            except Exception as e:
+                # In live mode, propagate real error
+                raise e
 
-            class MockSlowLoRAModel(nn.Module):
-                def __init__(self, vocab_size: int = 1000, hidden_dim: int = 64):
-                    super().__init__()
-                    self.embedding = nn.Embedding(vocab_size, hidden_dim)
-                    self.base_linear = nn.Linear(hidden_dim, hidden_dim, bias=False)
-                    for p in self.base_linear.parameters():
-                        p.requires_grad = False
-                    self.lora_A = nn.Linear(hidden_dim, 8, bias=False)
-                    self.lora_B = nn.Linear(8, hidden_dim, bias=False)
-                    self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
+        # Mock path only enabled when settings.use_mock is True
+        import torch
+        import torch.nn as nn
 
-                def forward(self, input_ids: torch.Tensor, labels: Optional[torch.Tensor] = None, **kwargs) -> Any:
-                    h = self.embedding(input_ids % 1000)
-                    base_out = self.base_linear(h)
-                    lora_out = self.lora_B(self.lora_A(h)) * 0.5
-                    logits = self.head(base_out + lora_out)
-                    loss = None
-                    if labels is not None:
-                        shift_logits = logits[..., :-1, :].contiguous()
-                        shift_labels = labels[..., 1:].contiguous()
-                        loss = nn.functional.cross_entropy(
-                            shift_logits.view(-1, shift_logits.size(-1)),
-                            shift_labels.view(-1),
-                            ignore_index=-100
-                        )
-                    class Output:
-                        def __init__(self, loss, logits):
-                            self.loss = loss
-                            self.logits = logits
-                    return Output(loss if loss is not None else torch.tensor(0.5, requires_grad=True), logits)
+        class MockSlowLoRAModel(nn.Module):
+            def __init__(self, vocab_size: int = 1000, hidden_dim: int = 64):
+                super().__init__()
+                self.embedding = nn.Embedding(vocab_size, hidden_dim)
+                self.base_linear = nn.Linear(hidden_dim, hidden_dim, bias=False)
+                for p in self.base_linear.parameters():
+                    p.requires_grad = False
+                self.lora_A = nn.Linear(hidden_dim, 8, bias=False)
+                self.lora_B = nn.Linear(8, hidden_dim, bias=False)
+                self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
 
-            class MockTokenizer:
-                def __init__(self):
-                    self.eos_token_id = 2
-                def __call__(self, text: str, return_tensors: str = "pt", **kwargs):
-                    tokens = [ord(c) % 1000 for c in text] if text else [0]
-                    return {"input_ids": torch.tensor([tokens])}
+            def forward(self, input_ids: torch.Tensor, labels: Optional[torch.Tensor] = None, **kwargs) -> Any:
+                h = self.embedding(input_ids % 1000)
+                base_out = self.base_linear(h)
+                lora_out = self.lora_B(self.lora_A(h)) * 0.5
+                logits = self.head(base_out + lora_out)
+                loss = None
+                if labels is not None:
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+                    loss = nn.functional.cross_entropy(
+                        shift_logits.view(-1, shift_logits.size(-1)),
+                        shift_labels.view(-1),
+                        ignore_index=-100
+                    )
+                class Output:
+                    def __init__(self, loss, logits):
+                        self.loss = loss
+                        self.logits = logits
+                return Output(loss if loss is not None else torch.tensor(0.5, requires_grad=True), logits)
 
-            self.model = MockSlowLoRAModel()
-            self.tokenizer = MockTokenizer()
-            self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
-                lr=self.settings.consolidation_lr,
-                weight_decay=self.settings.consolidation_weight_decay
-            )
+        class MockTokenizer:
+            def __init__(self):
+                self.eos_token_id = 2
+            def __call__(self, text: str, return_tensors: str = "pt", **kwargs):
+                tokens = [ord(c) % 1000 for c in text] if text else [0]
+                return {"input_ids": torch.tensor([tokens])}
+
+        self.model = MockSlowLoRAModel()
+        self.tokenizer = MockTokenizer()
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.settings.consolidation_lr,
+            weight_decay=self.settings.consolidation_weight_decay
+        )
 
     def fetch_unconsolidated_memories(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Retrieves verified episodic traces ordered by surprise score."""

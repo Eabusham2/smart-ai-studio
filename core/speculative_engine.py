@@ -222,16 +222,15 @@ class SpeculativeEngine:
         return accepted, bonus_token
 
     def _update_metrics(self):
-        """Updates speculative acceptance rate and estimated speedup multiplier."""
+        """Updates speculative acceptance rate and authentic speedup ratio from accepted tokens per cycle."""
         proposed = max(1, self.stats.draft_tokens_proposed)
         accepted = self.stats.draft_tokens_accepted
+        cycles = max(1, self.stats.speculative_cycles)
         self.stats.acceptance_rate = round(accepted / proposed, 4)
 
-        # Amdahl-style speculative speedup: S = 1 / ( (1 - alpha) + alpha / (K * alpha + 1) )
-        k = max(1, self.max_draft_tokens)
-        alpha = self.stats.acceptance_rate
-        effective_speedup = 1.0 + alpha * (k * 0.45)
-        self.stats.estimated_speedup = round(min(4.8, max(1.0, effective_speedup)), 2)
+        # Exact mathematical speedup ratio: total accepted tokens produced per target forward cycle
+        effective_speedup = (accepted + cycles) / cycles
+        self.stats.estimated_speedup = round(max(1.0, effective_speedup), 2)
 
     def get_telemetry(self) -> Dict[str, Any]:
         """Provides real-time speculative decoding metrics for UI and engine."""

@@ -9,6 +9,7 @@ Provides objective RLVR validation to prevent neural verifier hacking via:
 
 import ast
 import collections
+import logging
 import math
 import random
 import re
@@ -17,6 +18,8 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,10 +47,11 @@ def get_sandbox_preexec(max_memory_mb: int = 512):
                         resource.setrlimit(resource.RLIMIT_DATA, (max_bytes, max_bytes))
                     if hasattr(resource, "RLIMIT_CORE"):
                         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Could not set resource limits in preexec: {e}")
             return preexec
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Could not initialize sandbox resource preexec: {e}")
             return None
     return None
 
@@ -204,6 +208,7 @@ class GroundTruthVerifier:
                 stderr=res.stderr
             )
         except Exception as e:
+            logger.warning(f"Docker sandbox verification failed ({e}), falling back to subprocess.")
             return self._verify_in_subprocess(test_harness, start_time)
 
     def verify_sympy_equivalence(
@@ -234,8 +239,10 @@ class GroundTruthVerifier:
                 execution_time_ms=(time.perf_counter() - start_time) * 1000
             )
         except ImportError:
+            logger.info("SymPy not installed; using multi-point numeric evaluation fallback.")
             return self._fallback_multi_point_math_eval(candidate_expr, ground_truth_expr, start_time)
         except Exception as e:
+            logger.error(f"SymPy evaluation error: {e}")
             return VerificationResult(
                 passed=False,
                 verifier_type="sympy_symbolic",
@@ -280,7 +287,8 @@ class GroundTruthVerifier:
                 if abs(val_a - val_b) > 1e-5:
                     all_passed = False
                     break
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Point evaluation exception for point {point}: {e}")
                 all_passed = (a_str.strip() == b_str.strip())
                 break
 
