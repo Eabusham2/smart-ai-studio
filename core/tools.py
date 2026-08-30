@@ -83,6 +83,7 @@ class AgentToolRegistry:
             {"name": "run_terminal", "description": "Executes a shell command on the host system and returns stdout/stderr.", "parameters": {"command": "string"}},
             {"name": "python_sandbox", "description": "Executes Python code in an isolated sandbox and returns printed output.", "parameters": {"code": "string"}},
             {"name": "math_calculate", "description": "Solves symbolic math, equations, derivatives, integrals, and arithmetic.", "parameters": {"expression": "string"}},
+            {"name": "calculate", "description": "Solves arithmetic, math formulas, equations, derivatives, integrals, and scientific calculations.", "parameters": {"expression": "string"}},
             {"name": "system_monitor", "description": "Returns host CPU, RAM, OS, Disk, and VRAM hardware telemetry.", "parameters": {}},
             {"name": "sql_query", "description": "Executes a SELECT query on the episodic SQLite database.", "parameters": {"query": "string"}},
             {"name": "json_csv_analyzer", "description": "Parses and summarizes a JSON or CSV data file.", "parameters": {"path": "string"}},
@@ -132,8 +133,9 @@ class AgentToolRegistry:
                 return self._tool_run_terminal(args.get("command", ""))
             elif tool in ("python_sandbox", "python_exec", "python"):
                 return self._tool_python_sandbox(args.get("code", ""))
-            elif tool in ("math_calculate", "calculate", "math"):
-                return self._tool_math_calculate(args.get("expression", ""))
+            elif tool in ("math_calculate", "calculate", "math", "calculator"):
+                expr = args.get("expression", args.get("expr", args.get("formula", args.get("query", args.get("equation", "")))))
+                return self._tool_math_calculate(expr)
             elif tool in ("system_monitor", "hardware_specs", "system_info"):
                 return self._tool_system_monitor()
             elif tool == "sql_query":
