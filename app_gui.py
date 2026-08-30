@@ -478,6 +478,22 @@ class SmartAIChatbotApp:
         self._update_input_lock_state()
         self._start_event_queue_polling()
 
+    def _update_memory_hud_badge(self):
+        """Updates top HUD memory badge with live macOS system RAM and app process memory."""
+        if not hasattr(self, "lbl_vram"):
+            return
+        try:
+            mem = SystemMemoryWatchdog.get_system_memory_status()
+            used_gb = mem.get("used_gb", 0.0)
+            total_gb = mem.get("total_gb", 16.0)
+            proc_gb = mem.get("process_rss_gb", 0.0)
+            if proc_gb > 0.1:
+                self.lbl_vram.configure(text=f"💾 {used_gb:.1f}/{total_gb:.0f} GB ({proc_gb:.1f} GB App)")
+            else:
+                self.lbl_vram.configure(text=f"💾 {used_gb:.1f}/{total_gb:.0f} GB RAM")
+        except Exception:
+            pass
+
     def _start_event_queue_polling(self):
         """Safely consumes thread-safe background events inside Tkinter main GUI thread."""
         def _poll():
@@ -491,14 +507,7 @@ class SmartAIChatbotApp:
             except Exception:
                 pass
 
-            try:
-                if hasattr(self, "lbl_vram"):
-                    proc_rss = SystemMemoryWatchdog.get_process_rss_gb()
-                    mem = SystemMemoryWatchdog.get_system_memory_status()
-                    total_gb = mem.get("total_gb", 16.0)
-                    self.lbl_vram.configure(text=f"💾 {proc_rss:.2f} GB / {total_gb:.0f} GB")
-            except Exception:
-                pass
+            self._update_memory_hud_badge()
 
             try:
                 if hasattr(self, "root") and self.root.winfo_exists():
@@ -2265,13 +2274,13 @@ class SmartAIChatbotApp:
             self.engine.unload_model()
             self.is_model_loaded = False
             self.lbl_model_status.configure(text=f"○ Unloaded ({target_info['short_name']})", fg=self.C["accent_yellow"])
-            self.lbl_vram.configure(text="💾 0.0 GB / 16 GB")
+            self._update_memory_hud_badge()
             self._update_model_action_buttons()
             self._update_resource_view_metrics()
             self._update_input_lock_state()
             self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}` purged from unified memory.")
         else:
-            popup, update_cb = self._show_model_loading_popup(target_info["name"], target_info.get("vram", "5.8 GB"))
+            popup, update_cb = self._show_model_loading_popup(target_info["name"], target_info.get("vram", "14.5 GB / 16 GB"))
 
             def _do_load():
                 load_res = self.engine.load_model(target_info["name"], model_path=m_path)
@@ -2285,7 +2294,7 @@ class SmartAIChatbotApp:
                     if load_res.get("status") == "loaded":
                         self.is_model_loaded = True
                         self.lbl_model_status.configure(text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"])
-                        self.lbl_vram.configure(text=f"💾 {target_info['vram']}")
+                        self._update_memory_hud_badge()
                         self._update_model_action_buttons()
                         self._update_resource_view_metrics()
                         self._update_input_lock_state()
@@ -2293,6 +2302,7 @@ class SmartAIChatbotApp:
                     else:
                         self.is_model_loaded = False
                         self.lbl_model_status.configure(text=f"○ Not Downloaded ({target_info['short_name']})", fg=self.C["accent_yellow"])
+                        self._update_memory_hud_badge()
                         self._update_model_action_buttons()
                         self._update_input_lock_state()
                         self._append_ai_message(
@@ -2366,13 +2376,13 @@ class SmartAIChatbotApp:
         if load_res.get("status") == "loaded":
             self.is_model_loaded = True
             self.lbl_model_status.configure(text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"])
-            self.lbl_vram.configure(text=f"💾 {target_info['vram']}")
+            self._update_memory_hud_badge()
         else:
             self.is_model_loaded = False
             cached = is_model_cached_locally(target_info["repo_id"]) if target_info.get("repo_id") else (os.path.exists(m_path or "") if m_path else False)
             status_txt = f"⚡ Ready to Load ({target_info['short_name']})" if cached else f"○ Not Downloaded ({target_info['short_name']})"
             self.lbl_model_status.configure(text=status_txt, fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"])
-            self.lbl_vram.configure(text="💾 0.0 GB / 16 GB")
+            self._update_memory_hud_badge()
 
         self._update_model_action_buttons()
         total_p = target_info.get("raw_params", 27_400_000_000) + self.synapses_learned_count
@@ -2403,7 +2413,7 @@ class SmartAIChatbotApp:
             self.engine.unload_model()
             self.is_model_loaded = False
             self.lbl_model_status.configure(text="⚠️ Auto-Unloaded (Memory Watchdog)", fg=self.C["accent_red"])
-            self.lbl_vram.configure(text="💾 0.0 GB / 16 GB")
+            self._update_memory_hud_badge()
             self._update_model_action_buttons()
             self._update_input_lock_state()
             self._update_resource_view_metrics()

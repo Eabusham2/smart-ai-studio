@@ -58,27 +58,39 @@ class SystemMemoryWatchdog:
 
     @staticmethod
     def get_process_rss_gb() -> float:
-        """Returns the current process RSS (Resident Set Size) in Gigabytes."""
+        """Returns the current process memory (RSS + MLX Metal active memory) in Gigabytes."""
+        rss_gb = 0.0
         try:
             import psutil
-            return round(psutil.Process().memory_info().rss / (1024 ** 3), 2)
+            rss_gb = psutil.Process().memory_info().rss / (1024 ** 3)
         except Exception:
             try:
                 import resource
                 rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                if platform.system() == "Darwin":
-                    return round(rss / (1024 ** 3), 2)
-                return round(rss / (1024 ** 2), 2)
+                rss_gb = (rss / (1024 ** 3)) if platform.system() == "Darwin" else (rss / (1024 ** 2))
             except Exception:
-                return 0.0
+                pass
+
+        metal_gb = 0.0
+        try:
+            import mlx.core as mx
+            if hasattr(mx, "get_active_memory"):
+                metal_gb = mx.get_active_memory() / (1024 ** 3)
+            elif hasattr(mx, "metal") and hasattr(mx.metal, "get_active_memory"):
+                metal_gb = mx.metal.get_active_memory() / (1024 ** 3)
+        except Exception:
+            pass
+
+        return round(max(rss_gb, metal_gb, rss_gb + metal_gb * 0.5), 2)
 
     @staticmethod
     def get_system_memory_status() -> Dict[str, Any]:
-        """Queries host total, used, and free RAM in GB, percentage, and process RSS."""
+        """Queries host total, used, and free RAM in GB matching macOS Activity Monitor."""
         total_gb = 16.0
         used_gb = 5.0
         free_gb = 11.0
         used_percent = 31.25
+        proc_gb = 0.0
 
         try:
             import psutil
@@ -87,6 +99,7 @@ class SystemMemoryWatchdog:
             used_gb = vm.used / (1024 ** 3)
             free_gb = vm.available / (1024 ** 3)
             used_percent = vm.percent
+            proc_gb = SystemMemoryWatchdog.get_process_rss_gb()
         except ImportError:
             try:
                 if platform.system() == "Darwin":
@@ -96,31 +109,16 @@ class SystemMemoryWatchdog:
                     free_gb = max(2.0, total_gb * 0.4)
                     used_gb = total_gb - free_gb
                     used_percent = (used_gb / total_gb) * 100
-                elif platform.system() == "Linux":
-                    with open("/proc/meminfo", "r") as f:
-                        lines = f.readlines()
-                    info = {}
-                    for line in lines:
-                        parts = line.split(":")
-                        if len(parts) == 2:
-                            info[parts[0].strip()] = parts[1].strip()
-                    total_kb = float(info.get("MemTotal", "16000000 kB").split()[0])
-                    avail_kb = float(info.get("MemAvailable", "8000000 kB").split()[0])
-                    total_gb = total_kb / (1024 ** 2)
-                    free_gb = avail_kb / (1024 ** 2)
-                    used_gb = total_gb - free_gb
-                    used_percent = (used_gb / total_gb) * 100
+                    proc_gb = SystemMemoryWatchdog.get_process_rss_gb()
             except Exception:
                 pass
 
-        process_gb = SystemMemoryWatchdog.get_process_rss_gb()
-
         return {
-            "total_gb": round(total_gb, 2),
-            "used_gb": round(used_gb, 2),
-            "free_gb": round(free_gb, 2),
+            "total_gb": round(total_gb, 1),
+            "used_gb": round(used_gb, 1),
+            "free_gb": round(free_gb, 1),
             "used_percent": round(used_percent, 1),
-            "process_rss_gb": process_gb
+            "process_rss_gb": round(proc_gb, 2)
         }
 
     def check_memory_pressure(self) -> Tuple[bool, Dict[str, Any]]:
