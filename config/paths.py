@@ -160,7 +160,7 @@ def terminate_existing_app_instances():
                     continue
                 cmdline = proc.info.get('cmdline') or []
                 cmd = " ".join(cmdline)
-                if ("main.py" in cmd or "app_gui.py" in cmd) and ("python" in cmd.lower()):
+                if ("main.py" in cmd or "app_gui.py" in cmd):
                     proc.kill()
             except Exception:
                 pass
@@ -170,13 +170,7 @@ def terminate_existing_app_instances():
     if sys.platform != "win32":
         try:
             import subprocess
-            out = subprocess.check_output(["pgrep", "-f", "python.*(main.py|app_gui.py)"]).decode().strip()
-            for line in out.splitlines():
-                try:
-                    pid = int(line.strip())
-                    if pid != my_pid:
-                        os.kill(pid, 9)  # SIGKILL
-                except Exception:
-                    pass
+            subprocess.run(["pkill", "-9", "-f", "main.py"], check=False)
+            subprocess.run(["pkill", "-9", "-f", "app_gui.py"], check=False)
         except Exception:
             pass
