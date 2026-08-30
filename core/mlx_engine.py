@@ -47,14 +47,21 @@ class MLXReasoningBackend:
             except Exception:
                 pass
 
-            self.model, self.tokenizer = mlx_lm.load(
-                self.model_path,
-                model_config={"kv_bits": 4, "kv_group_size": 64},
-                adapter_path=self.adapter_path if self.adapter_path and os.path.exists(self.adapter_path) else None
-            )
+            try:
+                self.model, self.tokenizer = mlx_lm.load(
+                    self.model_path,
+                    model_config={"kv_bits": 4, "kv_group_size": 64},
+                    adapter_path=self.adapter_path if self.adapter_path and os.path.exists(self.adapter_path) else None
+                )
+            except Exception:
+                self.model, self.tokenizer = mlx_lm.load(
+                    self.model_path,
+                    adapter_path=self.adapter_path if self.adapter_path and os.path.exists(self.adapter_path) else None
+                )
             self.is_mlx_available = True
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"MLX load_model failed for {self.model_path}: {e}")
             self.is_mlx_available = False
             return False
 
@@ -199,20 +206,31 @@ class MLXReasoningBackend:
             kwargs = {"max_tokens": min(max_tokens, 1024)}
             if sampler is not None:
                 kwargs["sampler"] = sampler
+            else:
+                kwargs["temp"] = temperature
+                kwargs["top_p"] = top_p
 
             for response in mlx_lm.stream_generate(self.model, self.tokenizer, prompt=prompt, **kwargs):
                 if hasattr(response, "text"):
                     yield response.text
                 elif isinstance(response, str):
                     yield response
+                elif hasattr(response, "token"):
+                    yield self.tokenizer.decode([response.token])
 
             # Reclaim Metal cache after generation
             if hasattr(mx, "clear_cache"):
                 mx.clear_cache()
             elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
                 mx.metal.clear_cache()
-        except Exception:
-            return
+        except Exception as e:
+            logger.error(f"MLX stream_generate error: {e}")
+            try:
+                ans = mlx_lm.generate(self.model, self.tokenizer, prompt=prompt, max_tokens=min(max_tokens, 512), verbose=False)
+                if ans:
+                    yield ans
+            except Exception:
+                pass
 
     def compute_mlx_fisher(self, anchor_texts: List[str]) -> Dict[str, Any]:
         """

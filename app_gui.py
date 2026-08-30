@@ -2238,22 +2238,24 @@ class SmartAIChatbotApp:
         if not hasattr(self, "txt_input") or not hasattr(self, "btn_send"):
             return
 
+    def _update_input_lock_state(self):
+        """Enforces input lock-out when the neural model is unloaded without polluting the text box."""
+        if not hasattr(self, "txt_input") or not hasattr(self, "btn_send"):
+            return
+
         if not self.is_model_loaded:
-            self.txt_input.configure(state="normal")
-            if getattr(self, "_placeholder_active", False) or not self.txt_input.get("1.0", "end-1c").strip():
-                self.txt_input.delete("1.0", "end")
-                self.txt_input.insert("1.0", "🔒 Model is unloaded. Click '⚡ Load' or '⬇️ Install' in the top bar to chat...")
-                self.txt_input.configure(fg=self.C.get("text_placeholder", "#71717a"))
-                self._placeholder_active = True
+            self.txt_input.delete("1.0", "end")
             self.txt_input.configure(state="disabled")
             self.btn_send.configure(state="disabled", text="🔒 Unloaded")
         else:
             self.txt_input.configure(state="normal")
-            if getattr(self, "_placeholder_active", False) and "Model is unloaded" in self.txt_input.get("1.0", "end-1c"):
-                self.txt_input.delete("1.0", "end")
-                self.txt_input.insert("1.0", "Ask anything, paste code, or type / for commands... (⇧⏎ for newline)")
-                self.txt_input.configure(fg=self.C.get("text_placeholder", "#71717a"))
+            self.txt_input.delete("1.0", "end")
+            self.txt_input.configure(fg=self.C.get("text_main", "#ffffff"))
             self.btn_send.configure(state="normal", text="  ▶ Send  ")
+            try:
+                self.txt_input.focus_set()
+            except Exception:
+                pass
 
     def _on_toggle_load_unload(self):
         target_info = self.models_config[self.active_tab_id]
