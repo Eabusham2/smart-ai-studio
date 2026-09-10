@@ -121,10 +121,20 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
             self.skipTest("Headless environment without display server")
             return
 
-        # Dedicated Single Model Verification
+        # Multi-tab Verification
         self.assertIn("model_1", app.models_config)
-        self.assertIn("Ternary-Bonsai-27B", app.models_config["model_1"]["name"])
-        self.assertEqual(app.active_tab_id, "model_1")
+        self.assertIn("model_2", app.models_config)
+        self.assertIn("model_3", app.models_config)
+        self.assertIn("model_4", app.models_config)
+        self.assertIn("model_7", app.models_config)
+        self.assertIn("RealVisXL", app.models_config["model_3"]["name"])
+        self.assertIn("Z-Image Turbo", app.models_config["model_4"]["name"])
+        self.assertIn("LTX-Video", app.models_config["model_7"]["name"])
+
+        # Switch to Model 3 (RealVisXL SDXL)
+        app._on_switch_model_tab("model_3")
+        self.assertEqual(app.active_tab_id, "model_3")
+        self.assertIn("RealVisXL", app.lbl_model_status.cget("text"))
 
         # Canvas Drawer Toggle
         app._on_toggle_canvas_viewer()
