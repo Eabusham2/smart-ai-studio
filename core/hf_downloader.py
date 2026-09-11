@@ -7,47 +7,162 @@ inspects local cache presence, supports cache purge, and auto-loads into Apple S
 import os
 import shutil
 import threading
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 
-def is_model_cached_locally(repo_id: str) -> bool:
-    """Checks whether the specified HuggingFace model is already cached on disk."""
-    if not repo_id:
-        return False
-    if os.path.exists(repo_id):
-        return True
+_WEIGHT_SUFFIXES = (
+    ".safetensors",
+    ".gguf",
+    ".bin",
+    ".npz",
+    ".pt",
+    ".pth",
+)
+_METADATA_NAMES = {
+    "config.json",
+    "tokenizer_config.json",
+    "generation_config.json",
+    "model.safetensors.index.json",
+    "tokenizer.json",
+}
+
+
+def _candidate_hf_cache_roots() -> Iterable[str]:
+    """Returns every Hugging Face hub cache root that may be active on this machine."""
+    seen = set()
 
     try:
-        from huggingface_hub import try_to_load_from_cache
-        cached = try_to_load_from_cache(repo_id, "config.json")
-        if cached is not None and isinstance(cached, str) and os.path.exists(cached):
-            return True
+        from huggingface_hub.constants import HF_HUB_CACHE
+        if HF_HUB_CACHE:
+            path = os.path.abspath(os.path.expanduser(str(HF_HUB_CACHE)))
+            if path not in seen:
+                seen.add(path)
+                yield path
     except Exception:
         pass
 
-    cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+    env_hub = os.getenv("HF_HUB_CACHE") or os.getenv("HUGGINGFACE_HUB_CACHE")
+    if env_hub:
+        path = os.path.abspath(os.path.expanduser(env_hub))
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+    hf_home = os.getenv("HF_HOME")
+    if hf_home:
+        path = os.path.abspath(os.path.expanduser(os.path.join(hf_home, "hub")))
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+    default = os.path.abspath(os.path.expanduser("~/.cache/huggingface/hub"))
+    if default not in seen:
+        yield default
+
+
+def _snapshot_looks_installed(path: str) -> bool:
+    """Require real model assets, not merely an empty/partial HF snapshot directory."""
+    if not path or not os.path.exists(path):
+        return False
+    if os.path.isfile(path):
+        return path.lower().endswith(_WEIGHT_SUFFIXES)
+
+    has_weights = False
+    has_metadata = False
+    try:
+        for root, _, files in os.walk(path):
+            for filename in files:
+                lower = filename.lower()
+                if lower.endswith(_WEIGHT_SUFFIXES):
+                    has_weights = True
+                if filename in _METADATA_NAMES or lower.endswith("config.json"):
+                    has_metadata = True
+                if has_weights and has_metadata:
+                    return True
+    except Exception:
+        return False
+
+    # GGUF and some single-file model repositories legitimately have no config.json.
+    return has_weights
+
+
+def is_model_cached_locally(repo_id: str) -> bool:
+    """
+    Reliably determines whether a model is installed locally.
+
+    Handles local model paths, the active Hugging Face cache location, alternate
+    HF_HOME/HF_HUB_CACHE directories, and cached revisions discovered through
+    huggingface_hub. A real weight file must be present, so an incomplete metadata-only
+    download is not reported as installed.
+    """
+    if not repo_id:
+        return False
+
+    expanded = os.path.abspath(os.path.expanduser(repo_id))
+    if os.path.exists(expanded):
+        return _snapshot_looks_installed(expanded)
+
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        cache_info = scan_cache_dir()
+        for repo in cache_info.repos:
+            if getattr(repo, "repo_id", None) != repo_id:
+                continue
+            for revision in getattr(repo, "revisions", ()):
+                snapshot_path = str(getattr(revision, "snapshot_path", "") or "")
+                if _snapshot_looks_installed(snapshot_path):
+                    return True
+    except Exception:
+        pass
+
+    # Direct cache lookup is quick and also respects the currently configured HF cache.
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        for marker in (
+            "config.json",
+            "model.safetensors.index.json",
+            "tokenizer_config.json",
+        ):
+            cached = try_to_load_from_cache(repo_id, marker)
+            if isinstance(cached, str) and os.path.exists(cached):
+                if _snapshot_looks_installed(os.path.dirname(cached)):
+                    return True
+    except Exception:
+        pass
+
     repo_folder = f"models--{repo_id.replace('/', '--')}"
-    target_path = os.path.join(cache_dir, repo_folder, "snapshots")
-    if os.path.exists(target_path) and os.listdir(target_path):
-        return True
+    for cache_root in _candidate_hf_cache_roots():
+        snapshots = os.path.join(cache_root, repo_folder, "snapshots")
+        if not os.path.isdir(snapshots):
+            continue
+        try:
+            for revision in os.listdir(snapshots):
+                if _snapshot_looks_installed(os.path.join(snapshots, revision)):
+                    return True
+        except Exception:
+            continue
 
     return False
 
 
 def purge_local_model_cache(repo_id: str) -> bool:
-    """Purges the local snapshot cache for the given model repo to allow a clean reinstall."""
+    """Purges all known local Hugging Face cache copies for a model repo."""
     if not repo_id:
         return False
-    try:
-        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-        repo_folder = f"models--{repo_id.replace('/', '--')}"
-        full_path = os.path.join(cache_dir, repo_folder)
-        if os.path.exists(full_path):
-            shutil.rmtree(full_path, ignore_errors=True)
-            return True
-    except Exception:
-        pass
-    return False
+
+    removed = False
+    repo_folder = f"models--{repo_id.replace('/', '--')}"
+    for cache_root in _candidate_hf_cache_roots():
+        full_path = os.path.join(cache_root, repo_folder)
+        try:
+            if os.path.exists(full_path):
+                shutil.rmtree(full_path, ignore_errors=True)
+                removed = True
+        except Exception:
+            pass
+    return removed
 
 
 def download_model_from_hf(
@@ -55,9 +170,7 @@ def download_model_from_hf(
     progress_callback: Optional[Callable[[str, float], None]] = None,
     cancel_event: Optional[threading.Event] = None
 ) -> Dict[str, Any]:
-    """
-    Downloads model weights from HuggingFace Hub with real-time status updates and clean resumption.
-    """
+    """Downloads model weights from HuggingFace Hub with real-time status updates."""
     if not repo_id:
         return {"status": "error", "error": "No model repository ID specified"}
 
@@ -70,11 +183,17 @@ def download_model_from_hf(
         if progress_callback:
             progress_callback(f"Downloading snapshot for `{repo_id}`...", 20.0)
 
-        # Removed deprecated resume_download argument
         local_dir = snapshot_download(
             repo_id=repo_id,
-            max_workers=4
+            max_workers=4,
         )
+
+        if not _snapshot_looks_installed(local_dir):
+            return {
+                "status": "error",
+                "repo_id": repo_id,
+                "error": "Hugging Face download returned without a usable model-weight snapshot",
+            }
 
         if progress_callback:
             progress_callback(f"Successfully downloaded `{repo_id}` to cache.", 100.0)
@@ -82,7 +201,7 @@ def download_model_from_hf(
         return {
             "status": "success",
             "repo_id": repo_id,
-            "local_dir": local_dir
+            "local_dir": local_dir,
         }
     except Exception as e:
         error_msg = str(e)
@@ -91,5 +210,5 @@ def download_model_from_hf(
         return {
             "status": "error",
             "repo_id": repo_id,
-            "error": error_msg
+            "error": error_msg,
         }
