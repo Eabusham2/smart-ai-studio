@@ -12,8 +12,7 @@ src = P.read_text(encoding="utf-8")
 
 PATCH = r'''
 # === EYAD OVERNIGHT STALL GUARD ===
-# Supervises whole evaluation items and redraws the original V5 telemetry line every 10s.
-# V5 prompts, generation, scoring, 4096/EOS and evaluation stages are not changed.
+# Display/watchdog only: V5 prompts, scoring, generation, 4096/EOS and stages stay untouched.
 import collections as _wd_collections
 import json as _wd_json
 import os as _wd_os
@@ -22,6 +21,10 @@ import sys as _wd_sys
 import time as _wd_time
 from datetime import timedelta as _wd_timedelta
 from pathlib import Path as _WdPath
+try:
+    import psutil as _wd_psutil
+except Exception:
+    _wd_psutil = None
 
 _WD_HEARTBEAT = _WdPath("eval_results/.eval_item_heartbeat.json")
 _WD_STALLS = _WdPath("eval_results/.eval_item_stalls.json")
@@ -55,23 +58,18 @@ def _wd_checkpoint_snapshot(phase_hint=None):
     cache = chk.get("completed_items", {}) if isinstance(chk, dict) else {}
     phase = str(chk.get("phase") or phase_hint or "Phase 1: Baseline")
     prefix = phase + "_"
-    vals = []
+    done = 0
+    correct = 0
     if isinstance(cache, dict):
         for key, value in cache.items():
-            if not isinstance(key, str) or key.startswith("__"):
+            if not isinstance(key, str) or key.startswith("__") or not key.startswith(prefix):
                 continue
-            if key.startswith(prefix):
-                vals.append(value is True)
-    return phase, len(vals), sum(vals)
+            done += 1
+            correct += int(value is True)
+    return phase, done, correct
 
 
 def _wd_seed_tps():
-    env = _wd_os.environ.get("EVAL_LAST_REAL_TPS")
-    try:
-        if env and float(env) > 0:
-            return float(env)
-    except Exception:
-        pass
     old = _wd_read(_WD_METRICS)
     try:
         x = float(old.get("last_tps", 0) or 0)
@@ -126,7 +124,7 @@ def _wd_init_runtime():
     old = _wd_read(_WD_METRICS)
     durations = []
     try:
-        durations = [float(x) for x in old.get("durations", [])[-20:] if float(x) > 0]
+        durations = [float(x) for x in old.get("durations", [])[-20:] if 0 < float(x) < _WD_TIMEOUT]
     except Exception:
         durations = []
     _WD_RUNTIME.clear()
@@ -175,13 +173,14 @@ def _wd_eval_single(self, split_name, item):
         out = _wd_original_eval_single(self, split_name, item)
         completed = True
         _wd_set_count(key, 0)
-
         dur = max(0.001, _wd_time.perf_counter() - t0)
         _WD_RUNTIME["done"] = int(_WD_RUNTIME.get("done", 0)) + 1
         if bool(out):
             _WD_RUNTIME["correct"] = int(_WD_RUNTIME.get("correct", 0)) + 1
-        _WD_RUNTIME["durations"].append(dur)
+        if dur < _WD_TIMEOUT:
+            _WD_RUNTIME["durations"].append(dur)
         try:
+            # This is V5's REAL pure-decode rate: its timer starts after prompt prefill.
             real_tps = float(getattr(self, "last_tok_per_sec", 0.0) or 0.0)
             if real_tps > 0:
                 _WD_RUNTIME["last_tps"] = real_tps
@@ -204,40 +203,65 @@ def _wd_eval_single(self, split_name, item):
 Master4000EvaluationEngine._evaluate_single_item = _wd_eval_single
 
 
-def _wd_render_original_line(hb):
+class _WdChildStdout:
+    """Hide only V5's newer bar/Acc telemetry so the parent can redraw the older format."""
+    def __init__(self, real):
+        self.real = real
+    def write(self, s):
+        if isinstance(s, str) and "Acc:" in s and "/4014" in s and ("█" in s or "░" in s):
+            return len(s)
+        return self.real.write(s)
+    def flush(self):
+        return self.real.flush()
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+def _wd_recent_eta(m, left):
+    try:
+        durs = sorted(float(x) for x in m.get("durations", []) if 0 < float(x) < _WD_TIMEOUT)
+    except Exception:
+        durs = []
+    if not durs:
+        return "calculating"
+    # Median/trimmed recent completed-item wall time; stalled/in-progress items never poison ETA.
+    if len(durs) >= 5:
+        trim = max(1, len(durs) // 10)
+        core = durs[trim:-trim] or durs
+    else:
+        core = durs
+    seconds_per_item = sum(core) / len(core)
+    return str(_wd_timedelta(seconds=max(0, int(seconds_per_item * left))))
+
+
+def _wd_child_ram_gb(hb):
+    if _wd_psutil is None:
+        return 0.0
+    try:
+        return _wd_psutil.Process(int(hb.get("pid", -1))).memory_info().rss / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
+def _wd_render_pre_recovery_line(hb):
     m = _wd_read(_WD_METRICS)
     phase = str(m.get("phase") or "Phase 1: Baseline")
     split_name = str(hb.get("split") or m.get("split") or "")
     done = max(0, min(_WD_TOTAL, int(m.get("done", 0) or 0)))
-    correct = max(0, int(m.get("correct", 0) or 0))
-    acc = (100.0 * correct / done) if done else 0.0
     tps = max(0.0, float(m.get("last_tps", 0.0) or 0.0))
     left = max(0, _WD_TOTAL - done)
-
-    try:
-        durs = [float(x) for x in m.get("durations", []) if float(x) > 0]
-    except Exception:
-        durs = []
-
-    if durs:
-        eta = str(_wd_timedelta(seconds=int((sum(durs) / len(durs)) * left)))
-    elif tps > 0:
-        eta = str(_wd_timedelta(seconds=int(left * 4096 / tps)))
-    else:
-        eta = "calculating"
-
+    eta = _wd_recent_eta(m, left)
     pct = 100.0 * done / _WD_TOTAL
-    n = 25
-    fill = int(n * done / _WD_TOTAL)
-    bar = "█" * fill + "░" * (n - fill)
+    ram = _wd_child_ram_gb(hb)
     return (
-        f"[{bar}] {pct:5.1f}% | {done}/{_WD_TOTAL} | Acc: {acc:5.1f}% | "
-        f"{tps:4.1f} t/s | ETA: {eta} | {phase} | {split_name}"
+        f"[{phase}] {split_name:<22} | Item {done}/{_WD_TOTAL} ({pct:5.2f}%) | "
+        f"Speed: {tps:4.1f}t/s | ETA: {eta} | RAM: {ram:.1f}GB"
     )
 
 
 def _wd_child_run():
     _wd_init_runtime()
+    _wd_sys.stdout = _WdChildStdout(_wd_sys.stdout)
     runner = Master4000EvaluationEngine(max_duration_hours=72.0)
     runner.run_full_suite()
 
@@ -266,7 +290,7 @@ def _wd_supervise():
                 age = now - float(hb.get("started", now))
 
                 if now - last_status >= _WD_STATUS_EVERY:
-                    _wd_sys.stdout.write("\r" + _wd_render_original_line(hb) + "   ")
+                    _wd_sys.stdout.write("\r" + _wd_render_pre_recovery_line(hb) + "   ")
                     _wd_sys.stdout.flush()
                     last_status = now
 
@@ -277,8 +301,7 @@ def _wd_supervise():
                 n = _wd_count(key) + 1
                 _wd_set_count(key, n)
                 print(
-                    f"\n[!] Watchdog: {key} stuck {int(age)}s; "
-                    f"restarting from checkpoint ({n}/{_WD_MAX_STALLS}).",
+                    f"\n[!] Watchdog: {key} stuck {int(age)}s; restarting from checkpoint ({n}/{_WD_MAX_STALLS}).",
                     flush=True,
                 )
                 child.kill()
@@ -323,7 +346,8 @@ else:
 new_src = base + PATCH + "\n" + MAIN
 compile(new_src, str(P), "exec")
 P.write_text(new_src, encoding="utf-8")
-print("[✓] Original V5 telemetry format restored.")
-print("[✓] Full progress line redraws every 10s using real checkpoint/last-run metrics.")
-print("[✓] V5 prompts/generation/scoring/stages remain untouched.")
+print("[✓] Exact pre-recovery telemetry format restored (Phase/Split/Item/Speed/ETA/RAM; no bar/Acc).")
+print("[✓] Telemetry redraws every 10s, including while an item is inside Metal generation.")
+print("[✓] ETA now uses recent COMPLETED item wall times; 4096-token worst-case fallback removed.")
+print("[✓] V5 pure-decode t/s calculation, prompts, generation, scoring and stages untouched.")
 print("[✓] 20-minute stall watchdog remains active.")
