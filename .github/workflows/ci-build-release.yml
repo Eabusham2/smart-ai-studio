@@ -56,7 +56,7 @@ jobs:
   build-and-release:
     name: Build & Auto-Publish Release Packages
     needs: test
-    if: always() && !cancelled()
+    if: success()
     runs-on: macos-latest
 
     steps:
