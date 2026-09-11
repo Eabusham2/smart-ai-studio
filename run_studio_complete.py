@@ -32,11 +32,14 @@ def _merged_init_lora(self):
                     )
                 if hasattr(layer.mlp.down_proj, "unfreeze"):
                     layer.mlp.down_proj.unfreeze()
-        self.adapters_buffer_a = {k: mx.array(v) for k, v in dict(mlx.utils.tree_flatten(self.model.trainable_parameters())).items()}
+        self.adapters_buffer_a = {
+            k: mx.array(v) for k, v in dict(mlx.utils.tree_flatten(self.model.trainable_parameters())).items()
+        }
         self.adapters_buffer_b = {k: mx.array(v) for k, v in self.adapters_buffer_a.items()}
-    except Exception:
+    except Exception as exc:
         self.adapters_buffer_a = {}
         self.adapters_buffer_b = {}
+        self.init_error = f"{type(exc).__name__}: {exc}"
 
 
 MoEDualBufferManager._init = _merged_init_lora
@@ -64,42 +67,65 @@ def _merged_dialogue_ingest(self):
 DialogueTimelineGraphIngester.ingest_developer_sessions = _merged_dialogue_ingest
 
 
+def _active_mlx_gb():
+    try:
+        if hasattr(mx, "get_active_memory"):
+            return float(mx.get_active_memory()) / (1024 ** 3)
+        if hasattr(mx, "metal") and hasattr(mx.metal, "get_active_memory"):
+            return float(mx.metal.get_active_memory()) / (1024 ** 3)
+    except Exception:
+        pass
+    return 0.0
+
+
 def _strict_initialize_runtime(self):
+    """Load the real model first and never erase it because an optional subsystem failed."""
     if not MLX_AVAILABLE:
         raise RuntimeError("MLX/MLX-LM is unavailable; refusing to run the real benchmark offline.")
 
-    quantized_error = None
+    # Match the known-working baseline: normal model load, no generation-cache options
+    # incorrectly passed through model_config.
     try:
-        self.model, self.tokenizer = load(
-            self.settings.mlx_model_path,
-            model_config={"kv_bits": 4, "kv_group_size": 64},
-        )
+        self.model, self.tokenizer = load(self.settings.mlx_model_path)
     except Exception as exc:
-        quantized_error = exc
-        try:
-            self.model, self.tokenizer = load(self.settings.mlx_model_path)
-        except Exception as fallback_exc:
-            raise RuntimeError(
-                f"Failed to load {self.settings.mlx_model_path}. "
-                f"4-bit-KV load error: {quantized_error!r}; fallback load error: {fallback_exc!r}"
-            ) from fallback_exc
+        raise RuntimeError(f"Failed to load real model {self.settings.mlx_model_path}: {exc!r}") from exc
 
     if self.model is None or self.tokenizer is None:
         raise RuntimeError(f"Model loader returned no model/tokenizer for {self.settings.mlx_model_path}")
 
-    # MLX is lazy: force the model tensors resident now so Phase 1 cannot start at ~0.4 GB
-    # and then appear frozen while the first generation secretly materializes all 27B weights.
+    # MLX is lazy. Force all weights to materialize before Phase 1 so model loading cannot
+    # masquerade as a frozen first benchmark item.
     try:
         mx.eval(self.model.parameters())
     except Exception as exc:
-        raise RuntimeError(f"Model loaded but MLX weight materialization failed: {exc!r}") from exc
+        raise RuntimeError(f"27B model loaded but weight materialization failed: {exc!r}") from exc
 
     rss_gb = psutil.Process().memory_info().rss / (1024 ** 3)
-    print(f"[✓] Model loaded and materialized: {self.settings.mlx_model_path} | process RAM {rss_gb:.2f} GB", flush=True)
+    active_gb = _active_mlx_gb()
+    print(
+        f"[✓] REAL MODEL READY: {self.settings.mlx_model_path} | RSS {rss_gb:.2f} GB | MLX active {active_gb:.2f} GB",
+        flush=True,
+    )
 
-    self.moe_manager = MoEDualBufferManager(self.model, self.settings)
-    self.moe_router = HierarchicalMoERouter(self.model)
-    self.grpo_trainer = GRPOTrainingEngine(self.model, self.tokenizer, self.sandbox)
+    # Initialize later-stage pieces separately. A failure can never null out the already-loaded model.
+    try:
+        self.moe_manager = MoEDualBufferManager(self.model, self.settings)
+    except Exception as exc:
+        self.moe_manager = None
+        raise RuntimeError(f"Model is loaded, but MoE/LoRA stage initialization failed: {exc!r}") from exc
+
+    try:
+        self.moe_router = HierarchicalMoERouter(self.model)
+    except Exception as exc:
+        self.moe_router = None
+        raise RuntimeError(f"Model is loaded, but MoE router initialization failed: {exc!r}") from exc
+
+    try:
+        self.grpo_trainer = GRPOTrainingEngine(self.model, self.tokenizer, self.sandbox)
+    except Exception as exc:
+        self.grpo_trainer = None
+        raise RuntimeError(f"Model is loaded, but GRPO stage initialization failed: {exc!r}") from exc
+
     if self.settings.enable_awake_ogp_daemon:
         self.ogp_daemon = ProjectedSleepConsolidationDaemon(
             self.moe_manager,
