@@ -56,7 +56,7 @@ jobs:
   build-and-release:
     name: Build & Auto-Publish Release Packages
     needs: test
-    if: success()
+    if: success() && github.event_name != 'pull_request'
     runs-on: macos-latest
 
     steps:
