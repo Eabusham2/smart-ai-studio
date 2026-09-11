@@ -7,9 +7,16 @@ import json
 import math
 import os
 import platform
-import resource
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+import psutil
+try:
+    import resource
+    HAS_RESOURCE = True
+except ImportError:
+    resource = None
+    HAS_RESOURCE = False
 
 from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
@@ -18,13 +25,17 @@ from eval.benchmark_data import HUMANEVAL_50_SUBSET, MATH_50_SUBSET
 
 
 def get_current_rss_mb() -> float:
-    """Returns current process Resident Set Size in Megabytes."""
-    try:
-        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        if platform.system() == "Darwin":
-            return ru / (1024 * 1024)
-        else:
+    """Returns current process Resident Set Size in Megabytes on every supported OS."""
+    if HAS_RESOURCE:
+        try:
+            ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if platform.system() == "Darwin":
+                return ru / (1024 * 1024)
             return ru / 1024
+        except Exception:
+            pass
+    try:
+        return psutil.Process().memory_info().rss / (1024 * 1024)
     except Exception:
         return 0.0
 
@@ -61,14 +72,12 @@ class BenchmarkRunner:
             response, meta = self.engine.solve(prompt, test_cases=test_cases)
             duration = max(0.001, time.perf_counter() - t0)
 
-            # Token count approximation
             toks = len(response.split()) * 2
             total_tokens += toks
             total_time_s += duration
 
             is_verified = meta.get("verified", False)
             if not is_verified and test_cases:
-                # Direct verification run if not run in engine
                 res = self.verifier.verify_in_sandbox(response, test_cases)
                 is_verified = res.passed
 
