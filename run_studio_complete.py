@@ -62,3 +62,54 @@ def _merged_dialogue_ingest(self):
 
 
 DialogueTimelineGraphIngester.ingest_developer_sessions = _merged_dialogue_ingest
+
+
+def _strict_initialize_runtime(self):
+    if not MLX_AVAILABLE:
+        raise RuntimeError("MLX/MLX-LM is unavailable; refusing to run the real benchmark offline.")
+
+    quantized_error = None
+    try:
+        self.model, self.tokenizer = load(
+            self.settings.mlx_model_path,
+            model_config={"kv_bits": 4, "kv_group_size": 64},
+        )
+    except Exception as exc:
+        quantized_error = exc
+        try:
+            self.model, self.tokenizer = load(self.settings.mlx_model_path)
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                f"Failed to load {self.settings.mlx_model_path}. "
+                f"4-bit-KV load error: {quantized_error!r}; fallback load error: {fallback_exc!r}"
+            ) from fallback_exc
+
+    if self.model is None or self.tokenizer is None:
+        raise RuntimeError(f"Model loader returned no model/tokenizer for {self.settings.mlx_model_path}")
+
+    # MLX is lazy: force the model tensors resident now so Phase 1 cannot start at ~0.4 GB
+    # and then appear frozen while the first generation secretly materializes all 27B weights.
+    try:
+        mx.eval(self.model.parameters())
+    except Exception as exc:
+        raise RuntimeError(f"Model loaded but MLX weight materialization failed: {exc!r}") from exc
+
+    rss_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+    print(f"[✓] Model loaded and materialized: {self.settings.mlx_model_path} | process RAM {rss_gb:.2f} GB", flush=True)
+
+    self.moe_manager = MoEDualBufferManager(self.model, self.settings)
+    self.moe_router = HierarchicalMoERouter(self.model)
+    self.grpo_trainer = GRPOTrainingEngine(self.model, self.tokenizer, self.sandbox)
+    if self.settings.enable_awake_ogp_daemon:
+        self.ogp_daemon = ProjectedSleepConsolidationDaemon(
+            self.moe_manager,
+            self.ogp_projector,
+            self.kg,
+            self.tokenizer,
+            self.settings,
+            METAL_STREAM_LOCK,
+        )
+        self.ogp_daemon.start()
+
+
+UnifiedMasterEngine._initialize_runtime = _strict_initialize_runtime
