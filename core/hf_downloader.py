@@ -1,7 +1,7 @@
 """
 HuggingFace Auto-Downloader & Local Weight Cache Manager.
 Downloads real model checkpoints directly from HuggingFace Hub with live progress streaming,
-inspects local cache presence, supports cache purge, and auto-loads into Apple Silicon MLX.
+inspects local cache presence, supports cache purge, and tracks models proven loaded in memory.
 """
 
 import os
@@ -25,6 +25,43 @@ _METADATA_NAMES = {
     "model.safetensors.index.json",
     "tokenizer.json",
 }
+_LOADED_MODEL_KEYS = set()
+_LOADED_MODEL_LOCK = threading.Lock()
+
+
+def _model_key(value: str) -> str:
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if os.path.exists(os.path.expanduser(value)):
+        return os.path.abspath(os.path.expanduser(value))
+    return value
+
+
+def register_loaded_model(identifier: str) -> None:
+    """Record a model identifier/path that has successfully loaded into memory."""
+    key = _model_key(identifier)
+    if not key:
+        return
+    with _LOADED_MODEL_LOCK:
+        _LOADED_MODEL_KEYS.add(key)
+
+
+def unregister_loaded_model(identifier: Optional[str] = None) -> None:
+    """Remove one loaded model identifier, or clear all when the active model unloads."""
+    with _LOADED_MODEL_LOCK:
+        if identifier is None:
+            _LOADED_MODEL_KEYS.clear()
+        else:
+            _LOADED_MODEL_KEYS.discard(_model_key(identifier))
+
+
+def is_model_registered_loaded(identifier: str) -> bool:
+    key = _model_key(identifier)
+    if not key:
+        return False
+    with _LOADED_MODEL_LOCK:
+        return key in _LOADED_MODEL_KEYS
 
 
 def _candidate_hf_cache_roots() -> Iterable[str]:
@@ -82,7 +119,6 @@ def _snapshot_looks_installed(path: str) -> bool:
     except Exception:
         return False
 
-    # GGUF and some single-file model repositories legitimately have no config.json.
     return has_weights
 
 
@@ -90,13 +126,15 @@ def is_model_cached_locally(repo_id: str) -> bool:
     """
     Reliably determines whether a model is installed locally.
 
-    Handles local model paths, the active Hugging Face cache location, alternate
-    HF_HOME/HF_HUB_CACHE directories, and cached revisions discovered through
-    huggingface_hub. A real weight file must be present, so an incomplete metadata-only
-    download is not reported as installed.
+    A model that is *already loaded successfully* is authoritative and therefore
+    always reports ready, even if Hugging Face cache metadata is temporarily stale
+    or lives under a nonstandard root. Otherwise a real weight file must be found.
     """
     if not repo_id:
         return False
+
+    if is_model_registered_loaded(repo_id):
+        return True
 
     expanded = os.path.abspath(os.path.expanduser(repo_id))
     if os.path.exists(expanded):
@@ -116,7 +154,6 @@ def is_model_cached_locally(repo_id: str) -> bool:
     except Exception:
         pass
 
-    # Direct cache lookup is quick and also respects the currently configured HF cache.
     try:
         from huggingface_hub import try_to_load_from_cache
 
@@ -152,6 +189,7 @@ def purge_local_model_cache(repo_id: str) -> bool:
     if not repo_id:
         return False
 
+    unregister_loaded_model(repo_id)
     removed = False
     repo_folder = f"models--{repo_id.replace('/', '--')}"
     for cache_root in _candidate_hf_cache_roots():
