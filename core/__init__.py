@@ -2,10 +2,12 @@ from core.entropy_router import EntropyRouter
 from core.verifier import GroundTruthVerifier, VerificationResult
 from core.pro_engine import ProReasoningEngine
 from core.awake_auto_hook import install_awake_auto_learning
+from core.pro_runtime_hardening import install_pro_runtime_hardening
 from core.speculative_engine import SpeculativeEngine, PromptLookupDrafter, LookaheadJacobiDrafter
 from core.platform import PlatformRouter, get_platform_router, detect_hardware
 
 install_awake_auto_learning(ProReasoningEngine)
+install_pro_runtime_hardening(ProReasoningEngine)
 
 __all__ = [
     "EntropyRouter",
