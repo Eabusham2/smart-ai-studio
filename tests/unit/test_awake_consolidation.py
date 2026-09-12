@@ -1,8 +1,4 @@
-"""
-Unit and Integration Tests for Awake Online Synaptic Consolidation and Thinking Dropdown.
-Verifies real-training readiness, watermark pruning, background updates, rolling chat,
-and GUI thinking-dropdown behavior.
-"""
+"""Tests for honest awake online consolidation and GUI thinking display."""
 
 import os
 import tempfile
@@ -19,20 +15,27 @@ from app_gui import SmartAIChatbotApp
 
 
 class FakeTrainableEngine:
-    """Small deterministic test double representing a genuinely trainable loaded engine."""
-    def __init__(self):
+    def __init__(self, adapter_path=None):
         self.model = object()
         self.tokenizer = object()
+        self.is_mlx_available = True
         self.adapters = {"layer_0_lora": 0.05}
+        self.adapter_path = adapter_path
+        self.last_save_path = None
 
     @staticmethod
     def count_tokens(messages):
         return max(1, sum(len(m.get("content", "")) for m in messages) // 4)
 
     def train_mini_batch(self, adapters, data, lambda_ewc=400.0, steps=3, **kwargs):
+        self.last_save_path = kwargs.get("save_path")
         updated = dict(adapters or {})
         updated["layer_0_lora"] = float(updated.get("layer_0_lora", 0.0)) + 0.01
         self.adapters = updated
+        if self.last_save_path:
+            os.makedirs(os.path.dirname(os.path.abspath(self.last_save_path)), exist_ok=True)
+            with open(self.last_save_path, "wb") as f:
+                f.write(b"adapter")
         return updated, 0.01
 
 
@@ -70,8 +73,13 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
         self.assertFalse(triggered)
         self.assertEqual(len(retained), 2)
 
-    def test_02_watermark_prune_requires_real_training_and_updates(self):
-        trainable = FakeTrainableEngine()
+    def test_02_watermark_prune_requires_real_training_updates_and_persists(self):
+        adapter_path = os.path.join(tempfile.gettempdir(), "awake-test-adapter.safetensors")
+        try:
+            os.remove(adapter_path)
+        except FileNotFoundError:
+            pass
+        trainable = FakeTrainableEngine(adapter_path=adapter_path)
         consolidator = AwakeOnlineConsolidator(
             mlx_engine=trainable,
             memory_db=self.db,
@@ -98,6 +106,12 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
         self.assertGreaterEqual(consolidator.consolidation_count, 1)
         self.assertGreater(consolidator.total_param_shift, 0.0)
         self.assertGreater(trainable.adapters["layer_0_lora"], 0.05)
+        self.assertEqual(trainable.last_save_path, adapter_path)
+        self.assertTrue(os.path.exists(adapter_path))
+        try:
+            os.remove(adapter_path)
+        except Exception:
+            pass
 
     def test_03_unloaded_engine_never_prunes_or_claims_learning(self):
         consolidator = AwakeOnlineConsolidator(
@@ -119,7 +133,7 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
         self.assertEqual(consolidator.consolidation_count, 0)
         self.assertEqual(consolidator.total_param_shift, 0.0)
 
-    def test_04_engine_chat_rolling_context(self):
+    def test_04_engine_chat_rolling_context_does_not_fake_learning_in_mock_mode(self):
         self.engine.awake_consolidator.max_context = 60
         self.engine.awake_consolidator.watermark_tokens = 40
         history = [
@@ -131,13 +145,13 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
         ]
         resp, pruned = self.engine.chat(history)
         self.assertTrue(len(resp) > 0)
-        self.assertTrue(len(pruned) >= 2)
+        self.assertEqual(len(pruned), len(history))
+        self.assertEqual(self.engine.awake_consolidator.consolidation_count, 0)
 
     def test_05_gui_thinking_dropdown_toggle(self):
         root = tk.Tk()
         root.withdraw()
         app = SmartAIChatbotApp(root, settings=self.settings)
-
         app._append_ai_message(
             "Here is the final verified answer.",
             thinking_text="Step 1: Analyzed input.\nStep 2: Applied formal logic rules.\nStep 3: Verification complete.",
@@ -145,7 +159,6 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
             duration_s=0.35,
             tok_per_sec=120.0,
         )
-
         content = app.chat_stream.get("1.0", "end")
         self.assertIn("Thought for", content)
         self.assertIn("[Click to Expand]", content)
