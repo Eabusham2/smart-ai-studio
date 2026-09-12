@@ -34,7 +34,6 @@ def test_prompt_hardening_is_installed_before_phase4_capture():
 
 def test_only_proven_overthinkers_get_system_suffixes():
     base = VERIFIED_GEMINI_PROMPT
-
     assert "2-4 terse lines" in hardening._system_for_split("LiveCodeBench-Hard", base)
     assert "finite-difference shortcut" in hardening._system_for_split("AIME-150", base)
     assert "one terse line" in hardening._system_for_split("GPQA-400", base)
@@ -44,12 +43,8 @@ def test_only_proven_overthinkers_get_system_suffixes():
     assert "memory limitations" in hardening._system_for_split("DialogueRecall-150", base)
 
     for split in (
-        "HumanEval-164",
-        "GSM8K-500",
-        "MATH-500",
-        "ZebraLogic-200",
-        "BFCL-200",
-        "TensorGraphDSL-300",
+        "HumanEval-164", "GSM8K-500", "MATH-500", "ZebraLogic-200",
+        "BFCL-200", "TensorGraphDSL-300",
     ):
         assert hardening._system_for_split(split, base) == base
 
@@ -60,7 +55,6 @@ def test_lcb_and_deepswe_prompts_are_brief_but_not_reasoning_free():
         "DeepSWE-50",
         {"repo_files": {"a.py": "x=1\n"}, "test_cmd": "pytest -q"},
     )
-
     assert "2-4 terse lines" in lcb
     assert "algorithm" in lcb and "invariant/edge case" in lcb and "implementation" in lcb
     assert "alternatives, examples, or rechecking" in lcb
@@ -74,7 +68,6 @@ def test_known_good_families_keep_original_task_policy():
     math = phase4._task_user_prompt("MATH-500", {"prompt": "Compute 2+2"})
     zebra = phase4._task_user_prompt("ZebraLogic-200", {"prompt": "logic"})
     bfcl = phase4._task_user_prompt("BFCL-200", {"prompt": "tool prompt"})
-
     assert "Use scratchpad only for logic outline" in human
     assert "Solve this problem using a minimal scratchpad" in gsm
     assert "Solve this problem using a minimal scratchpad" in math
@@ -91,7 +84,6 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     dsl = phase4._task_user_prompt("TensorGraphDSL-300", {"prompt": "dsl"})
     auto = phase4._task_user_prompt("AutonomousEvolution-200", {"prompt": "group"})
     dialogue = phase4._task_user_prompt("DialogueRecall-150", {"prompt": "recall"})
-
     assert "One literal condition -> one option" in gpqa
     assert "One literal condition -> one option" in mmlu
     assert "first difference directly" in aime
@@ -101,10 +93,17 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     assert "otherwise `unknown`" in dialogue
 
 
-def test_dialogue_recall_is_not_in_prelearn_focused_smoke():
+def test_focused_smoke_is_exactly_five_one_go_families():
     source = Path("tools/random_changed_split_smoke.py").read_text(encoding="utf-8")
-    assert '_FOCUS_EXACT = {"GPQA-400"}' in source
-    assert "DialogueRecall intentionally deferred" in source
+    for split in (
+        "LiveCodeBench-Hard", "AIME-150", "GPQA-400",
+        "DeepSWE-50", "AutonomousEvolution-200",
+    ):
+        assert split in source
+    assert "DialogueRecall-150" not in source
+    assert "old-prompt" not in source.lower()
+    assert "checkpoint" not in source.lower()
+    assert "five generations total" in source
 
 
 def test_rsi_system_routing_restores_the_verified_base_after_use():
