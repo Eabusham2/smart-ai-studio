@@ -22,40 +22,45 @@ def test_code_prompt_hardening_is_installed_before_phase4_capture():
     assert getattr(entry.Master4000EvaluationEngine, "_code_prompt_hardening_installed", False)
 
 
-def test_lcb_gets_tight_code_reasoning_instruction():
+def test_lcb_gets_adaptive_concise_reasoning_instruction():
     item = {
         "prompt": "Write function f(arr).",
         "entry_point": "f",
     }
     prompt = phase4._task_user_prompt("LiveCodeBench-Hard", item)
-    assert "Inside <think>, do not restate the task" in prompt
-    assert "at most one terse implementation/repair note" in prompt
-    assert "merge-sort inversions; O(n log n)" in prompt
+    assert "Start solving immediately inside <think>" in prompt
+    assert "trivial code may use one terse line" in prompt
+    assert "ordinary code should use a compact 2-4 line implementation sketch" in prompt
+    assert "genuinely complex code may use a few terse steps" in prompt
     assert "After </think>, output ONLY valid executable Python" in prompt
     assert "Use scratchpad only for logic outline" not in prompt
 
 
-def test_humaneval_gets_tight_code_reasoning_instruction():
+def test_humaneval_gets_adaptive_concise_reasoning_instruction():
     item = {"prompt": "def f(x):\n    pass"}
     prompt = phase4._task_user_prompt("HumanEval-164", item)
-    assert "Inside <think>, do not restate the task" in prompt
+    assert "Start solving immediately inside <think>" in prompt
+    assert "2-4 line implementation sketch" in prompt
     assert "After </think>, output ONLY the valid executable Python" in prompt
     assert "Use scratchpad only for logic outline" not in prompt
 
 
-def test_deepswe_gets_tight_patch_reasoning_instruction():
+def test_deepswe_gets_longer_but_still_concise_repair_reasoning():
     item = {
         "repo_files": {"a.py": "def f():\n    return 0\n"},
         "test_cmd": "pytest -q",
     }
     prompt = phase4._task_user_prompt("DeepSWE-50", item)
-    assert "Inside <think>, do not restate the task" in prompt
+    assert "Start diagnosing immediately inside <think>" in prompt
+    assert "usually 2-6 terse lines" in prompt
+    assert "Reason enough to make the patch reliable" in prompt
     assert "After </think>, output ONLY the unified diff patch" in prompt
     assert "Test command: pytest -q" in prompt
 
 
-def test_non_code_handlers_keep_existing_prompt_policy():
+def test_non_code_handlers_keep_existing_prompt_policy_and_no_unknown_addon():
     item = {"prompt": "Compute 2+2", "expected": "4"}
     prompt = phase4._task_user_prompt("MATH-500", item)
     assert "Solve this problem using a minimal scratchpad" in prompt
-    assert "Inside <think>, do not restate the task" not in prompt
+    assert "Start solving immediately inside <think>" not in prompt
+    assert "unknown" not in runtime.SYSTEM_PROMPT.lower()
