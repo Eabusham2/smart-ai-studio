@@ -105,7 +105,11 @@ def test_focused_smoke_is_exactly_five_one_go_families():
     # invokes the current hardened evaluator and never calls the old evaluator.
     assert "rt.evaluate_one(" not in source
     assert "All-Split Smoke OLD Reference" not in source
-    assert "checkpoint" not in source.lower()
+    # It may print that no checkpoint was touched; what matters is that it never
+    # opens or invokes the production checkpoint machinery.
+    assert "eval_checkpoint_4000" not in source
+    assert "load_checkpoint(" not in source
+    assert "save_checkpoint(" not in source
     assert "five generations total" in source
 
 
