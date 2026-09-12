@@ -75,13 +75,11 @@ def test_historical_learning_facts_are_restored_additively():
 def test_learn_and_rsi_are_separate_and_rsi_is_self_generated():
     phase = _src("eval/phase4_pro_rsi.py")
     merge = _src("eval/historical_good_merge.py")
-
     assert "LEARN_SESSION_ID" in phase
     assert "RSI_SESSION_ID" in phase
     assert "SELF-GENERATED CANDIDATE" in phase
     assert "Critique your own attempt" in phase
     assert "Do not assume or request a hidden answer" in phase
-
     assert "AUTONOMOUS_RLVR_TASKS" in merge
     assert "No reference answer is available" in merge
     assert "Verifier feedback from that attempt" in merge
@@ -91,13 +89,11 @@ def test_learn_and_rsi_are_separate_and_rsi_is_self_generated():
 def test_phase3_really_updates_and_measures_trainable_weights():
     phase = _src("eval/phase4_pro_rsi.py")
     merge = _src("eval/historical_good_merge.py")
-
     assert "nn.value_and_grad" in phase
     assert "optim.AdamW" in phase
     assert "opt.update(self.engine.model" in phase
     assert "rsi_post_phase3.safetensors" in phase
     assert "Refresh B from the trained" in phase
-
     assert "real_trainable_delta_l2" in merge
     assert "real_layer_deltas" in merge
     assert "Phase 3 claimed parameter updates but real trainable-weight delta is zero" in merge
@@ -105,14 +101,12 @@ def test_phase3_really_updates_and_measures_trainable_weights():
 
 def test_phase4_is_same_model_miss_only_and_answer_blind_pro():
     phase = _src("eval/phase4_pro_rsi.py")
-
     assert "model object was replaced/reloaded" in phase
     assert "backend.model = self.engine.model" in phase
     assert "backend.tokenizer = self.engine.tokenizer" in phase
     assert not _has_call("eval/phase4_pro_rsi.py", "load_model")
     assert "Phase 4 retests Phase-1 misses only" in phase
     assert 'cache.get(f"Phase 1: Baseline_{item[\'id\']}") is False' in phase
-
     assert "_choose_without_ground_truth" in phase
     assert "answer-blind consensus" in phase
     assert "low_threshold=0.25" in phase
@@ -131,25 +125,49 @@ def test_learning_retention_uses_model_not_kg_shortcut():
 
 def test_math_lcb_and_model_driven_scoring_repairs_remain():
     runtime = _src("eval/master_4000_runtime.py")
+    dataset = _src("eval/dataset_hardening.py")
+    scoring = _src("eval/scoring_hardening.py")
     assert "_repair_suite" in runtime
     assert 'splits.get("MATH-500", [])' in runtime
     assert "exponent = (i % 5) + 1" in runtime
     assert 'if "LiveCodeBench" in split:' in runtime
     assert "LCB prompt is natural language, not a Python stub" in runtime
+    assert "minimum number of adjacent swaps" in dataset
+    assert "linear polynomial" in dataset
+    assert "_strict_math" in scoring
+    assert "_final_choice" in scoring
 
 
-def test_awake_learning_is_wired_for_normal_app_generation():
+def test_awake_learning_is_wired_real_and_serialized():
     hook = _src("core/awake_auto_hook.py")
+    online = _src("core/online_consolidator.py")
+    lock = _src("core/mlx_runtime_lock.py")
     init = _src("core/__init__.py")
     assert "consolidator.check_and_prune(history)" in hook
     assert "stream_solve_with_awake_learning" in hook
     assert "solve_with_awake_learning" in hook
+    assert "_real_training_ready" in online
+    assert "param_drift = 0.002" not in online
+    assert "with _lock(self)" in lock
+    assert "install_mlx_runtime_lock(MLXReasoningBackend)" in init
     assert "install_awake_auto_learning(ProReasoningEngine)" in init
 
 
-def test_launcher_install_order_keeps_new_and_historical_layers():
+def test_production_pro_runtime_is_honest():
+    hard = _src("core/pro_runtime_hardening.py")
+    init = _src("core/__init__.py")
+    assert "Refusing to substitute mock/synthetic output" in hard
+    assert 'metadata["tok_speed"] = generated / elapsed' in hard
+    assert 'metadata["memory_rss_mb"] = _rss_mb()' in hard
+    assert "register_loaded_model" in hard
+    assert "install_pro_runtime_hardening(ProReasoningEngine)" in init
+
+
+def test_launcher_install_order_keeps_all_layers():
     launcher = _src("master_4000_eval_suite.py")
-    base = launcher.index("install(Master4000EvaluationEngine)")
+    base = launcher.index("master_runtime.install(Master4000EvaluationEngine)")
+    dataset = launcher.index("install_dataset_hardening(master_runtime, phase4_pro_rsi)")
     pro = launcher.index("phase4_pro_rsi.install(Master4000EvaluationEngine)")
     hist = launcher.index("install_historical_good_merge(phase4_pro_rsi)")
-    assert base < pro < hist
+    score = launcher.index("install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)")
+    assert base < dataset < pro < hist < score
