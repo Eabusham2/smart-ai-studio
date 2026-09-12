@@ -13,7 +13,17 @@ import time
 from core.hf_downloader import register_loaded_model, unregister_loaded_model
 
 
-DEFAULT_MLX_ADAPTER_PATH = os.path.abspath("./consolidated_slow_lora/adapter.safetensors")
+DEFAULT_MLX_ADAPTER_PATH = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
+
+
+def _normalize_adapter_path(path) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return DEFAULT_MLX_ADAPTER_PATH
+    expanded = os.path.abspath(os.path.expanduser(raw))
+    if os.path.isdir(expanded) or raw.endswith(("/", "\\")):
+        return os.path.join(expanded, "adapters.safetensors")
+    return expanded
 
 
 def _active_backend_name(engine) -> str:
@@ -69,11 +79,12 @@ def install_pro_runtime_hardening(cls) -> None:
 
     def hardened_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        if not getattr(self.settings, "use_mock", False) and not getattr(self, "lora_adapter_path", None):
-            self.lora_adapter_path = DEFAULT_MLX_ADAPTER_PATH
+        if not getattr(self.settings, "use_mock", False):
+            normalized = _normalize_adapter_path(getattr(self, "lora_adapter_path", None))
+            self.lora_adapter_path = normalized
             mlx = getattr(self, "mlx_backend", None)
             if mlx is not None:
-                mlx.adapter_path = self.lora_adapter_path
+                mlx.adapter_path = normalized
 
     def hardened_load(self, *args, **kwargs):
         result = original_load(self, *args, **kwargs)
