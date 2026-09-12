@@ -1,27 +1,45 @@
-"""Code-task prompt hardening proven by the live LCB A/B test.
+"""Code-task prompt hardening proven by live A/B tests.
 
-The global Gemini-tested SYSTEM_PROMPT is intentionally unchanged.  This layer
-only tightens the user-side instructions for HumanEval, LiveCodeBench and
-DeepSWE so the reasoning model does not turn the template-opened <think> block
-into a tutorial/verification monologue.
+The global Gemini-tested SYSTEM_PROMPT is intentionally unchanged. This layer
+only tightens user-side instructions for HumanEval, LiveCodeBench and DeepSWE so
+the reasoning model starts solving immediately instead of restating/tutorializing.
 
-Measured reference on LiveCodeBench-Hard_0 with the same 27B model:
+Observed reference on LiveCodeBench-Hard_0 with the same 27B model:
 - old code instruction: PASS, 1024 thinking tokens, no </think>, ~181 s wall
 - tight code instruction: PASS, 11 thinking tokens, closed </think>, ~43 s wall
 
-Installation happens before phase4_pro_rsi.install(), so Phase 4 captures this
-baseline evaluator and its RSI task-prompt builder is patched consistently.
+The production policy does NOT target 11 tokens. Trivial tasks may need one terse
+line; normal coding should keep a compact 2-4 line reasoning sketch; complex code
+or repository repairs may use a short 2-6 step implementation/repair sketch.
+Reasoning should be brief but real, then close </think> once the implementation
+path is sufficiently worked out.
+
+Installation happens before phase4_pro_rsi.install(), so Phase 4 captures the
+same hardened evaluator and RSI task-prompt builder.
 """
 from __future__ import annotations
 
 from typing import Any, Dict
 
 
-CODE_THINK_RULES = (
-    "Inside <think>, do not restate the task, list requirements, explain definitions, compare algorithms, "
-    "walk examples, or verify an already-known solution. "
-    "Use at most one terse implementation/repair note, then close </think> immediately. "
-    "Do NOT emit the requested code or patch until after </think>. "
+COMMON_CODE_THINK_RULES = (
+    "Start solving immediately inside <think>. "
+    "Do not restate the task, describe what the user wants, list requirements, explain definitions, "
+    "compare alternatives after an adequate approach is clear, narrate a plan, or repeat verification. "
+    "Keep reasoning concise but sufficient: trivial code may use one terse line; ordinary code should use a compact "
+    "2-4 line implementation sketch; genuinely complex code may use a few terse steps for the key algorithm, invariants, "
+    "and edge cases. Do not stop before the implementation path is clear, but do not tutorialize. "
+    "Once the solution is sufficiently worked out, close </think>. "
+    "Do NOT emit the requested code until after </think>. "
+)
+
+DEEPSWE_THINK_RULES = (
+    "Start diagnosing immediately inside <think>. "
+    "Do not restate the task, describe what the user wants, list the repository back to yourself, explain generic concepts, "
+    "or repeat verification. Use a short concrete repair sketch, usually 2-6 terse lines: identify the failing behavior, "
+    "the file/change, any important compatibility edge case, and the test implication. "
+    "Reason enough to make the patch reliable, then close </think>. "
+    "Do NOT emit the patch until after </think>. "
 )
 
 
@@ -29,7 +47,7 @@ def _human_eval_user(item: Dict[str, Any]) -> str:
     return (
         f"{item['prompt']}\n\n"
         "Complete the Python function above. "
-        + CODE_THINK_RULES
+        + COMMON_CODE_THINK_RULES
         + "After </think>, output ONLY the valid executable Python code wrapped in ```python ... ```."
     )
 
@@ -38,8 +56,8 @@ def _lcb_user(item: Dict[str, Any]) -> str:
     return (
         f"{item['prompt']}\n\n"
         "Write the complete Python solution requested above. "
-        + CODE_THINK_RULES
-        + "For an obvious standard algorithm, one short tag such as `merge-sort inversions; O(n log n)` is sufficient scratch work. "
+        + COMMON_CODE_THINK_RULES
+        + "For a standard algorithm, name it tersely and note only the key invariant/edge case needed before coding. "
         "After </think>, output ONLY valid executable Python wrapped in ```python ... ```."
     )
 
@@ -51,14 +69,14 @@ def _deep_swe_user(item: Dict[str, Any]) -> str:
     )
     return (
         "Repair the repository so the test command passes. "
-        + CODE_THINK_RULES
+        + DEEPSWE_THINK_RULES
         + "After </think>, output ONLY the unified diff patch.\n\n"
         f"Repository files:\n{repo_text}\n\nTest command: {item['test_cmd']}"
     )
 
 
 def install(runtime_module, phase4_module, cls) -> None:
-    """Install tight code prompts without changing generation/scoring/system prompt."""
+    """Install concise code prompts without changing generation/scoring/system prompt."""
     if getattr(cls, "_code_prompt_hardening_installed", False):
         return
 
