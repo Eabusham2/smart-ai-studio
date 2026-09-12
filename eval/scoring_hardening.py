@@ -12,11 +12,12 @@ Important invariants:
   scratchpad line.
 - RSI still selects candidates without ground truth; hidden ground truth is
   consulted only after selection to assign reward.
+- LearningFacts retention is evaluated through the real model with the exact
+  Gemini-tested system prompt and strict final-answer matching.
 """
 from __future__ import annotations
 
 import ast
-import json
 import re
 from typing import Any, Dict, Optional
 
@@ -46,8 +47,7 @@ def _boxed_values(text: str):
 
 
 def _integer_value(text: str) -> Optional[int]:
-    s = _normalize_text(text)
-    s = s.replace(",", "").strip()
+    s = _normalize_text(text).replace(",", "").strip()
     if re.fullmatch(r"[+-]?\d+", s):
         try:
             return int(s)
@@ -66,14 +66,11 @@ def _final_integer(text: str) -> Optional[int]:
     if direct is not None:
         return direct
 
-    # Accept explicit final-answer prose while refusing arbitrary substring hits.
     match = re.search(
         r"(?i)(?:final\s+answer|answer|result)\s*(?:is\s*)?[:=\-]?\s*([+-]?\d[\d,]*)\b",
         line,
     )
-    if match:
-        return _integer_value(match.group(1))
-    return None
+    return _integer_value(match.group(1)) if match else None
 
 
 def _final_choice(text: str) -> Optional[str]:
@@ -114,7 +111,6 @@ def _strict_text(expected: str, output: str) -> bool:
     line = _normalize_text(_last_nonempty_line(output)).casefold()
     if line == exp:
         return True
-    # Multi-token facts may naturally appear in a short final sentence.
     if len(exp) >= 4 and exp in line:
         return True
     return False
@@ -142,7 +138,7 @@ def _strict_dsl(self, item: Dict[str, Any], output: str) -> bool:
 
 
 def strict_score(self, split: str, item: Dict[str, Any], output: str) -> Optional[bool]:
-    """Return a strict score, or None when the existing deterministic verifier owns scoring."""
+    """Return a strict score, or None when an existing deterministic verifier owns scoring."""
     if any(name in split for name in ("HumanEval", "LiveCodeBench", "DeepSWE", "BFCL")):
         return None
 
@@ -158,11 +154,9 @@ def strict_score(self, split: str, item: Dict[str, Any], output: str) -> Optiona
     if not expected:
         return None
 
-    # GPQA/MMLU-style multiple choice must return an explicit final option.
     if expected.upper() in {"A", "B", "C", "D"} and len(expected) == 1:
         return _final_choice(output) == expected.upper()
 
-    # Zebra's small numeric index is an exact final integer, not a substring.
     if "ZebraLogic" in split and _integer_value(expected) is not None:
         return _final_integer(output) == _integer_value(expected)
 
@@ -188,16 +182,64 @@ def install(cls, phase4_module) -> None:
         return original_answer_blind(self, split, item, candidate)
 
     def hardened_hidden_reward(self, split, item, candidate):
-        # Deterministic task verifiers are answer-blind and remain authoritative.
         verified = hardened_answer_blind(self, split, item, candidate)
         if verified is not None:
             return bool(verified)
 
-        # Ground truth is consulted only now, after candidate selection.
         strict = strict_score(self, split, item, candidate)
         return bool(strict) if strict is not None else False
+
+    def hardened_learning_retention_test(self, model_identity: int):
+        phase4_module._assert_same_model(self, model_identity, "LearningFacts retention test")
+        prior_phase = getattr(self, "_current_phase", "")
+        prior_split = getattr(self, "_current_split", "")
+        prior_item = getattr(self, "_current_item_id", "")
+
+        passed = 0
+        total = len(phase4_module.LEARN_EXAMPLES)
+        for idx, (prompt, expected) in enumerate(phase4_module.LEARN_EXAMPLES):
+            self._current_phase = "Learning Test: Post-RSI"
+            self._current_split = "LearningFacts"
+            self._current_item_id = f"LearningFact_{idx}"
+
+            user = prompt + "\nState the exact learned fact directly."
+            formatted = phase4_module._chat(
+                self.engine.tokenizer,
+                user,
+                system=phase4_module.SYSTEM_PROMPT,
+            )
+            out = self._fast_generate(
+                formatted,
+                max_tokens=min(phase4_module._benchmark_ceiling(self), 16384),
+            )
+            self.last_raw_out = out
+            phase4_module._append_raw_generation_log(self, formatted, user, out)
+
+            ok = _strict_text(str(expected), out)
+            if ok:
+                passed += 1
+            try:
+                with open(phase4_module.RAW_OUTPUT_LOG, "a", encoding="utf-8") as f:
+                    f.write(f"RESULT: {'PASS' if ok else 'FAIL'}\n")
+                    f.write("=" * 110 + "\n")
+            except Exception:
+                pass
+
+        self._current_phase = prior_phase
+        self._current_split = prior_split
+        self._current_item_id = prior_item
+        phase4_module._assert_same_model(self, model_identity, "LearningFacts retention test end")
+
+        pct = 100.0 * passed / max(1, total)
+        print(
+            f"[Learning Test: Post-RSI] LearningFacts | {passed}/{total} ({pct:.2f}%) "
+            f"| same in-memory model | strict final-answer scoring",
+            flush=True,
+        )
+        return {"correct": passed, "total": total, "accuracy": pct}
 
     cls._evaluate_single_item = hardened_evaluate
     cls._strict_scoring_installed = True
     phase4_module._candidate_passes_answer_blind = hardened_answer_blind
     phase4_module._hidden_reward_only_after_selection = hardened_hidden_reward
+    phase4_module._run_learning_retention_test = hardened_learning_retention_test
