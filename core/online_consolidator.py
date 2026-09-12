@@ -1,7 +1,8 @@
 """
 Awake online synaptic consolidation.
 Evicts old dialogue only when a real trainable MLX model is present, then performs
-serialized background LoRA/EWC updates without reporting fake parameter drift.
+serialized background LoRA/EWC updates, measures real drift, and persists the
+updated adapter so learning survives process restarts.
 """
 
 import copy
@@ -29,7 +30,6 @@ class AwakeOnlineConsolidator:
         self.watermark_tokens = int(max_context * watermark)
         self.evict_ratio = evict_ratio
         self.lambda_ewc = lambda_ewc
-
         self.is_consolidating = False
         self.lock = threading.Lock()
         self.consolidation_count = 0
@@ -40,6 +40,7 @@ class AwakeOnlineConsolidator:
             self.engine is not None
             and getattr(self.engine, "model", None) is not None
             and getattr(self.engine, "tokenizer", None) is not None
+            and getattr(self.engine, "is_mlx_available", False)
             and callable(getattr(self.engine, "train_mini_batch", None))
         )
 
@@ -74,8 +75,6 @@ class AwakeOnlineConsolidator:
         evicted_chunk = conversation_history[:evict_count]
         retained_history = conversation_history[evict_count:]
 
-        # Claim the consolidation slot before starting the worker. This closes the
-        # race where two rapid messages could launch overlapping training threads.
         with self.lock:
             if self.is_consolidating:
                 return conversation_history, False
@@ -102,12 +101,9 @@ class AwakeOnlineConsolidator:
         return max(1, total_chars // 4)
 
     def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]):
-        """Run a genuine parameter update; never fabricate a successful drift."""
+        """Run and persist a genuine parameter update; never fabricate drift."""
         start_time = time.time()
-        logger.info(
-            "[AwakeConsolidator] Commencing consolidation on %d turns...",
-            len(chunk),
-        )
+        logger.info("[AwakeConsolidator] Commencing consolidation on %d turns...", len(chunk))
 
         try:
             if not self._real_training_ready():
@@ -122,6 +118,7 @@ class AwakeOnlineConsolidator:
                 data=chunk,
                 lambda_ewc=self.lambda_ewc,
                 steps=3,
+                save_path=getattr(self.engine, "adapter_path", None),
             )
 
             try:
@@ -131,8 +128,8 @@ class AwakeOnlineConsolidator:
             except Exception:
                 pass
 
-            if not isinstance(param_drift, (int, float)):
-                raise RuntimeError("awake consolidation returned invalid parameter drift")
+            if not isinstance(param_drift, (int, float)) or float(param_drift) <= 0.0:
+                raise RuntimeError("awake consolidation produced no measurable parameter update")
 
             with self.lock:
                 if hasattr(self.engine, "adapters"):
