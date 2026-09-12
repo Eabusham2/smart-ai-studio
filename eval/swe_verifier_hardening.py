@@ -1,14 +1,13 @@
-"""Remove false-negative DeepSWE patch-application timeouts.
+"""Remove false-negative DeepSWE patch-application failures.
 
-The benchmark compatibility sandbox historically hardcoded a 2-second timeout
-for the external `patch`/`git apply` setup step even though its configured test
-sandbox timeout is 4 seconds. On a busy macOS machine a correct tiny patch could
-therefore be marked FAIL before tests even ran.
+The compatibility sandbox historically hardcoded both a 2-second patch timeout
+and `patch -p1`. The timeout could reject a correct patch on a busy machine, and
+`-p1` rejects perfectly valid model diffs whose headers are `app/file.py` rather
+than `a/app/file.py` / `b/app/file.py`.
 
-This layer patches both benchmark sandbox implementations to use a bounded patch
-setup timeout derived from the configured sandbox timeout, validates the patch
-application return code, then leaves the actual test command under the original
-sandbox timeout/resource policy.
+This layer derives a bounded setup timeout from the configured sandbox timeout,
+selects the correct strip level for the emitted diff, dry-runs before applying,
+and leaves the actual test command under the original sandbox resource policy.
 """
 from __future__ import annotations
 
@@ -25,6 +24,18 @@ from pathlib import Path
 def _extract_patch(text: str) -> str:
     blocks = re.findall(r"```(?:diff|patch)?\s*([\s\S]*?)```", text or "", re.I)
     return (blocks[-1] if blocks else (text or "")).strip() + "\n"
+
+
+def _patch_strip_level(patch: str) -> int:
+    """Use -p1 for git a/... b/... headers, otherwise preserve plain paths with -p0."""
+    paths = []
+    for match in re.finditer(r"^(?:---|\+\+\+)\s+([^\t\r\n ]+)", patch or "", re.M):
+        path = match.group(1).strip()
+        if path and path != "/dev/null":
+            paths.append(path)
+    if paths and all(path.startswith(("a/", "b/")) for path in paths):
+        return 1
+    return 0
 
 
 def _install_one(cls, result_cls, *, use_git_apply: bool = False) -> None:
@@ -76,8 +87,18 @@ def _install_one(cls, result_cls, *, use_git_apply: bool = False) -> None:
                     capture_output=True, text=True, timeout=patch_timeout,
                 )
             else:
+                strip = _patch_strip_level(patch)
+                check = subprocess.run(
+                    ["patch", "--dry-run", f"-p{strip}", "-i", "task.patch"],
+                    cwd=root, capture_output=True, text=True, timeout=patch_timeout,
+                )
+                if check.returncode:
+                    return result_cls(
+                        False, (time.perf_counter() - started) * 1000.0,
+                        check.stdout, check.stderr[-2000:], 0.0,
+                    )
                 applied = subprocess.run(
-                    ["patch", "-p1", "-i", "task.patch"], cwd=root,
+                    ["patch", f"-p{strip}", "-i", "task.patch"], cwd=root,
                     capture_output=True, text=True, timeout=patch_timeout,
                 )
 
