@@ -34,6 +34,16 @@ def _literal_assignment(path: str, name: str):
     raise AssertionError(f"{name} not found in {path}")
 
 
+def _has_call(path: str, attr_name: str) -> bool:
+    tree = ast.parse(_src(path), filename=path)
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == attr_name
+        for node in ast.walk(tree)
+    )
+
+
 def test_exact_gemini_low_overthink_prompt_and_raw_logger():
     runtime = _src("eval/master_4000_runtime.py")
     assert "write only concise intermediate formulas or numbers." in runtime
@@ -99,7 +109,7 @@ def test_phase4_is_same_model_miss_only_and_answer_blind_pro():
     assert "model object was replaced/reloaded" in phase
     assert "backend.model = self.engine.model" in phase
     assert "backend.tokenizer = self.engine.tokenizer" in phase
-    assert "backend.load_model(" not in phase
+    assert not _has_call("eval/phase4_pro_rsi.py", "load_model")
     assert "Phase 4 retests Phase-1 misses only" in phase
     assert 'cache.get(f"Phase 1: Baseline_{item[\'id\']}") is False' in phase
 
