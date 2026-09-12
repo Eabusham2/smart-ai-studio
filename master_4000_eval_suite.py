@@ -9,6 +9,7 @@ from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
 from eval.reader_hardening import install as install_reader_hardening
+from eval.scoring_hardening import install as install_scoring_hardening
 from eval.swe_verifier_hardening import install as install_swe_verifier_hardening
 
 # Fix active SWE patch application before any engine exists. Actual tests remain
@@ -40,7 +41,7 @@ phase4_pro_rsi.install(Master4000EvaluationEngine)
 # Phase-4/RSI multi-branch generation uses mlx_lm.stream_generate when available.
 install_phase4_stream(phase4_pro_rsi)
 install_historical_good_merge(phase4_pro_rsi)
-scoring_hardening.install(Master4000EvaluationEngine, phase4_pro_rsi)
+install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
 
 if __name__ == "__main__":
     Master4000EvaluationEngine(max_duration_hours=72.0).run_full_suite()
