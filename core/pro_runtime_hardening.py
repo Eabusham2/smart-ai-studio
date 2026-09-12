@@ -1,9 +1,9 @@
 """Production hardening for ProReasoningEngine.
 
-Keeps mock generation available for explicit unit-test mode only, but prevents a
-loaded live backend from silently falling through to synthetic/mock responses when
-real generation fails. Replaces hard-coded tok/s/RSS metadata with measured request
-telemetry and keeps UI cache state synchronized with models proven loaded in memory.
+Keeps mock generation available for explicit unit-test mode only, prevents loaded
+live backends from silently falling through to synthetic output, replaces hard-coded
+telemetry with measured values, synchronizes loaded-state UI/cache state, and gives
+live MLX learning a stable adapter checkpoint path across restarts.
 """
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ import os
 import time
 
 from core.hf_downloader import register_loaded_model, unregister_loaded_model
+
+
+DEFAULT_MLX_ADAPTER_PATH = os.path.abspath("./consolidated_slow_lora/adapter.safetensors")
 
 
 def _active_backend_name(engine) -> str:
@@ -58,10 +61,19 @@ def install_pro_runtime_hardening(cls) -> None:
     if getattr(cls, "_pro_runtime_hardening_installed", False):
         return
 
+    original_init = cls.__init__
     original_fallback = cls._generate_fallback_branches
     original_solve = cls.solve
     original_load = cls.load_model
     original_unload = cls.unload_model
+
+    def hardened_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if not getattr(self.settings, "use_mock", False) and not getattr(self, "lora_adapter_path", None):
+            self.lora_adapter_path = DEFAULT_MLX_ADAPTER_PATH
+            mlx = getattr(self, "mlx_backend", None)
+            if mlx is not None:
+                mlx.adapter_path = self.lora_adapter_path
 
     def hardened_load(self, *args, **kwargs):
         result = original_load(self, *args, **kwargs)
@@ -87,10 +99,8 @@ def install_pro_runtime_hardening(cls) -> None:
     def hardened_fallback(self, prompt: str, branch_count: int):
         if getattr(self.settings, "use_mock", False):
             return original_fallback(self, prompt, branch_count)
-
         if not self.is_model_loaded:
             return original_fallback(self, prompt, branch_count)
-
         raise RuntimeError(
             "Live model weights are loaded, but every real generation backend returned no candidates. "
             "Refusing to substitute mock/synthetic output."
@@ -109,6 +119,7 @@ def install_pro_runtime_hardening(cls) -> None:
         metadata["backend"] = _active_backend_name(self)
         return response, metadata
 
+    cls.__init__ = hardened_init
     cls.load_model = hardened_load
     cls.unload_model = hardened_unload
     cls._generate_fallback_branches = hardened_fallback
