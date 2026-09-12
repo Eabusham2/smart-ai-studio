@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Run the read-only real-model smoke only on representative changed behaviors.
+"""Run the read-only real-model smoke only on the one behavior still failing.
 
-The focused gate deliberately skips already-proven families to save 27B inference
-time. It reuses random_all_split_smoke so old/new comparison, strict scoring,
-checkpoint read-only behavior, live logging, and one model load remain identical.
+Current evidence already cleared LCB, AIME, DeepSWE and AutonomousEvolution.
+DialogueRecall is intentionally not meaningful before Learn/RSI/Phase-3 and is
+therefore excluded from this pre-Learn smoke. Reuse the common smoke harness so
+strict scoring, checkpoint read-only behavior, live logging and one model load
+remain identical.
 """
 from __future__ import annotations
 
@@ -16,14 +18,7 @@ sys.path.insert(0, str(ROOT))
 from tools import random_all_split_smoke as smoke
 
 
-_FOCUS_EXACT = {
-    "LiveCodeBench-Hard",       # code-generation overthinking
-    "AIME-150",                # long arithmetic/recheck loop
-    "GPQA-400",                # direct choice + strict reader
-    "DeepSWE-50",              # repo-repair reasoning/verifier
-    "AutonomousEvolution-200", # symbolic derivation overthinking
-    "DialogueRecall-150",      # fast pre-Learn miss / post-Learn recall policy
-}
+_FOCUS_EXACT = {"GPQA-400"}
 
 
 def main() -> int:
@@ -36,9 +31,9 @@ def main() -> int:
 
     provider_cls.load_all_4000_items = focus_only
 
-    print("[*] Focused representative mode: 6 benchmark families.")
-    print("[*] Testing: LCB, AIME, GPQA, DeepSWE, AutonomousEvolution, DialogueRecall.")
-    print("[*] Skipped: proven-good HumanEval/GSM8K/MATH/Zebra/BFCL/MMLU/HLE/DSL.\n")
+    print("[*] Final bad-family mode: GPQA only.")
+    print("[*] LCB/AIME/DeepSWE/AutonomousEvolution already cleared by real-model smoke.")
+    print("[*] DialogueRecall intentionally deferred until after Learn/RSI/Phase-3.\n")
     return smoke.main()
 
 
