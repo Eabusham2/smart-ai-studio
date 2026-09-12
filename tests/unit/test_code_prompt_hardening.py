@@ -1,4 +1,6 @@
-"""Regression tests for task-specific low-yap prompt routing."""
+"""Regression tests for minimal task-specific prompt routing."""
+
+from pathlib import Path
 
 import eval.master_4000_runtime as runtime
 import eval.phase4_pro_rsi as phase4
@@ -21,6 +23,12 @@ def test_global_system_prompt_remains_exact_verified_gemini_prompt():
 
 def test_prompt_hardening_is_installed_before_phase4_capture():
     assert getattr(entry.Master4000EvaluationEngine, "_code_prompt_hardening_installed", False)
+    source = Path("master_4000_eval_suite.py").read_text(encoding="utf-8")
+    assert source.index("install_code_prompt_hardening(") < source.index("phase4_pro_rsi.install(")
+    phase_source = Path("eval/phase4_pro_rsi.py").read_text(encoding="utf-8")
+    assert "base_eval = cls._evaluate_single_item" in phase_source
+    assert "result = base_eval(self, split, item)" in phase_source
+    assert "original_user = _task_user_prompt(split_name, item)" in phase_source
 
 
 def test_code_families_get_brief_but_real_reasoning():
@@ -31,11 +39,11 @@ def test_code_families_get_brief_but_real_reasoning():
         {"repo_files": {"a.py": "x=1\n"}, "test_cmd": "pytest -q"},
     )
     for prompt in (human, lcb):
-        assert "Start with the solution, not a restatement" in prompt
-        assert "no self-talk" in prompt
-        assert "repeated verification" in prompt
-        assert "Close </think> when implementation is clear" in prompt
-    assert "short 2-6 line repair sketch" in swe
+        assert "start solving immediately" in prompt
+        assert "Do not restate the task or narrate" in prompt
+        assert "no repeated checking" in prompt
+        assert "Close </think> when ready" in prompt
+    assert "failure -> file/change -> important edge/test" in swe
     assert "output ONLY the unified diff patch" in swe
 
 
@@ -50,13 +58,13 @@ def test_problematic_non_code_families_get_small_targeted_clarifications():
     dialogue = phase4._task_user_prompt("DialogueRecall-150", {"prompt": "recall"})
 
     assert "shortest valid calculation" in aime
-    assert "output ONLY the option letter" in gpqa
-    assert "output ONLY the option letter" in mmlu
+    assert "output ONLY A, B, C, or D" in gpqa
+    assert "output ONLY A, B, C, or D" in mmlu
     assert "synthetic notation literally" in hle
-    assert "do not emit JSON" in bfcl
+    assert "Do not emit JSON inside <think>" in bfcl
     assert "arr[k:] + arr[:k]" in dsl
-    assert "canonical nonnegative exponent" in auto
-    assert "Do not discuss yourself, memory access" in dialogue
+    assert "reduce the exponent modulo" in auto
+    assert "do not discuss yourself or memory access" in dialogue
 
 
 def test_already_good_prompt_families_keep_original_policy():
@@ -67,5 +75,5 @@ def test_already_good_prompt_families_keep_original_policy():
     assert "Solve this problem using a minimal scratchpad" in gsm
     assert "Solve this problem using a minimal scratchpad" in math
     assert "Deduce the solution directly. State the final answer on the last line." in zebra
-    assert "Start with the solution, not a restatement" not in gsm
-    assert "Start with the solution, not a restatement" not in math
+    assert "start solving immediately" not in gsm
+    assert "start solving immediately" not in math
