@@ -1,4 +1,4 @@
-"""Regression tests for DeepSWE patch verifier timeout hardening."""
+"""Regression tests for DeepSWE patch verifier hardening."""
 
 from types import SimpleNamespace
 
@@ -7,7 +7,7 @@ import master_4000_eval_suite  # installs the hardening layer
 import run_studio_complete as compat
 
 
-def test_active_benchmark_patch_step_uses_configured_timeout(monkeypatch):
+def _run_with_fake_subprocess(monkeypatch, patch_text):
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -15,30 +15,52 @@ def test_active_benchmark_patch_step_uses_configured_timeout(monkeypatch):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hardening.subprocess, "run", fake_run)
-
     sandbox = compat.POSIXHardenedSandbox(timeout_sec=4.0, max_memory_mb=512)
     result = sandbox.verify_git_diff_patch(
-        {"app/calc.py": "def compute():\n    return 46\n"},
+        {"app/calc.py": "def compute():\n    return 10\n"},
+        patch_text,
+        "python -c \"from app.calc import compute; assert compute() == 20\"",
+    )
+    return result, calls
+
+
+def test_plain_model_diff_uses_p0_and_configured_timeout(monkeypatch):
+    result, calls = _run_with_fake_subprocess(
+        monkeypatch,
+        """```diff
+--- app/calc.py
++++ app/calc.py
+@@ -1,2 +1,2 @@
+ def compute():
+-    return 10
++    return 20
+```""",
+    )
+    assert result.passed is True
+    patch_calls = [(cmd, timeout) for cmd, timeout in calls if isinstance(cmd, list) and cmd and cmd[0] == "patch"]
+    assert patch_calls
+    assert any("-p0" in cmd for cmd, _ in patch_calls)
+    assert all(timeout >= 4.0 for _, timeout in patch_calls)
+    assert any("--dry-run" in cmd for cmd, _ in patch_calls)
+
+
+def test_git_style_diff_uses_p1(monkeypatch):
+    result, calls = _run_with_fake_subprocess(
+        monkeypatch,
         """```diff
 --- a/app/calc.py
 +++ b/app/calc.py
 @@ -1,2 +1,2 @@
  def compute():
--    return 46
-+    return 92
+-    return 10
++    return 20
 ```""",
-        "python -c \"from app.calc import compute; assert compute() == 92\"",
     )
-
     assert result.passed is True
     patch_calls = [(cmd, timeout) for cmd, timeout in calls if isinstance(cmd, list) and cmd and cmd[0] == "patch"]
-    assert patch_calls, calls
-    assert patch_calls[0][1] >= 4.0
-    assert patch_calls[0][1] != 2
-
-    test_calls = [(cmd, timeout) for cmd, timeout in calls if isinstance(cmd, str)]
-    assert test_calls, calls
-    assert test_calls[-1][1] == 4.0
+    assert patch_calls
+    assert any("-p1" in cmd for cmd, _ in patch_calls)
+    assert all(timeout >= 4.0 for _, timeout in patch_calls)
 
 
 def test_global_system_prompt_did_not_gain_unknown_instruction():
