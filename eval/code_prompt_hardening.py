@@ -1,11 +1,11 @@
-"""Task-specific prompt hardening backed by real-model smoke tests.
+"""Minimal task-specific prompt hardening backed by real-model smoke tests.
 
-The exact Gemini-tested global SYSTEM_PROMPT is intentionally unchanged.
-Only benchmark families that demonstrated a concrete failure mode get a small
-user-side clarification. Families whose existing prompt behaved well keep it.
+The exact Gemini-tested global SYSTEM_PROMPT stays unchanged. Only benchmark
+families that demonstrated a concrete failure get a short user-side clarification.
+Families that already behaved well keep their original task prompt.
 
-This layer is installed before phase4_pro_rsi.install(), so the same task policy
-is used by Phase 1, Phase-4 retests, and RSI via _task_user_prompt().
+Installed before phase4_pro_rsi.install(), so the same policy is used by Phase 1,
+RSI task generation, and the final Phase-4 miss-only retest.
 """
 from __future__ import annotations
 
@@ -15,15 +15,13 @@ from eval.scoring_hardening import strict_score
 
 
 CODE_THINK = (
-    "Think briefly and concretely inside <think>. Start with the solution, not a restatement. "
-    "Use only the algorithm, invariants, and edge cases actually needed; no self-talk, requirement list, "
-    "approach-shopping after one works, or repeated verification. Close </think> when implementation is clear. "
+    "Inside <think>, start solving immediately. Do not restate the task or narrate. "
+    "Keep only needed algorithm/invariant/edge-case notes; no repeated checking. Close </think> when ready. "
 )
 
 DEEPSWE_THINK = (
-    "Diagnose immediately inside <think>. Use only a short 2-6 line repair sketch: failing behavior, file/change, "
-    "important edge if any, and test implication. Do not restate the task/repository, self-narrate, or re-check the "
-    "same conclusion. Close </think> when the patch is clear. "
+    "Inside <think>, diagnose immediately: failure -> file/change -> important edge/test. "
+    "Keep it brief; no task/repository restatement or repeated checking. Close </think> when the patch is clear. "
 )
 
 
@@ -39,8 +37,7 @@ def _lcb_user(item: Dict[str, Any]) -> str:
     return (
         f"{item['prompt']}\n\nWrite the complete Python solution requested above. "
         + CODE_THINK
-        + "A standard algorithm may be named tersely with its key invariant/edge case. "
-        "After </think>, output ONLY valid executable Python wrapped in ```python ... ```."
+        + "After </think>, output ONLY valid executable Python wrapped in ```python ... ```."
     )
 
 
@@ -58,41 +55,39 @@ def _deep_swe_user(item: Dict[str, Any]) -> str:
 
 def _aime_user(item: Dict[str, Any]) -> str:
     return (
-        f"{item['prompt']}\n\nUse the shortest valid calculation. Inside <think>, do not restate the problem, "
-        "derive unused quantities, use an alternate method, or double-check after the result is known. "
-        "Close </think> once determined, then output ONLY the final \\boxed{answer}."
+        f"{item['prompt']}\n\nUse the shortest valid calculation. No restatement, alternate method, or double-check. "
+        "Close </think> once determined; output ONLY \\boxed{answer}."
     )
 
 
 def _choice_user(item: Dict[str, Any]) -> str:
     return (
-        f"{item['prompt']}\nUse only the stated premises. Inside <think>, make one terse deduction; do not discuss "
-        "the user, benchmark/question type, outside context, or re-check the same conclusion. "
-        "Close </think>, then output ONLY the option letter A, B, C, or D."
+        f"{item['prompt']}\nUse only the stated premises. Make one terse deduction; no restatement, meta-commentary, "
+        "outside context, or re-check. Close </think>; output ONLY A, B, C, or D."
     )
 
 
 def _hle_user(item: Dict[str, Any]) -> str:
     return (
-        f"{item['prompt']}\nTreat the synthetic notation literally as defined here; do not import outside meanings. "
-        "Use one terse substitution, no restatement or re-check. Close </think>, then output ONLY the exact Con(...) expression."
+        f"{item['prompt']}\nTreat the synthetic notation literally as defined here. One terse substitution only; "
+        "no outside hierarchy discussion or re-check. Close </think>; output ONLY the exact Con(...) expression."
     )
 
 
 def _bfcl_user(item: Dict[str, Any]) -> str:
     return (
-        f"{item['prompt']}\nInside <think>, do not emit JSON; verify the requested tool name and arguments once in a terse line. "
-        "Close </think>, then emit exactly ONE JSON object with keys `name` and `arguments`, and nothing else."
+        f"{item['prompt']}\nDo not emit JSON inside <think>; check tool name/arguments once. "
+        "Close </think>; emit exactly ONE JSON object with keys `name` and `arguments`."
     )
 
 
 def _dsl_user(item: Dict[str, Any]) -> str:
-    # Keep the original Gemini-tested DSL wording, adding only the exact left-rotation formula
-    # exposed as necessary by a random k=2 smoke failure.
+    # Preserve the original Gemini-tested DSL prompt; add only the exact fold rule
+    # exposed by the random k=2 smoke failure.
     return (
         f"{item['prompt']}\n"
         "DSL Rules:\n"
-        "- `arr >>~fold(k)`: Rotates list left by k positions, exactly `arr[k:] + arr[:k]`.\n"
+        "- `arr >>~fold(k)`: Rotates list left by k positions: `arr[k:] + arr[:k]`.\n"
         "- `arr <#>scale(s)`: Multiplies each element by scalar s.\n"
         "- `arr1 @fuse arr2`: Element-wise addition.\n"
         "Calculate on scratchpad and output the final numeric list [x, y, ...] directly."
@@ -101,16 +96,15 @@ def _dsl_user(item: Dict[str, Any]) -> str:
 
 def _autoevol_user(item: Dict[str, Any]) -> str:
     return (
-        f"{item['prompt']}\nApply the given relations directly once. Reduce the exponent modulo the stated order "
-        "to the canonical nonnegative exponent. Do not restate, list equivalent forms, or re-check. "
-        "Close </think>, then output ONLY the final symbolic power."
+        f"{item['prompt']}\nApply the given relations once and reduce the exponent modulo the stated order. "
+        "No restatement, equivalent-form list, or re-check. Close </think>; output ONLY the final symbolic power."
     )
 
 
 def _dialogue_user(item: Dict[str, Any]) -> str:
     return (
-        f"{item['prompt']}\nDo not discuss yourself, memory access, or the request. Inside <think>, make only a terse "
-        "retrieval attempt. Close </think>, then output ONLY the exact recalled fact if known; otherwise output `unknown`."
+        f"{item['prompt']}\nAttempt recall tersely; do not discuss yourself or memory access. "
+        "Close </think>; output ONLY the recalled fact if known, otherwise `unknown`."
     )
 
 
@@ -152,7 +146,6 @@ def install(runtime_module, phase4_module, cls) -> None:
 
     def hardened_eval(self, split, item):
         if not any(name in split for name in targeted):
-            # Preserve proven-good original handlers (GSM8K/MATH/Zebra/etc.) exactly.
             return original_eval(self, split, item)
 
         tok = self.engine.tokenizer
