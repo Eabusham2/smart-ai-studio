@@ -5,7 +5,8 @@ train_mini_batch() updates the active model in-place, so it must never overlap a
 forward/generation pass. This installer adds one re-entrant runtime lock shared by
 entropy probes, branch generation, streaming generation, and mini-batch training.
 The learning thread remains asynchronous, but waits for an inference-safe boundary
-before changing weights.
+before changing weights. Unloaded training fails explicitly instead of returning a
+synthetic nonzero parameter drift.
 """
 from __future__ import annotations
 
@@ -42,12 +43,18 @@ def install_mlx_runtime_lock(cls) -> None:
             return original_branches(self, *args, **kwargs)
 
     def stream_locked(self, *args, **kwargs):
-        # Keep the lock for the full lifetime of the generator so training cannot
-        # change weights between streamed tokens.
         with _lock(self):
             yield from original_stream(self, *args, **kwargs)
 
     def train_locked(self, *args, **kwargs):
+        if (
+            getattr(self, "model", None) is None
+            or getattr(self, "tokenizer", None) is None
+            or not getattr(self, "is_mlx_available", False)
+        ):
+            raise RuntimeError(
+                "Cannot report an MLX parameter update without a real loaded model and tokenizer."
+            )
         with _lock(self):
             return original_train(self, *args, **kwargs)
 
