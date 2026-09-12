@@ -2,13 +2,15 @@
 
 Keeps mock generation available for explicit unit-test mode only, but prevents a
 loaded live backend from silently falling through to synthetic/mock responses when
-real generation fails. Also replaces hard-coded tok/s/RSS metadata with measured
-request telemetry and reports the actual active backend.
+real generation fails. Replaces hard-coded tok/s/RSS metadata with measured request
+telemetry and keeps UI cache state synchronized with models proven loaded in memory.
 """
 from __future__ import annotations
 
 import os
 import time
+
+from core.hf_downloader import register_loaded_model, unregister_loaded_model
 
 
 def _active_backend_name(engine) -> str:
@@ -58,6 +60,29 @@ def install_pro_runtime_hardening(cls) -> None:
 
     original_fallback = cls._generate_fallback_branches
     original_solve = cls.solve
+    original_load = cls.load_model
+    original_unload = cls.unload_model
+
+    def hardened_load(self, *args, **kwargs):
+        result = original_load(self, *args, **kwargs)
+        if isinstance(result, dict) and result.get("status") == "loaded" and not getattr(self.settings, "use_mock", False):
+            path = str(result.get("path") or "").strip()
+            if path:
+                register_loaded_model(path)
+            model_name = ""
+            if args:
+                model_name = str(args[0] or "").strip()
+            elif kwargs.get("model_name"):
+                model_name = str(kwargs.get("model_name") or "").strip()
+            if model_name:
+                register_loaded_model(model_name)
+        return result
+
+    def hardened_unload(self, *args, **kwargs):
+        try:
+            return original_unload(self, *args, **kwargs)
+        finally:
+            unregister_loaded_model()
 
     def hardened_fallback(self, prompt: str, branch_count: int):
         if getattr(self.settings, "use_mock", False):
@@ -84,6 +109,8 @@ def install_pro_runtime_hardening(cls) -> None:
         metadata["backend"] = _active_backend_name(self)
         return response, metadata
 
+    cls.load_model = hardened_load
+    cls.unload_model = hardened_unload
     cls._generate_fallback_branches = hardened_fallback
     cls.solve = hardened_solve
     cls._pro_runtime_hardening_installed = True
