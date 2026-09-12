@@ -4,8 +4,26 @@ The internal 4,014-item suite intentionally uses synthetic stand-ins for several
 public benchmark families. Synthetic is useful only when each expected answer is
 actually entailed by the prompt. This layer repairs recovered fallback tasks that
 were malformed, under-specified, or too weakly tested while preserving item IDs.
+
+DialogueRecall is aligned with the actual Learn curriculum: the 150 scored items
+mix the newer project-fact question style with the original Session A-E historical
+recall style. Baseline may miss them; Learn/Phase 3 teaches the same question/fact
+pairs and Phase 4 retests baseline misses.
 """
 from __future__ import annotations
+
+from eval.flagship_benchmarks import EPISODIC_DIALOGUE_RECALL_PROBE
+
+
+PROJECT_RECALL_PROBES = (
+    ("What DNS service runs on the ASUS ROG GT-BE19000?", "AdGuard Home DNS"),
+    ("Where is AdGuard Home DNS hosted?", "Portainer Docker AI Board"),
+    ("What was the BD PROCHOT sensor decision?", "Disabled via ThrottleStop"),
+    ("What contact frame is paired with the ROG Z790 motherboard?", "Thermal Grizzly Contact Frame"),
+    ("What quantization format is used by Ternary-Bonsai-27B?", "1.58-bit ternary MLX"),
+    ("What does MLX Metal use for model memory?", "Apple unified memory"),
+    ("What operations does TensorGraphDSL support?", "fold scale fuse"),
+)
 
 
 def _harden_lcb_fallback(splits):
@@ -58,22 +76,10 @@ def _harden_aime(splits):
 
 def _harden_gpqa(splits):
     cases = (
-        (
-            "The perturbation H' commutes with the parity operator Π, [H', Π] = 0, and the level is non-degenerate.",
-            "A",
-        ),
-        (
-            "H' has a nonzero matrix element between opposite-parity states, so parity is not a symmetry of the perturbed Hamiltonian.",
-            "B",
-        ),
-        (
-            "The two relevant eigenstates remain exactly energy-degenerate under H'.",
-            "C",
-        ),
-        (
-            "The perturbation norm decays to zero as t→∞, so only the asymptotic classification applies.",
-            "D",
-        ),
+        ("The perturbation H' commutes with the parity operator Π, [H', Π] = 0, and the level is non-degenerate.", "A"),
+        ("H' has a nonzero matrix element between opposite-parity states, so parity is not a symmetry of the perturbed Hamiltonian.", "B"),
+        ("The two relevant eigenstates remain exactly energy-degenerate under H'.", "C"),
+        ("The perturbation norm decays to zero as t→∞, so only the asymptotic classification applies.", "D"),
     )
     subjects = ("Quantum Physics", "Organic Chemistry", "Molecular Genetics", "General Relativity")
     for pos, item in enumerate(splits.get("GPQA-400", [])):
@@ -169,6 +175,42 @@ def _harden_autonomous_evolution(splits):
     return splits
 
 
+def _dialogue_recall_pairs():
+    """Interleave newer project facts with the original Session A-E recall probes."""
+    project = [("project", q, a) for q, a in PROJECT_RECALL_PROBES]
+    historical = [
+        (
+            "historical",
+            str(probe.get("query", "")).strip(),
+            str(probe.get("expected_fact", "")).strip(),
+        )
+        for probe in EPISODIC_DIALOGUE_RECALL_PROBE
+        if str(probe.get("query", "")).strip() and str(probe.get("expected_fact", "")).strip()
+    ]
+    mixed = []
+    width = max(len(project), len(historical))
+    for idx in range(width):
+        if idx < len(project):
+            mixed.append(project[idx])
+        if idx < len(historical):
+            mixed.append(historical[idx])
+    return mixed
+
+
+def _harden_dialogue_recall(splits):
+    """Make scored recall questions match both halves of the actual Learn curriculum."""
+    pairs = _dialogue_recall_pairs()
+    if not pairs:
+        return splits
+    for pos, item in enumerate(splits.get("DialogueRecall-150", [])):
+        style, prompt, expected = pairs[pos % len(pairs)]
+        item["prompt"] = prompt
+        item["expected_keyword"] = expected
+        item["recall_style"] = style
+        item["recall_pair_index"] = pos % len(pairs)
+    return splits
+
+
 def harden_suite(splits):
     for fn in (
         _harden_lcb_fallback,
@@ -178,6 +220,7 @@ def harden_suite(splits):
         _harden_zebra,
         _harden_hle,
         _harden_autonomous_evolution,
+        _harden_dialogue_recall,
     ):
         splits = fn(splits)
     return splits
