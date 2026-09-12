@@ -11,6 +11,10 @@ master_runtime.install(Master4000EvaluationEngine)
 # Install the live tap before Phase-4 wraps _fast_generate so baseline/Learn/RSI
 # keep the recovered fused decoder while exposing raw <think> tokens in real time.
 install_baseline_stream(master_runtime, Master4000EvaluationEngine)
+# phase4_pro_rsi imported this function by value during module import. Point its
+# local reference at the wrapped logger too so RSI/LearningFacts cannot bypass the
+# live current-item file.
+phase4_pro_rsi._append_raw_generation_log = master_runtime._append_raw_generation_log
 install_dataset_hardening(master_runtime, phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 # Phase-4/RSI multi-branch generation uses mlx_lm.stream_generate when available.
