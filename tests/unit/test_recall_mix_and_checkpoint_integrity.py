@@ -22,7 +22,10 @@ def test_dialogue_recall_150_mixes_project_and_original_historical_styles():
     assert pairs.issubset(learned)
 
     assert any(item["prompt"] == "What DNS service runs on the ASUS ROG GT-BE19000?" for item in recall)
-    assert any("IPC ring buffer architecture" in item["prompt"] for item in recall)
+    assert any(
+        item["prompt"] == "What IPC architecture was chosen during Session A for zero-copy message exchange?"
+        for item in recall
+    )
     assert any("token TTL" in item["prompt"] for item in recall)
 
 
