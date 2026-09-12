@@ -1,13 +1,14 @@
 """Autonomous learning & research orchestrator.
 
 /live /learn semantics:
-1. Gather independent external/source facts.
+1. Gather genuinely retrieved external/source facts.
 2. Ask the already-loaded model to synthesize only from those sources.
 3. Require a model-produced claim plus a verbatim source-evidence span.
 4. Train the same active MLX model's LoRA parameters on the verified synthesis.
 5. Measure real parameter drift and persist the adapter.
 
-No hard-coded `return True` self-test, fake synapse counter, or second model load is used.
+No hard-coded `return True` self-test, fake search dossier, fake synapse counter,
+or second model load is accepted as learning evidence.
 """
 from __future__ import annotations
 
@@ -49,6 +50,21 @@ class AutonomousLearner:
                 parts.append(str(value))
         return "\n\n".join(parts).strip()
 
+    @staticmethod
+    def _usable_retrieved_source(ok: bool, text: Any) -> bool:
+        if not ok or not str(text or "").strip():
+            return False
+        lowered = str(text).casefold()
+        rejected_markers = (
+            "no results found",
+            "search service may be unavailable",
+            "failed to fetch",
+            "could not retrieve page content",
+            # Legacy topic-mode crawler fabricated this sentence without fetching a page.
+            "foundational concepts, api architectures, and execution rules for",
+        )
+        return not any(marker in lowered for marker in rejected_markers)
+
     def _require_live_mlx(self):
         backend = getattr(self.engine, "mlx_backend", None)
         if (
@@ -80,17 +96,38 @@ class AutonomousLearner:
         return None
 
     def crawl_and_research(self, topic: str) -> Dict[str, Any]:
-        """Gather independent source material through the existing research tools."""
-        ok_crawl, crawl_res = self.tools.execute_tool(
-            "web_crawler",
-            {"query_or_url": topic, "max_pages": 3, "max_depth": 1},
-        )
-        ok_search, search_res = self.tools.execute_tool("web_search", {"query": topic})
-        sources_found = int(bool(ok_crawl and crawl_res)) + int(bool(ok_search and search_res))
+        """Gather only actually retrieved source material through the existing tools."""
+        target = str(topic or "").strip()
+        is_url = target.startswith(("http://", "https://"))
+        crawl_parts: List[str] = []
+        search_report = ""
+        sources_found = 0
+
+        if is_url:
+            ok_fetch, fetch_res = self.tools.execute_tool("web_fetch", {"url": target})
+            if self._usable_retrieved_source(ok_fetch, fetch_res):
+                crawl_parts.append(str(fetch_res))
+                sources_found += 1
+
+            ok_crawl, crawl_res = self.tools.execute_tool(
+                "web_crawler",
+                {"query_or_url": target, "max_pages": 3, "max_depth": 1},
+            )
+            if self._usable_retrieved_source(ok_crawl, crawl_res):
+                crawl_parts.append(str(crawl_res))
+                sources_found += 1
+        else:
+            # The legacy crawler fabricates a placeholder dossier for topic strings,
+            # so topic learning uses only the real network-backed search path.
+            ok_search, search_res = self.tools.execute_tool("web_search", {"query": target})
+            if self._usable_retrieved_source(ok_search, search_res):
+                search_report = str(search_res)
+                sources_found += 1
+
         result = {
-            "topic": topic,
-            "crawl_report": crawl_res if ok_crawl else "",
-            "search_report": search_res if ok_search else "",
+            "topic": target,
+            "crawl_report": "\n\n".join(crawl_parts),
+            "search_report": search_report,
             "sources_found": sources_found,
         }
         self._last_research = result
@@ -178,7 +215,7 @@ class AutonomousLearner:
         backend = self._require_live_mlx()
         adapter_path = getattr(backend, "adapter_path", None) or getattr(self.engine, "lora_adapter_path", None)
         if not adapter_path:
-            adapter_path = os.path.abspath("./consolidated_slow_lora/adapter.safetensors")
+            adapter_path = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
             backend.adapter_path = adapter_path
             self.engine.lora_adapter_path = adapter_path
 
