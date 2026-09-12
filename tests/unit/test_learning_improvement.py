@@ -32,24 +32,19 @@ class MockReasoningModel(nn.Module):
     def __init__(self, vocab_size: int = 256, hidden_dim: int = 64):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, hidden_dim)
-        # Frozen base weights (simulating 1.58-bit ternary backbone)
         self.base_linear = nn.Linear(hidden_dim, hidden_dim, bias=False)
         for p in self.base_linear.parameters():
             p.requires_grad = False
-            
-        # Trainable Slow-LoRA synaptic adapter
         self.lora_A = nn.Linear(hidden_dim, 8, bias=False)
         self.lora_B = nn.Linear(8, hidden_dim, bias=False)
         self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         h = self.embedding(input_ids)
-        # Base representation + LoRA delta
         base_out = self.base_linear(h)
         lora_out = self.lora_B(self.lora_A(h)) * 0.5
         out = base_out + lora_out
-        logits = self.head(out)
-        return logits
+        return self.head(out)
 
 
 class TestContinuousLearningAndImprovement(unittest.TestCase):
@@ -58,11 +53,14 @@ class TestContinuousLearningAndImprovement(unittest.TestCase):
         self.db_path = os.path.join(self.temp_dir.name, "test_learning_memory.db")
         self.adapter_path = os.path.join(self.temp_dir.name, "slow_lora_synapses.pt")
 
+        # This test owns its tiny synthetic torch model below; the daemon portion is
+        # explicitly mock. Never make CI download production weights to prove this contract.
         self.settings = Settings(
             database_path=self.db_path,
             lora_adapter_path=self.adapter_path,
             base_model_path="prism-ml/Ternary-Bonsai-27B-mlx-2bit",
-            ewc_lambda=350.0
+            ewc_lambda=350.0,
+            use_mock=True,
         )
         self.db = EpisodicMemoryDB(db_path=self.db_path)
         self.engine = ProReasoningEngine(settings=self.settings)
@@ -77,13 +75,6 @@ class TestContinuousLearningAndImprovement(unittest.TestCase):
             pass
 
     def test_end_to_end_model_learning_and_consolidation(self):
-        """
-        Executes a complete daytime -> episodic capture -> nighttime sleep consolidation loop
-        and measures mathematical learning improvement.
-        """
-        # -------------------------------------------------------------
-        # STEP 1: Daytime Pro Reasoning & RLVR Sandbox Verification
-        # -------------------------------------------------------------
         tasks = [
             {
                 "prompt": "Write a Python function `gcd(a, b)` using Euclidean algorithm.",
@@ -102,12 +93,10 @@ class TestContinuousLearningAndImprovement(unittest.TestCase):
             }
         ]
 
-        recorded_ids = []
         for task in tasks:
             v_res = self.verifier.verify_in_sandbox(task["code"], task["tests"])
             self.assertTrue(v_res.passed)
-            
-            row_id = self.db.log_interaction(
+            self.db.log_interaction(
                 prompt=task["prompt"],
                 completion=task["code"],
                 raw_branches=[task["code"]],
@@ -118,84 +107,55 @@ class TestContinuousLearningAndImprovement(unittest.TestCase):
                 winning_branch=0,
                 test_cases=task["tests"]
             )
-            recorded_ids.append(row_id)
 
         stats_before = self.db.get_stats()
         self.assertEqual(stats_before["total_interactions"], 3)
         self.assertEqual(stats_before["unconsolidated_verified"], 3)
 
-        # -------------------------------------------------------------
-        # STEP 2: Neural Parameter Learning & Synaptic Weight Updates
-        # -------------------------------------------------------------
         model = MockReasoningModel()
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=0.03)
-
-        # Task training tensor: prompt -> completion token sequence
         task_input = torch.randint(0, 200, (1, 16))
         task_target = torch.randint(0, 200, (1, 16))
-
-        # Anchor dataset tensor for knowledge retention
         anchor_input = torch.randint(0, 200, (1, 16))
         anchor_target = torch.randint(0, 200, (1, 16))
 
-        # 1. Measure initial baseline loss before learning
         model.eval()
         with torch.no_grad():
             initial_task_loss = criterion(model(task_input).view(-1, 256), task_target.view(-1)).item()
             initial_anchor_loss = criterion(model(anchor_input).view(-1, 256), anchor_target.view(-1)).item()
 
-        # 2. Compute Fisher Information on Anchors to preserve general knowledge
         model.train()
         trainable_params = {n: p for n, p in model.named_parameters() if p.requires_grad}
         fisher_matrices = {}
         anchor_weights = {}
-
         for n, p in trainable_params.items():
             anchor_weights[n] = p.clone().detach()
-            fisher_matrices[n] = torch.ones_like(p) * 0.1  # Synaptic importance constraint
+            fisher_matrices[n] = torch.ones_like(p) * 0.1
 
         ewc_loss_module = EWCLossCalculator(lambda_ewc=5.0)
-
-        # 3. Execute Sleep Consolidation Replay Loop (30 optimization steps)
-        for epoch in range(30):
+        for _epoch in range(30):
             optimizer.zero_grad()
-            # Task prediction loss
             task_logits = model(task_input).view(-1, 256)
             loss_task = criterion(task_logits, task_target.view(-1))
-            
-            # EWC quadratic constraint penalty
             loss_ewc = ewc_loss_module.calculate_penalty(
                 named_parameters=model.named_parameters(),
                 fisher_matrix=fisher_matrices,
                 anchor_weights=anchor_weights
             )
-            
-            total_loss = loss_task + loss_ewc
-            total_loss.backward()
+            (loss_task + loss_ewc).backward()
             optimizer.step()
 
-        # 4. Measure post-consolidation loss (Proof of Learning & Improvement)
         model.eval()
         with torch.no_grad():
             post_task_loss = criterion(model(task_input).view(-1, 256), task_target.view(-1)).item()
             post_anchor_loss = criterion(model(anchor_input).view(-1, 256), anchor_target.view(-1)).item()
 
-        # -------------------------------------------------------------
-        # STEP 3: Verification of Learning & Improvement
-        # -------------------------------------------------------------
-        # A. Task loss MUST drop significantly (Proves the model learned the new problem)
         self.assertLess(post_task_loss, initial_task_loss)
         improvement_pct = ((initial_task_loss - post_task_loss) / initial_task_loss) * 100.0
-        self.assertGreater(improvement_pct, 40.0)  # Over 40% loss reduction
+        self.assertGreater(improvement_pct, 40.0)
+        self.assertLess(abs(post_anchor_loss - initial_anchor_loss), 3.0)
 
-        # B. Anchor loss MUST remain bounded (Proves no catastrophic forgetting)
-        anchor_drift = abs(post_anchor_loss - initial_anchor_loss)
-        self.assertLess(anchor_drift, 3.0)
-
-        # -------------------------------------------------------------
-        # STEP 4: Complete Daemon Sleep Consolidation Cycle Verification
-        # -------------------------------------------------------------
         daemon = SleepConsolidationDaemon(
             db_path=self.db_path,
             lora_adapter_path=self.adapter_path,
@@ -205,7 +165,6 @@ class TestContinuousLearningAndImprovement(unittest.TestCase):
         self.assertEqual(res["status"], "success")
         self.assertEqual(res["memories_consolidated"], 3)
 
-        # Database state after sleep consolidation
         stats_after = self.db.get_stats()
         self.assertEqual(stats_after["unconsolidated_verified"], 0)
         self.assertEqual(stats_after["consolidation_cycles"], 1)
