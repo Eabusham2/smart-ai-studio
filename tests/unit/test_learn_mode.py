@@ -15,10 +15,21 @@ SOURCE_SENTENCE = "Raft uses a replicated log and majority quorum to commit entr
 
 class FakeTools:
     def execute_tool(self, name, args):
+        if name == "web_fetch":
+            return True, f"Page content: {SOURCE_SENTENCE}"
         if name == "web_crawler":
             return True, f"Web Crawler Research Dossier: {SOURCE_SENTENCE}"
         if name == "web_search":
             return True, f"Search evidence: {SOURCE_SENTENCE}"
+        return False, ""
+
+
+class NoResultTools:
+    def execute_tool(self, name, args):
+        if name == "web_search":
+            return True, "No results found. The search service may be unavailable."
+        if name == "web_crawler":
+            return True, "Foundational concepts, API architectures, and execution rules for fake topic."
         return False, ""
 
 
@@ -91,20 +102,39 @@ class TestAutonomousLearnMode(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_01_research_uses_real_tool_results_and_counts_sources(self):
+    def test_01_topic_research_uses_real_search_only_not_fake_topic_crawler(self):
         research = self.learner.crawl_and_research("distributed consensus raft")
-        self.assertEqual(research["sources_found"], 2)
-        self.assertIn(SOURCE_SENTENCE, research["crawl_report"])
+        self.assertEqual(research["sources_found"], 1)
+        self.assertEqual(research["crawl_report"], "")
         self.assertIn(SOURCE_SENTENCE, research["search_report"])
 
-    def test_02_synthesis_is_generated_by_active_model_not_hardcoded_code(self):
+    def test_02_direct_url_research_accepts_real_fetch_and_crawl(self):
+        research = self.learner.crawl_and_research("https://example.test/raft")
+        self.assertEqual(research["sources_found"], 2)
+        self.assertIn(SOURCE_SENTENCE, research["crawl_report"])
+        self.assertEqual(research["search_report"], "")
+
+    def test_03_unavailable_or_fabricated_research_is_rejected(self):
+        learner = AutonomousLearner(
+            engine=self.engine,
+            tools=NoResultTools(),
+            db=self.db,
+            settings=self.settings,
+        )
+        research = learner.crawl_and_research("fake topic")
+        self.assertEqual(research["sources_found"], 0)
+        self.assertEqual(learner._source_blob(research), "")
+        with self.assertRaisesRegex(RuntimeError, "no usable source material"):
+            learner.synthesize_knowledge("fake topic", research)
+
+    def test_04_synthesis_is_generated_by_active_model_not_hardcoded_code(self):
         research = self.learner.crawl_and_research("distributed consensus raft")
         synthesis = self.learner.synthesize_knowledge("distributed consensus raft", research)
         self.assertIn("replicated log", synthesis)
         self.assertNotIn("def solve_", synthesis)
         self.assertNotIn("return True", synthesis)
 
-    def test_03_self_test_requires_verbatim_source_evidence(self):
+    def test_05_self_test_requires_verbatim_source_evidence(self):
         research = self.learner.crawl_and_research("distributed consensus raft")
         synthesis = self.learner.synthesize_knowledge("distributed consensus raft", research)
         passed, details, reward = self.learner.self_test_and_verify(
@@ -114,7 +144,7 @@ class TestAutonomousLearnMode(unittest.TestCase):
         self.assertEqual(reward, 1.0)
         self.assertIn("Source-grounded verification passed", details)
 
-    def test_04_parametric_consolidation_updates_same_active_mlx_backend(self):
+    def test_06_parametric_consolidation_updates_same_active_mlx_backend(self):
         result = self.learner.consolidate_parameters(
             "distributed consensus raft",
             "Raft maintains a replicated log and majority quorum.",
@@ -129,7 +159,7 @@ class TestAutonomousLearnMode(unittest.TestCase):
         self.assertGreaterEqual(stats["total_interactions"], 1)
         self.assertEqual(stats["unconsolidated_verified"], 0)
 
-    def test_05_full_learning_session_reports_measured_parameter_change(self):
+    def test_07_full_learning_session_reports_measured_parameter_change(self):
         stages = []
         res = self.learner.run_learning_session(
             topic="/learn distributed consensus raft",
@@ -146,7 +176,7 @@ class TestAutonomousLearnMode(unittest.TestCase):
         consolidated = next(x for x in stages if x[0] == "consolidating")
         self.assertIn("||ΔW||", consolidated[1])
 
-    def test_06_learning_session_cancellation(self):
+    def test_08_learning_session_cancellation(self):
         cancel_event = threading.Event()
         cancel_event.set()
         stages = []
