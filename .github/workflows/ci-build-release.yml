@@ -11,14 +11,90 @@ on:
 
 permissions:
   contents: write
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    name: Verify Existing Green Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      reuse_green: ${{ steps.green.outputs.reuse_green }}
+      verified_pr_head: ${{ steps.green.outputs.verified_pr_head }}
+    steps:
+      - name: Detect already-green merged PR head
+        id: green
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.setOutput('reuse_green', 'false');
+            core.setOutput('verified_pr_head', '');
+
+            // PRs must always execute the full matrix. Tags, manual runs, direct
+            // pushes, squash merges, and rebases also fall back to full CI.
+            if (context.eventName !== 'push') return;
+            if (!['refs/heads/master', 'refs/heads/main'].includes(context.ref)) return;
+
+            const { owner, repo } = context.repo;
+            const commit = await github.rest.repos.getCommit({
+              owner,
+              repo,
+              ref: context.sha,
+            });
+            const parents = commit.data.parents || [];
+            if (parents.length !== 2) {
+              core.notice('No two-parent merge commit; full CI will run.');
+              return;
+            }
+
+            // For a normal GitHub merge commit, parent[1] is the exact PR head
+            // that was tested before merge. Never infer green from the new merge SHA.
+            const prHead = parents[1].sha;
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner,
+              repo,
+              commit_sha: prHead,
+            });
+            const mergedPr = prs.data.find(pr =>
+              pr.merged_at && ['master', 'main'].includes(pr.base.ref)
+            );
+            if (!mergedPr) {
+              core.notice(`No merged PR found for ${prHead}; full CI will run.`);
+              return;
+            }
+
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner,
+              repo,
+              head_sha: prHead,
+              event: 'pull_request',
+              status: 'completed',
+              per_page: 50,
+            });
+            const greenRun = runs.data.workflow_runs.find(run =>
+              run.name === context.workflow && run.conclusion === 'success'
+            );
+            if (!greenRun) {
+              core.notice(`No successful PR CI run found for ${prHead}; full CI will run.`);
+              return;
+            }
+
+            core.notice(
+              `Reusing successful PR CI run ${greenRun.id} for PR #${mergedPr.number} ` +
+              `at ${prHead}. Master will package/release without rerunning the matrix.`
+            );
+            core.setOutput('reuse_green', 'true');
+            core.setOutput('verified_pr_head', prHead);
+
   test:
     name: Run Test Suite (${{ matrix.os }})
+    needs: preflight
+    if: needs.preflight.outputs.reuse_green != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     strategy:
@@ -60,12 +136,26 @@ jobs:
 
   build-and-release:
     name: Build & Auto-Publish Release Packages
-    needs: test
-    if: success() && github.event_name != 'pull_request'
+    needs: [preflight, test]
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.preflight.result == 'success' &&
+      (needs.preflight.outputs.reuse_green == 'true' || needs.test.result == 'success')
     runs-on: macos-latest
     timeout-minutes: 35
 
     steps:
+      - name: Report Release Gate
+        shell: bash
+        run: |
+          if [ "${{ needs.preflight.outputs.reuse_green }}" = "true" ]; then
+            echo "Reusing already-green PR head: ${{ needs.preflight.outputs.verified_pr_head }}"
+            echo "Skipping duplicate six-lane test matrix on merged master commit."
+          else
+            echo "Using successful tests from this workflow run."
+          fi
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
