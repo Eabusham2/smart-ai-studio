@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run the read-only real-model smoke only on families still changing now.
+"""Run the read-only real-model smoke only on representative changed behaviors.
 
-Already-verified HumanEval/GPQA/DSL behavior and intentionally pre-Learn
-DialogueRecall are skipped. The wrapper reuses random_all_split_smoke so old/new
-comparison, strict scoring, checkpoint read-only behavior, live logging, and one
-model load remain identical.
+The focused gate deliberately skips already-proven families to save 27B inference
+time. It reuses random_all_split_smoke so old/new comparison, strict scoring,
+checkpoint read-only behavior, live logging, and one model load remain identical.
 """
 from __future__ import annotations
 
@@ -18,13 +17,12 @@ from tools import random_all_split_smoke as smoke
 
 
 _FOCUS_EXACT = {
-    "LiveCodeBench-Hard",
-    "AIME-150",
-    "MMLU-Pro-1000",
-    "BFCL-200",
-    "HLE-100",
-    "DeepSWE-50",
-    "AutonomousEvolution-200",
+    "LiveCodeBench-Hard",       # code-generation overthinking
+    "AIME-150",                # long arithmetic/recheck loop
+    "GPQA-400",                # direct choice + strict reader
+    "DeepSWE-50",              # repo-repair reasoning/verifier
+    "AutonomousEvolution-200", # symbolic derivation overthinking
+    "DialogueRecall-150",      # fast pre-Learn miss / post-Learn recall policy
 }
 
 
@@ -38,9 +36,9 @@ def main() -> int:
 
     provider_cls.load_all_4000_items = focus_only
 
-    print("[*] Focused changed-family mode: 7 benchmark families.")
-    print("[*] Skipped: already-verified HumanEval/GPQA/DSL and pre-Learn DialogueRecall.")
-    print("[*] Also skipped unchanged GSM8K/MATH/Zebra.\n")
+    print("[*] Focused representative mode: 6 benchmark families.")
+    print("[*] Testing: LCB, AIME, GPQA, DeepSWE, AutonomousEvolution, DialogueRecall.")
+    print("[*] Skipped: proven-good HumanEval/GSM8K/MATH/Zebra/BFCL/MMLU/HLE/DSL.\n")
     return smoke.main()
 
 
