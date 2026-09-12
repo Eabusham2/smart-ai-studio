@@ -43,32 +43,38 @@ def install_awake_auto_learning(cls) -> None:
         self,
         prompt: str,
         history: Optional[List[Dict[str, str]]] = None,
-        *args,
-        **kwargs,
+        temperature: float = 0.75,
+        top_p: float = 0.92,
+        cancel_event: Optional[Any] = None,
     ):
         history = _apply_awake_learning(self, history)
         yield from original_stream_solve(
             self,
             prompt,
             history=history,
-            *args,
-            **kwargs,
+            temperature=temperature,
+            top_p=top_p,
+            cancel_event=cancel_event,
         )
 
     def solve_with_awake_learning(
         self,
         prompt: str,
-        *args,
+        test_cases: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
-        **kwargs,
+        cancel_event: Optional[Any] = None,
+        force_branch_count: Optional[int] = None,
+        temperature: Optional[float] = None,
     ):
         history = _apply_awake_learning(self, history)
         return original_solve(
             self,
             prompt,
-            *args,
+            test_cases=test_cases,
             history=history,
-            **kwargs,
+            cancel_event=cancel_event,
+            force_branch_count=force_branch_count,
+            temperature=temperature,
         )
 
     cls.stream_solve = stream_solve_with_awake_learning
