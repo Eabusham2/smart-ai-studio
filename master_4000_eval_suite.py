@@ -7,6 +7,12 @@ from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
 from eval.scoring_hardening import install as install_scoring_hardening
+from eval.swe_verifier_hardening import install as install_swe_verifier_hardening
+
+# Fix the active benchmark patch verifier before any engine instance is created.
+# This removes the old hardcoded 2-second patch-tool timeout false negative while
+# leaving actual test execution under the configured sandbox timeout/resource policy.
+install_swe_verifier_hardening(master_runtime)
 
 master_runtime.install(Master4000EvaluationEngine)
 # Install the live tap before Phase-4 wraps _fast_generate so baseline/Learn/RSI
