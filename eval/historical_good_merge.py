@@ -138,17 +138,18 @@ def _install_learning_facts(p4) -> None:
     def seed_learning_facts(self) -> int:
         p4._delete_unconsumed_session_rows(self, p4.LEARN_SESSION_ID)
 
-        # Restore the original 5-session semantic-memory tables in the same DB as
-        # the benchmark, while also training these facts parametrically below.
         db_path = getattr(getattr(self.engine, "kg", None), "db_path", None)
         if db_path:
             try:
-                with sqlite3.connect(db_path) as conn:
-                    for sess in HISTORICAL_DIALOGUE_SESSIONS:
-                        conn.execute(
-                            "DELETE FROM semantic_memory_index WHERE session_id=?",
-                            (str(sess.get("session_id", "")),),
-                        )
+                try:
+                    with sqlite3.connect(db_path) as conn:
+                        for sess in HISTORICAL_DIALOGUE_SESSIONS:
+                            conn.execute(
+                                "DELETE FROM semantic_memory_index WHERE session_id=?",
+                                (str(sess.get("session_id", "")),),
+                            )
+                except sqlite3.OperationalError:
+                    pass
                 ingest_historical_dialogues(db_path=db_path)
             except Exception:
                 pass
@@ -234,15 +235,9 @@ def _install_historical_rsi_methodology(p4) -> None:
     base_rsi = p4._run_rsi_self_improvement
 
     def merged_rsi(self, splits, cache) -> int:
-        # Keep the newer miss-driven recursive self-improvement first.
         miss_verified = int(base_rsi(self, splits, cache) or 0)
         model_identity = id(self.engine.model)
         extra_verified = 0
-
-        # Recovered methodology: multi-temperature live neural generation,
-        # deterministic environment verification, and iterative error feedback.
-        # It is deliberately bounded to the original task pool rather than
-        # fabricating hundreds of duplicate traces.
         temps = [0.20, 0.38, 0.58, 0.82]
 
         for task_name, task_prompt, hidden_tests in AUTONOMOUS_RLVR_TASKS:
