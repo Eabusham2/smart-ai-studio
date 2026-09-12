@@ -146,7 +146,10 @@ def test_model_driven_dataset_and_strict_scoring_repairs_remain():
     assert "execute_python_code(code, item[\"test\"])" in runtime
 
     # Synthetic stand-ins are fully determined, not arbitrary labels/weak >=0 checks.
-    assert "minimum number of adjacent swaps" in dataset
+    # The LCB prompt is assembled from adjacent Python string literals, so assert the
+    # semantic pieces instead of one source-text phrase crossing that literal boundary.
+    assert "exact minimum number of" in dataset
+    assert "adjacent swaps required to sort" in dataset
     assert "inversion count" in dataset
     assert "linear polynomial" in dataset
     assert "_harden_gpqa" in dataset
