@@ -2,11 +2,12 @@
 
 Keeps mock generation available for explicit unit-test mode only, but prevents a
 loaded live backend from silently falling through to synthetic/mock responses when
-real generation fails. Also replaces hard-coded tok/s metadata with measured
-request throughput and reports the actual active backend.
+real generation fails. Also replaces hard-coded tok/s/RSS metadata with measured
+request telemetry and reports the actual active backend.
 """
 from __future__ import annotations
 
+import os
 import time
 
 
@@ -40,8 +41,15 @@ def _count_response_tokens(engine, text: str) -> int:
             return max(0, len(tok.encode(text or "")))
         except Exception:
             pass
-    # Honest fallback estimate when a backend tokenizer is inaccessible.
     return max(0, len((text or "").split()))
+
+
+def _rss_mb() -> float:
+    try:
+        import psutil
+        return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        return 0.0
 
 
 def install_pro_runtime_hardening(cls) -> None:
@@ -55,11 +63,9 @@ def install_pro_runtime_hardening(cls) -> None:
         if getattr(self.settings, "use_mock", False):
             return original_fallback(self, prompt, branch_count)
 
-        # Preserve the normal UI guidance when the user simply has no weights loaded.
         if not self.is_model_loaded:
             return original_fallback(self, prompt, branch_count)
 
-        # A live model exists: never hide a failed backend behind synthetic prose/code.
         raise RuntimeError(
             "Live model weights are loaded, but every real generation backend returned no candidates. "
             "Refusing to substitute mock/synthetic output."
@@ -74,6 +80,7 @@ def install_pro_runtime_hardening(cls) -> None:
         metadata["tokens_generated"] = generated
         metadata["tok_speed"] = generated / elapsed if generated else 0.0
         metadata["measured_wall_time_s"] = elapsed
+        metadata["memory_rss_mb"] = _rss_mb()
         metadata["backend"] = _active_backend_name(self)
         return response, metadata
 
