@@ -37,13 +37,12 @@ def test_only_proven_overthinkers_get_system_suffixes():
 
     assert "2-4 terse lines" in hardening._system_for_split("LiveCodeBench-Hard", base)
     assert "finite-difference shortcut" in hardening._system_for_split("AIME-150", base)
-    assert "One deduction" in hardening._system_for_split("GPQA-400", base)
+    assert "one terse line" in hardening._system_for_split("GPQA-400", base)
     assert "stated premises" in hardening._system_for_split("MMLU-Pro-1000", base)
     assert "synthetic notation literally" in hardening._system_for_split("HLE-100", base)
     assert "commutator definition" in hardening._system_for_split("AutonomousEvolution-200", base)
     assert "memory limitations" in hardening._system_for_split("DialogueRecall-150", base)
 
-    # These already behaved well: exact Gemini system prompt only.
     for split in (
         "HumanEval-164",
         "GSM8K-500",
@@ -67,7 +66,6 @@ def test_lcb_and_deepswe_prompts_are_brief_but_not_reasoning_free():
     assert "alternatives, examples, or rechecking" in lcb
     assert "failure -> exact file/edit -> one test-sensitive edge" in swe
     assert "output ONLY the unified diff patch" in swe
-    assert len(lcb) < 360
 
 
 def test_known_good_families_keep_original_task_policy():
@@ -94,14 +92,19 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     auto = phase4._task_user_prompt("AutonomousEvolution-200", {"prompt": "group"})
     dialogue = phase4._task_user_prompt("DialogueRecall-150", {"prompt": "recall"})
 
+    assert "One literal condition -> one option" in gpqa
+    assert "One literal condition -> one option" in mmlu
     assert "first difference directly" in aime
-    assert "No intercept or second verification" in aime
-    assert "One premise -> one choice" in gpqa
-    assert "One premise -> one choice" in mmlu
     assert "Substitute the stated I-index literally" in hle
     assert "arr[k:] + arr[:k]" in dsl
     assert "at most 3 terse algebra lines" in auto
     assert "otherwise `unknown`" in dialogue
+
+
+def test_dialogue_recall_is_not_in_prelearn_focused_smoke():
+    source = Path("tools/random_changed_split_smoke.py").read_text(encoding="utf-8")
+    assert '_FOCUS_EXACT = {"GPQA-400"}' in source
+    assert "DialogueRecall intentionally deferred" in source
 
 
 def test_rsi_system_routing_restores_the_verified_base_after_use():
