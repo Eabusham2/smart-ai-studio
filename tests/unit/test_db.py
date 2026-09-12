@@ -3,6 +3,7 @@ Unit tests for Episodic SQLite memory manager.
 """
 
 import os
+import sqlite3
 import tempfile
 import unittest
 from memory.db import EpisodicMemoryDB
@@ -86,6 +87,24 @@ class TestEpisodicMemoryDB(unittest.TestCase):
         self.assertGreater(log_id, 0)
         stats = self.db.get_stats()
         self.assertEqual(stats["consolidation_cycles"], 1)
+
+    def test_connection_context_releases_database_file_handle(self):
+        """The DB file must be deletable immediately after leaving a connection context.
+
+        Windows raises WinError 32 when sqlite3's file handle is leaked. POSIX allows
+        unlinking an open file, so also assert the connection itself is closed.
+        """
+        probe_path = os.path.join(self.temp_dir.name, "close_probe.db")
+        probe = EpisodicMemoryDB(db_path=probe_path)
+
+        with probe._get_connection() as conn:
+            conn.execute("SELECT 1")
+
+        with self.assertRaises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+        os.remove(probe_path)
+        self.assertFalse(os.path.exists(probe_path))
 
 
 if __name__ == "__main__":

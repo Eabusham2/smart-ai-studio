@@ -10,13 +10,32 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
+class _ClosingSQLiteConnection(sqlite3.Connection):
+    """sqlite connection whose context manager also releases the OS file handle.
+
+    Python's standard sqlite3.Connection context manager commits/rolls back but
+    deliberately leaves the connection open.  Most of this project uses
+    ``with db._get_connection() as conn`` and historically assumed that meant
+    closed-on-exit. POSIX masks the leak because an open file can be unlinked;
+    Windows correctly rejects deletion of the still-open database file.
+
+    Preserve sqlite's transaction semantics first, then always close the handle.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class EpisodicMemoryDB:
     def __init__(self, db_path: str = "memory.db"):
         self.db_path = db_path
         self.init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, factory=_ClosingSQLiteConnection)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -58,7 +77,7 @@ class EpisodicMemoryDB:
                 )
             """)
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_interactions_consolidation 
+                CREATE INDEX IF NOT EXISTS idx_interactions_consolidation
                 ON interactions (verified_reward, consolidated, surprise_score DESC)
             """)
             conn.commit()
@@ -84,8 +103,8 @@ class EpisodicMemoryDB:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO interactions (
-                    prompt, completion, raw_branches, verified_reward, 
-                    surprise_score, mode, entropy, winning_branch, 
+                    prompt, completion, raw_branches, verified_reward,
+                    surprise_score, mode, entropy, winning_branch,
                     winning_temp, test_cases, consolidated, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """, (

@@ -1,113 +1,194 @@
-"""
-Unit & Integration Tests for Autonomous /learn Mode and Web Crawler.
-Verifies:
-1. Web crawler tool crawling topics and URLs
-2. Autonomous research, synthesis, and sandbox self-testing
-3. Slow-LoRA EWC parametric consolidation during learning
-4. Interactive progress callbacks and chat stream updates
-5. Immediate cancellation via cancel_event
-"""
+"""Tests for honest /learn semantics without loading real 27B weights in CI."""
 
 import os
 import tempfile
 import threading
 import unittest
+
 from config.settings import get_settings
 from core.autonomous_learner import AutonomousLearner
-from core.pro_engine import ProReasoningEngine
-from core.tools import AgentToolRegistry
 from memory.db import EpisodicMemoryDB
 
 
+SOURCE_SENTENCE = "Raft uses a replicated log and majority quorum to commit entries safely."
+
+
+class FakeTools:
+    def execute_tool(self, name, args):
+        if name == "web_fetch":
+            return True, f"Page content: {SOURCE_SENTENCE}"
+        if name == "web_crawler":
+            return True, f"Web Crawler Research Dossier: {SOURCE_SENTENCE}"
+        if name == "web_search":
+            return True, f"Search evidence: {SOURCE_SENTENCE}"
+        return False, ""
+
+
+class NoResultTools:
+    def execute_tool(self, name, args):
+        if name == "web_search":
+            return True, "No results found. The search service may be unavailable."
+        if name == "web_crawler":
+            return True, "Foundational concepts, API architectures, and execution rules for fake topic."
+        return False, ""
+
+
+class FakeArray:
+    def __init__(self, size=2_000_000):
+        self.size = size
+
+
+class FakeMLXBackend:
+    def __init__(self, adapter_path):
+        self.model = object()
+        self.tokenizer = object()
+        self.is_mlx_available = True
+        self.adapter_path = adapter_path
+        self.adapters = {"lora": FakeArray()}
+        self.train_calls = 0
+
+    def compute_mlx_fisher(self, anchors):
+        return {"lora": FakeArray()}
+
+    def train_mini_batch(self, adapters, data, **kwargs):
+        self.train_calls += 1
+        save_path = kwargs.get("save_path")
+        if save_path:
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            with open(save_path, "wb") as f:
+                f.write(b"real-test-adapter")
+        self.adapters = {"lora": FakeArray()}
+        return self.adapters, 0.0125
+
+
+class FakeEngine:
+    def __init__(self, adapter_path):
+        self.mlx_backend = FakeMLXBackend(adapter_path)
+        self.lora_adapter_path = adapter_path
+
+    def solve(self, prompt, **kwargs):
+        if "return ONLY one JSON object" in prompt:
+            return (
+                '{"claim":"Raft commits entries using a majority quorum.",'
+                f'"evidence":"{SOURCE_SENTENCE}"}}',
+                {"mode": "test"},
+            )
+        return (
+            "Raft maintains a replicated log and commits entries after majority-quorum agreement.",
+            {"mode": "test"},
+        )
+
+
 class TestAutonomousLearnMode(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.settings = get_settings()
-        cls.db_fd, cls.db_path = tempfile.mkstemp(suffix=".db")
-        cls.db = EpisodicMemoryDB(db_path=cls.db_path)
-        cls.tools = AgentToolRegistry(db_path=cls.db_path)
-        cls.engine = ProReasoningEngine(settings=cls.settings)
-        cls.learner = AutonomousLearner(engine=cls.engine, tools=cls.tools, db=cls.db, settings=cls.settings)
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "learn.db")
+        self.adapter_path = os.path.join(self.temp_dir.name, "adapter.safetensors")
+        self.settings = get_settings(
+            use_mock=True,
+            database_path=self.db_path,
+            lora_adapter_path=self.adapter_path,
+        )
+        self.db = EpisodicMemoryDB(db_path=self.db_path)
+        self.engine = FakeEngine(self.adapter_path)
+        self.tools = FakeTools()
+        self.learner = AutonomousLearner(
+            engine=self.engine,
+            tools=self.tools,
+            db=self.db,
+            settings=self.settings,
+        )
 
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            os.close(cls.db_fd)
-            if os.path.exists(cls.db_path):
-                os.remove(cls.db_path)
-        except Exception:
-            pass
+    def tearDown(self):
+        self.temp_dir.cleanup()
 
-    def test_01_web_crawler_tool_execution(self):
-        """Verify web_crawler tool executes for topics and URLs."""
-        ok, res = self.tools.execute_tool("web_crawler", {"query_or_url": "quantum computing algorithms", "max_pages": 2})
-        self.assertTrue(ok)
-        self.assertIn("Web Crawler Research Dossier", res)
-        self.assertIn("quantum computing algorithms", res)
-
-    def test_02_learner_research_and_synthesis(self):
-        """Verify autonomous research gathering and structured knowledge synthesis."""
+    def test_01_topic_research_uses_real_search_only_not_fake_topic_crawler(self):
         research = self.learner.crawl_and_research("distributed consensus raft")
-        self.assertIn("topic", research)
-        self.assertIn("crawl_report", research)
+        self.assertEqual(research["sources_found"], 1)
+        self.assertEqual(research["crawl_report"], "")
+        self.assertIn(SOURCE_SENTENCE, research["search_report"])
 
+    def test_02_direct_url_research_accepts_real_fetch_and_crawl(self):
+        research = self.learner.crawl_and_research("https://example.test/raft")
+        self.assertEqual(research["sources_found"], 2)
+        self.assertIn(SOURCE_SENTENCE, research["crawl_report"])
+        self.assertEqual(research["search_report"], "")
+
+    def test_03_unavailable_or_fabricated_research_is_rejected(self):
+        learner = AutonomousLearner(
+            engine=self.engine,
+            tools=NoResultTools(),
+            db=self.db,
+            settings=self.settings,
+        )
+        research = learner.crawl_and_research("fake topic")
+        self.assertEqual(research["sources_found"], 0)
+        self.assertEqual(learner._source_blob(research), "")
+        with self.assertRaisesRegex(RuntimeError, "no usable source material"):
+            learner.synthesize_knowledge("fake topic", research)
+
+    def test_04_synthesis_is_generated_by_active_model_not_hardcoded_code(self):
+        research = self.learner.crawl_and_research("distributed consensus raft")
         synthesis = self.learner.synthesize_knowledge("distributed consensus raft", research)
-        self.assertIn("Synthesized Knowledge Base", synthesis)
-        self.assertIn("def solve_", synthesis)
+        self.assertIn("replicated log", synthesis)
+        self.assertNotIn("def solve_", synthesis)
+        self.assertNotIn("return True", synthesis)
 
-    def test_03_learner_self_testing_rlvr(self):
-        """Verify learner formulates assertions and validates in ground-truth sandbox."""
-        passed, details, reward = self.learner.self_test_and_verify("graph neural networks")
+    def test_05_self_test_requires_verbatim_source_evidence(self):
+        research = self.learner.crawl_and_research("distributed consensus raft")
+        synthesis = self.learner.synthesize_knowledge("distributed consensus raft", research)
+        passed, details, reward = self.learner.self_test_and_verify(
+            "distributed consensus raft", research, synthesis
+        )
         self.assertTrue(passed)
         self.assertEqual(reward, 1.0)
-        self.assertIn("Sandbox Verification", details)
+        self.assertIn("Source-grounded verification passed", details)
 
-    def test_04_learner_parametric_consolidation(self):
-        """Verify learned traces are logged to episodic database and consolidated."""
-        res = self.learner.consolidate_parameters("quantum key distribution", "Synthesis content for QKD", reward=1.0)
-        self.assertIn("status", res)
+    def test_06_parametric_consolidation_updates_same_active_mlx_backend(self):
+        result = self.learner.consolidate_parameters(
+            "distributed consensus raft",
+            "Raft maintains a replicated log and majority quorum.",
+            reward=1.0,
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertGreater(result["parameter_drift_l2"], 0.0)
+        self.assertGreater(result["trainable_parameters_m"], 0.0)
+        self.assertEqual(self.engine.mlx_backend.train_calls, 1)
+        self.assertTrue(os.path.exists(self.adapter_path))
         stats = self.db.get_stats()
         self.assertGreaterEqual(stats["total_interactions"], 1)
+        self.assertEqual(stats["unconsolidated_verified"], 0)
 
-    def test_05_full_learning_session_progression(self):
-        """Verify multi-cycle learning session progresses through all stages and fires callbacks."""
-        stages_recorded = []
-        messages_recorded = []
-
-        def callback(stage, message, syn_delta):
-            stages_recorded.append(stage)
-            messages_recorded.append(message)
-
+    def test_07_full_learning_session_reports_measured_parameter_change(self):
+        stages = []
         res = self.learner.run_learning_session(
-            topic="/learn distributed caching architectures",
-            cancel_event=None,
-            progress_callback=callback,
-            max_cycles=1
+            topic="/learn distributed consensus raft",
+            progress_callback=lambda s, m, d: stages.append((s, m, d)),
+            max_cycles=1,
         )
         self.assertEqual(res["status"], "completed")
         self.assertEqual(res["cycles_completed"], 1)
         self.assertGreater(res["synapses_learned_m"], 0.0)
-        self.assertIn("init", stages_recorded)
-        self.assertIn("crawling", stages_recorded)
-        self.assertIn("synthesizing", stages_recorded)
-        self.assertIn("verifying", stages_recorded)
-        self.assertIn("consolidating", stages_recorded)
-        self.assertIn("done", stages_recorded)
+        self.assertGreater(res["parameter_drift_l2"], 0.0)
+        stage_names = [x[0] for x in stages]
+        for expected in ("init", "crawling", "synthesizing", "verifying", "consolidating", "done"):
+            self.assertIn(expected, stage_names)
+        consolidated = next(x for x in stages if x[0] == "consolidating")
+        self.assertIn("||ΔW||", consolidated[1])
 
-    def test_06_learning_session_cancellation(self):
-        """Verify learning session halts immediately when cancel_event is set."""
+    def test_08_learning_session_cancellation(self):
         cancel_event = threading.Event()
-        cancel_event.set()  # Pre-cancelled
-
+        cancel_event.set()
         stages = []
         res = self.learner.run_learning_session(
             topic="deep reinforcement learning",
             cancel_event=cancel_event,
             progress_callback=lambda s, m, d: stages.append(s),
-            max_cycles=2
+            max_cycles=2,
         )
         self.assertEqual(res["status"], "cancelled")
         self.assertEqual(res["cycles_completed"], 0)
+        self.assertIn("stopped", stages)
 
 
 if __name__ == "__main__":
