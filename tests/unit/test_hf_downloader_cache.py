@@ -1,6 +1,18 @@
 import os
 
-from core.hf_downloader import is_model_cached_locally
+from core.hf_downloader import (
+    is_model_cached_locally,
+    register_loaded_model,
+    unregister_loaded_model,
+)
+
+
+def setup_function():
+    unregister_loaded_model()
+
+
+def teardown_function():
+    unregister_loaded_model()
 
 
 def test_local_weight_directory_is_installed(tmp_path):
@@ -29,3 +41,16 @@ def test_hf_hub_snapshot_in_configured_cache_is_installed(tmp_path, monkeypatch)
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(cache_root))
 
     assert is_model_cached_locally("owner/model") is True
+
+
+def test_successfully_loaded_model_is_ready_even_when_cache_scan_cannot_find_it(tmp_path, monkeypatch):
+    empty_cache = tmp_path / "empty-hub"
+    empty_cache.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(empty_cache))
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(empty_cache))
+
+    assert is_model_cached_locally("owner/runtime-loaded") is False
+    register_loaded_model("owner/runtime-loaded")
+    assert is_model_cached_locally("owner/runtime-loaded") is True
+    unregister_loaded_model("owner/runtime-loaded")
+    assert is_model_cached_locally("owner/runtime-loaded") is False
