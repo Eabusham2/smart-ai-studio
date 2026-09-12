@@ -101,7 +101,10 @@ def test_focused_smoke_is_exactly_five_one_go_families():
     ):
         assert split in source
     assert "DialogueRecall-150" not in source
-    assert "old-prompt" not in source.lower()
+    # Lock behavior rather than comments/docstrings: the focused runner only
+    # invokes the current hardened evaluator and never calls the old evaluator.
+    assert "rt.evaluate_one(" not in source
+    assert "All-Split Smoke OLD Reference" not in source
     assert "checkpoint" not in source.lower()
     assert "five generations total" in source
 
