@@ -30,7 +30,8 @@ SYSTEM_SUFFIXES = {
         "or recheck a settled result."
     ),
     "GPQA": (
-        " Use only the stated premise. One deduction to the option; no task restatement or option narration."
+        " Map the stated condition directly to its option label in one terse line. "
+        "Do not restate the prompt/options or add domain exposition."
     ),
     "MMLU-Pro": (
         " Use only the stated premises. One deduction to the option; do not import outside context."
@@ -82,7 +83,7 @@ def _aime_user(item: Dict[str, Any]) -> str:
 
 
 def _choice_user(item: Dict[str, Any]) -> str:
-    return f"{item['prompt']}\nOne premise -> one choice. Close </think>; output ONLY A, B, C, or D."
+    return f"{item['prompt']}\nOne literal condition -> one option. Use one terse reasoning line, close </think>, output ONLY A, B, C, or D."
 
 
 def _hle_user(item: Dict[str, Any]) -> str:
