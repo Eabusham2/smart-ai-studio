@@ -1,5 +1,6 @@
 from eval.dataset_hardening import (
     _harden_aime,
+    _harden_autonomous_evolution,
     _harden_gpqa,
     _harden_hle,
     _harden_lcb_fallback,
@@ -44,7 +45,6 @@ def test_aime_polynomial_is_determined_and_expected_matches_linear_interpolation
     item = {"id": "AIME_0", "prompt": "bad", "expected": "bad"}
     out = _harden_aime({"AIME-150": [item]})["AIME-150"][0]
     assert "linear polynomial" in out["prompt"]
-    # i=0: P(1)=3, P(2)=28, slope=25, so P(5)=103.
     assert out["expected"] == "103"
 
 
@@ -84,3 +84,18 @@ def test_hle_consistency_notation_contains_required_axiom_level():
         "Con(ZFC + I2)",
     ]
     assert "T = ZFC + I0" in out[0]["prompt"]
+
+
+def test_autonomous_evolution_commutator_is_determined_by_dihedral_relations():
+    items = [{"id": f"AutoEvol_{i}", "prompt": "bad", "expected_token": "?"} for i in range(5)]
+    out = _harden_autonomous_evolution({"AutonomousEvolution-200": items})["AutonomousEvolution-200"]
+    # For order n, [g,h]=g^-2=g^(n-2).
+    assert [x["expected_token"] for x in out] == [
+        "g_0",
+        "g_1^2",
+        "g_2^3",
+        "g_3^4",
+        "g_4^5",
+    ]
+    assert "h_0 g_0 h_0 = g_0^(-1)" in out[0]["prompt"]
+    assert "[g,h] = g^(-1) h^(-1) g h" in out[0]["prompt"]
