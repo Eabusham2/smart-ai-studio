@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only real-model smoke test: one random item from every benchmark split.
+"""Read-only real-model smoke: one random item from every benchmark split.
 
-This runner never writes the evaluation checkpoint. It uses the currently wired
-production evaluator for the NEW result. For code families whose historical
-checkpoint correctness is unavailable, it first runs the pre-hardening evaluator
-on the same item to establish a concrete old-prompt baseline instead of reporting
-"UNKNOWN".
-
-The normal benchmark token ceilings are not changed. This smoke runner uses
-smaller per-split generation allowances only to keep the diagnostic bounded.
+The evaluator checkpoint is READ ONLY. Every split gets one NEW-policy sample.
+For any family whose task prompt changed on this branch, missing historical
+PASS/FAIL is replaced by an actual OLD-prompt run on the same item. That old
+output is rescored with the current strict reader/verifier when available, so
+`NO_HISTORY` is never confused with model output such as `unknown`.
 """
 from __future__ import annotations
 
@@ -29,6 +26,7 @@ import master_4000_eval_suite as suite
 import eval.live_generation_stream as live_stream
 import eval.master_4000_runtime as rt
 import eval.phase4_pro_rsi as p4
+import eval.scoring_hardening as scoring
 
 
 VERIFIED_GEMINI_PROMPT = (
@@ -38,10 +36,12 @@ VERIFIED_GEMINI_PROMPT = (
     "Close </think> immediately once calculated and output the answer."
 )
 
-CODE_SPLITS = ("HumanEval", "LiveCodeBench", "DeepSWE")
+CHANGED_SPLITS = (
+    "HumanEval", "LiveCodeBench", "DeepSWE", "AIME", "GPQA", "MMLU-Pro",
+    "HLE", "BFCL", "TensorGraphDSL", "AutonomousEvolution", "DialogueRecall",
+)
 LEGACY_MARKERS = ("__v2done__:", "__eyad_v3_done__:", "__eyad_v5_done__:")
 
-# Diagnostic-only ceilings; production retains its normal dynamic 8K/16K ceiling.
 SMOKE_CAPS = {
     "HumanEval-164": 1024,
     "LiveCodeBench-Hard": 1024,
@@ -69,11 +69,9 @@ def checkpoint_history(cache: Dict[str, Any], item_id: str) -> Tuple[str, Any]:
         if value is False:
             return "FAIL", False
         return "DIRECT_NONBOOLEAN", None
-
     for prefix in LEGACY_MARKERS:
         if cache.get(prefix + key) is True:
             return "DONE_NO_DIRECT_RESULT", None
-
     return "NO_HISTORY", None
 
 
@@ -101,8 +99,13 @@ def thought_stats(tokenizer, raw: str):
     return closed, count
 
 
-def is_code_split(name: str) -> bool:
-    return any(part in name for part in CODE_SPLITS)
+def changed_split(name: str) -> bool:
+    return any(part in name for part in CHANGED_SPLITS)
+
+
+def current_strict_or_existing(engine, split_name, item, existing_value):
+    strict = scoring.strict_score(engine, split_name, item, str(getattr(engine, "last_raw_out", "") or ""))
+    return bool(strict) if strict is not None else bool(existing_value)
 
 
 def main() -> int:
@@ -110,7 +113,7 @@ def main() -> int:
     ap.add_argument(
         "--checkpoint",
         default="eval_results/eval_checkpoint_4000.json",
-        help="Checkpoint to READ for historical status; never modified.",
+        help="Checkpoint to READ for history; never modified.",
     )
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args()
@@ -129,7 +132,7 @@ def main() -> int:
     rng = random.Random(args.seed) if args.seed is not None else random.SystemRandom()
 
     print("[✓] Exact verified Gemini system prompt is unchanged.")
-    print("[✓] No anti-unknown system suffix is installed.")
+    print("[✓] No global anti-unknown system suffix is installed.")
     print(f"[*] Historical checkpoint (read only): {checkpoint_path}")
     print("[*] Loading ONE real benchmark model...")
 
@@ -157,10 +160,10 @@ def main() -> int:
         reference_label = historical_label
         reference_value = historical_value
 
-        # For code prompts only, establish a true pre-hardening baseline when
-        # checkpoint correctness cannot be recovered. rt.evaluate_one is the
-        # original evaluator function; the class method is the hardened NEW path.
-        if is_code_split(split_name) and reference_value is None:
+        # If this branch changed the task prompt and no direct old result survives,
+        # run the exact pre-hardening evaluator on the same item. Score its output
+        # with the current strict reader where one owns the split.
+        if changed_split(split_name) and reference_value is None:
             engine._current_phase = "All-Split Smoke OLD Reference"
             engine._current_split = split_name
             engine._current_item_id = item_id
@@ -168,7 +171,10 @@ def main() -> int:
 
             t0 = time.perf_counter()
             try:
-                reference_value = bool(rt.evaluate_one(engine, split_name, item))
+                old_existing = bool(rt.evaluate_one(engine, split_name, item))
+                reference_value = current_strict_or_existing(
+                    engine, split_name, item, old_existing
+                )
                 reference_label = "RETEST_OLD_PASS" if reference_value else "RETEST_OLD_FAIL"
             except Exception as exc:
                 reference_value = None
@@ -201,30 +207,27 @@ def main() -> int:
         print(f"wall time:            {wall:.2f}s")
         if error:
             print(f"error:                {error}")
-
         if raw:
             print("RAW OUTPUT (tail):")
             print("-" * 118)
             print(raw[-2200:])
             print("-" * 118)
 
-        comparable = reference_value is not None and is_code_split(split_name)
+        comparable = reference_value is not None and changed_split(split_name)
         regression = bool(comparable and reference_value is True and new_pass is False)
 
-        rows.append(
-            {
-                "split": split_name,
-                "id": item_id,
-                "history": reference_label,
-                "old": reference_value,
-                "new": new_pass,
-                "closed": closed,
-                "think": think_tokens,
-                "out": output_tokens,
-                "wall": wall,
-                "regression": regression,
-            }
-        )
+        rows.append({
+            "split": split_name,
+            "id": item_id,
+            "history": reference_label,
+            "old": reference_value,
+            "new": new_pass,
+            "closed": closed,
+            "think": think_tokens,
+            "out": output_tokens,
+            "wall": wall,
+            "regression": regression,
+        })
 
     print("\n" + "=" * 118)
     print("FINAL — ONE RANDOM ITEM FROM EVERY BENCHMARK TYPE")
@@ -246,18 +249,16 @@ def main() -> int:
     regressions = [row for row in rows if row["regression"]]
     print()
     if regressions:
-        print("[X] CODE-PROMPT REGRESSION on a previously/retested passing code sample:")
+        print("[X] REGRESSION on a changed-family sample that previously/retested PASS:")
         for row in regressions:
             print(f"    {row['split']} {row['id']}")
     else:
-        print("[✓] No sampled code family regressed from a known/retested old PASS.")
+        print("[✓] No changed-family sample regressed from a known/retested old PASS.")
 
-    print("[*] Non-code prompts were intentionally unchanged; their rows are current-policy smoke checks.")
-    print("[*] DialogueRecall may legitimately fail before the Learn/RSI/consolidation stages.")
+    print("[*] DialogueRecall may intentionally fail before Learn/RSI/Phase-3, then be retested in Phase 4.")
     print("[✓] Evaluation checkpoint was READ ONLY and was never modified.")
     print("[*] Live stream: /tmp/random_all_split_smoke_live.log")
     print("[*] Raw smoke log: /tmp/random_all_split_smoke_raw.log")
-
     return 1 if regressions else 0
 
 
