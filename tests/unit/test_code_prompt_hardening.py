@@ -1,4 +1,4 @@
-"""Regression tests for minimal task-specific prompt routing."""
+"""Regression tests for evidence-driven task-specific prompt routing."""
 
 from pathlib import Path
 
@@ -32,62 +32,76 @@ def test_prompt_hardening_is_installed_before_phase4_capture():
     assert "original_user = _task_user_prompt(split_name, item)" in phase_source
 
 
-def test_only_stubborn_families_get_tiny_system_suffixes():
+def test_only_proven_overthinkers_get_system_suffixes():
     base = VERIFIED_GEMINI_PROMPT
-    assert hardening._system_for_split("LiveCodeBench-Hard", base).startswith(base)
-    assert "Never describe the user" in hardening._system_for_split("LiveCodeBench-Hard", base)
-    assert "shortest calculation" in hardening._system_for_split("AIME-150", base)
+
+    assert "2-4 terse lines" in hardening._system_for_split("LiveCodeBench-Hard", base)
+    assert "finite-difference shortcut" in hardening._system_for_split("AIME-150", base)
+    assert "One deduction" in hardening._system_for_split("GPQA-400", base)
     assert "stated premises" in hardening._system_for_split("MMLU-Pro-1000", base)
     assert "synthetic notation literally" in hardening._system_for_split("HLE-100", base)
-    assert "emit the final JSON once" in hardening._system_for_split("BFCL-200", base)
-    assert "Apply the given relations once" in hardening._system_for_split("AutonomousEvolution-200", base)
+    assert "commutator definition" in hardening._system_for_split("AutonomousEvolution-200", base)
+    assert "memory limitations" in hardening._system_for_split("DialogueRecall-150", base)
 
-    for split in ("HumanEval-164", "GPQA-400", "DeepSWE-50", "TensorGraphDSL-300", "GSM8K-500", "MATH-500", "ZebraLogic-200", "DialogueRecall-150"):
+    # These already behaved well: exact Gemini system prompt only.
+    for split in (
+        "HumanEval-164",
+        "GSM8K-500",
+        "MATH-500",
+        "ZebraLogic-200",
+        "BFCL-200",
+        "TensorGraphDSL-300",
+    ):
         assert hardening._system_for_split(split, base) == base
 
 
-def test_lcb_and_deepswe_user_prompts_are_short_and_direct():
+def test_lcb_and_deepswe_prompts_are_brief_but_not_reasoning_free():
     lcb = phase4._task_user_prompt("LiveCodeBench-Hard", {"prompt": "Write f(arr)."})
     swe = phase4._task_user_prompt(
         "DeepSWE-50",
         {"repo_files": {"a.py": "x=1\n"}, "test_cmd": "pytest -q"},
     )
-    assert "Think only: algorithm + key invariant/edge case" in lcb
-    assert "failure -> file/change -> important edge/test" in swe
+
+    assert "2-4 terse lines" in lcb
+    assert "algorithm" in lcb and "invariant/edge case" in lcb and "implementation" in lcb
+    assert "alternatives, examples, or rechecking" in lcb
+    assert "failure -> exact file/edit -> one test-sensitive edge" in swe
     assert "output ONLY the unified diff patch" in swe
-    assert len(lcb) < 260
+    assert len(lcb) < 360
 
 
-def test_humaneval_and_known_good_families_keep_original_task_policy():
+def test_known_good_families_keep_original_task_policy():
     human = phase4._task_user_prompt("HumanEval-164", {"prompt": "def f(x):\n    pass"})
     gsm = phase4._task_user_prompt("GSM8K-500", {"prompt": "Compute 2+2"})
     math = phase4._task_user_prompt("MATH-500", {"prompt": "Compute 2+2"})
     zebra = phase4._task_user_prompt("ZebraLogic-200", {"prompt": "logic"})
+    bfcl = phase4._task_user_prompt("BFCL-200", {"prompt": "tool prompt"})
 
     assert "Use scratchpad only for logic outline" in human
     assert "Solve this problem using a minimal scratchpad" in gsm
     assert "Solve this problem using a minimal scratchpad" in math
     assert "Deduce the solution directly. State the final answer on the last line." in zebra
+    assert "Return ONLY one JSON object" in bfcl
+    assert "Check the tool name and arguments once" not in bfcl
 
 
-def test_targeted_non_code_user_prompts_stay_small():
+def test_targeted_non_code_prompts_are_short_and_specific():
     aime = phase4._task_user_prompt("AIME-150", {"prompt": "AIME prompt"})
     gpqa = phase4._task_user_prompt("GPQA-400", {"prompt": "MC prompt"})
     mmlu = phase4._task_user_prompt("MMLU-Pro-1000", {"prompt": "MC prompt"})
     hle = phase4._task_user_prompt("HLE-100", {"prompt": "HLE prompt"})
-    bfcl = phase4._task_user_prompt("BFCL-200", {"prompt": "tool prompt"})
     dsl = phase4._task_user_prompt("TensorGraphDSL-300", {"prompt": "dsl"})
     auto = phase4._task_user_prompt("AutonomousEvolution-200", {"prompt": "group"})
     dialogue = phase4._task_user_prompt("DialogueRecall-150", {"prompt": "recall"})
 
-    assert "shortest calculation" in aime
-    assert "output ONLY A, B, C, or D" in gpqa
-    assert "output ONLY A, B, C, or D" in mmlu
+    assert "first difference directly" in aime
+    assert "No intercept or second verification" in aime
+    assert "One premise -> one choice" in gpqa
+    assert "One premise -> one choice" in mmlu
     assert "Substitute the stated I-index literally" in hle
-    assert "final JSON out of <think>" in bfcl
     assert "arr[k:] + arr[:k]" in dsl
-    assert "Apply the relations once" in auto
-    assert "output ONLY the fact if known, otherwise `unknown`" in dialogue
+    assert "at most 3 terse algebra lines" in auto
+    assert "otherwise `unknown`" in dialogue
 
 
 def test_rsi_system_routing_restores_the_verified_base_after_use():
