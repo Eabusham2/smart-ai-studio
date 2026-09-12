@@ -1,18 +1,17 @@
 """Real-time current-item generation log for the 4,014-item benchmark.
 
-This intentionally does NOT contain GitHub/CI monitoring.  It exists only so a
+This intentionally does NOT contain GitHub/CI monitoring. It exists only so a
 second Terminal window can run one simple shell line and see the exact current
 model prompt plus raw model output (including <think>...</think>) while tokens are
 still being generated.
 
-The historical append-only raw_model_outputs.log remains unchanged.  This module
+The historical append-only raw_model_outputs.log remains unchanged. This module
 adds eval_results/live_generation.log, which is truncated when a new item/branch
 starts and continuously appended during decode.
 """
 from __future__ import annotations
 
 import gc
-import json
 import os
 import time
 from datetime import datetime
@@ -105,7 +104,7 @@ def _append_live_result(ok: bool) -> None:
 
 
 def install_baseline_stream(runtime_module, cls) -> None:
-    """Install a byte-for-byte-equivalent fused decoder plus low-overhead live logging."""
+    """Install the recovered fused decoder plus a low-overhead live output tap."""
     if getattr(cls, "_live_generation_stream_installed", False):
         return
 
@@ -192,9 +191,8 @@ def install_baseline_stream(runtime_module, cls) -> None:
                     decode += 1
 
                     now = time.perf_counter()
-                    # Roughly twice per second at the current ~5 t/s.  Decode only
-                    # the newly generated handful of tokens so monitoring does not
-                    # repeatedly re-decode the whole response or hurt throughput.
+                    # Roughly twice per second at the current ~5 t/s. Decode only
+                    # newly generated tokens, never the whole response repeatedly.
                     if pending_live and (now - live_update >= 0.5 or len(pending_live) >= 8):
                         _append_live_text(_decode_piece(tok, pending_live))
                         pending_live.clear()
@@ -271,14 +269,16 @@ def install_phase4_stream(phase4_module) -> None:
 
         stream_generate = getattr(mlx_lm, "stream_generate", None)
         if not callable(stream_generate):
-            # Older mlx-lm: preserve original behavior.  The final selected output
-            # is still written by the runtime snapshot hook.
+            # Older mlx-lm: preserve original generation semantics. The final
+            # selected output still lands in the live file via the snapshot hook.
             return original(self, formatted_prompt, temperatures, max_tokens, top_p)
 
         try:
             from mlx_lm.sample_utils import make_sampler
         except Exception:
             make_sampler = None
+        if make_sampler is None:
+            return original(self, formatted_prompt, temperatures, max_tokens, top_p)
 
         branches: List[str] = []
         total_branches = len(temperatures)
@@ -292,16 +292,13 @@ def install_phase4_stream(phase4_module) -> None:
             except Exception:
                 pass
 
-            kwargs: Dict[str, Any] = {"max_tokens": max(1, int(max_tokens)), "verbose": False}
-            if make_sampler is not None:
-                try:
-                    kwargs["sampler"] = make_sampler(temp=float(temp), top_p=top_p)
-                except Exception:
-                    kwargs["temp"] = float(temp)
-                    kwargs["top_p"] = top_p
-            else:
-                kwargs["temp"] = float(temp)
-                kwargs["top_p"] = top_p
+            try:
+                sampler = make_sampler(temp=float(temp), top_p=top_p)
+            except Exception:
+                # Do not invent a different sampling path just to keep the watcher live.
+                fallback = original(self, formatted_prompt, [temp], max_tokens, top_p)
+                branches.extend(fallback)
+                continue
 
             _write_live_header(
                 self,
@@ -314,28 +311,24 @@ def install_phase4_stream(phase4_module) -> None:
                     self.engine.model,
                     self.engine.tokenizer,
                     prompt=formatted_prompt,
-                    **kwargs,
+                    max_tokens=max(1, int(max_tokens)),
+                    sampler=sampler,
                 )
+                for response in iterator:
+                    chunk = getattr(response, "text", None)
+                    if chunk is None:
+                        chunk = str(response)
+                    chunk = str(chunk)
+                    pieces.append(chunk)
+                    _append_live_text(chunk)
+                branches.append("".join(pieces))
             except TypeError:
-                kwargs.pop("sampler", None)
-                kwargs["temp"] = float(temp)
-                kwargs["top_p"] = top_p
-                iterator = stream_generate(
-                    self.engine.model,
-                    self.engine.tokenizer,
-                    prompt=formatted_prompt,
-                    **kwargs,
-                )
-
-            for response in iterator:
-                chunk = getattr(response, "text", None)
-                if chunk is None:
-                    chunk = str(response)
-                chunk = str(chunk)
-                pieces.append(chunk)
-                _append_live_text(chunk)
-
-            branches.append("".join(pieces))
+                # API mismatch on an older mlx-lm build: preserve the original
+                # generation implementation for this branch rather than failing.
+                fallback = original(self, formatted_prompt, [temp], max_tokens, top_p)
+                branches.extend(fallback)
+                if fallback:
+                    _append_live_text(str(fallback[0]))
 
         return branches
 
