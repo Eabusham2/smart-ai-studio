@@ -52,10 +52,11 @@ def test_final_snapshot_keeps_exact_output_and_measured_metrics(tmp_path, monkey
     assert "RESULT: PASS" in text
 
 
-def test_launcher_installs_live_stream_before_phase4_wrapper():
+def test_launcher_installs_live_stream_before_phase4_wrapper_and_routes_logger():
     src = (Path(__file__).resolve().parents[2] / "master_4000_eval_suite.py").read_text(encoding="utf-8")
     base = src.index("master_runtime.install(Master4000EvaluationEngine)")
     live_base = src.index("install_baseline_stream(master_runtime, Master4000EvaluationEngine)")
+    phase4_logger = src.index("phase4_pro_rsi._append_raw_generation_log = master_runtime._append_raw_generation_log")
     phase4 = src.index("phase4_pro_rsi.install(Master4000EvaluationEngine)")
     live_phase4 = src.index("install_phase4_stream(phase4_pro_rsi)")
-    assert base < live_base < phase4 < live_phase4
+    assert base < live_base < phase4_logger < phase4 < live_phase4
