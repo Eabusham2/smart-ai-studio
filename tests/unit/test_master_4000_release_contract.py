@@ -53,6 +53,18 @@ def test_exact_gemini_low_overthink_prompt_and_raw_logger():
     assert "METRICS AFTER RAW OUTPUT:" in runtime
 
 
+def test_live_watcher_is_prompt_complete_raw_and_ci_free():
+    live = _src("eval/live_generation_stream.py")
+    launcher = _src("master_4000_eval_suite.py")
+    assert 'LIVE_GENERATION_LOG = os.path.join("eval_results", "live_generation.log")' in live
+    assert "FULL FORMATTED MODEL PROMPT (EXACT TEXT SENT TO TOKENIZER)" in live
+    assert "RAW MODEL OUTPUT — LIVE (INCLUDING <think> EXACTLY AS EMITTED)" in live
+    assert "GitHub/CI monitoring" in live  # explicit statement that it is excluded
+    assert "install_baseline_stream(master_runtime, Master4000EvaluationEngine)" in launcher
+    assert "phase4_pro_rsi._append_raw_generation_log = master_runtime._append_raw_generation_log" in launcher
+    assert "install_phase4_stream(phase4_pro_rsi)" in launcher
+
+
 def test_phase1_status_format_is_preserved():
     runtime = _src("eval/master_4000_runtime.py")
     assert 'f"[{phase}] {split_name:<22} | Item {overall}/{total} ({pct:5.2f}%) | "' in runtime
@@ -123,19 +135,31 @@ def test_learning_retention_uses_model_not_kg_shortcut():
     assert "self._fast_generate(" in merge
 
 
-def test_math_lcb_and_model_driven_scoring_repairs_remain():
+def test_model_driven_dataset_and_strict_scoring_repairs_remain():
     runtime = _src("eval/master_4000_runtime.py")
     dataset = _src("eval/dataset_hardening.py")
     scoring = _src("eval/scoring_hardening.py")
-    assert "_repair_suite" in runtime
-    assert 'splits.get("MATH-500", [])' in runtime
-    assert "exponent = (i % 5) + 1" in runtime
+
+    # Runtime still sends LCB to the model and verifies the resulting executable code.
     assert 'if "LiveCodeBench" in split:' in runtime
     assert "LCB prompt is natural language, not a Python stub" in runtime
+    assert "execute_python_code(code, item[\"test\"])" in runtime
+
+    # Synthetic stand-ins are fully determined, not arbitrary labels/weak >=0 checks.
     assert "minimum number of adjacent swaps" in dataset
+    assert "inversion count" in dataset
     assert "linear polynomial" in dataset
-    assert "_strict_math" in scoring
-    assert "_final_choice" in scoring
+    assert "_harden_gpqa" in dataset
+    assert "_harden_mmlu" in dataset
+    assert "_harden_zebra" in dataset
+    assert "_harden_hle" in dataset
+    assert "_harden_autonomous_evolution" in dataset
+
+    # Final grading is strict and separate from model generation/selection.
+    assert "def _strict_math" in scoring
+    assert "def _final_choice" in scoring
+    assert "def _strict_dsl" in scoring
+    assert "def hardened_hidden_reward" in scoring
 
 
 def test_awake_learning_is_wired_real_and_serialized():
@@ -163,11 +187,25 @@ def test_production_pro_runtime_is_honest():
     assert "install_pro_runtime_hardening(ProReasoningEngine)" in init
 
 
+def test_curriculum_is_bounded_and_mock_fixtures_are_not_live_fallbacks():
+    hard = _src("rlvr/runtime_hardening.py")
+    init = _src("rlvr/__init__.py")
+    assert "target * 8" in hard
+    assert "target * 4" in hard
+    assert "Do not ask for or assume a hidden answer" in hard
+    assert "Do not assume or request the hidden test or answer" in hard
+    assert "if _mock_mode(self)" in hard
+    assert "install_master_curriculum_hardening(MasterCurriculumOrchestrator)" in init
+
+
 def test_launcher_install_order_keeps_all_layers():
     launcher = _src("master_4000_eval_suite.py")
     base = launcher.index("master_runtime.install(Master4000EvaluationEngine)")
+    live_base = launcher.index("install_baseline_stream(master_runtime, Master4000EvaluationEngine)")
+    phase4_log = launcher.index("phase4_pro_rsi._append_raw_generation_log = master_runtime._append_raw_generation_log")
     dataset = launcher.index("install_dataset_hardening(master_runtime, phase4_pro_rsi)")
     pro = launcher.index("phase4_pro_rsi.install(Master4000EvaluationEngine)")
+    live_phase4 = launcher.index("install_phase4_stream(phase4_pro_rsi)")
     hist = launcher.index("install_historical_good_merge(phase4_pro_rsi)")
     score = launcher.index("install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)")
-    assert base < dataset < pro < hist < score
+    assert base < live_base < phase4_log < dataset < pro < live_phase4 < hist < score
