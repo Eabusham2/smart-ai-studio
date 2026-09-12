@@ -6,16 +6,21 @@ from core.hf_downloader import (
     is_model_registered_loaded,
     unregister_loaded_model,
 )
-from core.pro_runtime_hardening import install_pro_runtime_hardening
+from core.pro_runtime_hardening import (
+    DEFAULT_MLX_ADAPTER_PATH,
+    _normalize_adapter_path,
+    install_pro_runtime_hardening,
+)
 
 
 class DummyPro:
-    def __init__(self, *, use_mock=False, loaded=True):
+    def __init__(self, *, use_mock=False, loaded=True, lora_adapter_path=None):
         self.settings = SimpleNamespace(use_mock=use_mock)
         self._loaded = loaded
         self.active_backend = "mlx" if loaded else None
         self.mlx_backend = None
         self.tokenizer = None
+        self.lora_adapter_path = lora_adapter_path
 
     @property
     def is_model_loaded(self):
@@ -52,6 +57,24 @@ def setup_function():
 
 def teardown_function():
     unregister_loaded_model()
+
+
+def test_default_and_legacy_directory_adapter_paths_become_safetensors_files(tmp_path):
+    assert DEFAULT_MLX_ADAPTER_PATH.endswith("adapters.safetensors")
+    assert _normalize_adapter_path(None) == DEFAULT_MLX_ADAPTER_PATH
+    legacy_dir = tmp_path / "legacy_adapter"
+    legacy_dir.mkdir()
+    assert _normalize_adapter_path(str(legacy_dir)) == str(legacy_dir / "adapters.safetensors")
+
+
+def test_live_engine_initializes_a_persistent_adapter_file_path(tmp_path):
+    engine = DummyPro(use_mock=False, loaded=False)
+    assert engine.lora_adapter_path.endswith("adapters.safetensors")
+
+    legacy_dir = tmp_path / "legacy_adapter"
+    legacy_dir.mkdir()
+    engine2 = DummyPro(use_mock=False, loaded=False, lora_adapter_path=str(legacy_dir))
+    assert engine2.lora_adapter_path == str(legacy_dir / "adapters.safetensors")
 
 
 def test_live_loaded_model_never_falls_back_to_synthetic_output():
