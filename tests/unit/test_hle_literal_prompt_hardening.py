@@ -12,6 +12,7 @@ def test_global_rule_stops_after_answer_is_settled():
     assert "more than twice" in rule
     assert "Once you believe you have the answer" in rule
     assert "do not repeat, revisit, re-derive, rephrase, or keep checking it" in rule
+    assert "Never repeat the same reasoning or answer in an endless loop" in rule
     assert "Close </think> immediately" in rule
 
 
@@ -34,7 +35,8 @@ def test_hle_literal_token_is_extracted_from_prompt_not_expected_answer():
         assert "exactly one line" in routed
         assert "Immediately close </think>" in routed
         assert "alternate notation" in routed
-        assert "second answer" in routed
+        assert "repeat the answer" in routed
+        assert "restart the reasoning" in routed
 
 
 def test_hle_system_rule_is_family_wide_and_generic():
@@ -50,5 +52,5 @@ def test_hle_system_rule_is_family_wide_and_generic():
     assert "I2" not in hard.SYSTEM_SUFFIXES["HLE"]
 
 
-def test_hle_generation_has_small_family_backstop():
-    assert hard.HLE_GENERATION_CEILING == 128
+def test_hle_has_no_family_specific_generation_ceiling():
+    assert not hasattr(hard, "HLE_GENERATION_CEILING")
