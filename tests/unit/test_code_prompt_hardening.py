@@ -42,7 +42,7 @@ def test_global_rule_reaches_every_family_and_only_proven_overthinkers_get_extra
     assert "finite-difference shortcut" in hardening._system_for_split("AIME-150", base)
     assert "one terse line" in hardening._system_for_split("GPQA-400", base)
     assert "stated premises" in hardening._system_for_split("MMLU-Pro-1000", base)
-    assert "synthetic notation literally" in hardening._system_for_split("HLE-100", base)
+    assert "opaque literal text" in hardening._system_for_split("HLE-100", base)
     assert "commutator definition" in hardening._system_for_split("AutonomousEvolution-200", base)
     assert "memory limitations" in hardening._system_for_split("DialogueRecall-150", base)
 
@@ -97,7 +97,7 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     assert "One literal condition -> one option" in gpqa
     assert "One literal condition -> one option" in mmlu
     assert "first difference directly" in aime
-    assert "Substitute the stated I-index literally" in hle
+    assert "Treat the axiom token after `T = ZFC +` as opaque literal text" in hle
     assert "arr[k:] + arr[:k]" in dsl
     assert "at most 3 terse algebra lines" in auto
     assert "otherwise `unknown`" in dialogue

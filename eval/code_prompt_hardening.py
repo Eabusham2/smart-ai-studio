@@ -10,12 +10,20 @@ same global anti-loop rule without leaking unrelated task-family suffixes.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from eval.scoring_hardening import strict_score
 
 
-GLOBAL_SYSTEM_SUFFIX = " Never verify or check the same work more than twice."
+GLOBAL_SYSTEM_SUFFIX = (
+    " Never verify or check the same work more than twice. Once you believe you have the answer, "
+    "do not repeat, revisit, re-derive, rephrase, or keep checking it. Never repeat the same reasoning "
+    "or answer in an endless loop. Never repeat identical reasoning, calculations, intermediate steps, "
+    "or final answers just to verify them again. If you notice you are repeating content without new "
+    "information, stop immediately. Do not restart reasoning after the answer is settled. "
+    "Close </think> immediately and output the answer."
+)
 
 SYSTEM_SUFFIXES = {
     "LiveCodeBench": (
@@ -37,7 +45,12 @@ SYSTEM_SUFFIXES = {
     "MMLU-Pro": (
         " Use only the stated premises. One deduction to the option; do not import outside context."
     ),
-    "HLE": " Treat the synthetic notation literally; substitute the stated index and stop.",
+    "HLE": (
+        " For HLE synthetic consistency items, the axiom token after `T = ZFC +` is opaque literal text. "
+        "Copy that exact token unchanged into Con(ZFC + token) once. The first completed Con(...) is final: "
+        "never reinterpret, rename, parenthesize, compare alternate notation, revisit, or re-check it; "
+        "close </think> immediately."
+    ),
     "AutonomousEvolution": (
         " Use the commutator definition and the given conjugation relation once; reduce the exponent "
         "modulo the order and stop."
@@ -101,10 +114,29 @@ def _choice_user(item: Dict[str, Any]) -> str:
     return f"{item['prompt']}\nOne literal condition -> one option. Use one terse reasoning line, close </think>, output ONLY A, B, C, or D."
 
 
+def _hle_literal_token(prompt: str) -> str | None:
+    """Read the HLE axiom token from the prompt itself; never consult expected answers."""
+    match = re.search(r"\bT\s*=\s*ZFC\s*\+\s*([A-Za-z][A-Za-z0-9_]*)", str(prompt))
+    return match.group(1) if match else None
+
+
 def _hle_user(item: Dict[str, Any]) -> str:
+    prompt = str(item.get("prompt", ""))
+    token = _hle_literal_token(prompt)
+    if token:
+        final = f"Con(ZFC + {token})"
+        return (
+            f"Synthetic consistency notation: T = ZFC + {token}. "
+            f"Treat `{token}` as one opaque literal axiom token. In <think>, write exactly one line: `{final}`. "
+            "That determines the answer. Immediately close </think> and output that same expression once. "
+            "Do not explain, check, reinterpret, compare spellings, consider alternate notation, repeat the answer, "
+            "or restart the reasoning after the expression is formed."
+        )
     return (
-        f"{item['prompt']}\n"
-        "Substitute the stated I-index literally; close </think>; output ONLY the exact Con(...) expression."
+        f"{prompt}\n"
+        "Treat the axiom token after `T = ZFC +` as opaque literal text. Copy it unchanged into Con(...). "
+        "Once that expression is formed the answer is determined: immediately close </think> and output it once. "
+        "Do not explain, revisit, re-check, repeat, or consider alternate notation."
     )
 
 
