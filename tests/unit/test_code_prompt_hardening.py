@@ -14,11 +14,15 @@ VERIFIED_GEMINI_PROMPT = (
     "No conversational monologue, no self-reflection, and no verification loops. "
     "Close </think> immediately once calculated and output the answer."
 )
+EXPECTED_GLOBAL_PROMPT = VERIFIED_GEMINI_PROMPT + hardening.GLOBAL_SYSTEM_SUFFIX
 
 
-def test_global_system_prompt_remains_exact_verified_gemini_prompt():
-    assert runtime.SYSTEM_PROMPT == VERIFIED_GEMINI_PROMPT
-    assert phase4.SYSTEM_PROMPT == VERIFIED_GEMINI_PROMPT
+def test_global_system_prompt_keeps_verified_gemini_base_and_anti_loop_rule():
+    assert runtime.SYSTEM_PROMPT == EXPECTED_GLOBAL_PROMPT
+    assert phase4.SYSTEM_PROMPT == EXPECTED_GLOBAL_PROMPT
+    assert runtime.SYSTEM_PROMPT.startswith(VERIFIED_GEMINI_PROMPT)
+    assert runtime.SYSTEM_PROMPT.count(hardening.GLOBAL_SYSTEM_SUFFIX.strip()) == 1
+    assert "more than twice" in runtime.SYSTEM_PROMPT
     assert "unknown" not in runtime.SYSTEM_PROMPT.lower()
 
 
@@ -32,7 +36,7 @@ def test_prompt_hardening_is_installed_before_phase4_capture():
     assert "original_user = _task_user_prompt(split_name, item)" in phase_source
 
 
-def test_only_proven_overthinkers_get_system_suffixes():
+def test_global_rule_reaches_every_family_and_only_proven_overthinkers_get_extra_suffixes():
     base = VERIFIED_GEMINI_PROMPT
     assert "2-4 terse lines" in hardening._system_for_split("LiveCodeBench-Hard", base)
     assert "finite-difference shortcut" in hardening._system_for_split("AIME-150", base)
@@ -46,7 +50,12 @@ def test_only_proven_overthinkers_get_system_suffixes():
         "HumanEval-164", "GSM8K-500", "MATH-500", "ZebraLogic-200",
         "BFCL-200", "TensorGraphDSL-300",
     ):
-        assert hardening._system_for_split(split, base) == base
+        routed = hardening._system_for_split(split, base)
+        assert routed.startswith(base)
+        assert routed.count(hardening.GLOBAL_SYSTEM_SUFFIX.strip()) == 1
+
+    # MATH gets its anti-repeat instruction in the user prompt, not another system suffix.
+    assert hardening._system_for_split("MATH-500", base) == EXPECTED_GLOBAL_PROMPT
 
 
 def test_lcb_and_deepswe_prompts_are_brief_but_not_reasoning_free():
@@ -65,18 +74,17 @@ def test_lcb_and_deepswe_prompts_are_brief_but_not_reasoning_free():
 def test_known_good_families_keep_original_task_policy():
     human = phase4._task_user_prompt("HumanEval-164", {"prompt": "def f(x):\n    pass"})
     gsm = phase4._task_user_prompt("GSM8K-500", {"prompt": "Compute 2+2"})
-    math = phase4._task_user_prompt("MATH-500", {"prompt": "Compute 2+2"})
     zebra = phase4._task_user_prompt("ZebraLogic-200", {"prompt": "logic"})
     bfcl = phase4._task_user_prompt("BFCL-200", {"prompt": "tool prompt"})
     assert "Use scratchpad only for logic outline" in human
     assert "Solve this problem using a minimal scratchpad" in gsm
-    assert "Solve this problem using a minimal scratchpad" in math
     assert "Deduce the solution directly. State the final answer on the last line." in zebra
     assert "Return ONLY one JSON object" in bfcl
     assert "Check the tool name and arguments once" not in bfcl
 
 
 def test_targeted_non_code_prompts_are_short_and_specific():
+    math = phase4._task_user_prompt("MATH-500", {"prompt": "modular residue"})
     aime = phase4._task_user_prompt("AIME-150", {"prompt": "AIME prompt"})
     gpqa = phase4._task_user_prompt("GPQA-400", {"prompt": "MC prompt"})
     mmlu = phase4._task_user_prompt("MMLU-Pro-1000", {"prompt": "MC prompt"})
@@ -84,6 +92,8 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     dsl = phase4._task_user_prompt("TensorGraphDSL-300", {"prompt": "dsl"})
     auto = phase4._task_user_prompt("AutonomousEvolution-200", {"prompt": "group"})
     dialogue = phase4._task_user_prompt("DialogueRecall-150", {"prompt": "recall"})
+    assert "Never repeat a completed calculation" in math
+    assert "at most 3 terse arithmetic lines" in math
     assert "One literal condition -> one option" in gpqa
     assert "One literal condition -> one option" in mmlu
     assert "first difference directly" in aime
@@ -113,7 +123,7 @@ def test_focused_smoke_is_exactly_five_one_go_families():
     assert "five generations total" in source
 
 
-def test_rsi_system_routing_restores_the_verified_base_after_use():
+def test_rsi_system_routing_restores_the_global_gemini_base_after_use():
     source = Path("eval/code_prompt_hardening.py").read_text(encoding="utf-8")
     assert "phase4_module._task_system_routing_active = True" in source
     assert "phase4_module.SYSTEM_PROMPT = _system_for_split" in source
