@@ -28,6 +28,13 @@ def main() -> int:
     splits = rt._repair_suite(engine.provider.load_all_4000_items())
     items = {str(x.get("id")): x for x in splits.get("HLE-100", [])}
 
+    # HLE must use the normal benchmark ceiling; there is no HLE-specific cap.
+    normal_ceiling = int(getattr(engine, "benchmark_max_tokens", None) or rt._benchmark_ceiling(engine))
+    if normal_ceiling != 16384:
+        raise SystemExit(f"[X] Expected normal benchmark ceiling 16384, got {normal_ceiling}")
+    if hasattr(hard, "HLE_GENERATION_CEILING"):
+        raise SystemExit("[X] HLE-specific generation ceiling still exists")
+
     failures = []
     results = []
 
@@ -56,8 +63,7 @@ def main() -> int:
         closed = "</think>" in raw
         repeats = repeat_count(raw)
         out_tokens = int(getattr(engine, "last_output_tokens", -1) or -1)
-        within_cap = out_tokens < 0 or out_tokens <= hard.HLE_GENERATION_CEILING
-        good = passed and closed and repeats <= 2 and within_cap
+        good = passed and closed and repeats <= 2
 
         results.append((item_id, token, passed, closed, repeats, out_tokens, wall))
         if not good:
@@ -95,7 +101,7 @@ def main() -> int:
     print("[✓] Nonzero HLE control remains correct")
     print("[✓] Both close </think>")
     print("[✓] No thinking line repeated more than twice")
-    print(f"[✓] HLE generation backstop active at {hard.HLE_GENERATION_CEILING} tokens")
+    print("[✓] HLE uses the normal 16,384-token benchmark ceiling")
     print("[✓] Production checkpoint was not read or modified")
     return 0
 
