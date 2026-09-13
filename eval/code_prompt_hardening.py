@@ -18,10 +18,9 @@ from eval.scoring_hardening import strict_score
 
 GLOBAL_SYSTEM_SUFFIX = (
     " Never verify or check the same work more than twice. Once you believe you have the answer, "
-    "do not repeat, revisit, re-derive, rephrase, or keep checking it. Close </think> immediately "
-    "and output the answer."
+    "do not repeat, revisit, re-derive, rephrase, or keep checking it. Never repeat the same reasoning "
+    "or answer in an endless loop. Close </think> immediately and output the answer."
 )
-HLE_GENERATION_CEILING = 128
 
 SYSTEM_SUFFIXES = {
     "LiveCodeBench": (
@@ -127,13 +126,14 @@ def _hle_user(item: Dict[str, Any]) -> str:
             f"Synthetic consistency notation: T = ZFC + {token}. "
             f"Treat `{token}` as one opaque literal axiom token. In <think>, write exactly one line: `{final}`. "
             "That determines the answer. Immediately close </think> and output that same expression once. "
-            "Do not explain, check, reinterpret, compare spellings, consider alternate notation, or produce a second answer."
+            "Do not explain, check, reinterpret, compare spellings, consider alternate notation, repeat the answer, "
+            "or restart the reasoning after the expression is formed."
         )
     return (
         f"{prompt}\n"
         "Treat the axiom token after `T = ZFC +` as opaque literal text. Copy it unchanged into Con(...). "
         "Once that expression is formed the answer is determined: immediately close </think> and output it once. "
-        "Do not explain, revisit, re-check, or consider alternate notation."
+        "Do not explain, revisit, re-check, repeat, or consider alternate notation."
     )
 
 
@@ -224,8 +224,6 @@ def install(runtime_module, phase4_module, cls) -> None:
         system_message = _system_for_split(split, runtime_module.SYSTEM_PROMPT)
         prompt = runtime_module._chat(tok, user_message, system=system_message)
         ceiling = getattr(self, "benchmark_max_tokens", None) or runtime_module._benchmark_ceiling(self)
-        if "HLE" in split:
-            ceiling = min(int(ceiling), HLE_GENERATION_CEILING)
         out = self._fast_generate(prompt, max_tokens=ceiling)
         self.last_raw_out = out
         runtime_module._append_raw_generation_log(self, prompt, user_message, out)
