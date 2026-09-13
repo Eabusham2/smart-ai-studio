@@ -16,8 +16,12 @@ from typing import Any, Dict
 from eval.scoring_hardening import strict_score
 
 
-GLOBAL_SYSTEM_SUFFIX = " Never verify or check the same work more than twice."
-HLE_GENERATION_CEILING = 256
+GLOBAL_SYSTEM_SUFFIX = (
+    " Never verify or check the same work more than twice. Once you believe you have the answer, "
+    "do not repeat, revisit, re-derive, rephrase, or keep checking it. Close </think> immediately "
+    "and output the answer."
+)
+HLE_GENERATION_CEILING = 128
 
 SYSTEM_SUFFIXES = {
     "LiveCodeBench": (
@@ -41,8 +45,9 @@ SYSTEM_SUFFIXES = {
     ),
     "HLE": (
         " For HLE synthetic consistency items, the axiom token after `T = ZFC +` is opaque literal text. "
-        "Copy that exact token unchanged into the Con(ZFC + token) result once; never reinterpret, "
-        "rename, parenthesize, compare alternate notation, or re-check the token."
+        "Copy that exact token unchanged into Con(ZFC + token) once. The first completed Con(...) is final: "
+        "never reinterpret, rename, parenthesize, compare alternate notation, revisit, or re-check it; "
+        "close </think> immediately."
     ),
     "AutonomousEvolution": (
         " Use the commutator definition and the given conjugation relation once; reduce the exponent "
@@ -117,17 +122,18 @@ def _hle_user(item: Dict[str, Any]) -> str:
     prompt = str(item.get("prompt", ""))
     token = _hle_literal_token(prompt)
     if token:
+        final = f"Con(ZFC + {token})"
         return (
             f"Synthetic consistency notation: T = ZFC + {token}. "
-            f"Treat `{token}` as one opaque literal axiom token. Copy it unchanged into the consistency form. "
-            "Do not interpret the token's spelling, convert it to another notation, or compare alternatives. "
-            "In <think>, use exactly one substitution line, then close </think>. "
-            "Output ONLY the Con(...) expression containing that same literal token."
+            f"Treat `{token}` as one opaque literal axiom token. In <think>, write exactly one line: `{final}`. "
+            "That determines the answer. Immediately close </think> and output that same expression once. "
+            "Do not explain, check, reinterpret, compare spellings, consider alternate notation, or produce a second answer."
         )
     return (
         f"{prompt}\n"
         "Treat the axiom token after `T = ZFC +` as opaque literal text. Copy it unchanged into Con(...). "
-        "Use one substitution line only, close </think>, and output ONLY the exact Con(...) expression."
+        "Once that expression is formed the answer is determined: immediately close </think> and output it once. "
+        "Do not explain, revisit, re-check, or consider alternate notation."
     )
 
 
