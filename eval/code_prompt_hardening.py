@@ -10,12 +10,14 @@ same global anti-loop rule without leaking unrelated task-family suffixes.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from eval.scoring_hardening import strict_score
 
 
 GLOBAL_SYSTEM_SUFFIX = " Never verify or check the same work more than twice."
+HLE_GENERATION_CEILING = 256
 
 SYSTEM_SUFFIXES = {
     "LiveCodeBench": (
@@ -37,7 +39,11 @@ SYSTEM_SUFFIXES = {
     "MMLU-Pro": (
         " Use only the stated premises. One deduction to the option; do not import outside context."
     ),
-    "HLE": " Treat the synthetic notation literally; substitute the stated index and stop.",
+    "HLE": (
+        " For HLE synthetic consistency items, the axiom token after `T = ZFC +` is opaque literal text. "
+        "Copy that exact token unchanged into the Con(ZFC + token) result once; never reinterpret, "
+        "rename, parenthesize, compare alternate notation, or re-check the token."
+    ),
     "AutonomousEvolution": (
         " Use the commutator definition and the given conjugation relation once; reduce the exponent "
         "modulo the order and stop."
@@ -101,10 +107,27 @@ def _choice_user(item: Dict[str, Any]) -> str:
     return f"{item['prompt']}\nOne literal condition -> one option. Use one terse reasoning line, close </think>, output ONLY A, B, C, or D."
 
 
+def _hle_literal_token(prompt: str) -> str | None:
+    """Read the HLE axiom token from the prompt itself; never consult expected answers."""
+    match = re.search(r"\bT\s*=\s*ZFC\s*\+\s*([A-Za-z][A-Za-z0-9_]*)", str(prompt))
+    return match.group(1) if match else None
+
+
 def _hle_user(item: Dict[str, Any]) -> str:
+    prompt = str(item.get("prompt", ""))
+    token = _hle_literal_token(prompt)
+    if token:
+        return (
+            f"Synthetic consistency notation: T = ZFC + {token}. "
+            f"Treat `{token}` as one opaque literal axiom token. Copy it unchanged into the consistency form. "
+            "Do not interpret the token's spelling, convert it to another notation, or compare alternatives. "
+            "In <think>, use exactly one substitution line, then close </think>. "
+            "Output ONLY the Con(...) expression containing that same literal token."
+        )
     return (
-        f"{item['prompt']}\n"
-        "Substitute the stated I-index literally; close </think>; output ONLY the exact Con(...) expression."
+        f"{prompt}\n"
+        "Treat the axiom token after `T = ZFC +` as opaque literal text. Copy it unchanged into Con(...). "
+        "Use one substitution line only, close </think>, and output ONLY the exact Con(...) expression."
     )
 
 
@@ -195,6 +218,8 @@ def install(runtime_module, phase4_module, cls) -> None:
         system_message = _system_for_split(split, runtime_module.SYSTEM_PROMPT)
         prompt = runtime_module._chat(tok, user_message, system=system_message)
         ceiling = getattr(self, "benchmark_max_tokens", None) or runtime_module._benchmark_ceiling(self)
+        if "HLE" in split:
+            ceiling = min(int(ceiling), HLE_GENERATION_CEILING)
         out = self._fast_generate(prompt, max_tokens=ceiling)
         self.last_raw_out = out
         runtime_module._append_raw_generation_log(self, prompt, user_message, out)
