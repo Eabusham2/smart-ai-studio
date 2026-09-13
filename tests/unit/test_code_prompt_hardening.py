@@ -42,7 +42,10 @@ def test_global_rule_reaches_every_family_and_only_proven_overthinkers_get_extra
     assert "finite-difference shortcut" in hardening._system_for_split("AIME-150", base)
     assert "one terse line" in hardening._system_for_split("GPQA-400", base)
     assert "stated premises" in hardening._system_for_split("MMLU-Pro-1000", base)
-    assert "synthetic notation literally" in hardening._system_for_split("HLE-100", base)
+    hle_system = hardening._system_for_split("HLE-100", base)
+    assert "literal synthetic string-substitution task" in hle_system
+    assert "Ignore all real-world meanings" in hle_system
+    assert "one literal index substitution" in hle_system
     assert "commutator definition" in hardening._system_for_split("AutonomousEvolution-200", base)
     assert "memory limitations" in hardening._system_for_split("DialogueRecall-150", base)
 
@@ -97,10 +100,19 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     assert "One literal condition -> one option" in gpqa
     assert "One literal condition -> one option" in mmlu
     assert "first difference directly" in aime
-    assert "Substitute the stated I-index literally" in hle
+    assert "synthetic string substitution" in hle
+    assert "do not use real-world large-cardinal knowledge" in hle
+    assert "exactly one terse substitution line" in hle
     assert "arr[k:] + arr[:k]" in dsl
     assert "at most 3 terse algebra lines" in auto
     assert "otherwise `unknown`" in dialogue
+
+
+def test_hle_generation_has_split_local_safety_ceiling():
+    assert hardening.HLE_MAX_TOKENS == 128
+    source = Path("eval/code_prompt_hardening.py").read_text(encoding="utf-8")
+    assert 'if "HLE" in split:' in source
+    assert "ceiling = min(int(ceiling), HLE_MAX_TOKENS)" in source
 
 
 def test_focused_smoke_is_exactly_five_one_go_families():
