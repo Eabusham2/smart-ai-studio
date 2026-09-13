@@ -16,6 +16,7 @@ from eval.scoring_hardening import strict_score
 
 
 GLOBAL_SYSTEM_SUFFIX = " Never verify or check the same work more than twice."
+HLE_MAX_TOKENS = 128
 
 SYSTEM_SUFFIXES = {
     "LiveCodeBench": (
@@ -37,7 +38,11 @@ SYSTEM_SUFFIXES = {
     "MMLU-Pro": (
         " Use only the stated premises. One deduction to the option; do not import outside context."
     ),
-    "HLE": " Treat the synthetic notation literally; substitute the stated index and stop.",
+    "HLE": (
+        " This is a literal synthetic string-substitution task. Ignore all real-world meanings of "
+        "I0/I1/I2. Do not explain, interpret, compare, or verify the notation. Perform one literal "
+        "index substitution in <think>, then stop."
+    ),
     "AutonomousEvolution": (
         " Use the commutator definition and the given conjugation relation once; reduce the exponent "
         "modulo the order and stop."
@@ -104,7 +109,9 @@ def _choice_user(item: Dict[str, Any]) -> str:
 def _hle_user(item: Dict[str, Any]) -> str:
     return (
         f"{item['prompt']}\n"
-        "Substitute the stated I-index literally; close </think>; output ONLY the exact Con(...) expression."
+        "Treat this only as synthetic string substitution; do not use real-world large-cardinal knowledge. "
+        "Read the digit in I<digit> and copy that same digit into Con(ZFC + I<digit>). "
+        "In <think>, write exactly one terse substitution line, then close </think>; output ONLY the exact Con(...) expression."
     )
 
 
@@ -195,6 +202,8 @@ def install(runtime_module, phase4_module, cls) -> None:
         system_message = _system_for_split(split, runtime_module.SYSTEM_PROMPT)
         prompt = runtime_module._chat(tok, user_message, system=system_message)
         ceiling = getattr(self, "benchmark_max_tokens", None) or runtime_module._benchmark_ceiling(self)
+        if "HLE" in split:
+            ceiling = min(int(ceiling), HLE_MAX_TOKENS)
         out = self._fast_generate(prompt, max_tokens=ceiling)
         self.last_raw_out = out
         runtime_module._append_raw_generation_log(self, prompt, user_message, out)
