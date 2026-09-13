@@ -19,6 +19,7 @@ os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
 
 import master_4000_eval_suite as suite
+import eval.code_prompt_hardening as hardening
 import eval.live_generation_stream as live_stream
 import eval.master_4000_runtime as rt
 import eval.phase4_pro_rsi as p4
@@ -29,6 +30,7 @@ VERIFIED_GEMINI_PROMPT = (
     "No conversational monologue, no self-reflection, and no verification loops. "
     "Close </think> immediately once calculated and output the answer."
 )
+EXPECTED_SYSTEM_PROMPT = VERIFIED_GEMINI_PROMPT + hardening.GLOBAL_SYSTEM_SUFFIX
 
 FOCUS = (
     "LiveCodeBench-Hard",
@@ -65,8 +67,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args()
 
-    assert rt.SYSTEM_PROMPT == VERIFIED_GEMINI_PROMPT
-    assert p4.SYSTEM_PROMPT == VERIFIED_GEMINI_PROMPT
+    assert rt.SYSTEM_PROMPT == EXPECTED_SYSTEM_PROMPT
+    assert p4.SYSTEM_PROMPT == EXPECTED_SYSTEM_PROMPT
     assert getattr(suite.Master4000EvaluationEngine, "_code_prompt_hardening_installed", False)
 
     live_stream.LIVE_GENERATION_LOG = "/tmp/random_changed_split_smoke_live.log"
@@ -75,7 +77,7 @@ def main() -> int:
 
     rng = random.Random(args.seed) if args.seed is not None else random.SystemRandom()
 
-    print("[✓] Exact verified Gemini base prompt unchanged.")
+    print("[✓] Verified Gemini base retained; universal anti-loop rule active.")
     print("[*] Final merged-family smoke: EXACTLY 5 families, one generation each.")
     print("[*] LCB | AIME | GPQA | DeepSWE | AutonomousEvolution")
     print("[*] DialogueRecall intentionally deferred until after Learn/RSI/Phase-3.\n")
