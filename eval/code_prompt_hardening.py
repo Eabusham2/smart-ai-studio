@@ -19,7 +19,10 @@ from eval.scoring_hardening import strict_score
 GLOBAL_SYSTEM_SUFFIX = (
     " Never verify or check the same work more than twice. Once you believe you have the answer, "
     "do not repeat, revisit, re-derive, rephrase, or keep checking it. Never repeat the same reasoning "
-    "or answer in an endless loop. Close </think> immediately and output the answer."
+    "or answer in an endless loop. Never repeat identical reasoning, calculations, intermediate steps, "
+    "or final answers just to verify them again. If you notice you are repeating content without new "
+    "information, stop immediately. Do not restart reasoning after the answer is settled. "
+    "Close </think> immediately and output the answer."
 )
 
 SYSTEM_SUFFIXES = {
