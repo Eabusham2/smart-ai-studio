@@ -1,6 +1,7 @@
 import inspect
 
 import master_4000_eval_suite as master
+from eval import code_prompt_hardening
 from eval import historical_good_merge
 from eval import master_4000_runtime as runtime
 from eval import phase4_pro_rsi
@@ -62,13 +63,18 @@ def test_dsl_scores_final_list_not_intermediate_list():
     assert scoring.strict_score(runner, "TensorGraphDSL-300", item, "[4, 8, 0]\n[1, 2, 3]") is False
 
 
-def test_exact_gemini_prompt_is_shared_across_every_model_stage():
-    assert runtime.SYSTEM_PROMPT == (
+def test_gemini_base_plus_global_anti_loop_rule_is_shared_across_every_model_stage():
+    gemini = (
         "You are a fast symbolic computing engine. "
         "Keep your internal scratchpad (<think>) strictly minimal: write only concise intermediate formulas or numbers. "
         "No conversational monologue, no self-reflection, and no verification loops. "
         "Close </think> immediately once calculated and output the answer."
     )
+    expected = gemini + code_prompt_hardening.GLOBAL_SYSTEM_SUFFIX
+    assert runtime.SYSTEM_PROMPT == expected
+    assert phase4_pro_rsi.SYSTEM_PROMPT == expected
+    assert runtime.SYSTEM_PROMPT.startswith(gemini)
+    assert runtime.SYSTEM_PROMPT.count(code_prompt_hardening.GLOBAL_SYSTEM_SUFFIX.strip()) == 1
 
     runtime_src = inspect.getsource(runtime.evaluate_one)
     assert "prompt = _chat(tok, user_message)" in runtime_src

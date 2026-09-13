@@ -1,13 +1,12 @@
 """Minimal task-specific prompt hardening backed by real-model smoke tests.
 
-The verified Gemini SYSTEM_PROMPT remains the base everywhere. Families already
-shown concise/correct keep that prompt and their original task policy. Only
-families with observed overthinking/formatting/semantic issues get a tiny,
-task-local addition.
+The verified Gemini SYSTEM_PROMPT remains the base everywhere. One short global
+anti-loop rule is appended to every benchmark/model stage. Families with observed
+overthinking/formatting/semantic issues get an additional tiny task-local rule.
 
 Installed before phase4_pro_rsi.install(), so baseline and final Phase-4 retests
-use the same evaluator policy. RSI is routed through the same per-split policy
-without leaking a task suffix into LearningFacts or historical RLVR.
+use the same evaluator policy. RSI, LearningFacts, and historical RLVR share the
+same global anti-loop rule without leaking unrelated task-family suffixes.
 """
 from __future__ import annotations
 
@@ -15,6 +14,8 @@ from typing import Any, Dict
 
 from eval.scoring_hardening import strict_score
 
+
+GLOBAL_SYSTEM_SUFFIX = " Never verify or check the same work more than twice."
 
 SYSTEM_SUFFIXES = {
     "LiveCodeBench": (
@@ -47,11 +48,17 @@ SYSTEM_SUFFIXES = {
 }
 
 
+def _with_global_rule(base: str) -> str:
+    rule = GLOBAL_SYSTEM_SUFFIX.strip()
+    return base if rule in base else base + GLOBAL_SYSTEM_SUFFIX
+
+
 def _system_for_split(split: str, base: str) -> str:
+    system = _with_global_rule(base)
     for name, suffix in SYSTEM_SUFFIXES.items():
         if name in split:
-            return base + suffix
-    return base
+            return system + suffix
+    return system
 
 
 def _lcb_user(item: Dict[str, Any]) -> str:
@@ -71,6 +78,14 @@ def _deep_swe_user(item: Dict[str, Any]) -> str:
         "Repair the repository. In <think>: failure -> exact file/edit -> one test-sensitive edge. "
         "No restatement or speculation. Close </think>; output ONLY the unified diff patch.\n\n"
         f"Repository files:\n{repo_text}\n\nTest command: {item['test_cmd']}"
+    )
+
+
+def _math_user(item: Dict[str, Any]) -> str:
+    return (
+        f"{item['prompt']}\n"
+        "Compute each modular reduction once. Never repeat a completed calculation. "
+        "Use at most 3 terse arithmetic lines, close </think>, output ONLY \\boxed{answer}."
     )
 
 
@@ -121,11 +136,13 @@ def _dialogue_user(item: Dict[str, Any]) -> str:
 
 
 def _task_user(split: str, item: Dict[str, Any], original) -> str:
-    # Gemini-only / original policy: HumanEval, GSM8K, MATH, Zebra, BFCL.
+    # Original task policy remains for HumanEval, GSM8K, Zebra, and BFCL.
     if "LiveCodeBench" in split:
         return _lcb_user(item)
     if "DeepSWE" in split:
         return _deep_swe_user(item)
+    if "MATH" in split:
+        return _math_user(item)
     if "AIME" in split:
         return _aime_user(item)
     if "GPQA" in split or "MMLU-Pro" in split:
@@ -142,9 +159,14 @@ def _task_user(split: str, item: Dict[str, Any], original) -> str:
 
 
 def install(runtime_module, phase4_module, cls) -> None:
-    """Install concise task prompts without replacing the verified Gemini base."""
+    """Install concise task prompts while preserving Gemini as the system base."""
     if getattr(cls, "_code_prompt_hardening_installed", False):
         return
+
+    # Apply the universal anti-loop rule to every model stage. The original Gemini
+    # text stays byte-for-byte at the beginning of the system message.
+    runtime_module.SYSTEM_PROMPT = _with_global_rule(runtime_module.SYSTEM_PROMPT)
+    phase4_module.SYSTEM_PROMPT = _with_global_rule(phase4_module.SYSTEM_PROMPT)
 
     original_eval = cls._evaluate_single_item
     original_task_user_prompt = phase4_module._task_user_prompt
@@ -154,6 +176,7 @@ def install(runtime_module, phase4_module, cls) -> None:
     targeted = (
         "LiveCodeBench",
         "DeepSWE",
+        "MATH",
         "AIME",
         "GPQA",
         "MMLU-Pro",
