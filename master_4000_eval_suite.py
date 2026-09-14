@@ -44,4 +44,11 @@ install_historical_good_merge(phase4_pro_rsi)
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
 
 if __name__ == "__main__":
-    Master4000EvaluationEngine(max_duration_hours=72.0).run_full_suite()
+    try:
+        Master4000EvaluationEngine(max_duration_hours=72.0).run_full_suite()
+    except KeyboardInterrupt:
+        # Inner evaluation loops save the active checkpoint before re-raising.
+        # If Ctrl+C occurs during model loading, there is no new checkpoint state
+        # to save. Either way, exit cleanly without an alarming traceback.
+        print("\n[*] Ctrl+C: clean shutdown.", flush=True)
+        raise SystemExit(130)
