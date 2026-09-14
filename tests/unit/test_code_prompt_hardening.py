@@ -44,7 +44,10 @@ def test_global_rule_reaches_every_family_and_only_proven_overthinkers_get_extra
     assert "stated premises" in hardening._system_for_split("MMLU-Pro-1000", base)
     assert "opaque literal text" in hardening._system_for_split("HLE-100", base)
     assert "commutator definition" in hardening._system_for_split("AutonomousEvolution-200", base)
-    assert "memory limitations" in hardening._system_for_split("DialogueRecall-150", base)
+    dialogue_system = hardening._system_for_split("DialogueRecall-150", base)
+    assert "output `unknown` exactly once" in dialogue_system
+    assert "Never expand abbreviations" in dialogue_system
+    assert "re-check the same missing fact" in dialogue_system
 
     for split in (
         "HumanEval-164", "GSM8K-500", "MATH-500", "ZebraLogic-200",
@@ -100,7 +103,45 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     assert "Treat the axiom token after `T = ZFC +` as opaque literal text" in hle
     assert "arr[k:] + arr[:k]" in dsl
     assert "at most 3 terse algebra lines" in auto
-    assert "otherwise `unknown`" in dialogue
+    assert "otherwise `unknown` once" in dialogue
+    assert "Do not expand abbreviations" in dialogue
+
+
+def test_dialogue_recall_baseline_defers_without_model_generation():
+    class Dummy:
+        _current_phase = "Phase 1: Baseline"
+        last_raw_out = "should be cleared"
+        last_output_tokens = 99
+        last_generation_seconds = 99.0
+
+        @property
+        def engine(self):
+            raise AssertionError("baseline DialogueRecall must not touch the model/tokenizer")
+
+    dummy = Dummy()
+    result = entry.Master4000EvaluationEngine._evaluate_single_item(
+        dummy,
+        "DialogueRecall-150",
+        {"id": "Dialogue_1", "prompt": "Recall a fact", "expected_keyword": "BD PROCHOT"},
+    )
+    assert result is False
+    assert dummy.last_raw_out == ""
+    assert dummy.last_output_tokens == 0
+    assert dummy.last_generation_seconds == 0.0
+
+
+def test_dialogue_recall_is_masked_from_rsi_but_remains_false_in_real_cache_for_phase4():
+    source = Path("eval/code_prompt_hardening.py").read_text(encoding="utf-8")
+    assert 'rsi_cache = dict(cache)' in source
+    assert 'rsi_cache[key] = "DEFERRED_PRE_LEARN_MEMORY"' in source
+    assert 'return original_rsi(self, splits, rsi_cache)' in source
+    assert 'cache[key] =' not in source
+
+    # Phase 4 intentionally selects baseline False values as misses. Keeping the
+    # real cache False makes every deferred DialogueRecall item eligible there.
+    phase_source = Path("eval/phase4_pro_rsi.py").read_text(encoding="utf-8")
+    assert 'cache.get(f"Phase 1: Baseline_{item[' in phase_source
+    assert ') is False' in phase_source
 
 
 def test_focused_smoke_is_exactly_five_one_go_families():
@@ -111,12 +152,8 @@ def test_focused_smoke_is_exactly_five_one_go_families():
     ):
         assert split in source
     assert "DialogueRecall-150" not in source
-    # Lock behavior rather than comments/docstrings: the focused runner only
-    # invokes the current hardened evaluator and never calls the old evaluator.
     assert "rt.evaluate_one(" not in source
     assert "All-Split Smoke OLD Reference" not in source
-    # It may print that no checkpoint was touched; what matters is that it never
-    # opens or invokes the production checkpoint machinery.
     assert "eval_checkpoint_4000" not in source
     assert "load_checkpoint(" not in source
     assert "save_checkpoint(" not in source
