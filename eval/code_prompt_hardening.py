@@ -7,6 +7,11 @@ overthinking/formatting/semantic issues get an additional tiny task-local rule.
 Installed before phase4_pro_rsi.install(), so baseline and final Phase-4 retests
 use the same evaluator policy. RSI, LearningFacts, and historical RLVR share the
 same global anti-loop rule without leaking unrelated task-family suffixes.
+
+DialogueRecall is intentionally stage-aware: the zero-shot baseline does not ask
+the model to recall facts that are only supplied/parametrically consolidated in
+later stages. Baseline items are recorded as expected misses without generation,
+RSI ignores those memory misses, and Phase 4 retests them after Learn + Phase 3.
 """
 from __future__ import annotations
 
@@ -56,7 +61,8 @@ SYSTEM_SUFFIXES = {
         "modulo the order and stop."
     ),
     "DialogueRecall": (
-        " Recall only. If the fact has not been learned yet, output `unknown`; do not explain memory limitations."
+        " Recall only after learning. If the fact is unavailable, output `unknown` exactly once. "
+        "Never expand abbreviations, invent alternate meanings, guess, or re-check the same missing fact."
     ),
 }
 
@@ -163,7 +169,8 @@ def _autoevol_user(item: Dict[str, Any]) -> str:
 def _dialogue_user(item: Dict[str, Any]) -> str:
     return (
         f"{item['prompt']}\n"
-        "Recall only. Close </think>; output ONLY the fact if learned, otherwise `unknown`."
+        "Recall the learned fact directly. Close </think>; output ONLY the fact if available, otherwise `unknown` once. "
+        "Do not expand abbreviations, invent meanings, guess, or revisit a missing fact."
     )
 
 
@@ -222,6 +229,16 @@ def install(runtime_module, phase4_module, cls) -> None:
         if not any(name in split for name in targeted):
             return original_eval(self, split, item)
 
+        # Memory recall is not a meaningful zero-shot baseline. These facts are
+        # deliberately introduced by the later Learn/ingestion stage, so do not
+        # spend model tokens guessing before learning. Recording False preserves
+        # miss-only Phase-4 eligibility after consolidation.
+        if "DialogueRecall" in split and str(getattr(self, "_current_phase", "")).startswith("Phase 1"):
+            self.last_raw_out = ""
+            self.last_output_tokens = 0
+            self.last_generation_seconds = 0.0
+            return False
+
         tok = self.engine.tokenizer
         user_message = _task_user(split, item, original_task_user_prompt)
         system_message = _system_for_split(split, runtime_module.SYSTEM_PROMPT)
@@ -253,8 +270,19 @@ def install(runtime_module, phase4_module, cls) -> None:
     def routed_rsi(self, splits, cache):
         previous = phase4_module.SYSTEM_PROMPT
         phase4_module._task_system_routing_active = True
+
+        # DialogueRecall is a post-Learn retention check, not a reasoning miss.
+        # Give RSI a shallow cache copy where pre-Learn recall misses are marked
+        # deferred, while leaving the real cache False so Phase 4 still retests
+        # every deferred memory item after consolidation.
+        rsi_cache = dict(cache)
+        for item in splits.get("DialogueRecall-150", []):
+            key = f"Phase 1: Baseline_{item['id']}"
+            if rsi_cache.get(key) is False:
+                rsi_cache[key] = "DEFERRED_PRE_LEARN_MEMORY"
+
         try:
-            return original_rsi(self, splits, cache)
+            return original_rsi(self, splits, rsi_cache)
         finally:
             phase4_module._task_system_routing_active = False
             phase4_module.SYSTEM_PROMPT = previous
