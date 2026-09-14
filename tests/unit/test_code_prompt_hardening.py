@@ -57,7 +57,6 @@ def test_global_rule_reaches_every_family_and_only_proven_overthinkers_get_extra
         assert routed.startswith(base)
         assert routed.count(hardening.GLOBAL_SYSTEM_SUFFIX.strip()) == 1
 
-    # MATH gets its anti-repeat instruction in the user prompt, not another system suffix.
     assert hardening._system_for_split("MATH-500", base) == EXPECTED_GLOBAL_PROMPT
 
 
@@ -107,7 +106,7 @@ def test_targeted_non_code_prompts_are_short_and_specific():
     assert "Do not expand abbreviations" in dialogue
 
 
-def test_dialogue_recall_baseline_defers_without_model_generation():
+def test_all_150_dialogue_recall_baseline_items_fail_immediately_without_model_generation():
     class Dummy:
         _current_phase = "Phase 1: Baseline"
         last_raw_out = "should be cleared"
@@ -118,16 +117,21 @@ def test_dialogue_recall_baseline_defers_without_model_generation():
         def engine(self):
             raise AssertionError("baseline DialogueRecall must not touch the model/tokenizer")
 
-    dummy = Dummy()
-    result = entry.Master4000EvaluationEngine._evaluate_single_item(
-        dummy,
-        "DialogueRecall-150",
-        {"id": "Dialogue_1", "prompt": "Recall a fact", "expected_keyword": "BD PROCHOT"},
-    )
-    assert result is False
-    assert dummy.last_raw_out == ""
-    assert dummy.last_output_tokens == 0
-    assert dummy.last_generation_seconds == 0.0
+    for i in range(150):
+        dummy = Dummy()
+        result = entry.Master4000EvaluationEngine._evaluate_single_item(
+            dummy,
+            "DialogueRecall-150",
+            {
+                "id": f"Dialogue_{i}",
+                "prompt": f"Recall developer decision #{i % 10}",
+                "expected_keyword": "BD PROCHOT",
+            },
+        )
+        assert result is False
+        assert dummy.last_raw_out == ""
+        assert dummy.last_output_tokens == 0
+        assert dummy.last_generation_seconds == 0.0
 
 
 def test_dialogue_recall_is_masked_from_rsi_but_remains_false_in_real_cache_for_phase4():
@@ -135,10 +139,8 @@ def test_dialogue_recall_is_masked_from_rsi_but_remains_false_in_real_cache_for_
     assert 'rsi_cache = dict(cache)' in source
     assert 'rsi_cache[key] = "DEFERRED_PRE_LEARN_MEMORY"' in source
     assert 'return original_rsi(self, splits, rsi_cache)' in source
-    assert 'cache[key] =' not in source
+    assert 'return original_rsi(self, splits, cache)' not in source
 
-    # Phase 4 intentionally selects baseline False values as misses. Keeping the
-    # real cache False makes every deferred DialogueRecall item eligible there.
     phase_source = Path("eval/phase4_pro_rsi.py").read_text(encoding="utf-8")
     assert 'cache.get(f"Phase 1: Baseline_{item[' in phase_source
     assert ') is False' in phase_source
