@@ -1,31 +1,31 @@
 """Memory-safe RSI/Phase-4 branch generation without reducing reasoning length.
 
-The corrected legacy RSI core already has the right search semantics: branches are
-sequential, four temperatures are explored by RSI, answer-blind selection happens
-before hidden reward, and round two self-critiques the selected prior attempt. The
-later live-stream wrapper preserved those semantics but stopped owning a hard
-per-branch teardown boundary and used an unbounded full-precision KV cache.
+The current RSI search/reward algorithm is left untouched. This layer restores the
+strong branch-lifecycle behavior from the much older MLX implementation around the
+current live-stream generator, while using modern MLX-LM KV controls.
 
-This layer keeps the current algorithm and live output while restoring the useful
-legacy branch isolation and adding current MLX-LM memory controls:
-- fresh sequential branch generation;
-- hardware-scaled active KV residency;
-- 4-bit KV cache quantization when supported;
-- smaller prefill chunks to reduce peak unified-memory use;
-- explicit generator teardown + Metal/Python cache cleanup after every branch;
-- the shared Metal lock around each branch;
-- one more-conservative retry of only the current branch on a real Metal OOM.
+Kept from the old implementation because it is still useful:
+- branches remain strictly sequential;
+- Python/Metal caches are reclaimed before AND after every branch;
+- one branch owns the model/Metal lock at a time.
+
+Modernized for the current implementation:
+- 4-bit KV-cache quantization reduces long-generation unified-memory growth;
+- smaller prefill chunks reduce peak prompt-prefill memory;
+- a Metal OOM retries only the failed branch with earlier KV quantization;
+- iterator/response references are explicitly torn down after every streamed branch.
 
 The generation allowance is NOT shortened. ``max_tokens`` is passed through
-unchanged, so the benchmark/RSI ceiling remains 16,384 tokens.
+unchanged, so the benchmark/RSI ceiling remains 16,384 tokens. The normal path also
+keeps the full context (no sliding ``max_kv_size`` window). The OOM retry keeps the
+full context too; it becomes more aggressive by quantizing KV earlier, not by
+throwing old reasoning tokens away.
 """
 from __future__ import annotations
 
 import contextlib
 import gc
 from typing import Any, Dict, List
-
-from core.kv_cache_manager import compute_auto_kv_budget
 
 
 _OOM_MARKERS = (
@@ -42,7 +42,10 @@ def _is_metal_oom(exc: BaseException) -> bool:
 
 
 def _clear_runtime_memory(mx: Any) -> None:
-    """Release Python refs and MLX's cached Metal allocations at branch boundaries."""
+    """Release transient graphs and MLX's cached Metal allocations."""
+    # The older implementation collected before and after every branch. Keep that
+    # hard boundary; use a full collection because RSI branches are very long-lived.
+    gc.collect(2)
     try:
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
@@ -50,44 +53,22 @@ def _clear_runtime_memory(mx: Any) -> None:
             mx.metal.clear_cache()
     except Exception:
         pass
-    gc.collect()
 
 
-def _engine_kv_budget(self) -> int:
-    """Use the existing app/backend hardware policy even when Pro backend is not built yet."""
-    backend = getattr(self, "_phase4_pro_backend", None)
-    try:
-        value = int(getattr(backend, "max_stateful_kv_tokens", 0) or 0)
-    except Exception:
-        value = 0
-    if value <= 0:
-        try:
-            value = int(compute_auto_kv_budget())
-        except Exception:
-            value = 2048
-    return max(512, value)
+def _memory_policy(*, aggressive: bool = False) -> Dict[str, int]:
+    """Return current MLX-LM controls without imposing a sliding context window.
 
-
-def _memory_policy(self, *, aggressive: bool = False) -> Dict[str, int]:
-    """Bound resident KV, not output length.
-
-    On a <=16 GB machine the existing backend policy is 2048 KV tokens. The
-    normal path uses that budget with 4-bit KV and 256-token prefill chunks. A
-    branch that still hits a genuine Metal OOM gets one retry at half the active
-    KV residency and 128-token prefill chunks. Both paths retain the caller's
-    full generation token allowance.
+    Normal generation leaves the first 2048 KV tokens unquantized for throughput,
+    then stores the growing cache at 4 bits. On an actual Metal OOM, one retry starts
+    quantizing after 128 tokens and uses smaller prefill chunks. ``max_kv_size`` is
+    intentionally absent from both policies so the model can retain the full 16K
+    reasoning history.
     """
-    budget = _engine_kv_budget(self)
-    if aggressive:
-        budget = max(512, budget // 2)
-    prefill = 128 if aggressive else (256 if budget <= 2048 else 512)
-    quant_start = min(512, max(128, budget // 4))
     return {
-        "max_kv_size": int(budget),
-        "prefill_step_size": int(prefill),
+        "prefill_step_size": 128 if aggressive else 256,
         "kv_bits": 4,
         "kv_group_size": 64,
-        "quantized_kv_start": int(quant_start),
+        "quantized_kv_start": 128 if aggressive else 2048,
     }
 
 
@@ -101,7 +82,7 @@ def _close_iterator(iterator: Any) -> None:
 
 
 def install(phase4_module, live_module, legacy_generate) -> None:
-    """Replace only the branch execution wrapper; leave RSI search/reward logic intact."""
+    """Wrap only branch execution; never replace RSI search/reward/training logic."""
     if getattr(phase4_module, "_rsi_generation_memory_hardening_installed", False):
         return
 
@@ -127,8 +108,8 @@ def install(phase4_module, live_module, legacy_generate) -> None:
         except Exception:
             make_sampler = None
 
-        # Legacy direct generation remains the compatibility path for older MLX-LM.
-        # It is still run one branch at a time with the stronger post-branch teardown.
+        # The pre-rewrite direct generator stays the compatibility path. It is
+        # invoked one branch at a time so its old branch isolation is preserved.
         use_stream = callable(stream_generate) and make_sampler is not None
         branches: List[str] = []
         total_branches = len(temperatures)
@@ -150,14 +131,15 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                     )
                 return str(out[0]) if out else ""
             finally:
+                out = None
                 _clear_runtime_memory(mx)
 
         def streamed_one(temp: float, branch_idx: int, *, aggressive: bool) -> str:
-            policy = _memory_policy(self, aggressive=aggressive)
+            policy = _memory_policy(aggressive=aggressive)
             sampler = make_sampler(temp=float(temp), top_p=top_p)
             label = (
                 f"live branch {branch_idx}/{total_branches} | T={float(temp):.2f} | "
-                f"KV={policy['max_kv_size']} | KV4 | prefill={policy['prefill_step_size']}"
+                f"KV4@{policy['quantized_kv_start']} | prefill={policy['prefill_step_size']}"
             )
             live_module._write_live_header(self, formatted_prompt, branch_label=label)
 
@@ -168,7 +150,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             try:
                 kwargs: Dict[str, Any] = {
                     "prompt": formatted_prompt,
-                    # Deliberately unchanged: this remains 16,384 when RSI passes 16,384.
+                    # Deliberately unchanged: RSI still receives 16,384 here.
                     "max_tokens": max(1, int(max_tokens)),
                     "sampler": sampler,
                     **policy,
@@ -188,11 +170,13 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                         live_module._append_live_text(chunk)
                 return "".join(pieces)
             finally:
-                # The last GenerationResponse can hold logprob/Metal-backed state.
+                # GenerationResponse/logprob state and the generator can retain MLX
+                # cache refs. Tear both down before the next branch starts.
                 response = None
                 _close_iterator(iterator)
                 iterator = None
                 sampler = None
+                pieces.clear()
                 _clear_runtime_memory(mx)
 
         for branch_idx, temp in enumerate(temperatures, 1):
@@ -203,19 +187,20 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             try:
                 branches.append(streamed_one(float(temp), branch_idx, aggressive=False))
             except TypeError:
-                # Older MLX-LM may not support the modern KV/prefill kwargs. Keep
-                # corrected legacy semantics rather than inventing another sampler.
+                # Older MLX-LM without modern KV/prefill kwargs: retain the old
+                # direct generator rather than changing search/sampling semantics.
                 branches.append(legacy_one(float(temp)))
             except RuntimeError as exc:
                 if not _is_metal_oom(exc):
                     raise
-                # Recover only the failed branch. Completed branches stay valid and
-                # the item/round search policy is unchanged.
+                # Recover only this branch. Completed branches and RSI item progress
+                # remain valid. Reasoning/output allowance remains 16,384 tokens.
                 _clear_runtime_memory(mx)
                 try:
                     live_module._append_live_text(
-                        "\n[RSI MEMORY RECOVERY] Metal OOM: retrying this branch with "
-                        "more conservative KV residency; 16,384-token allowance unchanged.\n"
+                        "\n[RSI MEMORY RECOVERY] Metal OOM: retrying only this branch "
+                        "with earlier 4-bit KV quantization; 16,384-token allowance and "
+                        "full context are unchanged.\n"
                     )
                 except Exception:
                     pass
