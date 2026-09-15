@@ -9,6 +9,7 @@ from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
 from eval.reader_hardening import install as install_reader_hardening
+from eval.rsi_prompt_hardening import install as install_rsi_prompt_hardening
 from eval.scoring_hardening import install as install_scoring_hardening
 from eval.swe_verifier_hardening import install as install_swe_verifier_hardening
 
@@ -35,8 +36,11 @@ phase4_pro_rsi._append_raw_generation_log = master_runtime._append_raw_generatio
 install_dataset_hardening(master_runtime, phase4_pro_rsi)
 # Keep the exact Gemini-tested global system prompt. Only task families that showed
 # a concrete smoke-test failure get small clarifications. Install before Phase-4
-# so baseline, Phase-4 retests, and RSI share the same task policy.
+# so baseline and Phase-4 retests share the same task policy.
 install_code_prompt_hardening(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
+# RSI intentionally omits only the long global anti-loop suffix. Its exact Gemini
+# base and family-specific task guidance remain intact.
+install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 # Phase-4/RSI multi-branch generation uses mlx_lm.stream_generate when available.
 install_phase4_stream(phase4_pro_rsi)
