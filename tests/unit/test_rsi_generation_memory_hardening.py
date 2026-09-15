@@ -1,4 +1,4 @@
-"""Regression coverage for memory-safe RSI generation with legacy search semantics intact."""
+"""Regression coverage for memory-safe RSI generation with old branch isolation retained."""
 from __future__ import annotations
 
 import sys
@@ -17,27 +17,29 @@ def _src(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_memory_policy_uses_existing_hardware_budget_without_reducing_output_limit(monkeypatch):
-    monkeypatch.setattr(hard, "compute_auto_kv_budget", lambda: 2048)
-    runner = SimpleNamespace(_phase4_pro_backend=None)
-
-    normal = hard._memory_policy(runner, aggressive=False)
-    retry = hard._memory_policy(runner, aggressive=True)
+def test_memory_policy_quantizes_kv_without_sliding_context_or_shortening_output():
+    normal = hard._memory_policy(aggressive=False)
+    retry = hard._memory_policy(aggressive=True)
 
     assert normal == {
-        "max_kv_size": 2048,
         "prefill_step_size": 256,
         "kv_bits": 4,
         "kv_group_size": 64,
-        "quantized_kv_start": 512,
+        "quantized_kv_start": 2048,
     }
-    assert retry["max_kv_size"] == 1024
-    assert retry["prefill_step_size"] == 128
-    assert retry["kv_bits"] == 4
+    assert retry == {
+        "prefill_step_size": 128,
+        "kv_bits": 4,
+        "kv_group_size": 64,
+        "quantized_kv_start": 128,
+    }
+    assert "max_kv_size" not in normal
+    assert "max_kv_size" not in retry
 
     source = _src("eval/rsi_generation_memory_hardening.py")
     assert '"max_tokens": max(1, int(max_tokens))' in source
-    assert "16,384-token allowance unchanged" in source
+    assert "16,384-token allowance" in source
+    assert "full context" in source
     assert "max_tokens=min" not in source
 
 
@@ -88,15 +90,11 @@ def _fake_modules(monkeypatch, *, oom_first=False):
         _write_live_header=lambda *args, **kwargs: None,
         _append_live_text=lambda *args, **kwargs: None,
     )
-    runner = SimpleNamespace(
-        engine=SimpleNamespace(model=object(), tokenizer=object()),
-        _phase4_pro_backend=None,
-    )
+    runner = SimpleNamespace(engine=SimpleNamespace(model=object(), tokenizer=object()))
     return p4, live, runner, calls, clear_calls
 
 
 def test_streamed_rsi_keeps_full_16384_allowance_and_tears_down_each_branch(monkeypatch):
-    monkeypatch.setattr(hard, "compute_auto_kv_budget", lambda: 2048)
     p4, live, runner, calls, clear_calls = _fake_modules(monkeypatch)
     legacy = p4._generate_branches_same_model
 
@@ -112,15 +110,15 @@ def test_streamed_rsi_keeps_full_16384_allowance_and_tears_down_each_branch(monk
     assert out == ["branch-1", "branch-2"]
     assert len(calls) == 2
     assert all(call["max_tokens"] == 16384 for call in calls)
-    assert all(call["max_kv_size"] == 2048 for call in calls)
+    assert all("max_kv_size" not in call for call in calls)
     assert all(call["prefill_step_size"] == 256 for call in calls)
     assert all(call["kv_bits"] == 4 for call in calls)
-    # At least one pre + one post clear for each sequential branch.
+    assert all(call["quantized_kv_start"] == 2048 for call in calls)
+    # Old implementation's important behavior: pre + post clear per branch.
     assert len(clear_calls) >= 4
 
 
-def test_only_failed_branch_retries_on_metal_oom_with_smaller_kv_not_fewer_tokens(monkeypatch):
-    monkeypatch.setattr(hard, "compute_auto_kv_budget", lambda: 2048)
+def test_only_failed_branch_retries_on_metal_oom_with_earlier_quantization_not_fewer_tokens(monkeypatch):
     p4, live, runner, calls, _ = _fake_modules(monkeypatch, oom_first=True)
     legacy = p4._generate_branches_same_model
 
@@ -136,13 +134,14 @@ def test_only_failed_branch_retries_on_metal_oom_with_smaller_kv_not_fewer_token
     assert out == ["branch-2"]
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == calls[1]["max_tokens"] == 16384
-    assert calls[0]["max_kv_size"] == 2048
-    assert calls[1]["max_kv_size"] == 1024
+    assert "max_kv_size" not in calls[0] and "max_kv_size" not in calls[1]
+    assert calls[0]["quantized_kv_start"] == 2048
+    assert calls[1]["quantized_kv_start"] == 128
     assert calls[0]["prefill_step_size"] == 256
     assert calls[1]["prefill_step_size"] == 128
 
 
-def test_corrected_legacy_rsi_search_algorithm_is_still_the_current_core():
+def test_current_rsi_search_reward_semantics_are_not_rewritten():
     phase = _src("eval/phase4_pro_rsi.py")
     assert "for round_idx in (1, 2):" in phase
     assert "temps = [0.20, 0.38, 0.58, 0.82]" in phase
@@ -154,7 +153,7 @@ def test_corrected_legacy_rsi_search_algorithm_is_still_the_current_core():
     assert "for split_name, item in misses[:64]:" in phase
 
 
-def test_memory_layer_wraps_live_stream_after_capturing_legacy_generator():
+def test_memory_layer_wraps_live_stream_after_capturing_old_direct_generator():
     launcher = _src("master_4000_eval_suite.py")
     capture = launcher.index("_legacy_rsi_branch_generate = phase4_pro_rsi._generate_branches_same_model")
     live = launcher.index("install_phase4_stream(phase4_pro_rsi)")
@@ -166,4 +165,4 @@ def test_memory_layer_wraps_live_stream_after_capturing_legacy_generator():
     assert "legacy_generate(" in source
     assert "_close_iterator(iterator)" in source
     assert "METAL_STREAM_LOCK" in source
-    assert "retrying this branch" in source
+    assert "retrying only this branch" in source
