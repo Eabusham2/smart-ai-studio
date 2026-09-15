@@ -9,7 +9,10 @@ from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
 from eval.reader_hardening import install as install_reader_hardening
+from eval.rsi_miss_only_hardening import capture_before_historical_merge, enforce_after_historical_merge
+from eval.rsi_prompt_hardening import install as install_rsi_prompt_hardening
 from eval.scoring_hardening import install as install_scoring_hardening
+from eval.stage_integrity_telemetry import install as install_stage_integrity_telemetry
 from eval.swe_verifier_hardening import install as install_swe_verifier_hardening
 
 # Fix active SWE patch application before any engine exists. Actual tests remain
@@ -33,14 +36,26 @@ install_baseline_stream(master_runtime, Master4000EvaluationEngine)
 # live current-item file.
 phase4_pro_rsi._append_raw_generation_log = master_runtime._append_raw_generation_log
 install_dataset_hardening(master_runtime, phase4_pro_rsi)
-# Keep the exact Gemini-tested global system prompt. Only task families that showed
-# a concrete smoke-test failure get small clarifications. Install before Phase-4
-# so baseline, Phase-4 retests, and RSI share the same task policy.
+# Keep the exact Gemini-tested global system prompt for normal benchmark generation.
+# Only task families that showed a concrete smoke-test failure get small clarifications.
 install_code_prompt_hardening(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
+# RSI has no system role. Any family-specific guidance selected for the split is
+# preserved by moving it into the RSI user message instead.
+install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 # Phase-4/RSI multi-branch generation uses mlx_lm.stream_generate when available.
 install_phase4_stream(phase4_pro_rsi)
+
+# Capture the true Phase-1-miss-only RSI before historical recovery installs its
+# optional extra autonomous RLVR tasks. Historical Learn/retention/parameter-delta
+# behavior is still restored, then RSI is put back to Phase-1 misses only.
+capture_before_historical_merge(phase4_pro_rsi)
 install_historical_good_merge(phase4_pro_rsi)
+enforce_after_historical_merge(phase4_pro_rsi)
+
+# Add stage telemetry and fail-closed proof that every supplied LearningFact is
+# queued, trained, consolidated, moves real trainable weights, and is persisted.
+install_stage_integrity_telemetry(phase4_pro_rsi, Master4000EvaluationEngine)
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
 
 if __name__ == "__main__":
