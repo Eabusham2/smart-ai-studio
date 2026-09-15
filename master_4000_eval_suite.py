@@ -38,8 +38,8 @@ install_dataset_hardening(master_runtime, phase4_pro_rsi)
 # a concrete smoke-test failure get small clarifications. Install before Phase-4
 # so baseline and Phase-4 retests share the same task policy.
 install_code_prompt_hardening(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
-# RSI intentionally omits only the long global anti-loop suffix. Its exact Gemini
-# base and family-specific task guidance remain intact.
+# RSI intentionally has no system role. Any family-specific guidance selected for
+# the split is preserved by moving it into the RSI user message instead.
 install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 # Phase-4/RSI multi-branch generation uses mlx_lm.stream_generate when available.
