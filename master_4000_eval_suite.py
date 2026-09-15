@@ -10,6 +10,8 @@ from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
 from eval.reader_hardening import install as install_reader_hardening
+from eval.rsi_feedback_hardening import install as install_rsi_feedback_hardening
+from eval.rsi_memory_hardening import install as install_rsi_memory_hardening
 from eval.rsi_miss_only_hardening import capture_before_historical_merge, enforce_after_historical_merge
 from eval.rsi_prompt_hardening import install as install_rsi_prompt_hardening
 from eval.rsi_resume_hardening import install as install_rsi_resume_hardening
@@ -48,6 +50,14 @@ install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 # Phase-4/RSI multi-branch generation uses mlx_lm.stream_generate when available.
 install_phase4_stream(phase4_pro_rsi)
+# Preserve the full 16,384 generated-token ceiling while bounding/quantizing KV
+# memory, retrying smaller KV windows on Metal OOM, and restoring sequential
+# per-branch cache teardown from the older generator.
+install_rsi_memory_hardening(phase4_pro_rsi)
+# Restore the useful part of the older recursive loop: deterministic verifier
+# feedback is supplied to round 2 when available. Hidden benchmark truth remains
+# reward-only and never enters generation.
+install_rsi_feedback_hardening(phase4_pro_rsi)
 
 # Capture the true Phase-1-miss-only RSI before historical recovery installs its
 # optional extra autonomous RLVR tasks. Historical Learn/retention/parameter-delta
