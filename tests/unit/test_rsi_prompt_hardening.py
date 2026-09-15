@@ -1,6 +1,6 @@
-"""Regression coverage for RSI's clean verified-Gemini system prompt."""
+"""Regression coverage for RSI systemless prompting with family guidance retained."""
 from eval.code_prompt_hardening import GLOBAL_SYSTEM_SUFFIX, SYSTEM_SUFFIXES
-from eval.rsi_prompt_hardening import _without_global_rule
+from eval.rsi_prompt_hardening import _family_guidance_from_system
 
 
 VERIFIED_GEMINI_PROMPT = (
@@ -11,18 +11,20 @@ VERIFIED_GEMINI_PROMPT = (
 )
 
 
-def test_rsi_removes_only_global_anti_loop_suffix():
+def test_rsi_extracts_family_guidance_without_gemini_or_global_text():
     family = SYSTEM_SUFFIXES["HLE"]
     routed = VERIFIED_GEMINI_PROMPT + GLOBAL_SYSTEM_SUFFIX + family
-    cleaned = _without_global_rule(routed)
-    assert cleaned == VERIFIED_GEMINI_PROMPT + family
-    assert GLOBAL_SYSTEM_SUFFIX.strip() not in cleaned
+    extracted = _family_guidance_from_system(routed)
+    assert extracted == family.strip()
+    assert VERIFIED_GEMINI_PROMPT not in extracted
+    assert GLOBAL_SYSTEM_SUFFIX.strip() not in extracted
 
 
-def test_clean_gemini_base_is_byte_preserved():
-    assert _without_global_rule(VERIFIED_GEMINI_PROMPT + GLOBAL_SYSTEM_SUFFIX) == VERIFIED_GEMINI_PROMPT
+def test_rsi_family_guidance_is_empty_when_split_has_no_suffix():
+    routed = VERIFIED_GEMINI_PROMPT + GLOBAL_SYSTEM_SUFFIX
+    assert _family_guidance_from_system(routed) == ""
 
 
-def test_unrelated_text_is_not_modified():
-    text = VERIFIED_GEMINI_PROMPT + " family-specific guidance"
-    assert _without_global_rule(text) == text
+def test_family_guidance_registry_remains_available_for_rsi():
+    for name in ("LiveCodeBench", "DeepSWE", "AIME", "GPQA", "MMLU-Pro", "HLE", "AutonomousEvolution", "DialogueRecall"):
+        assert SYSTEM_SUFFIXES[name].strip()
