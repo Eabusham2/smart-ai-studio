@@ -1,5 +1,6 @@
 """Canonical entry point for the merged 4,014-item evaluation suite."""
 from eval._master_4000_base import *
+import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
 import eval.phase4_pro_rsi as phase4_pro_rsi
 import eval.scoring_hardening as scoring_hardening
@@ -10,6 +11,8 @@ from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
 from eval.reader_hardening import install as install_reader_hardening
+from eval.rsi_generation_memory_hardening import install as install_rsi_generation_memory_hardening
+from eval.rsi_legacy_training_hardening import install as install_rsi_legacy_training_hardening
 from eval.rsi_miss_only_hardening import capture_before_historical_merge, enforce_after_historical_merge
 from eval.rsi_prompt_hardening import install as install_rsi_prompt_hardening
 from eval.rsi_resume_hardening import install as install_rsi_resume_hardening
@@ -46,8 +49,17 @@ install_code_prompt_hardening(master_runtime, phase4_pro_rsi, Master4000Evaluati
 # preserved by moving it into the RSI user message instead.
 install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
-# Phase-4/RSI multi-branch generation uses mlx_lm.stream_generate when available.
+
+# Keep the old direct branch generator as a compatibility path. The live watcher
+# wraps it; then the memory layer restores old pre/post-branch cleanup while adding
+# current MLX-LM KV quantization and OOM recovery. Search/reward semantics are untouched.
+_legacy_rsi_branch_generate = phase4_pro_rsi._generate_branches_same_model
 install_phase4_stream(phase4_pro_rsi)
+install_rsi_generation_memory_hardening(
+    phase4_pro_rsi,
+    live_generation_stream,
+    _legacy_rsi_branch_generate,
+)
 
 # Capture the true Phase-1-miss-only RSI before historical recovery installs its
 # optional extra autonomous RLVR tasks. Historical Learn/retention/parameter-delta
@@ -64,6 +76,9 @@ install_rsi_resume_hardening(phase4_pro_rsi)
 # Add stage telemetry and fail-closed proof that every supplied LearningFact is
 # queued, trained, consolidated, moves real trainable weights, and is persisted.
 install_stage_integrity_telemetry(phase4_pro_rsi, Master4000EvaluationEngine)
+# Restore the useful pre-rewrite training semantics around that final fail-closed
+# Phase-3 stack: completion-only CE plus transaction rollback on any failure.
+install_rsi_legacy_training_hardening(phase4_pro_rsi)
 # Keep the full structured JSONL telemetry, but render RSI heartbeat/progress in a
 # short Stage-1-style single line on the console.
 install_rsi_telemetry_compact(stage_integrity_telemetry)
