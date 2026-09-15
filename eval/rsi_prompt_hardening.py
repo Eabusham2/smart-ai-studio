@@ -1,5 +1,15 @@
-"""Run RSI with no system message; keep task guidance in the user prompt only."""
+"""Run RSI without a system message while preserving family-specific guidance."""
 from __future__ import annotations
+
+from eval.code_prompt_hardening import SYSTEM_SUFFIXES
+
+
+def _family_guidance_from_system(system: str | None) -> str:
+    text = str(system or "")
+    for suffix in SYSTEM_SUFFIXES.values():
+        if suffix and suffix in text:
+            return suffix.strip()
+    return ""
 
 
 def _chat_without_system(tokenizer, user: str) -> str:
@@ -20,10 +30,12 @@ def _chat_without_system(tokenizer, user: str) -> str:
 
 
 def install(phase4_module) -> None:
-    """Remove the system role entirely for Recursive Self-Improvement generations.
+    """Remove RSI's system role, but retain family guidance in its user prompt.
 
-    RSI still receives its benchmark/task-specific instructions through the user
-    prompt. Non-RSI generation keeps the normal Gemini/global/task system routing.
+    The verified Gemini base and global anti-loop suffix are omitted only for
+    Recursive Self-Improvement generations. Any family-specific system guidance
+    already selected for the split is copied into the RSI user message instead.
+    Non-RSI generation is unchanged.
     """
     if getattr(phase4_module, "_rsi_no_system_installed", False):
         return
@@ -32,7 +44,11 @@ def install(phase4_module) -> None:
 
     def rsi_no_system_chat(tokenizer, user, system=None):
         if "Recursive Self-Improvement" in str(user):
-            return _chat_without_system(tokenizer, user)
+            family_guidance = _family_guidance_from_system(system)
+            rsi_user = str(user)
+            if family_guidance and family_guidance not in rsi_user:
+                rsi_user += "\n\n" + family_guidance
+            return _chat_without_system(tokenizer, rsi_user)
         if system is None:
             return original_chat(tokenizer, user)
         return original_chat(tokenizer, user, system=system)
