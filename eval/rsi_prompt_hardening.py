@@ -1,33 +1,41 @@
-"""Keep RSI on the verified Gemini base without the global anti-loop suffix."""
+"""Run RSI with no system message; keep task guidance in the user prompt only."""
 from __future__ import annotations
 
-from eval.code_prompt_hardening import GLOBAL_SYSTEM_SUFFIX
 
-
-def _without_global_rule(system: str) -> str:
-    """Remove only the additive global anti-loop block; preserve all other text."""
-    return str(system).replace(GLOBAL_SYSTEM_SUFFIX, "", 1)
+def _chat_without_system(tokenizer, user: str) -> str:
+    messages = [{"role": "user", "content": str(user)}]
+    if hasattr(tokenizer, "apply_chat_template"):
+        try:
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            pass
+    return (
+        f"<|im_start|>user\n{user}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
 
 
 def install(phase4_module) -> None:
-    """Strip the global anti-loop block only for RSI chat formatting.
+    """Remove the system role entirely for Recursive Self-Improvement generations.
 
-    Task-specific RSI instructions remain in the user prompt/system routing. All
-    non-RSI generations keep the normal global anti-loop system protection.
+    RSI still receives its benchmark/task-specific instructions through the user
+    prompt. Non-RSI generation keeps the normal Gemini/global/task system routing.
     """
-    if getattr(phase4_module, "_rsi_clean_gemini_system_installed", False):
+    if getattr(phase4_module, "_rsi_no_system_installed", False):
         return
 
     original_chat = phase4_module._chat
 
-    def rsi_clean_chat(tokenizer, user, system=None):
+    def rsi_no_system_chat(tokenizer, user, system=None):
         if "Recursive Self-Improvement" in str(user):
-            chosen = phase4_module.SYSTEM_PROMPT if system is None else system
-            chosen = _without_global_rule(chosen)
-            return original_chat(tokenizer, user, system=chosen)
+            return _chat_without_system(tokenizer, user)
         if system is None:
             return original_chat(tokenizer, user)
         return original_chat(tokenizer, user, system=system)
 
-    phase4_module._chat = rsi_clean_chat
-    phase4_module._rsi_clean_gemini_system_installed = True
+    phase4_module._chat = rsi_no_system_chat
+    phase4_module._rsi_no_system_installed = True
