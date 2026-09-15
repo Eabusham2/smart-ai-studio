@@ -20,8 +20,13 @@ RSI_CACHE_LIMIT_BYTES = 512 * 1024 * 1024
 
 
 def _clear_branch_memory(mx) -> None:
-    """Release Python references and cached Metal allocations between branches."""
+    """Finish pending Metal work, then release cached allocations between branches."""
     gc.collect()
+    try:
+        if hasattr(mx, "synchronize"):
+            mx.synchronize()
+    except Exception:
+        pass
     try:
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
@@ -55,6 +60,7 @@ def _kv_retry_ladder(self) -> List[Tuple[int, int]]:
         (4_096, 256),
         (hardware_floor, 256),
         (1_024, 128),
+        (512, 128),
     ]
     out: List[Tuple[int, int]] = []
     seen = set()
