@@ -12,6 +12,7 @@ from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
 from eval.reader_hardening import install as install_reader_hardening
 from eval.rsi_generation_memory_hardening import install as install_rsi_generation_memory_hardening
+from eval.rsi_legacy_training_hardening import install as install_rsi_legacy_training_hardening
 from eval.rsi_miss_only_hardening import capture_before_historical_merge, enforce_after_historical_merge
 from eval.rsi_prompt_hardening import install as install_rsi_prompt_hardening
 from eval.rsi_resume_hardening import install as install_rsi_resume_hardening
@@ -49,9 +50,9 @@ install_code_prompt_hardening(master_runtime, phase4_pro_rsi, Master4000Evaluati
 install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 
-# Preserve the corrected legacy RSI branch generator as the compatibility path.
-# The live watcher wraps it next; the memory layer then restores the old strong
-# branch-isolation boundary while retaining live output and the current RSI logic.
+# Keep the old direct branch generator as a compatibility path. The live watcher
+# wraps it; then the memory layer restores old pre/post-branch cleanup while adding
+# current MLX-LM KV quantization and OOM recovery. Search/reward semantics are untouched.
 _legacy_rsi_branch_generate = phase4_pro_rsi._generate_branches_same_model
 install_phase4_stream(phase4_pro_rsi)
 install_rsi_generation_memory_hardening(
@@ -75,6 +76,9 @@ install_rsi_resume_hardening(phase4_pro_rsi)
 # Add stage telemetry and fail-closed proof that every supplied LearningFact is
 # queued, trained, consolidated, moves real trainable weights, and is persisted.
 install_stage_integrity_telemetry(phase4_pro_rsi, Master4000EvaluationEngine)
+# Restore the useful pre-rewrite training semantics around that final fail-closed
+# Phase-3 stack: completion-only CE plus transaction rollback on any failure.
+install_rsi_legacy_training_hardening(phase4_pro_rsi)
 # Keep the full structured JSONL telemetry, but render RSI heartbeat/progress in a
 # short Stage-1-style single line on the console.
 install_rsi_telemetry_compact(stage_integrity_telemetry)
