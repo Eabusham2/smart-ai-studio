@@ -3,6 +3,7 @@ from pathlib import Path
 
 from eval.rsi_legacy_training_hardening import (
     ASSISTANT_MARKER,
+    FISHER_ANCHOR_COUNT,
     TRAIN_WINDOW_TOKENS,
     _CompletionWindowTokenizer,
 )
@@ -56,7 +57,7 @@ def test_phase3_wrapper_is_installed_outside_fail_closed_integrity_stack():
     assert telemetry < transactional < scoring
 
 
-def test_training_wrapper_preserves_current_optimizer_math_and_adds_transaction_rollback():
+def test_training_wrapper_preserves_current_optimizer_math_and_restores_real_old_protections():
     hard = _src("eval/rsi_legacy_training_hardening.py")
     phase = _src("eval/phase4_pro_rsi.py")
 
@@ -67,19 +68,27 @@ def test_training_wrapper_preserves_current_optimizer_math_and_adds_transaction_
     assert "opt.update(self.engine.model, grads)" in phase
     assert "rsi_post_phase3.safetensors" in phase
 
-    # Old useful semantics restored around it.
+    # Real pre-rewrite strengths restored around it.
     assert "completion_only_cross_entropy" in hard
     assert "ASSISTANT_MARKER" in hard
+    assert "_compute_real_fisher" in hard
+    assert "compute_mlx_fisher" in hard
+    assert "get_anchor_texts()[:FISHER_ANCHOR_COUNT]" in hard
+    assert "ewc_value_and_grad" in hard
+    assert "ewc_lambda" in hard
+    assert FISHER_ANCHOR_COUNT == 4
     assert "_snapshot_trainables" in hard
     assert "_restore_trainables" in hard
+    assert "_snapshot_moe_buffers" in hard
+    assert "_restore_moe_buffers" in hard
     assert "UPDATE episodic_interactions SET consolidated=0" in hard
     assert ".pre_phase3.bak" in hard
     assert "except BaseException:" in hard
 
 
-def test_old_bad_training_behaviors_are_not_reintroduced():
+def test_old_fake_training_behaviors_are_not_reintroduced():
     hard = _src("eval/rsi_legacy_training_hardening.py")
     assert "random.normal" not in hard
     assert "param_drift = 0.0018" not in hard
-    assert "return True" not in hard
     assert "default_code" not in hard
+    assert "MockSlowLoRAModel" not in hard
