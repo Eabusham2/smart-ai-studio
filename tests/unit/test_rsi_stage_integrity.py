@@ -59,6 +59,16 @@ def test_stage_telemetry_covers_all_pipeline_stages_and_fail_closed_training():
     assert "left {len(not_marked)} trained memories unconsolidated" in source
 
 
+def test_rsi_progress_total_is_dynamic_not_hardcoded_to_current_21_misses():
+    source = _src("eval/stage_integrity_telemetry.py")
+    assert "cap = min(64, len(eligible))" in source
+    assert '"total": cap' in source
+    assert "total=cap" in source
+    assert "done=0" in source
+    assert "percent=0.0" in source
+    assert "21" not in source
+
+
 def test_core_rsi_still_selects_only_phase1_false_and_cap_64():
     phase = _src("eval/phase4_pro_rsi.py")
     assert 'key = f"Phase 1: Baseline_{item[\'id\']}"' in phase
