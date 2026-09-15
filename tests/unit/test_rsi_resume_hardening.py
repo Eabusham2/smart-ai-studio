@@ -34,7 +34,12 @@ def test_rsi_resume_is_item_level_miss_only_and_recovers_verified_trace():
 def test_partial_item_is_not_checkpointed_and_training_trace_is_required_for_success_skip():
     source = _src("eval/rsi_resume_hardening.py")
     assert "if not (bool(passed) or int(round_idx) >= 2):" in source
-    assert "Cannot prove/rebuild the training trace: rerun honestly." in source
+    # A recovered PASS may only stay skipped if its exact training row exists or
+    # a logged PASS candidate can rebuild it. Otherwise it is removed from the
+    # completed set and the core miss-only RSI reruns that item honestly.
+    assert "if (split, prompt) in existing_rows:" in source
+    assert "candidate = raw_candidates.get" in source
+    assert "if not candidate:" in source
     assert "completed.pop(key, None)" in source
 
 
