@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -103,7 +104,6 @@ def install(p4, cls) -> None:
         missing = sorted(target_pairs - present)
         retried = 0
 
-        # Retry only genuinely missing supplied facts, then verify again.
         for prompt, completion in missing:
             self.engine.kg.log_interaction(
                 p4.LEARN_SESSION_ID,
@@ -124,15 +124,7 @@ def install(p4, cls) -> None:
             raise RuntimeError(f"Learn seed integrity failure: {len(missing)} supplied facts still missing")
 
         self._phase2_learn_seed_count = target
-        _emit(
-            "Phase 2 Learn",
-            "progress",
-            done=target,
-            total=target,
-            percent=100.0,
-            retried=retried,
-            eta_seconds=0,
-        )
+        _emit("Phase 2 Learn", "progress", done=target, total=target, percent=100.0, retried=retried, eta_seconds=0)
         _emit(
             "Phase 2 Learn",
             "seed_verified",
@@ -152,12 +144,14 @@ def install(p4, cls) -> None:
 
         key = f"{split}:{item_id}"
         completed = state.setdefault("completed", set())
-        # A successful round is final. An unsuccessful round 2 is also final.
         if key in completed or (not passed and int(round_idx) < 2):
             return
 
         completed.add(key)
         state["done"] = int(state.get("done", 0)) + 1
+        state["last_split"] = split
+        state["last_item"] = item_id
+        state["last_passed"] = bool(passed)
         if passed:
             state["verified"] = int(state.get("verified", 0)) + 1
 
@@ -213,10 +207,59 @@ def install(p4, cls) -> None:
             "verified": 0,
             "started": t0,
             "completed": set(),
+            "last_split": None,
+            "last_item": None,
+            "last_passed": None,
         }
+        _emit(
+            "RSI",
+            "progress",
+            done=0,
+            total=cap,
+            percent=0.0,
+            verified=0,
+            elapsed=0.0,
+            eta_seconds=None,
+            status="working",
+        )
+
+        stop_heartbeat = threading.Event()
+
+        def heartbeat():
+            while not stop_heartbeat.wait(10.0):
+                state = getattr(self, "_rsi_progress_telemetry", None)
+                if not isinstance(state, dict):
+                    return
+                done = int(state.get("done", 0))
+                total = max(0, int(state.get("total", 0)))
+                elapsed = max(0.0, time.perf_counter() - float(state.get("started", time.perf_counter())))
+                if done > 0:
+                    avg = elapsed / done
+                    eta = max(0, int(avg * max(0, total - done)))
+                else:
+                    eta = None
+                _emit(
+                    "RSI",
+                    "heartbeat",
+                    done=done,
+                    total=total,
+                    percent=round(100.0 * done / max(1, total), 2),
+                    verified=int(state.get("verified", 0)),
+                    elapsed=round(elapsed, 2),
+                    eta_seconds=eta,
+                    last_split=state.get("last_split"),
+                    last_item=state.get("last_item"),
+                    status="working",
+                )
+
+        heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+        heartbeat_thread.start()
+
         try:
             verified = int(base_rsi(self, splits, cache) or 0)
         finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=1.0)
             state = getattr(self, "_rsi_progress_telemetry", None)
             if isinstance(state, dict) and int(state.get("done", 0)) < cap:
                 elapsed = max(0.0, time.perf_counter() - t0)
@@ -282,14 +325,7 @@ def install(p4, cls) -> None:
             rsi_traces=len(rsi_rows),
             adapter_path=p4.RSI_ADAPTER_PATH,
         )
-        _emit(
-            "Phase 3 Consolidation",
-            "progress",
-            done=0,
-            total=len(queued),
-            percent=0.0,
-            eta_seconds=None,
-        )
+        _emit("Phase 3 Consolidation", "progress", done=0, total=len(queued), percent=0.0, eta_seconds=None)
 
         t0 = time.perf_counter()
         result = dict(base_phase3(self) or {})
