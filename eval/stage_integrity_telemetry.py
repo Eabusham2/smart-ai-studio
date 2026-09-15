@@ -20,11 +20,12 @@ STAGE_TELEMETRY_LOG = os.path.join("eval_results", "stage_telemetry.jsonl")
 
 
 def _emit(stage: str, event: str, **fields: Any) -> None:
+    ram_gb = round(psutil.virtual_memory().used / (1024 ** 3), 3)
     payload = {
         "ts": time.time(),
         "stage": stage,
         "event": event,
-        "ram_gb": round(psutil.virtual_memory().used / (1024 ** 3), 3),
+        "ram_gb": ram_gb,
         **fields,
     }
     os.makedirs(os.path.dirname(STAGE_TELEMETRY_LOG), exist_ok=True)
@@ -32,7 +33,7 @@ def _emit(stage: str, event: str, **fields: Any) -> None:
         f.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
     concise = " | ".join(f"{k}={v}" for k, v in fields.items())
     suffix = f" | {concise}" if concise else ""
-    print(f"[Telemetry] {stage} | {event}{suffix}", flush=True)
+    print(f"[Telemetry] {stage} | {event}{suffix} | RAM={ram_gb:.1f}GB", flush=True)
 
 
 def _db_path(self) -> str:
@@ -69,14 +70,25 @@ def install(p4, cls) -> None:
     base_all = cls._evaluate_all_splits
     base_seed = p4._seed_supervised_learn
     base_rsi = p4._run_rsi_self_improvement
+    base_rsi_log = p4._append_rsi_log
     base_phase3 = p4._run_phase3_consolidation
     base_retention = p4._run_learning_retention_test
 
     def evaluate_all_with_stage_telemetry(self, splits, cache, phase, start, total):
         stage = str(phase)
-        _emit(stage, "start", items=sum(len(v) for v in splits.values()), total_arg=total)
+        item_count = sum(len(v) for v in splits.values())
+        _emit(stage, "start", items=item_count, total_arg=total)
         t0 = time.perf_counter()
         result = base_all(self, splits, cache, phase, start, total)
+        _emit(
+            stage,
+            "progress",
+            done=item_count,
+            total=item_count,
+            percent=100.0,
+            elapsed=round(time.perf_counter() - t0, 3),
+            eta_seconds=0,
+        )
         _emit(stage, "end", seconds=round(time.perf_counter() - t0, 3))
         return result
 
@@ -114,6 +126,15 @@ def install(p4, cls) -> None:
         self._phase2_learn_seed_count = target
         _emit(
             "Phase 2 Learn",
+            "progress",
+            done=target,
+            total=target,
+            percent=100.0,
+            retried=retried,
+            eta_seconds=0,
+        )
+        _emit(
+            "Phase 2 Learn",
             "seed_verified",
             target_facts=target,
             reported=reported,
@@ -122,6 +143,44 @@ def install(p4, cls) -> None:
             session_rows=len(rows),
         )
         return target
+
+    def rsi_log_with_progress(self, split, item_id, round_idx, candidate, passed, selection):
+        base_rsi_log(self, split, item_id, round_idx, candidate, passed, selection)
+        state = getattr(self, "_rsi_progress_telemetry", None)
+        if not isinstance(state, dict):
+            return
+
+        key = f"{split}:{item_id}"
+        completed = state.setdefault("completed", set())
+        # A successful round is final. An unsuccessful round 2 is also final.
+        if key in completed or (not passed and int(round_idx) < 2):
+            return
+
+        completed.add(key)
+        state["done"] = int(state.get("done", 0)) + 1
+        if passed:
+            state["verified"] = int(state.get("verified", 0)) + 1
+
+        done = int(state["done"])
+        total = max(0, int(state.get("total", 0)))
+        elapsed = max(0.0, time.perf_counter() - float(state.get("started", time.perf_counter())))
+        avg = elapsed / max(1, done)
+        eta = max(0, int(avg * max(0, total - done)))
+        pct = 100.0 * done / max(1, total)
+        _emit(
+            "RSI",
+            "progress",
+            done=done,
+            total=total,
+            percent=round(pct, 2),
+            split=split,
+            item=item_id,
+            round=int(round_idx),
+            passed=bool(passed),
+            verified=int(state.get("verified", 0)),
+            elapsed=round(elapsed, 2),
+            eta_seconds=eta,
+        )
 
     def rsi_with_integrity(self, splits, cache) -> int:
         eligible: set[Tuple[str, str]] = set()
@@ -148,7 +207,30 @@ def install(p4, cls) -> None:
             attempt_cap=cap,
         )
         t0 = time.perf_counter()
-        verified = int(base_rsi(self, splits, cache) or 0)
+        self._rsi_progress_telemetry = {
+            "total": cap,
+            "done": 0,
+            "verified": 0,
+            "started": t0,
+            "completed": set(),
+        }
+        try:
+            verified = int(base_rsi(self, splits, cache) or 0)
+        finally:
+            state = getattr(self, "_rsi_progress_telemetry", None)
+            if isinstance(state, dict) and int(state.get("done", 0)) < cap:
+                elapsed = max(0.0, time.perf_counter() - t0)
+                _emit(
+                    "RSI",
+                    "progress",
+                    done=int(state.get("done", 0)),
+                    total=cap,
+                    percent=round(100.0 * int(state.get("done", 0)) / max(1, cap), 2),
+                    verified=int(state.get("verified", 0)),
+                    elapsed=round(elapsed, 2),
+                    eta_seconds=None,
+                )
+            self._rsi_progress_telemetry = None
 
         rows = _session_rows(self, p4.RSI_SESSION_ID, unconsolidated_only=True)
         bad: List[str] = []
@@ -200,6 +282,14 @@ def install(p4, cls) -> None:
             rsi_traces=len(rsi_rows),
             adapter_path=p4.RSI_ADAPTER_PATH,
         )
+        _emit(
+            "Phase 3 Consolidation",
+            "progress",
+            done=0,
+            total=len(queued),
+            percent=0.0,
+            eta_seconds=None,
+        )
 
         t0 = time.perf_counter()
         result = dict(base_phase3(self) or {})
@@ -230,6 +320,15 @@ def install(p4, cls) -> None:
 
         _emit(
             "Phase 3 Consolidation",
+            "progress",
+            done=updated,
+            total=len(queued),
+            percent=round(100.0 * updated / max(1, len(queued)), 2),
+            elapsed=round(time.perf_counter() - t0, 2),
+            eta_seconds=0,
+        )
+        _emit(
+            "Phase 3 Consolidation",
             "end",
             seconds=round(time.perf_counter() - t0, 3),
             trained=updated,
@@ -243,12 +342,22 @@ def install(p4, cls) -> None:
     def retention_with_telemetry(self, model_identity: int) -> Dict[str, Any]:
         target = len(p4.LEARN_EXAMPLES)
         _emit("Learning Retention", "start", facts=target, same_model_id=model_identity)
+        _emit("Learning Retention", "progress", done=0, total=target, percent=0.0, eta_seconds=None)
         t0 = time.perf_counter()
         result = dict(base_retention(self, model_identity) or {})
         if int(result.get("total", 0) or 0) != target:
             raise RuntimeError(
                 f"Retention test covered {result.get('total', 0)}/{target} supplied LearningFacts"
             )
+        _emit(
+            "Learning Retention",
+            "progress",
+            done=target,
+            total=target,
+            percent=100.0,
+            elapsed=round(time.perf_counter() - t0, 2),
+            eta_seconds=0,
+        )
         _emit(
             "Learning Retention",
             "end",
@@ -259,6 +368,7 @@ def install(p4, cls) -> None:
         )
         return result
 
+    p4._append_rsi_log = rsi_log_with_progress
     cls._evaluate_all_splits = evaluate_all_with_stage_telemetry
     p4._seed_supervised_learn = seed_with_integrity
     p4._run_rsi_self_improvement = rsi_with_integrity
