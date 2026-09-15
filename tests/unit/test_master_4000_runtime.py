@@ -4,6 +4,7 @@ import master_4000_eval_suite as master
 from eval import master_4000_runtime as runtime
 from eval import phase4_pro_rsi
 from eval import scoring_hardening
+from eval import stage_integrity_telemetry
 
 
 def test_master_runtime_is_installed():
@@ -13,7 +14,8 @@ def test_master_runtime_is_installed():
 
     assert cls._fast_generate.__module__ == phase4_pro_rsi.__name__
     assert cls._evaluate_single_item.__module__ == scoring_hardening.__name__
-    assert cls._evaluate_all_splits.__module__ == phase4_pro_rsi.__name__
+    # Stage integrity telemetry intentionally wraps the Phase-4 miss-only evaluator.
+    assert cls._evaluate_all_splits.__module__ == stage_integrity_telemetry.__name__
     assert cls.run_full_suite.__module__ == phase4_pro_rsi.__name__
 
 
