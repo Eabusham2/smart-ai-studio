@@ -3,6 +3,7 @@ from eval._master_4000_base import *
 import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
 import eval.phase4_pro_rsi as phase4_pro_rsi
+import eval.real_benchmark_runtime as real_benchmark_runtime
 import eval.scoring_hardening as scoring_hardening
 import eval.stage_integrity_telemetry as stage_integrity_telemetry
 from eval.checkpoint_hardening import install as install_checkpoint_hardening
@@ -96,6 +97,10 @@ install_rsi_telemetry_compact(stage_integrity_telemetry)
 # Learn/Phase-3 use actual token-work throughput instead of a fabricated constant.
 install_stage_tps_hardening(stage_integrity_telemetry, phase4_pro_rsi, Master4000EvaluationEngine)
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
+# Final narrow adapter: real published benchmark data, schema-correct prompts and
+# verifiers, fresh REAL-* cache IDs, and a 32K benchmark ceiling. This intentionally
+# runs last so it replaces only recovered synthetic benchmark behavior.
+real_benchmark_runtime.install(BenchmarkDatasetProvider, master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
 
 if __name__ == "__main__":
     try:
