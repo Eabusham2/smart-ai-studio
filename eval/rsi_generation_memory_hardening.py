@@ -14,7 +14,7 @@ Modernized for the current implementation:
 - smaller prefill chunks reduce peak prompt-prefill memory;
 - a Metal OOM retries only the failed branch with earlier KV quantization;
 - iterator/response references are explicitly torn down after every streamed branch;
-- each completed branch publishes its real measured generation TPS for stage telemetry.
+- in-flight and completed branches publish real measured generation TPS for stage telemetry.
 
 The generation allowance is NOT shortened. ``max_tokens`` is passed through
 unchanged, so the benchmark/RSI ceiling remains 16,384 tokens. The normal path also
@@ -75,7 +75,7 @@ def _close_iterator(iterator: Any) -> None:
 
 
 def _publish_measured_tps(self, response: Any, text: str, elapsed: float) -> None:
-    """Publish honest branch TPS for the stage telemetry layer.
+    """Publish honest completed-branch TPS for the stage telemetry layer.
 
     MLX-LM's final GenerationResponse owns the authoritative decode TPS when it is
     available. Older builds fall back to exact generated-token count over measured
@@ -100,6 +100,34 @@ def _publish_measured_tps(self, response: Any, text: str, elapsed: float) -> Non
                 generated_tokens = 0
         if generated_tokens > 0:
             tps = generated_tokens / elapsed
+
+    if tps > 0.0:
+        self.last_tok_per_sec = float(tps)
+
+
+def _publish_inflight_tps(
+    self,
+    response: Any,
+    streamed_tokens: int,
+    decode_started: float | None,
+) -> None:
+    """Publish live decode TPS while a long RSI branch is still generating.
+
+    Prefer MLX-LM's own cumulative ``generation_tps`` whenever the streamed
+    response exposes it. On older builds, measure decode throughput from the first
+    emitted token onward so prompt-prefill time is not mislabeled as decode TPS.
+    """
+    tps = 0.0
+    try:
+        tps = float(getattr(response, "generation_tps", 0.0) or 0.0)
+    except Exception:
+        tps = 0.0
+
+    if tps <= 0.0 and decode_started is not None and streamed_tokens > 1:
+        elapsed = max(0.0, time.perf_counter() - float(decode_started))
+        if elapsed > 0.001:
+            # The first streamed token establishes the post-prefill decode clock.
+            tps = float(streamed_tokens - 1) / elapsed
 
     if tps > 0.0:
         self.last_tok_per_sec = float(tps)
@@ -172,6 +200,8 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             iterator = None
             response = None
             pieces: List[str] = []
+            streamed_tokens = 0
+            decode_started = None
             started = time.perf_counter()
             _clear_runtime_memory(mx)
             try:
@@ -189,12 +219,24 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                         **kwargs,
                     )
                     for response in iterator:
+                        now = time.perf_counter()
+                        streamed_tokens += 1
+                        if decode_started is None:
+                            decode_started = now
                         chunk = getattr(response, "text", None)
                         if chunk is None:
                             chunk = str(response)
                         chunk = str(chunk)
                         pieces.append(chunk)
                         live_module._append_live_text(chunk)
+                        # Heartbeat telemetry runs concurrently. Publish while the
+                        # branch is alive instead of waiting for branch completion.
+                        _publish_inflight_tps(
+                            self,
+                            response,
+                            streamed_tokens,
+                            decode_started,
+                        )
                 text = "".join(pieces)
                 _publish_measured_tps(self, response, text, time.perf_counter() - started)
                 return text
