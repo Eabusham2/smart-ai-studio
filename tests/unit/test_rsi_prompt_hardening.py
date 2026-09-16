@@ -53,12 +53,15 @@ def test_rsi_chat_has_user_role_only_no_system_role():
     assert all(message["role"] != "system" for message in tok.messages)
 
 
-def test_rsi_repeat_guard_is_short_and_does_not_reduce_reasoning_budget():
+def test_rsi_repeat_guard_is_progress_aware_and_does_not_reduce_reasoning_budget():
     assert RSI_REPEAT_GUARD == (
-        "If your reasoning starts repeating the same point or check without new information, "
-        "stop that loop and finalize."
+        "Continue while your reasoning is making new progress. Once the solution is determined, "
+        "if the same point or check repeats without new information, stop the repetition and output the answer."
     )
     lower = RSI_REPEAT_GUARD.lower()
+    assert "continue while" in lower
+    assert "new progress" in lower
+    assert "once the solution is determined" in lower
     for forbidden in ("think less", "reason less", "concise", "minimal", "terse", "token", "line"):
         assert forbidden not in lower
 
