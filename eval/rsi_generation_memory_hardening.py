@@ -13,7 +13,8 @@ Modernized for the current implementation:
 - 4-bit KV-cache quantization reduces long-generation unified-memory growth;
 - smaller prefill chunks reduce peak prompt-prefill memory;
 - a Metal OOM retries only the failed branch with earlier KV quantization;
-- iterator/response references are explicitly torn down after every streamed branch.
+- iterator/response references are explicitly torn down after every streamed branch;
+- each completed branch publishes its real measured generation TPS for stage telemetry.
 
 The generation allowance is NOT shortened. ``max_tokens`` is passed through
 unchanged, so the benchmark/RSI ceiling remains 16,384 tokens. The normal path also
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import time
 from typing import Any, Dict, List
 
 
@@ -43,8 +45,6 @@ def _is_metal_oom(exc: BaseException) -> bool:
 
 def _clear_runtime_memory(mx: Any) -> None:
     """Release transient graphs and MLX's cached Metal allocations."""
-    # The older implementation collected before and after every branch. Keep that
-    # hard boundary; use a full collection because RSI branches are very long-lived.
     gc.collect(2)
     try:
         if hasattr(mx, "clear_cache"):
@@ -56,14 +56,7 @@ def _clear_runtime_memory(mx: Any) -> None:
 
 
 def _memory_policy(*, aggressive: bool = False) -> Dict[str, int]:
-    """Return current MLX-LM controls without imposing a sliding context window.
-
-    Normal generation leaves the first 2048 KV tokens unquantized for throughput,
-    then stores the growing cache at 4 bits. On an actual Metal OOM, one retry starts
-    quantizing after 128 tokens and uses smaller prefill chunks. ``max_kv_size`` is
-    intentionally absent from both policies so the model can retain the full 16K
-    reasoning history.
-    """
+    """Return current MLX-LM controls without imposing a sliding context window."""
     return {
         "prefill_step_size": 128 if aggressive else 256,
         "kv_bits": 4,
@@ -79,6 +72,37 @@ def _close_iterator(iterator: Any) -> None:
             closer()
     except Exception:
         pass
+
+
+def _publish_measured_tps(self, response: Any, text: str, elapsed: float) -> None:
+    """Publish honest branch TPS for the stage telemetry layer.
+
+    MLX-LM's final GenerationResponse owns the authoritative decode TPS when it is
+    available. Older builds fall back to exact generated-token count over measured
+    wall time. A missing measurement is left unchanged instead of fabricating 0.
+    """
+    tps = 0.0
+    try:
+        tps = float(getattr(response, "generation_tps", 0.0) or 0.0)
+    except Exception:
+        tps = 0.0
+
+    if tps <= 0.0 and elapsed > 0.001:
+        generated_tokens = 0
+        try:
+            generated_tokens = int(getattr(response, "generation_tokens", 0) or 0)
+        except Exception:
+            generated_tokens = 0
+        if generated_tokens <= 0:
+            try:
+                generated_tokens = len(self.engine.tokenizer.encode(str(text)))
+            except Exception:
+                generated_tokens = 0
+        if generated_tokens > 0:
+            tps = generated_tokens / elapsed
+
+    if tps > 0.0:
+        self.last_tok_per_sec = float(tps)
 
 
 def install(phase4_module, live_module, legacy_generate) -> None:
@@ -108,8 +132,6 @@ def install(phase4_module, live_module, legacy_generate) -> None:
         except Exception:
             make_sampler = None
 
-        # The pre-rewrite direct generator stays the compatibility path. It is
-        # invoked one branch at a time so its old branch isolation is preserved.
         use_stream = callable(stream_generate) and make_sampler is not None
         branches: List[str] = []
         total_branches = len(temperatures)
@@ -120,6 +142,8 @@ def install(phase4_module, live_module, legacy_generate) -> None:
 
         def legacy_one(temp: float) -> str:
             _clear_runtime_memory(mx)
+            out = None
+            started = time.perf_counter()
             try:
                 with lock_context():
                     out = legacy_generate(
@@ -129,7 +153,9 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                         max_tokens,
                         top_p,
                     )
-                return str(out[0]) if out else ""
+                text = str(out[0]) if out else ""
+                _publish_measured_tps(self, None, text, time.perf_counter() - started)
+                return text
             finally:
                 out = None
                 _clear_runtime_memory(mx)
@@ -146,6 +172,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             iterator = None
             response = None
             pieces: List[str] = []
+            started = time.perf_counter()
             _clear_runtime_memory(mx)
             try:
                 kwargs: Dict[str, Any] = {
@@ -168,10 +195,10 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                         chunk = str(chunk)
                         pieces.append(chunk)
                         live_module._append_live_text(chunk)
-                return "".join(pieces)
+                text = "".join(pieces)
+                _publish_measured_tps(self, response, text, time.perf_counter() - started)
+                return text
             finally:
-                # GenerationResponse/logprob state and the generator can retain MLX
-                # cache refs. Tear both down before the next branch starts.
                 response = None
                 _close_iterator(iterator)
                 iterator = None
@@ -187,14 +214,10 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             try:
                 branches.append(streamed_one(float(temp), branch_idx, aggressive=False))
             except TypeError:
-                # Older MLX-LM without modern KV/prefill kwargs: retain the old
-                # direct generator rather than changing search/sampling semantics.
                 branches.append(legacy_one(float(temp)))
             except RuntimeError as exc:
                 if not _is_metal_oom(exc):
                     raise
-                # Recover only this branch. Completed branches and RSI item progress
-                # remain valid. Reasoning/output allowance remains 16,384 tokens.
                 _clear_runtime_memory(mx)
                 try:
                     live_module._append_live_text(

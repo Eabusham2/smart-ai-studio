@@ -49,6 +49,16 @@ def test_stage_wide_tps_uses_measured_decode_or_real_token_work_not_fixed_consta
     assert "5.0" not in source
 
 
+def test_rsi_streamed_branches_publish_real_generation_tps_to_stage_owner():
+    source = _src("eval/rsi_generation_memory_hardening.py")
+    assert "_publish_measured_tps" in source
+    assert 'getattr(response, "generation_tps", 0.0)' in source
+    assert 'getattr(response, "generation_tokens", 0)' in source
+    assert "len(self.engine.tokenizer.encode(str(text)))" in source
+    assert "self.last_tok_per_sec = float(tps)" in source
+    assert "time.perf_counter() - started" in source
+
+
 def test_phase3_training_tps_counts_the_actual_256_token_training_window():
     source = _src("eval/stage_tps_hardening.py")
     assert "min(_encode_len(self.engine.tokenizer, text), 256)" in source
@@ -60,6 +70,8 @@ def test_compact_rsi_console_includes_tps_and_launcher_installs_tps_last():
     compact = _src("eval/rsi_telemetry_compact.py")
     launcher = _src("master_4000_eval_suite.py")
     assert "TPS: {tps}" in compact
+    assert 'return "calculating"' in compact
+    assert 'return f"{tps:.1f}t/s"' in compact
     assert "install_stage2_future_hardening" in launcher
     compact_i = launcher.index("install_rsi_telemetry_compact(stage_integrity_telemetry)")
     tps_i = launcher.index("install_stage_tps_hardening(stage_integrity_telemetry, phase4_pro_rsi, Master4000EvaluationEngine)")

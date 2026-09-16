@@ -22,9 +22,12 @@ def _fmt_eta(value: Any) -> str:
 
 def _fmt_tps(value: Any) -> str:
     try:
-        return f"{float(value):.1f}t/s"
+        tps = float(value)
+        if tps > 0.0:
+            return f"{tps:.1f}t/s"
     except Exception:
-        return "0.0t/s"
+        pass
+    return "calculating"
 
 
 def install(stage_module) -> None:
@@ -56,8 +59,6 @@ def install(stage_module) -> None:
             print(f"[RSI] Start | Items: {total} | Deferred memory: {deferred} | TPS: {tps} | RAM: {ram_gb:.1f}GB", flush=True)
             return
 
-        # Suppress the redundant pre-resume 0/total progress line. The resume
-        # layer prints its recovered item count immediately afterward when present.
         if event == "progress" and int(fields.get("done", 0) or 0) == 0 and fields.get("status") == "working":
             return
 
