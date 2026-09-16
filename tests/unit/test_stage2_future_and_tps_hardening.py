@@ -59,6 +59,16 @@ def test_rsi_streamed_branches_publish_real_generation_tps_to_stage_owner():
     assert "time.perf_counter() - started" in source
 
 
+def test_rsi_streaming_publishes_inflight_decode_tps_before_branch_completion():
+    source = _src("eval/rsi_generation_memory_hardening.py")
+    assert "def _publish_inflight_tps" in source
+    assert "streamed_tokens += 1" in source
+    assert "decode_started = now" in source
+    assert "float(streamed_tokens - 1) / elapsed" in source
+    assert "_publish_inflight_tps(" in source
+    assert "branch is alive instead of waiting for branch completion" in source
+
+
 def test_phase3_training_tps_counts_the_actual_256_token_training_window():
     source = _src("eval/stage_tps_hardening.py")
     assert "min(_encode_len(self.engine.tokenizer, text), 256)" in source
