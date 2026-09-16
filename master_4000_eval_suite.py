@@ -98,9 +98,21 @@ install_rsi_telemetry_compact(stage_integrity_telemetry)
 install_stage_tps_hardening(stage_integrity_telemetry, phase4_pro_rsi, Master4000EvaluationEngine)
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
 # Final narrow adapter: real published benchmark data, schema-correct prompts and
-# verifiers, fresh REAL-* cache IDs, and a 32K benchmark ceiling. This intentionally
-# runs last so it replaces only recovered synthetic benchmark behavior.
+# verifiers, and a 32K benchmark ceiling. This intentionally runs last so it replaces
+# only recovered synthetic benchmark behavior.
 real_benchmark_runtime.install(BenchmarkDatasetProvider, master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
+
+# Stable source-independent cache IDs guarantee old synthetic checkpoint entries can
+# never be reused and keep resume keys deterministic even when a public row lacks an ID.
+_real_repair_suite = master_runtime._repair_suite
+def _stable_real_repair_suite(splits):
+    splits = _real_repair_suite(splits)
+    for split_name in real_benchmark_runtime.REAL_SPLIT_COUNTS:
+        for idx, item in enumerate(splits.get(split_name, [])):
+            item["id"] = f"REAL-{split_name}-{idx:04d}"
+    return splits
+master_runtime._repair_suite = _stable_real_repair_suite
+phase4_pro_rsi._repair_suite = _stable_real_repair_suite
 
 if __name__ == "__main__":
     try:
