@@ -1,5 +1,6 @@
 """Canonical entry point for the merged 4,014-item evaluation suite."""
 from eval._master_4000_base import *
+import eval.flagship_dataset_overrides as flagship_dataset_overrides
 import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
 import eval.phase4_pro_rsi as phase4_pro_rsi
@@ -97,6 +98,8 @@ install_rsi_telemetry_compact(stage_integrity_telemetry)
 # Learn/Phase-3 use actual token-work throughput instead of a fabricated constant.
 install_stage_tps_hardening(stage_integrity_telemetry, phase4_pro_rsi, Master4000EvaluationEngine)
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
+# Prefer full flagship benchmark variants whenever they naturally fit the 32K window.
+flagship_dataset_overrides.install(real_benchmark_runtime)
 # Final narrow adapter: real published benchmark data, schema-correct prompts and
 # verifiers, and a 32K benchmark ceiling. This intentionally runs last so it replaces
 # only recovered synthetic benchmark behavior.
