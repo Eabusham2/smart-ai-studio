@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -58,6 +59,17 @@ def _chat_history() -> List[Dict[str, str]]:
     return history
 
 
+def _training_tokens(tokenizer) -> int:
+    total = 0
+    for user, assistant, _ in CONVERSATION_TEACH_EXAMPLES:
+        text = f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant}<|im_end|>"
+        try:
+            total += max(1, len(tokenizer.encode(text)) - 1)
+        except Exception:
+            total += max(1, len(text) // 4)
+    return total * 3  # production awake trainer runs 3 steps
+
+
 def install(p4, cls) -> None:
     if getattr(cls, "_conversation_teach_hardening_installed", False):
         return
@@ -81,7 +93,11 @@ def install(p4, cls) -> None:
             memory_db=None,
             max_context=8192,
         )
+        train_tokens = _training_tokens(self.engine.tokenizer)
+        teach_started = time.perf_counter()
         consolidator._run_shadow_consolidation(_chat_history())
+        teach_seconds = max(0.001, time.perf_counter() - teach_started)
+        teach_tps = train_tokens / teach_seconds
 
         p4._assert_same_model(self, model_identity, "after conversational teach")
         delta = float(consolidator.total_param_shift or 0.0)
@@ -99,15 +115,18 @@ def install(p4, cls) -> None:
                 "facts": len(CONVERSATION_TEACH_EXAMPLES),
                 "param_delta_l2": delta,
                 "adapter_path": p4.RSI_ADAPTER_PATH,
+                "training_tokens": train_tokens,
+                "training_tps": teach_tps,
             }
         )
         print(
             f"[✓] Phase 3B conversational teach: {len(CONVERSATION_TEACH_EXAMPLES)} facts "
-            f"updated the same model (||ΔW||2={delta:.8f}; persisted={persisted}).",
+            f"updated the same model (||ΔW||2={delta:.8f}; TPS={teach_tps:.1f}t/s; persisted={persisted}).",
             flush=True,
         )
         result["conversation_teach_updated"] = True
         result["conversation_teach_delta_l2"] = delta
+        result["conversation_teach_tps"] = teach_tps
         return result
 
     def final_conversation_recall(self) -> Dict[str, Any]:
@@ -121,6 +140,8 @@ def install(p4, cls) -> None:
         prior_item = getattr(self, "_current_item_id", "")
 
         passed = 0
+        total_tokens = 0
+        started = time.perf_counter()
         try:
             for idx, ((_, _, question), expected) in enumerate(
                 zip(CONVERSATION_TEACH_EXAMPLES, EXPECTED)
@@ -131,6 +152,7 @@ def install(p4, cls) -> None:
                 user = question + "\nState only the learned fact directly."
                 formatted = p4._chat(self.engine.tokenizer, user, system=p4.SYSTEM_PROMPT)
                 out = self._fast_generate(formatted, max_tokens=256)
+                total_tokens += int(getattr(self, "last_output_tokens", 0) or 0)
                 self.last_raw_out = out
                 p4._append_raw_generation_log(self, formatted, user, out)
                 ok = expected.lower() in p4.clean_output(out).lower() or expected.lower() in out.lower()
@@ -146,13 +168,15 @@ def install(p4, cls) -> None:
             self._current_split = prior_split
             self._current_item_id = prior_item
 
+        elapsed = max(0.001, time.perf_counter() - started)
+        tps = total_tokens / elapsed if total_tokens else float(getattr(self, "last_tok_per_sec", 0.0) or 0.0)
         pct = 100.0 * passed / max(1, len(CONVERSATION_TEACH_EXAMPLES))
         print(
             f"[Final Conversation Recall] {passed}/{len(CONVERSATION_TEACH_EXAMPLES)} "
-            f"({pct:.2f}%) | same updated model",
+            f"({pct:.2f}%) | TPS={tps:.1f}t/s | same updated model",
             flush=True,
         )
-        return {"correct": passed, "total": len(CONVERSATION_TEACH_EXAMPLES), "accuracy": pct}
+        return {"correct": passed, "total": len(CONVERSATION_TEACH_EXAMPLES), "accuracy": pct, "tps": tps}
 
     def run_with_final_conversation_recall(self):
         result = base_run(self)
