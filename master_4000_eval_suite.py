@@ -7,6 +7,7 @@ import eval.scoring_hardening as scoring_hardening
 import eval.stage_integrity_telemetry as stage_integrity_telemetry
 from eval.checkpoint_hardening import install as install_checkpoint_hardening
 from eval.code_prompt_hardening import install as install_code_prompt_hardening
+from eval.conversation_teach_hardening import install as install_conversation_teach_hardening
 from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
@@ -18,7 +19,9 @@ from eval.rsi_prompt_hardening import install as install_rsi_prompt_hardening
 from eval.rsi_resume_hardening import install as install_rsi_resume_hardening
 from eval.rsi_telemetry_compact import install as install_rsi_telemetry_compact
 from eval.scoring_hardening import install as install_scoring_hardening
+from eval.stage2_future_hardening import install as install_stage2_future_hardening
 from eval.stage_integrity_telemetry import install as install_stage_integrity_telemetry
+from eval.stage_tps_hardening import install as install_stage_tps_hardening
 from eval.swe_verifier_hardening import install as install_swe_verifier_hardening
 
 # Fix active SWE patch application before any engine exists. Actual tests remain
@@ -76,12 +79,22 @@ install_rsi_resume_hardening(phase4_pro_rsi)
 # Add stage telemetry and fail-closed proof that every supplied LearningFact is
 # queued, trained, consolidated, moves real trainable weights, and is persisted.
 install_stage_integrity_telemetry(phase4_pro_rsi, Master4000EvaluationEngine)
+# Recover the useful old Stage-2 checks for future runs: 5-session/10-fact semantic
+# history must be queryable and the bounded 30-item DSL MCTS teaching pass must
+# actually store its teaching edges. Resume can prove this from persisted state/DB.
+install_stage2_future_hardening(phase4_pro_rsi, stage_integrity_telemetry)
 # Restore the useful pre-rewrite training semantics around that final fail-closed
 # Phase-3 stack: completion-only CE plus transaction rollback on any failure.
 install_rsi_legacy_training_hardening(phase4_pro_rsi)
+# After normal Phase 3, teach a tiny independent fact set through the production
+# awake-conversation MLX update path and test those facts again after Phase 4.
+install_conversation_teach_hardening(phase4_pro_rsi, Master4000EvaluationEngine)
 # Keep the full structured JSONL telemetry, but render RSI heartbeat/progress in a
 # short Stage-1-style single line on the console.
 install_rsi_telemetry_compact(stage_integrity_telemetry)
+# Add measured TPS to every stage telemetry path. Generation stages use decode TPS;
+# Learn/Phase-3 use actual token-work throughput instead of a fabricated constant.
+install_stage_tps_hardening(stage_integrity_telemetry, phase4_pro_rsi, Master4000EvaluationEngine)
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
 
 if __name__ == "__main__":

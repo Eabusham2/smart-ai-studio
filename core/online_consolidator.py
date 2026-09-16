@@ -44,6 +44,26 @@ class AwakeOnlineConsolidator:
             and callable(getattr(self.engine, "train_mini_batch", None))
         )
 
+    @staticmethod
+    def _conversation_training_pairs(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Convert real chat role/content turns into the prompt/completion schema the MLX trainer consumes."""
+        pairs: List[Dict[str, str]] = []
+        pending_user: List[str] = []
+        for message in messages or []:
+            role = str(message.get("role", "")).strip().lower()
+            content = str(message.get("content", "")).strip()
+            if not content:
+                continue
+            if role == "user":
+                pending_user.append(content)
+                continue
+            if role == "assistant" and pending_user:
+                prompt = "\n".join(pending_user).strip()
+                if prompt:
+                    pairs.append({"prompt": prompt, "completion": content})
+                pending_user = []
+        return pairs
+
     def check_and_prune(
         self,
         conversation_history: List[Dict[str, str]],
@@ -109,13 +129,17 @@ class AwakeOnlineConsolidator:
             if not self._real_training_ready():
                 raise RuntimeError("real MLX model/tokenizer unavailable for awake consolidation")
 
+            training_pairs = self._conversation_training_pairs(chunk)
+            if not training_pairs:
+                raise RuntimeError("awake consolidation found no user/assistant training pairs")
+
             with self.lock:
                 active_adapters = getattr(self.engine, "adapters", None)
                 shadow_adapters = copy.deepcopy(active_adapters) if active_adapters is not None else {}
 
             updated_adapters, param_drift = self.engine.train_mini_batch(
                 adapters=shadow_adapters,
-                data=chunk,
+                data=training_pairs,
                 lambda_ewc=self.lambda_ewc,
                 steps=3,
                 save_path=getattr(self.engine, "adapter_path", None),
