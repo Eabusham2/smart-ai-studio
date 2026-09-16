@@ -6,7 +6,7 @@ bounded 30-item TensorGraphDSL MCTS teaching pass actually stored its teaching
 edges. The old unbounded N=16/K>=350 RLVR curriculum is intentionally not restored.
 
 This layer is resume-safe: a run already past Stage 2 may prove the same facts from
-the persisted DB/telemetry and continue without rerunning Stage 2.
+the persisted DB and continue without rerunning Stage 2.
 """
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ STATE_PATH = Path("eval_results/stage2_learning_state.json")
 _VERSION = 1
 _EXPECTED_SESSIONS = len(HISTORICAL_DIALOGUE_SESSIONS)
 _EXPECTED_HISTORICAL_FACTS = sum(len(s.get("key_facts", [])) for s in HISTORICAL_DIALOGUE_SESSIONS)
+_STAGE2_STARTED = None
+_STAGE2_SEED_TOKENS = 0
 
 
 def _atomic_save(payload: Dict[str, Any]) -> None:
@@ -91,9 +93,22 @@ def install(p4, stage_module) -> None:
     if getattr(p4, "_stage2_future_hardening_installed", False):
         return
 
+    base_seed = p4._seed_supervised_learn
     base_rsi = p4._run_rsi_self_improvement
 
+    def seed_with_stage2_clock(self):
+        global _STAGE2_STARTED, _STAGE2_SEED_TOKENS
+        texts = []
+        for q, a in p4.LEARN_EXAMPLES:
+            texts.extend((q, a))
+        for session in HISTORICAL_DIALOGUE_SESSIONS:
+            texts.extend(session.get("key_facts", []))
+        _STAGE2_SEED_TOKENS = _count_tokens(self.engine.tokenizer, texts)
+        _STAGE2_STARTED = time.perf_counter()
+        return base_seed(self)
+
     def verify_stage2_before_rsi(self, splits, cache):
+        global _STAGE2_STARTED, _STAGE2_SEED_TOKENS
         db_path = str(getattr(getattr(self.engine, "kg", None), "db_path", "") or "")
         dsl_items = list(splits.get("TensorGraphDSL-300", []))[:30]
         dsl_exprs = [item.get("dsl_expr", "") for item in dsl_items]
@@ -116,15 +131,15 @@ def install(p4, stage_module) -> None:
                 f"Stage 2 integrity: {counts['mcts_edges']}/{expected_mcts} TensorGraphDSL MCTS teaching edges stored"
             )
 
-        texts = []
-        for q, a in p4.LEARN_EXAMPLES:
-            texts.extend((q, a))
-        for session in HISTORICAL_DIALOGUE_SESSIONS:
-            texts.extend(session.get("key_facts", []))
-        texts.extend(dsl_exprs)
-        work_tokens = _count_tokens(self.engine.tokenizer, texts)
+        dsl_tokens = _count_tokens(self.engine.tokenizer, dsl_exprs)
+        work_tokens = int(_STAGE2_SEED_TOKENS) + dsl_tokens
+        fresh_run = _STAGE2_STARTED is not None
+        if fresh_run:
+            elapsed = max(0.001, time.perf_counter() - float(_STAGE2_STARTED))
+            tps = work_tokens / elapsed
+        else:
+            tps = 0.0
 
-        # This is a future-run integrity proof, not a request to replay Stage 2.
         payload = {
             "version": _VERSION,
             "verified": True,
@@ -134,6 +149,8 @@ def install(p4, stage_module) -> None:
             "mcts_edges": counts["mcts_edges"],
             "mcts_target": expected_mcts,
             "work_tokens": work_tokens,
+            "tps": tps,
+            "recovered_without_replay": not fresh_run,
             "verified_at": time.time(),
         }
         _atomic_save(payload)
@@ -145,8 +162,13 @@ def install(p4, stage_module) -> None:
             mcts_edges=counts["mcts_edges"],
             mcts_target=expected_mcts,
             work_tokens=work_tokens,
+            recovered_without_replay=not fresh_run,
+            tps=round(tps, 2),
         )
+        _STAGE2_STARTED = None
+        _STAGE2_SEED_TOKENS = 0
         return base_rsi(self, splits, cache)
 
+    p4._seed_supervised_learn = seed_with_stage2_clock
     p4._run_rsi_self_improvement = verify_stage2_before_rsi
     p4._stage2_future_hardening_installed = True
