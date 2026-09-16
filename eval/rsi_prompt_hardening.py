@@ -5,8 +5,8 @@ from eval.code_prompt_hardening import SYSTEM_SUFFIXES
 
 
 RSI_REPEAT_GUARD = (
-    "If your reasoning starts repeating the same point or check without new information, "
-    "stop that loop and finalize."
+    "Continue while your reasoning is making new progress. Once the solution is determined, "
+    "if the same point or check repeats without new information, stop the repetition and output the answer."
 )
 
 
@@ -36,13 +36,14 @@ def _chat_without_system(tokenizer, user: str) -> str:
 
 
 def install(phase4_module) -> None:
-    """Remove RSI's system role, retain family guidance, and stop repeat loops.
+    """Remove RSI's system role, retain family guidance, and stop settled repeat loops.
 
     The verified Gemini base and global anti-loop suffix are omitted only for
     Recursive Self-Improvement generations. Any family-specific system guidance
     already selected for the split is copied into the RSI user message instead.
-    RSI keeps its normal reasoning budget; the repeat guard only stops reasoning
-    that is cycling without adding information. Non-RSI generation is unchanged.
+    RSI keeps its normal reasoning budget; the repeat guard explicitly allows
+    continued reasoning while it is making new progress and only stops cycles
+    after the solution is determined. Non-RSI generation is unchanged.
     """
     if getattr(phase4_module, "_rsi_no_system_installed", False):
         return
