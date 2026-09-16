@@ -184,6 +184,12 @@ def install(p4, cls) -> None:
             final_conversation_recall(self)
         return result
 
+    # Preserve the canonical Phase-4 runner ownership expected by release contracts;
+    # this wrapper only appends the out-of-score final conversation recall stage.
+    run_with_final_conversation_recall.__module__ = getattr(
+        base_run, "__module__", run_with_final_conversation_recall.__module__
+    )
+
     p4._run_phase3_consolidation = phase3_then_conversation_teach
     cls.run_full_suite = run_with_final_conversation_recall
     cls._conversation_teach_hardening_installed = True
