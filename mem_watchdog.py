@@ -2,7 +2,7 @@ import os
 import time
 import psutil
 
-RAM_LIMIT_GB = 12.0
+RAM_LIMIT_GB = 13.0
 LIMIT_BYTES = RAM_LIMIT_GB * (1024**3)
 
 print(f"[*] Memory Watchdog Active: Monitoring Python processes (Cap: {RAM_LIMIT_GB} GB)...")
