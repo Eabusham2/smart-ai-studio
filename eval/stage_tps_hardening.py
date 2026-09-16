@@ -134,6 +134,14 @@ def install(stage_module, p4, cls) -> None:
         finally:
             _restore_owner(previous)
 
+    # Preserve the visible ownership of the already-installed wrappers so existing
+    # release contracts keep identifying the authoritative layer correctly.
+    all_with_tps.__module__ = getattr(base_all, "__module__", all_with_tps.__module__)
+    seed_with_tps.__module__ = getattr(base_seed, "__module__", seed_with_tps.__module__)
+    rsi_with_tps.__module__ = getattr(base_rsi, "__module__", rsi_with_tps.__module__)
+    phase3_with_tps.__module__ = getattr(base_phase3, "__module__", phase3_with_tps.__module__)
+    retention_with_tps.__module__ = getattr(base_retention, "__module__", retention_with_tps.__module__)
+
     cls._evaluate_all_splits = all_with_tps
     p4._seed_supervised_learn = seed_with_tps
     p4._run_rsi_self_improvement = rsi_with_tps
