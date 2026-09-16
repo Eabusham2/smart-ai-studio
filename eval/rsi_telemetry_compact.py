@@ -20,6 +20,13 @@ def _fmt_eta(value: Any) -> str:
     return str(timedelta(seconds=seconds))
 
 
+def _fmt_tps(value: Any) -> str:
+    try:
+        return f"{float(value):.1f}t/s"
+    except Exception:
+        return "0.0t/s"
+
+
 def install(stage_module) -> None:
     if getattr(stage_module, "_rsi_compact_console_installed", False):
         return
@@ -42,10 +49,11 @@ def install(stage_module) -> None:
         with open(stage_module.STAGE_TELEMETRY_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
 
+        tps = _fmt_tps(fields.get("tps", 0.0))
         if event == "start":
             total = int(fields.get("attempt_cap", fields.get("eligible_reasoning_misses", 0)) or 0)
             deferred = int(fields.get("dialogue_deferred", 0) or 0)
-            print(f"[RSI] Start | Items: {total} | Deferred memory: {deferred} | RAM: {ram_gb:.1f}GB", flush=True)
+            print(f"[RSI] Start | Items: {total} | Deferred memory: {deferred} | TPS: {tps} | RAM: {ram_gb:.1f}GB", flush=True)
             return
 
         # Suppress the redundant pre-resume 0/total progress line. The resume
@@ -64,7 +72,7 @@ def install(stage_module) -> None:
             eta = _fmt_eta(fields.get("eta_seconds"))
             print(
                 f"[RSI] {current:<28} | Item {done}/{total} ({pct:5.2f}%) | "
-                f"Verified: {verified} | ETA: {eta} | RAM: {ram_gb:.1f}GB",
+                f"Verified: {verified} | TPS: {tps} | ETA: {eta} | RAM: {ram_gb:.1f}GB",
                 flush=True,
             )
             return
@@ -72,13 +80,12 @@ def install(stage_module) -> None:
         if event == "end":
             verified = int(fields.get("verified_traces", 0) or 0)
             seconds = float(fields.get("seconds", 0.0) or 0.0)
-            print(f"[RSI] Done | Verified: {verified} | Time: {timedelta(seconds=int(seconds))} | RAM: {ram_gb:.1f}GB", flush=True)
+            print(f"[RSI] Done | Verified: {verified} | TPS: {tps} | Time: {timedelta(seconds=int(seconds))} | RAM: {ram_gb:.1f}GB", flush=True)
             return
 
-        # Any unexpected RSI event remains concise but visible.
         compact = " | ".join(f"{k}={v}" for k, v in fields.items())
         suffix = f" | {compact}" if compact else ""
-        print(f"[RSI] {event}{suffix} | RAM: {ram_gb:.1f}GB", flush=True)
+        print(f"[RSI] {event}{suffix} | TPS: {tps} | RAM: {ram_gb:.1f}GB", flush=True)
 
     stage_module._emit = emit
     stage_module._rsi_compact_console_installed = True

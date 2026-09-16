@@ -4,6 +4,12 @@ from __future__ import annotations
 from eval.code_prompt_hardening import SYSTEM_SUFFIXES
 
 
+RSI_REPEAT_GUARD = (
+    "Continue while your reasoning is making new progress. Once the solution is determined, "
+    "if the same point or check repeats without new information, stop the repetition and output the answer."
+)
+
+
 def _family_guidance_from_system(system: str | None) -> str:
     text = str(system or "")
     for suffix in SYSTEM_SUFFIXES.values():
@@ -30,12 +36,14 @@ def _chat_without_system(tokenizer, user: str) -> str:
 
 
 def install(phase4_module) -> None:
-    """Remove RSI's system role, but retain family guidance in its user prompt.
+    """Remove RSI's system role, retain family guidance, and stop settled repeat loops.
 
     The verified Gemini base and global anti-loop suffix are omitted only for
     Recursive Self-Improvement generations. Any family-specific system guidance
     already selected for the split is copied into the RSI user message instead.
-    Non-RSI generation is unchanged.
+    RSI keeps its normal reasoning budget; the repeat guard explicitly allows
+    continued reasoning while it is making new progress and only stops cycles
+    after the solution is determined. Non-RSI generation is unchanged.
     """
     if getattr(phase4_module, "_rsi_no_system_installed", False):
         return
@@ -48,6 +56,8 @@ def install(phase4_module) -> None:
             rsi_user = str(user)
             if family_guidance and family_guidance not in rsi_user:
                 rsi_user += "\n\n" + family_guidance
+            if RSI_REPEAT_GUARD not in rsi_user:
+                rsi_user += "\n\n" + RSI_REPEAT_GUARD
             return _chat_without_system(tokenizer, rsi_user)
         if system is None:
             return original_chat(tokenizer, user)
