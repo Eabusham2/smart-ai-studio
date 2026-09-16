@@ -7,6 +7,7 @@ import eval.scoring_hardening as scoring_hardening
 import eval.stage_integrity_telemetry as stage_integrity_telemetry
 from eval.checkpoint_hardening import install as install_checkpoint_hardening
 from eval.code_prompt_hardening import install as install_code_prompt_hardening
+from eval.conversation_teach_hardening import install as install_conversation_teach_hardening
 from eval.dataset_hardening import install as install_dataset_hardening
 from eval.historical_good_merge import install as install_historical_good_merge
 from eval.live_generation_stream import install_baseline_stream, install_phase4_stream
@@ -79,6 +80,9 @@ install_stage_integrity_telemetry(phase4_pro_rsi, Master4000EvaluationEngine)
 # Restore the useful pre-rewrite training semantics around that final fail-closed
 # Phase-3 stack: completion-only CE plus transaction rollback on any failure.
 install_rsi_legacy_training_hardening(phase4_pro_rsi)
+# After normal Phase 3, teach a tiny independent fact set through the production
+# awake-conversation MLX update path and test those facts again after Phase 4.
+install_conversation_teach_hardening(phase4_pro_rsi, Master4000EvaluationEngine)
 # Keep the full structured JSONL telemetry, but render RSI heartbeat/progress in a
 # short Stage-1-style single line on the console.
 install_rsi_telemetry_compact(stage_integrity_telemetry)
