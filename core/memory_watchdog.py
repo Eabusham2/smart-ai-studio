@@ -21,7 +21,7 @@ class SystemMemoryWatchdog:
         check_interval_seconds: float = 3.0,
         max_ram_usage_percent: float = 98.5,
         min_free_ram_gb: float = 0.15,
-        max_process_ram_gb: float = 15.8,
+        max_process_ram_gb: float = 13.0,
         on_pressure_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ):
         self.check_interval_seconds = check_interval_seconds
@@ -190,8 +190,8 @@ class SystemMemoryWatchdog:
         # Dynamically scale Metal cache headroom based on available memory
         self.adjust_dynamic_metal_headroom()
 
-        # Proactive memory reclamation if total process/model memory grows above safe threshold
-        if status.get("process_rss_gb", 0) > 15.6:
+        # Reclaim before the 13 GB hard process/model ceiling.
+        if status.get("process_rss_gb", 0) >= 12.5:
             self.reclaim_process_memory()
 
         is_under_pressure = (
