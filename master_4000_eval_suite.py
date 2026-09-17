@@ -1,6 +1,7 @@
 """Canonical entry point for the merged 4,014-item evaluation suite."""
 from eval._master_4000_base import *
 import eval.code_prompt_hardening as code_prompt_hardening
+import eval.deepswe_blind_pro_selector as deepswe_blind_pro_selector
 import eval.deepswe_dataset_override as deepswe_dataset_override
 import eval.deepswe_optional_flagship as deepswe_optional_flagship
 import eval.deepswe_phase4_eta_overlay as deepswe_phase4_eta_overlay
@@ -165,6 +166,13 @@ deepswe_rsi_counter_fix.install(phase4_pro_rsi)
 eta_progress_hardening.install(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
 # While normal Phase-4 runs, include still-pending DeepSWE Pro retakes in total ETA.
 deepswe_phase4_eta_overlay.install(master_runtime, eta_progress_hardening)
+# Replace only DeepSWE's unique-patch fallback with an answer-blind pairwise model tournament.
+# The shared Pro router/branch generator remains untouched.
+deepswe_blind_pro_selector.install(
+    deepswe_optional_flagship,
+    phase4_pro_rsi,
+    master_runtime,
+)
 # Add detailed 1/30..30/30 progress around the existing Phase-2 MCTS calls only.
 learn_progress_overlay.install(Master4000EvaluationEngine)
 
