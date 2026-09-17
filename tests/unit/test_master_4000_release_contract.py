@@ -168,13 +168,18 @@ def test_model_driven_dataset_and_strict_scoring_repairs_remain():
 def test_awake_learning_is_wired_real_and_serialized():
     hook = _src("core/awake_auto_hook.py")
     online = _src("core/online_consolidator.py")
+    full_context = _src("core/full_context_hardening.py")
     lock = _src("core/mlx_runtime_lock.py")
     init = _src("core/__init__.py")
-    assert "consolidator.check_and_prune(history)" in hook
+    assert "consolidator.consolidate_chunk_sync(chunk)" in hook
+    assert "target_prompt_tokens" in hook
+    assert "Never remove dialogue that was not successfully consolidated" in hook
     assert "stream_solve_with_awake_learning" in hook
     assert "solve_with_awake_learning" in hook
+    assert "def consolidate_chunk_sync" in online
     assert "_real_training_ready" in online
     assert "param_drift = 0.002" not in online
+    assert "cls.chat = context_safe_chat" in full_context
     assert "with _lock(self)" in lock
     assert "install_mlx_runtime_lock(MLXReasoningBackend)" in init
     assert "install_awake_auto_learning(ProReasoningEngine)" in init
@@ -185,6 +190,7 @@ def test_production_pro_runtime_is_honest():
     init = _src("core/__init__.py")
     assert "Refusing to substitute mock/synthetic output" in hard
     assert 'metadata["tok_speed"] = generated / elapsed' in hard
+    assert 'metadata["decode_tok_speed"] = decode_tps' in hard
     assert 'metadata["memory_rss_mb"] = _rss_mb()' in hard
     assert "register_loaded_model" in hard
     assert "install_pro_runtime_hardening(ProReasoningEngine)" in init
