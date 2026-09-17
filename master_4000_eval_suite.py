@@ -3,6 +3,7 @@ from eval._master_4000_base import *
 import eval.code_prompt_hardening as code_prompt_hardening
 import eval.deepswe_dataset_override as deepswe_dataset_override
 import eval.deepswe_optional_flagship as deepswe_optional_flagship
+import eval.deepswe_phase4_eta_overlay as deepswe_phase4_eta_overlay
 import eval.deepswe_rsi_counter_fix as deepswe_rsi_counter_fix
 import eval.eta_progress_hardening as eta_progress_hardening
 import eval.flagship_dataset_overrides as flagship_dataset_overrides
@@ -37,40 +38,19 @@ from eval.stage_integrity_telemetry import install as install_stage_integrity_te
 from eval.stage_tps_hardening import install as install_stage_tps_hardening
 from eval.swe_verifier_hardening import install as install_swe_verifier_hardening
 
-# Fix active SWE patch application before any engine exists. Actual tests remain
-# under the configured sandbox timeout/resource limits.
 install_swe_verifier_hardening(master_runtime)
-
-# A legacy done marker without a surviving boolean result is not enough to score
-# or skip an item. Marker-only entries are rerun honestly.
 install_checkpoint_hardening(master_runtime)
-
-# Narrow reader fix: accept an explicit final `(D) Description` choice without
-# restoring the old unsafe substring grading.
 install_reader_hardening(scoring_hardening)
-# Real MMLU-Pro/SuperGPQA items may use option labels beyond D.
 real_choice_scoring.install(scoring_hardening)
 
 master_runtime.install(Master4000EvaluationEngine)
-# Install the live tap before Phase-4 wraps _fast_generate so baseline/Learn/RSI
-# keep the recovered fused decoder while exposing raw <think> tokens in real time.
 install_baseline_stream(master_runtime, Master4000EvaluationEngine)
-# phase4_pro_rsi imported this function by value during module import. Point its
-# local reference at the wrapped logger too so RSI/LearningFacts cannot bypass the
-# live current-item file.
 phase4_pro_rsi._append_raw_generation_log = master_runtime._append_raw_generation_log
 install_dataset_hardening(master_runtime, phase4_pro_rsi)
-# Keep the exact Gemini-tested global system prompt for normal benchmark generation.
-# Only task families that showed a concrete smoke-test failure get small clarifications.
 install_code_prompt_hardening(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
-# RSI has no system role. Any family-specific guidance selected for the split is
-# preserved by moving it into the RSI user message instead.
 install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 
-# Keep the old direct branch generator as a compatibility path. The live watcher
-# wraps it; then the memory layer restores old pre/post-branch cleanup while adding
-# current MLX-LM KV quantization and OOM recovery. Search/reward semantics are untouched.
 _legacy_rsi_branch_generate = phase4_pro_rsi._generate_branches_same_model
 install_phase4_stream(phase4_pro_rsi)
 install_rsi_generation_memory_hardening(
@@ -79,66 +59,31 @@ install_rsi_generation_memory_hardening(
     _legacy_rsi_branch_generate,
 )
 
-# Capture the true Phase-1-miss-only RSI before historical recovery installs its
-# optional extra autonomous RLVR tasks. Historical Learn/retention/parameter-delta
-# behavior is still restored, then RSI is put back to Phase-1 misses only.
 capture_before_historical_merge(phase4_pro_rsi)
 install_historical_good_merge(phase4_pro_rsi)
 enforce_after_historical_merge(phase4_pro_rsi)
-
-# Persist completed RSI items across Ctrl+C/restarts. This wraps the final
-# Phase-1-miss-only RSI function, so passed Phase-1 questions and DialogueRecall
-# remain excluded exactly as before.
 install_rsi_resume_hardening(phase4_pro_rsi)
-
-# Add stage telemetry and fail-closed proof that every supplied LearningFact is
-# queued, trained, consolidated, moves real trainable weights, and is persisted.
 install_stage_integrity_telemetry(phase4_pro_rsi, Master4000EvaluationEngine)
-# Recover the useful old Stage-2 checks for future runs: 5-session/10-fact semantic
-# history must be queryable and the bounded 30-item DSL MCTS teaching pass must
-# actually store its teaching edges. Resume can prove this from persisted state/DB.
 install_stage2_future_hardening(phase4_pro_rsi, stage_integrity_telemetry)
-# Restore the useful pre-rewrite training semantics around that final fail-closed
-# Phase-3 stack: completion-only CE plus transaction rollback on any failure.
 install_rsi_legacy_training_hardening(phase4_pro_rsi)
-# After normal Phase 3, teach a tiny independent fact set through the production
-# awake-conversation MLX update path and test those facts again after Phase 4.
 install_conversation_teach_hardening(phase4_pro_rsi, Master4000EvaluationEngine)
-# Keep the full structured JSONL telemetry, but render RSI heartbeat/progress in a
-# short Stage-1-style single line on the console.
 install_rsi_telemetry_compact(stage_integrity_telemetry)
-# Add measured TPS to every stage telemetry path. Generation stages use decode TPS;
-# Learn/Phase-3 use actual token-work throughput instead of a fabricated constant.
 install_stage_tps_hardening(stage_integrity_telemetry, phase4_pro_rsi, Master4000EvaluationEngine)
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
-# Prefer full flagship benchmark variants whenever they naturally fit the 32K window.
+
 flagship_dataset_overrides.install(real_benchmark_runtime)
-# Apply only upstream-source/schema corrections discovered during loader verification.
 real_dataset_fetch_fixes.install(real_benchmark_runtime)
-# Rename replacement splits to the actual public benchmark names; no behavior changes.
 real_split_labels.install(real_benchmark_runtime)
-# Keep useful family-specific concise prompts for real replacements without restoring
-# any synthetic AIME/HLE-specific tricks. This also post-installs the existing
-# family-specific system routing after the real-data evaluator wrappers are attached.
 real_prompt_overrides.install(real_benchmark_runtime)
-# Final narrow adapter: real published benchmark data, schema-correct prompts and
-# verifiers, and a 32K benchmark ceiling. This intentionally runs last so it replaces
-# only recovered synthetic benchmark behavior.
 real_benchmark_runtime.install(BenchmarkDatasetProvider, master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
-# SWE-bench Verified is the normal 32K software-engineering benchmark. True DeepSWE
-# is separately opt-in below and is never mislabeled as SWE-bench.
 deepswe_dataset_override.install(
     real_benchmark_runtime,
     master_runtime,
     phase4_pro_rsi,
     Master4000EvaluationEngine,
 )
-# The real-data wrappers are installed after Phase-4 Pro. Restore the same current-item
-# context pro_eval normally supplies so answer-blind selection and metadata work identically.
 real_phase4_context.install(phase4_pro_rsi, Master4000EvaluationEngine)
 
-# Stable source-independent cache IDs guarantee old synthetic checkpoint entries can
-# never be reused and keep resume keys deterministic even when a public row lacks an ID.
 _real_repair_suite = master_runtime._repair_suite
 def _stable_real_repair_suite(splits):
     splits = _real_repair_suite(splits)
@@ -149,20 +94,20 @@ def _stable_real_repair_suite(splits):
 master_runtime._repair_suite = _stable_real_repair_suite
 phase4_pro_rsi._repair_suite = _stable_real_repair_suite
 
-# Optional true DeepSWE v1.1 uses the official 113-task Pier/mini-swe-agent harness.
-# N is the default and leaves the normal suite untouched. Y adds DeepSWE baseline,
-# two-round RSI on misses, and existing 1/8/16 Pro branching for final retakes.
+# Optional true flagship DeepSWE v1.1. Default N means zero DeepSWE work/cost.
 deepswe_optional_flagship.install(
     master_runtime,
     phase4_pro_rsi,
     code_prompt_hardening,
     Master4000EvaluationEngine,
 )
-# Ensure verified DeepSWE RSI traces count toward the existing Phase-3 fetch budget.
+# Count DeepSWE verified RSI traces in the already-existing consolidation budget.
 deepswe_rsi_counter_fix.install(phase4_pro_rsi)
-# ETA sees the final wrapped lifecycle, including optional DeepSWE.
+# Suite-wide smooth ETA / total progress, including optional DeepSWE when enabled.
 eta_progress_hardening.install(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
-# Add detailed 1/30..30/30 progress around the existing Phase-2 MCTS calls only.
+# While normal Phase-4 runs, include still-pending DeepSWE Pro retakes in total ETA.
+deepswe_phase4_eta_overlay.install(master_runtime, eta_progress_hardening)
+# Detailed Phase-2 MCTS progress only; MCTS behavior itself is unchanged.
 learn_progress_overlay.install(Master4000EvaluationEngine)
 
 if __name__ == "__main__":
