@@ -77,6 +77,82 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             )
         return bool(self.is_mlx_available)
 
+    def generate_branches(
+        self,
+        prompt: str,
+        branch_count: int = 16,
+        max_tokens: int = 512,
+        temperature=0.75,
+        top_p: float = 0.92,
+    ):
+        """Generate Pro branches without silent quality-reducing fallbacks."""
+        if not self.is_mlx_available or self.model is None:
+            return []
+
+        import gc
+        import mlx.core as mx
+        import mlx_lm
+
+        try:
+            from mlx_lm.sample_utils import make_sampler
+        except Exception as exc:
+            raise RuntimeError("MLX sampler unavailable; refusing to change Pro sampling semantics") from exc
+
+        count = max(1, min(int(branch_count), 16))
+        temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
+        branches = []
+
+        def _one(temp_value: float, prefill_step_size: int) -> str:
+            sampler = make_sampler(temp=float(temp_value), top_p=top_p)
+            kwargs = {
+                "prompt": prompt,
+                "max_tokens": max(1, int(max_tokens)),
+                "sampler": sampler,
+                "prefill_step_size": int(prefill_step_size),
+            }
+            pieces = []
+            try:
+                iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
+            except TypeError:
+                kwargs.pop("prefill_step_size", None)
+                iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
+            for response in iterator:
+                chunk = getattr(response, "text", None)
+                if chunk is None:
+                    chunk = str(response)
+                pieces.append(str(chunk))
+            return "".join(pieces)
+
+        for idx in range(count):
+            gc.collect(1)
+            if hasattr(mx, "clear_cache"):
+                mx.clear_cache()
+            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+
+            temp_value = float(temps[idx % len(temps)])
+            try:
+                branches.append(_one(temp_value, 256))
+            except RuntimeError as exc:
+                if not _is_metal_oom(exc):
+                    raise
+                # Lossless OOM retry: same prompt, same sampler policy, same token
+                # budget and native/full-precision KV. Only prefill chunking changes.
+                gc.collect(1)
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                    mx.metal.clear_cache()
+                branches.append(_one(temp_value, 64))
+            finally:
+                gc.collect(1)
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                    mx.metal.clear_cache()
+
+        return branches
+
     def stream_generate_tokens(self, prompt: str, max_tokens: int = 512,
                                temperature: float = 0.75, top_p: float = 0.92):
         if not self.is_mlx_available or self.model is None:
