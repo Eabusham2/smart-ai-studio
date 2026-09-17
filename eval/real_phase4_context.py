@@ -6,6 +6,8 @@ sets, so answer-blind branch verification and Phase-4 metadata work unchanged.
 """
 from __future__ import annotations
 
+from eval.pro_model_synthesis_adapter import install as install_pro_model_synthesis
+
 
 def install(phase4_module, cls) -> None:
     original_eval = cls._evaluate_single_item
@@ -23,3 +25,4 @@ def install(phase4_module, cls) -> None:
         return result
 
     cls._evaluate_single_item = evaluate
+    install_pro_model_synthesis(phase4_module)
