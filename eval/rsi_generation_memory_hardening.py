@@ -6,7 +6,7 @@ live-stream generator while preserving the model's full-precision KV cache.
 
 Kept because it is output-preserving and still useful:
 - branches remain strictly sequential;
-- Python/Metal caches are reclaimed before AND after every branch;
+- Python/Metal caches are reclaimed only under real memory pressure or forced OOM recovery;
 - one branch owns the model/Metal lock at a time;
 - smaller prefill chunks reduce peak prompt-prefill memory;
 - iterator/response references are explicitly torn down after every streamed branch;
@@ -29,6 +29,8 @@ import gc
 import time
 from typing import Any, Dict, List
 
+import psutil
+
 
 _OOM_MARKERS = (
     "insufficient memory",
@@ -43,8 +45,19 @@ def _is_metal_oom(exc: BaseException) -> bool:
     return any(marker.replace(" ", "") in text for marker in _OOM_MARKERS)
 
 
-def _clear_runtime_memory(mx: Any) -> None:
-    """Release transient graphs and MLX's cached Metal allocations."""
+def _memory_pressure() -> bool:
+    try:
+        proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+        return proc_gb >= 12.5 or avail_gb <= 0.75
+    except Exception:
+        return False
+
+
+def _clear_runtime_memory(mx: Any, *, force: bool = False) -> None:
+    """Release transient graphs/allocator caches only when pressure requires it."""
+    if not force and not _memory_pressure():
+        return
     gc.collect(2)
     try:
         if hasattr(mx, "clear_cache"):
@@ -243,7 +256,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             except RuntimeError as exc:
                 if not _is_metal_oom(exc):
                     raise
-                _clear_runtime_memory(mx)
+                _clear_runtime_memory(mx, force=True)
                 try:
                     live_module._append_live_text(
                         "\n[RSI MEMORY RECOVERY] Metal OOM: retrying only this branch "
