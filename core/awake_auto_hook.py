@@ -1,10 +1,10 @@
 """Activate awake/background learning for normal ProReasoningEngine chat paths.
 
-The rich GUI streams through ProReasoningEngine.stream_solve() and only falls back
-to solve(); historically the rolling AwakeOnlineConsolidator was invoked only by
-chat(), so ordinary GUI conversations could bypass automatic learning. This hook
-routes any history-bearing solve/stream call through the existing consolidator
-without changing UI behavior or model generation semantics.
+The rich GUI streams through ProReasoningEngine.stream_solve(). Preserve the original
+Pro contract by consulting the existing entropy router first: easy N=1 prompts keep
+the newer real-time stream, while N>1 prompts delegate back to the engine's existing
+solve() path (the historical Pro-routed chat path). Awake learning still wraps both
+paths without changing the Pro router, temperature ladder, branch generator, or model.
 """
 from __future__ import annotations
 
@@ -48,14 +48,54 @@ def install_awake_auto_learning(cls) -> None:
         cancel_event: Optional[Any] = None,
     ):
         history = _apply_awake_learning(self, history)
-        yield from original_stream_solve(
-            self,
-            prompt,
-            history=history,
-            temperature=temperature,
-            top_p=top_p,
-            cancel_event=cancel_event,
-        )
+
+        # Restore the historical chat decision point: the existing entropy router
+        # decides whether this is Instant N=1 or Pro N=8/N=16 before generation.
+        # Temperature is still the branch-diversity ladder inside Pro; it does not
+        # replace the entropy thresholds that decide the compute budget.
+        entropy = float(self.calculate_token_entropy(prompt))
+        mode, branch_count = self.router.route(entropy, has_test_cases=False)
+
+        if int(branch_count) <= 1:
+            # Keep the later real-time streaming UX only for the original Instant path.
+            yield from original_stream_solve(
+                self,
+                prompt,
+                history=history,
+                temperature=temperature,
+                top_p=top_p,
+                cancel_event=cancel_event,
+            )
+            return
+
+        # Hard prompts use the same historical solve() Pro path. self.solve is looked
+        # up at call time so later runtime-hardening/model-synthesis wrappers still
+        # apply around the original engine rather than creating a second Pro engine.
+        self._awake_stream_history_prepared = True
+        try:
+            response, metadata = self.solve(
+                prompt,
+                history=history,
+                cancel_event=cancel_event,
+                force_branch_count=int(branch_count),
+                temperature=None,
+            )
+        finally:
+            self._awake_stream_history_prepared = False
+
+        metadata = dict(metadata or {})
+        metadata["entropy"] = entropy
+        metadata["mode"] = mode
+        self._last_stream_pro_meta = metadata
+
+        # Pro must finish its parallel reasoning/synthesis before one final answer exists.
+        # Feed that completed answer through the GUI's existing stream renderer in chunks.
+        text = str(response or "")
+        step = 64
+        for idx in range(0, len(text), step):
+            if cancel_event and cancel_event.is_set():
+                break
+            yield text[idx : idx + step]
 
     def solve_with_awake_learning(
         self,
@@ -66,7 +106,8 @@ def install_awake_auto_learning(cls) -> None:
         force_branch_count: Optional[int] = None,
         temperature: Optional[float] = None,
     ):
-        history = _apply_awake_learning(self, history)
+        if not getattr(self, "_awake_stream_history_prepared", False):
+            history = _apply_awake_learning(self, history)
         return original_solve(
             self,
             prompt,
