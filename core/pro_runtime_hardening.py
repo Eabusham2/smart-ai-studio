@@ -124,10 +124,26 @@ def install_pro_runtime_hardening(cls) -> None:
         metadata = dict(metadata or {})
         generated = _count_response_tokens(self, response)
         metadata["tokens_generated"] = generated
+        # Keep the existing end-to-end number for total Pro/query throughput.
         metadata["tok_speed"] = generated / elapsed if generated else 0.0
         metadata["measured_wall_time_s"] = elapsed
         metadata["memory_rss_mb"] = _rss_mb()
         metadata["backend"] = _active_backend_name(self)
+
+        # Raw decoder TPS is a different metric: MLX-LM reports it from the active
+        # autoregressive decode loop, excluding the rest of an N-branch Pro request.
+        mlx = getattr(self, "mlx_backend", None)
+        try:
+            decode_tps = float(getattr(mlx, "last_tok_per_sec", 0.0) or 0.0)
+        except Exception:
+            decode_tps = 0.0
+        metadata["decode_tok_speed"] = decode_tps
+        metadata["generation_cap_reason"] = str(
+            getattr(mlx, "last_generation_cap_reason", "") or ""
+        )
+        note = str(getattr(self, "_last_context_consolidation_note", "") or "")
+        if note:
+            metadata["context_consolidation"] = note
         return response, metadata
 
     cls.__init__ = hardened_init
