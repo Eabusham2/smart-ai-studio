@@ -11,6 +11,19 @@ from core.kv_cache_manager import SmartKVCacheManager, compute_auto_kv_budget
 _base.logger = logging.getLogger(__name__)
 
 
+_OOM_MARKERS = (
+    "insufficient memory",
+    "out of memory",
+    "outofmemory",
+    "kiogpucommandbuffercallbackerroroutofmemory",
+)
+
+
+def _is_metal_oom(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".casefold().replace(" ", "")
+    return any(marker.replace(" ", "") in text for marker in _OOM_MARKERS)
+
+
 class MLXReasoningBackend(_base.MLXReasoningBackend):
     """Preserves native sampling/streaming while making the SmartKV policy live.
 
@@ -90,26 +103,24 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.kv_cache_manager.reset()
         self.kv_cache_manager.auto_compact_if_needed(prompt_len)
 
-        sampler = None
         try:
             from mlx_lm.sample_utils import make_sampler
             sampler = make_sampler(temp=temperature, top_p=top_p)
-        except Exception:
-            pass
-
-        kwargs = {"max_tokens": min(max_tokens, 4096)}
-        if sampler is not None:
-            kwargs["sampler"] = sampler
-        else:
-            kwargs["temp"] = temperature
-            kwargs["top_p"] = top_p
+        except Exception as exc:
+            raise RuntimeError("MLX sampler unavailable; refusing to change sampling semantics") from exc
 
         generated = 0
-        try:
-            # Newer MLX-LM versions accept an explicit native/full-precision prompt
-            # cache. Fall back to the library-managed native cache on older versions.
+
+        def _run_stream(prefill_step_size: int):
+            # Same prompt, sampler, token allowance and native/full-precision KV for
+            # normal execution and OOM retry. Only prefill chunk size may change.
+            kwargs = {
+                "max_tokens": max(1, int(max_tokens)),
+                "sampler": sampler,
+                "prefill_step_size": int(prefill_step_size),
+            }
             try:
-                iterator = mlx_lm.stream_generate(
+                return mlx_lm.stream_generate(
                     self.model,
                     self.tokenizer,
                     prompt=prompt,
@@ -117,35 +128,51 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     **kwargs,
                 )
             except TypeError:
-                iterator = mlx_lm.stream_generate(
+                # Older MLX-LM may not accept an explicit prompt cache. Library-managed
+                # cache is still native/full precision and preserves the same sampler.
+                kwargs.pop("prefill_step_size", None)
+                return mlx_lm.stream_generate(
                     self.model,
                     self.tokenizer,
                     prompt=prompt,
                     **kwargs,
                 )
 
-            for response in iterator:
-                generated += 1
-                if hasattr(response, "text"):
-                    yield response.text
-                elif isinstance(response, str):
-                    yield response
-                elif hasattr(response, "token"):
-                    yield self.tokenizer.decode([response.token])
+        try:
+            iterator = None
+            try:
+                iterator = _run_stream(256)
+                for response in iterator:
+                    generated += 1
+                    if hasattr(response, "text"):
+                        yield response.text
+                    elif isinstance(response, str):
+                        yield response
+                    elif hasattr(response, "token"):
+                        yield self.tokenizer.decode([response.token])
+            except RuntimeError as exc:
+                if not _is_metal_oom(exc) or generated:
+                    raise
+                # Retry only before any token has been emitted. Rebuild a fresh cache
+                # and reduce transient prefill memory without changing KV precision,
+                # context, sampler or requested generation length.
+                self.kv_cache_manager.reset()
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                    mx.metal.clear_cache()
+                iterator = _run_stream(64)
+                for response in iterator:
+                    generated += 1
+                    if hasattr(response, "text"):
+                        yield response.text
+                    elif isinstance(response, str):
+                        yield response
+                    elif hasattr(response, "token"):
+                        yield self.tokenizer.decode([response.token])
         except Exception as exc:
             _base.logger.error("MLX stream_generate error: %s", exc)
-            try:
-                answer = mlx_lm.generate(
-                    self.model,
-                    self.tokenizer,
-                    prompt=prompt,
-                    max_tokens=min(max_tokens, 512),
-                    verbose=False,
-                )
-                if answer:
-                    yield answer
-            except Exception:
-                return
+            raise
         finally:
             self.kv_cache_manager.current_length = min(
                 self.max_stateful_kv_tokens,
