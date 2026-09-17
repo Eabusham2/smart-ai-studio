@@ -37,10 +37,7 @@ class TestRealWeightsEval(unittest.TestCase):
             "eval_results",
             "adapters.safetensors",
         )
-        cls.model, cls.tokenizer = load(
-            cls.model_id,
-            model_config={"kv_bits": 4, "kv_group_size": 64},
-        )
+        cls.model, cls.tokenizer = load(cls.model_id)
         cls.verifier = GroundTruthVerifier()
 
     def test_01_real_mlx_model_loaded_on_metal(self):
