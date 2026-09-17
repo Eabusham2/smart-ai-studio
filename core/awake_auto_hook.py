@@ -1,20 +1,22 @@
 """Activate awake learning while preserving the historical Pro chat path.
 
 The rich GUI streams through ProReasoningEngine.stream_solve(). The existing entropy
-router remains authoritative: easy N=1 prompts keep real-time streaming at the old
-T=0.20 anchor, while N>1 prompts delegate to the historical solve() Pro path.
+router remains authoritative: easy N=1 prompts keep real-time streaming at the tuned
+T=0.65 single-pass temperature, while N>1 prompts delegate to the historical solve()
+Pro path with the calibrated convex ladder.
 
-Chat now has one total Context budget (prompt/history + generated tokens), not a
-separate output-token allowance. At the Gemini-designed 80% context watermark, old
-completed dialogue pairs are synchronously consolidated into the real trainable
-adapter and are removed only after that real parameter update succeeds. Generation
-then owns every token remaining in Context until natural EOS.
+Chat has one total Context budget (prompt/history + generated tokens), not a separate
+output-token allowance. At the Gemini-designed 80% context watermark, old completed
+dialogue pairs are synchronously consolidated into the real trainable adapter and are
+removed only after that real parameter update succeeds. Generation then owns every
+token remaining in Context until natural EOS.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 from core.platform import get_auto_context_window_size
+from core.temperature_policy import CHAT_N1_TEMPERATURE
 
 
 def _model_context_limit(engine) -> Optional[int]:
@@ -188,24 +190,23 @@ def install_awake_auto_learning(cls) -> None:
         history = _apply_awake_learning(self, history, prompt)
         self._last_stream_pro_meta = None
 
-        # Restore the historical chat decision point: entropy chooses N=1/8/16.
+        # Preserve the historical chat decision point: entropy chooses N=1/8/16.
         entropy = float(self.calculate_token_entropy(prompt))
         mode, branch_count = self.router.route(entropy, has_test_cases=False)
 
         if int(branch_count) <= 1:
-            # Historical good solve()-routed N=1 uses get_ladder_temperatures(1)=[0.20].
             yield from original_stream_solve(
                 self,
                 prompt,
                 history=history,
-                temperature=0.20,
+                temperature=CHAT_N1_TEMPERATURE,
                 top_p=top_p,
                 cancel_event=cancel_event,
             )
             return
 
         # N>1 delegates to the original Pro engine: same entropy router, branch
-        # generator, convex temperature ladder, verifier/consensus and metadata.
+        # generator, calibrated convex temperature ladder, verifier/consensus and metadata.
         self._awake_stream_history_prepared = True
         try:
             response, metadata = self.solve(
