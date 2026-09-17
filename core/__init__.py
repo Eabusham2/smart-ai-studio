@@ -7,11 +7,13 @@ from core.full_context_hardening import install as install_full_context_hardenin
 from core.pro_runtime_hardening import install_pro_runtime_hardening
 from core.mlx_adapter_persistence import install_mlx_adapter_persistence
 from core.mlx_runtime_lock import install_mlx_runtime_lock
+from core.unified_context_budget import install as install_unified_context_budget
 from core.speculative_engine import SpeculativeEngine, PromptLookupDrafter, LookaheadJacobiDrafter
 from core.platform import PlatformRouter, get_platform_router, detect_hardware
 
 install_mlx_adapter_persistence(MLXReasoningBackend)
 install_mlx_runtime_lock(MLXReasoningBackend)
+install_unified_context_budget(MLXReasoningBackend)
 install_awake_auto_learning(ProReasoningEngine)
 install_full_context_hardening(ProReasoningEngine)
 install_pro_runtime_hardening(ProReasoningEngine)
