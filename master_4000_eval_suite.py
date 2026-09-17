@@ -107,8 +107,6 @@ flagship_dataset_overrides.install(real_benchmark_runtime)
 real_benchmark_runtime.install(BenchmarkDatasetProvider, master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
 # DeepSWE is specifically real SWE-bench Verified: deterministic random 50 from
 # Verified, using only published 27K/13K BM25 contexts and the official evaluator.
-de.epswe_dataset_override if False else None
-
 deepswe_dataset_override.install(
     real_benchmark_runtime,
     master_runtime,
