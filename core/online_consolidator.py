@@ -1,8 +1,10 @@
 """
 Awake online synaptic consolidation.
 Evicts old dialogue only when a real trainable MLX model is present, then performs
-serialized background LoRA/EWC updates, measures real drift, and persists the
-updated adapter so learning survives process restarts.
+serialized LoRA/EWC updates, measures real drift, and persists the updated adapter
+so learning survives process restarts. Normal watermark work may run in background;
+a hard context-capacity request can use the same trainer synchronously so dialogue is
+not removed before its parameter update has actually completed.
 """
 
 import copy
@@ -116,14 +118,42 @@ class AwakeOnlineConsolidator:
 
         return retained_history, True
 
+    def consolidate_chunk_sync(self, chunk: List[Dict[str, str]]) -> bool:
+        """Synchronously consolidate a completed dialogue prefix before removing it.
+
+        This is reserved for hard model-context pressure. It uses the exact same real
+        LoRA/EWC trainer as background consolidation and returns True only after a
+        measurable parameter update has completed. Callers must keep the original
+        history if False is returned.
+        """
+        if not chunk or not self._real_training_ready():
+            return False
+
+        # Do not race a previous awake update against generation. Wait until the
+        # existing serialized update completes, then claim the same consolidation lock.
+        while True:
+            with self.lock:
+                busy = self.is_consolidating
+            if not busy:
+                break
+            time.sleep(0.05)
+
+        with self.lock:
+            if self.is_consolidating:
+                return False
+            self.is_consolidating = True
+
+        return bool(self._run_shadow_consolidation(chunk))
+
     def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
         total_chars = sum(len(m.get("content", "")) for m in messages)
         return max(1, total_chars // 4)
 
-    def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]):
+    def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:
         """Run and persist a genuine parameter update; never fabricate drift."""
         start_time = time.time()
         logger.info("[AwakeConsolidator] Commencing consolidation on %d turns...", len(chunk))
+        success = False
 
         try:
             if not self._real_training_ready():
@@ -172,13 +202,16 @@ class AwakeOnlineConsolidator:
 
             if self.db and hasattr(self.db, "mark_traces_consolidated"):
                 self.db.mark_traces_consolidated(chunk)
+            success = True
 
         except Exception as exc:
             logger.error(
-                "[AwakeConsolidator] Real background consolidation failed: %s",
+                "[AwakeConsolidator] Real consolidation failed: %s",
                 exc,
                 exc_info=True,
             )
         finally:
             with self.lock:
                 self.is_consolidating = False
+
+        return success
