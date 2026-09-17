@@ -1,26 +1,26 @@
-"""Memory-safe RSI/Phase-4 branch generation without reducing reasoning length.
+"""Memory-safe RSI/Phase-4 branch generation without reducing reasoning quality.
 
 The current RSI search/reward algorithm is left untouched. This layer restores the
-strong branch-lifecycle behavior from the much older MLX implementation around the
-current live-stream generator, while using modern MLX-LM KV controls.
+strong branch-lifecycle behavior from the older MLX implementation around the current
+live-stream generator while preserving the model's full-precision KV cache.
 
-Kept from the old implementation because it is still useful:
+Kept because it is output-preserving and still useful:
 - branches remain strictly sequential;
 - Python/Metal caches are reclaimed before AND after every branch;
-- one branch owns the model/Metal lock at a time.
-
-Modernized for the current implementation:
-- 4-bit KV-cache quantization reduces long-generation unified-memory growth;
+- one branch owns the model/Metal lock at a time;
 - smaller prefill chunks reduce peak prompt-prefill memory;
-- a Metal OOM retries only the failed branch with earlier KV quantization;
 - iterator/response references are explicitly torn down after every streamed branch;
-- in-flight and completed branches publish real measured generation TPS for stage telemetry.
+- in-flight and completed branches publish measured generation TPS for telemetry.
 
-The generation allowance is NOT shortened. ``max_tokens`` is passed through
-unchanged, so the benchmark/RSI ceiling remains 16,384 tokens. The normal path also
-keeps the full context (no sliding ``max_kv_size`` window). The OOM retry keeps the
-full context too; it becomes more aggressive by quantizing KV earlier, not by
-throwing old reasoning tokens away.
+Accuracy invariant:
+- no KV-cache quantization;
+- no sliding ``max_kv_size`` window;
+- no context truncation/compaction;
+- the Metal-OOM retry keeps identical KV precision and token allowance, changing only
+  prefill chunk size after clearing transient caches.
+
+``max_tokens`` is passed through unchanged, so the benchmark/RSI reasoning allowance
+remains controlled by the existing caller.
 """
 from __future__ import annotations
 
@@ -56,12 +56,9 @@ def _clear_runtime_memory(mx: Any) -> None:
 
 
 def _memory_policy(*, aggressive: bool = False) -> Dict[str, int]:
-    """Return current MLX-LM controls without imposing a sliding context window."""
+    """Output-preserving MLX-LM controls: full KV precision, smaller prefill only."""
     return {
         "prefill_step_size": 128 if aggressive else 256,
-        "kv_bits": 4,
-        "kv_group_size": 64,
-        "quantized_kv_start": 128 if aggressive else 2048,
     }
 
 
@@ -75,12 +72,7 @@ def _close_iterator(iterator: Any) -> None:
 
 
 def _publish_measured_tps(self, response: Any, text: str, elapsed: float) -> None:
-    """Publish honest completed-branch TPS for the stage telemetry layer.
-
-    MLX-LM's final GenerationResponse owns the authoritative decode TPS when it is
-    available. Older builds fall back to exact generated-token count over measured
-    wall time. A missing measurement is left unchanged instead of fabricating 0.
-    """
+    """Publish honest completed-branch TPS for the stage telemetry layer."""
     tps = 0.0
     try:
         tps = float(getattr(response, "generation_tps", 0.0) or 0.0)
@@ -111,12 +103,7 @@ def _publish_inflight_tps(
     streamed_tokens: int,
     decode_started: float | None,
 ) -> None:
-    """Publish live decode TPS while a long RSI branch is still generating.
-
-    Prefer MLX-LM's own cumulative ``generation_tps`` whenever the streamed
-    response exposes it. On older builds, measure decode throughput from the first
-    emitted token onward so prompt-prefill time is not mislabeled as decode TPS.
-    """
+    """Publish live decode TPS while a long RSI branch is still generating."""
     tps = 0.0
     try:
         tps = float(getattr(response, "generation_tps", 0.0) or 0.0)
@@ -126,7 +113,6 @@ def _publish_inflight_tps(
     if tps <= 0.0 and decode_started is not None and streamed_tokens > 1:
         elapsed = max(0.0, time.perf_counter() - float(decode_started))
         if elapsed > 0.001:
-            # The first streamed token establishes the post-prefill decode clock.
             tps = float(streamed_tokens - 1) / elapsed
 
     if tps > 0.0:
@@ -193,7 +179,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             sampler = make_sampler(temp=float(temp), top_p=top_p)
             label = (
                 f"live branch {branch_idx}/{total_branches} | T={float(temp):.2f} | "
-                f"KV4@{policy['quantized_kv_start']} | prefill={policy['prefill_step_size']}"
+                f"KV=full | prefill={policy['prefill_step_size']}"
             )
             live_module._write_live_header(self, formatted_prompt, branch_label=label)
 
@@ -207,7 +193,6 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             try:
                 kwargs: Dict[str, Any] = {
                     "prompt": formatted_prompt,
-                    # Deliberately unchanged: RSI still receives 16,384 here.
                     "max_tokens": max(1, int(max_tokens)),
                     "sampler": sampler,
                     **policy,
@@ -229,8 +214,6 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                         chunk = str(chunk)
                         pieces.append(chunk)
                         live_module._append_live_text(chunk)
-                        # Heartbeat telemetry runs concurrently. Publish while the
-                        # branch is alive instead of waiting for branch completion.
                         _publish_inflight_tps(
                             self,
                             response,
@@ -264,8 +247,8 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                 try:
                     live_module._append_live_text(
                         "\n[RSI MEMORY RECOVERY] Metal OOM: retrying only this branch "
-                        "with earlier 4-bit KV quantization; 16,384-token allowance and "
-                        "full context are unchanged.\n"
+                        "with smaller prefill chunks; KV precision, full context, and "
+                        "token allowance are unchanged.\n"
                     )
                 except Exception:
                     pass
