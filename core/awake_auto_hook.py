@@ -57,20 +57,21 @@ def install_awake_auto_learning(cls) -> None:
         mode, branch_count = self.router.route(entropy, has_test_cases=False)
 
         if int(branch_count) <= 1:
-            # Keep the later real-time streaming UX only for the original Instant path.
+            # Keep the later real-time streaming UX but preserve the historical
+            # Instant-path anchor temperature from get_ladder_temperatures(1).
             yield from original_stream_solve(
                 self,
                 prompt,
                 history=history,
-                temperature=temperature,
+                temperature=0.20,
                 top_p=top_p,
                 cancel_event=cancel_event,
             )
             return
 
         # Hard prompts use the same historical solve() Pro path. self.solve is looked
-        # up at call time so later runtime-hardening/model-synthesis wrappers still
-        # apply around the original engine rather than creating a second Pro engine.
+        # up at call time so later runtime-hardening wrappers still apply around the
+        # original engine rather than creating a second Pro engine.
         self._awake_stream_history_prepared = True
         try:
             response, metadata = self.solve(
@@ -88,7 +89,7 @@ def install_awake_auto_learning(cls) -> None:
         metadata["mode"] = mode
         self._last_stream_pro_meta = metadata
 
-        # Pro must finish its parallel reasoning/synthesis before one final answer exists.
+        # Pro must finish its parallel reasoning/selection before one final answer exists.
         # Feed that completed answer through the GUI's existing stream renderer in chunks.
         text = str(response or "")
         step = 64
