@@ -6,6 +6,8 @@ import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
 import eval.phase4_pro_rsi as phase4_pro_rsi
 import eval.real_benchmark_runtime as real_benchmark_runtime
+import eval.real_choice_scoring as real_choice_scoring
+import eval.real_dataset_fetch_fixes as real_dataset_fetch_fixes
 import eval.real_split_labels as real_split_labels
 import eval.scoring_hardening as scoring_hardening
 import eval.stage_integrity_telemetry as stage_integrity_telemetry
@@ -39,6 +41,8 @@ install_checkpoint_hardening(master_runtime)
 # Narrow reader fix: accept an explicit final `(D) Description` choice without
 # restoring the old unsafe substring grading.
 install_reader_hardening(scoring_hardening)
+# Real MMLU-Pro/SuperGPQA items may use option labels beyond D.
+real_choice_scoring.install(scoring_hardening)
 
 master_runtime.install(Master4000EvaluationEngine)
 # Install the live tap before Phase-4 wraps _fast_generate so baseline/Learn/RSI
@@ -102,6 +106,8 @@ install_stage_tps_hardening(stage_integrity_telemetry, phase4_pro_rsi, Master400
 install_scoring_hardening(Master4000EvaluationEngine, phase4_pro_rsi)
 # Prefer full flagship benchmark variants whenever they naturally fit the 32K window.
 flagship_dataset_overrides.install(real_benchmark_runtime)
+# Apply only upstream-source/schema corrections discovered during loader verification.
+real_dataset_fetch_fixes.install(real_benchmark_runtime)
 # Rename replacement splits to the actual public benchmark names; no behavior changes.
 real_split_labels.install(real_benchmark_runtime)
 # Final narrow adapter: real published benchmark data, schema-correct prompts and
