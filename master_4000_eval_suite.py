@@ -8,6 +8,7 @@ import eval.phase4_pro_rsi as phase4_pro_rsi
 import eval.real_benchmark_runtime as real_benchmark_runtime
 import eval.real_choice_scoring as real_choice_scoring
 import eval.real_dataset_fetch_fixes as real_dataset_fetch_fixes
+import eval.real_prompt_overrides as real_prompt_overrides
 import eval.real_split_labels as real_split_labels
 import eval.scoring_hardening as scoring_hardening
 import eval.stage_integrity_telemetry as stage_integrity_telemetry
@@ -110,6 +111,9 @@ flagship_dataset_overrides.install(real_benchmark_runtime)
 real_dataset_fetch_fixes.install(real_benchmark_runtime)
 # Rename replacement splits to the actual public benchmark names; no behavior changes.
 real_split_labels.install(real_benchmark_runtime)
+# Keep useful family-specific concise prompts for real replacements without restoring
+# any synthetic AIME/HLE-specific tricks.
+real_prompt_overrides.install(real_benchmark_runtime)
 # Final narrow adapter: real published benchmark data, schema-correct prompts and
 # verifiers, and a 32K benchmark ceiling. This intentionally runs last so it replaces
 # only recovered synthetic benchmark behavior.
