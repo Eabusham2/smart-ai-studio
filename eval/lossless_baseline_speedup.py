@@ -1,14 +1,12 @@
-"""Lossless Phase-1/Learn baseline generation speedup.
+"""Fast Phase-1/Learn single-pass generation on the native MLX-LM loop.
 
-Only the low-level decoder is replaced. Prompt construction, benchmark scoring,
-checkpointing, stage ownership, max-token policy, and model weights stay unchanged.
-The historical baseline used an explicit ``mx.argmax`` + ``mx.eval`` + ``.item()``
-Python loop every token. MLX-LM's ``make_sampler(temp=0)`` is the same greedy
-argmax policy, but runs through the library's optimized generation loop.
+Prompt construction, benchmark scoring, checkpointing, stage ownership, Context
+accounting, model weights and full-precision KV remain unchanged. The decoder uses
+the optimized MLX-LM stream rather than the old per-token Python ``.item()`` loop.
 
-No speculative decoding, KV quantization, sliding cache, context truncation, or
-quality-changing fallback is used. Metal/Python caches are reclaimed only under
-real memory pressure so normal items can reuse MLX's allocation pool.
+Sampling policy is intentionally tuned for this native low-bit/ternary model:
+eval single-pass uses T=0.55. This is a deliberate behavioral/quality choice, not a
+claim of bit-identical output to the older greedy baseline.
 """
 from __future__ import annotations
 
@@ -17,6 +15,8 @@ import time
 from typing import Any, List
 
 import psutil
+
+from core.temperature_policy import EVAL_N1_TEMPERATURE
 
 
 def _memory_pressure() -> bool:
@@ -45,7 +45,7 @@ def install(runtime_module, live_module, cls) -> None:
     if getattr(cls, "_lossless_baseline_speedup_installed", False):
         return
 
-    def native_greedy_generate(self, prompt, max_tokens=16384, stream=False):
+    def native_single_pass_generate(self, prompt, max_tokens=16384, stream=False):
         if not runtime_module.MLX_AVAILABLE:
             raise RuntimeError("MLX/MLX-LM unavailable: refusing to fake/offline benchmark generation")
         if self.engine.model is None or self.engine.tokenizer is None:
@@ -73,8 +73,12 @@ def install(runtime_module, live_module, cls) -> None:
                 )
             requested = min(requested, remaining)
 
-        live_module._write_live_header(self, prompt, branch_label="primary | native greedy/full-KV")
-        sampler = make_sampler(temp=0.0)
+        live_module._write_live_header(
+            self,
+            prompt,
+            branch_label=f"primary | native sampled T={EVAL_N1_TEMPERATURE:.2f}/full-KV",
+        )
+        sampler = make_sampler(temp=EVAL_N1_TEMPERATURE, top_p=0.92)
         started = time.perf_counter()
         last_live_write = started
         pending: List[str] = []
@@ -163,6 +167,6 @@ def install(runtime_module, live_module, cls) -> None:
             pieces.clear()
             _reclaim_if_needed(mx)
 
-    cls._fast_generate = native_greedy_generate
-    runtime_module.fast_generate = native_greedy_generate
+    cls._fast_generate = native_single_pass_generate
+    runtime_module.fast_generate = native_single_pass_generate
     cls._lossless_baseline_speedup_installed = True
