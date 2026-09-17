@@ -10,6 +10,7 @@ import eval.eta_progress_hardening as eta_progress_hardening
 import eval.flagship_dataset_overrides as flagship_dataset_overrides
 import eval.learn_progress_overlay as learn_progress_overlay
 import eval.live_generation_stream as live_generation_stream
+import eval.lossless_baseline_speedup as lossless_baseline_speedup
 import eval.master_4000_runtime as master_runtime
 import eval.phase4_pro_rsi as phase4_pro_rsi
 import eval.pro_synthesis_eta_adjust as pro_synthesis_eta_adjust
@@ -58,6 +59,9 @@ master_runtime.install(Master4000EvaluationEngine)
 # Install the live tap before Phase-4 wraps _fast_generate so baseline/Learn/RSI
 # keep the recovered fused decoder while exposing raw <think> tokens in real time.
 install_baseline_stream(master_runtime, Master4000EvaluationEngine)
+# Replace only that low-level manual argmax/.item() decoder with MLX-LM's equivalent
+# native greedy sampler; prompt/scoring/stage behavior and full-precision KV stay unchanged.
+lossless_baseline_speedup.install(master_runtime, live_generation_stream, Master4000EvaluationEngine)
 # phase4_pro_rsi imported this function by value during module import. Point its
 # local reference at the wrapped logger too so RSI/LearningFacts cannot bypass the
 # live current-item file.
