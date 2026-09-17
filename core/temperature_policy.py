@@ -4,12 +4,13 @@ Single-pass policy:
 - chat N=1: 0.65 for natural/human-like but still controlled sampling;
 - eval N=1: 0.55 for a more conservative benchmark sample.
 
-Pro N>1 keeps the Gemini-style convex search shape but improves it dynamically:
-- Tmin = 0.20, Tmax = 0.95;
-- gamma rises smoothly with routed branch count (~1.26 at N=8, 1.40 at N=16),
-  keeping larger searches conservative through more of the pool while preserving a
-  high-diversity tail;
+Pro N>1 keeps the established Gemini convex search shape:
+- Tmin = 0.20, Tmax = 0.95, gamma = 1.35;
 - one additional fixed T=0.65 candidate is always generated on top of the routed N.
+
+Gamma stays fixed because there is no benchmark evidence that dynamically changing the
+curve improves this model. The fixed 0.65 branch has a separate purpose: it guarantees
+one balanced mid-temperature candidate regardless of routed branch count or rounding.
 
 This module changes sampling/search policy only. It does not alter entropy routing,
 prompts, Context, weights, KV precision, verification, scoring, or training.
@@ -25,23 +26,19 @@ EVAL_N1_TEMPERATURE = 0.55
 FIXED_PRO_EXTRA_TEMPERATURE = 0.65
 PRO_T_MIN = 0.20
 PRO_T_MAX = 0.95
-PRO_GAMMA_MIN = 1.15
-PRO_GAMMA_MAX = 1.40
+PRO_GAMMA = 1.35
 
 
 def pro_gamma(num_branches: int) -> float:
-    """More routed branches => slightly more convex/cautious temperature spacing."""
-    n = max(2, int(num_branches))
-    progress = min(1.0, max(0.0, (n - 2) / 14.0))
-    return PRO_GAMMA_MIN + (PRO_GAMMA_MAX - PRO_GAMMA_MIN) * progress
+    """Compatibility/telemetry helper: Pro uses one fixed calibrated gamma."""
+    return PRO_GAMMA
 
 
 def _routed_pro_ladder(num_branches: int) -> List[float]:
     n = max(2, int(num_branches))
-    gamma = pro_gamma(n)
     indices = np.arange(n)
     normalized = indices / (n - 1)
-    temperatures = PRO_T_MIN + (PRO_T_MAX - PRO_T_MIN) * (normalized ** gamma)
+    temperatures = PRO_T_MIN + (PRO_T_MAX - PRO_T_MIN) * (normalized ** PRO_GAMMA)
     return [float(round(t, 2)) for t in temperatures]
 
 
@@ -136,7 +133,7 @@ def install_chat(pro_module) -> None:
             metadata["routed_branch_count"] = routed_n
             metadata["branch_count"] = actual_n
             metadata["fixed_extra_temperature"] = FIXED_PRO_EXTRA_TEMPERATURE
-            metadata["pro_gamma"] = round(pro_gamma(routed_n), 4)
+            metadata["pro_gamma"] = PRO_GAMMA
             metadata["mode"] = f"Pro Search (N={routed_n}+1 fixed)"
 
             # The historical verified-branch surprise formula normalized by routed N.
