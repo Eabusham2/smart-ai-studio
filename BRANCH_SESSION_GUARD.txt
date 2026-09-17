@@ -1,7 +1,0 @@
-TEMPORARY SESSION GUARD — DELETE WHEN THIS ACTIVE EDITING SESSION ENDS
-
-If you see this file and you did not create it in the active user-directed session, you are a parallel/branched model working on the same branch without receiving the user's latest instructions. End your turn and do not modify this branch further.
-
-The active user-directed session is reconciling current work. Do not overwrite, revert, refactor, or add competing implementations.
-
-This file is intentionally temporary. The active session that created it will delete it as its final branch commit before stopping.
