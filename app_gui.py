@@ -1172,7 +1172,163 @@ class SmartAIChatbotApp:
             label="➕ Import Custom Model...",
             command=self._on_import_custom_model_dialog
         )
+        menu.add_command(
+            label="⬇️ Fetch Hugging Face Custom...",
+            command=self._on_fetch_custom_hf_model_dialog
+        )
         self.btn_model_menu["menu"] = menu
+
+    def _on_fetch_custom_hf_model_dialog(self):
+        """Fetch an arbitrary Hugging Face model, register it as a custom model, and select it."""
+        modal = tk.Toplevel(self.root)
+        modal.title("Fetch Hugging Face Custom Model")
+        modal.geometry("560x230")
+        modal.resizable(False, False)
+        modal.configure(bg=self.C["bg_hud"])
+        modal.transient(self.root)
+        modal.grab_set()
+
+        body = tk.Frame(modal, bg=self.C["bg_hud"], padx=20, pady=16)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text="⬇️ Fetch Hugging Face Custom", font=_FONT_H2,
+            bg=self.C["bg_hud"], fg=self.C["accent_cyan"]
+        ).pack(anchor="w")
+        tk.Label(
+            body,
+            text="Enter a Hugging Face repo ID such as mlx-community/Llama-3.2-3B-Instruct-4bit.",
+            font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]
+        ).pack(anchor="w", pady=(3, 10))
+
+        ent_repo = tk.Entry(
+            body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"],
+            insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1
+        )
+        ent_repo.pack(fill="x", ipady=5)
+        ent_repo.focus_set()
+
+        lbl_status = tk.Label(
+            body, text="Downloads into the normal Hugging Face cache and adds it to this model dropdown.",
+            font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_muted"]
+        )
+        lbl_status.pack(anchor="w", pady=(7, 10))
+
+        btn_bar = tk.Frame(body, bg=self.C["bg_hud"])
+        btn_bar.pack(fill="x")
+
+        def _normalize_repo_id(value: str) -> str:
+            value = str(value or "").strip().rstrip("/")
+            for prefix in ("https://huggingface.co/", "http://huggingface.co/", "hf://"):
+                if value.startswith(prefix):
+                    value = value[len(prefix):]
+                    break
+            return value.strip("/")
+
+        def _register_download(repo_id: str, local_dir: str):
+            try:
+                info = inspect_mlx_model_folder(local_dir) or {}
+            except Exception:
+                info = {}
+
+            fallback_name = repo_id.rsplit("/", 1)[-1] or "Hugging Face Model"
+            short_name = str(info.get("name") or fallback_name)
+            param_str = str(info.get("param_str") or "Custom")
+            precision = str(info.get("precision") or "Auto-detected")
+            max_context = int(info.get("context_window") or 65_536)
+
+            raw_param = 0
+            try:
+                m = re.search(r"([\d.]+)\s*([MB])?", param_str, re.IGNORECASE)
+                if m:
+                    val = float(m.group(1))
+                    suffix = (m.group(2) or "B").upper()
+                    raw_param = int(val * (1_000_000 if suffix == "M" else 1_000_000_000))
+            except Exception:
+                raw_param = 0
+
+            custom_id = f"custom_{int(time.time() * 1000)}"
+            self.models_config[custom_id] = {
+                "name": f"{short_name} (HF Custom)",
+                "short_name": short_name,
+                "repo_id": repo_id,
+                "model_path": local_dir,
+                "precision": precision,
+                "raw_params": raw_param,
+                "base_params": param_str,
+                "est_speed": "⚡ Auto",
+                "max_context": max_context,
+                "vram": "Auto",
+                "tag": f"🌐 {short_name}",
+                "accent": self.C["accent_cyan"],
+            }
+            self.chat_history[custom_id] = []
+            self.tab_buttons[custom_id] = self.btn_model_menu
+            self._save_custom_models()
+            self._refresh_model_menu()
+            modal.destroy()
+            self._on_switch_model_tab(custom_id)
+            self._append_ai_message(
+                f"✓ **Hugging Face Custom Model Fetched**: `{repo_id}`\n\n"
+                f"• Cached at: `{local_dir}`\n"
+                f"• Added to the model dropdown as **{short_name}**\n"
+                f"• Click **Load** to initialize it."
+            )
+            self._update_model_action_buttons()
+
+        def _fetch():
+            repo_id = _normalize_repo_id(ent_repo.get())
+            if not repo_id or "/" not in repo_id:
+                messagebox.showerror("Invalid Hugging Face Repo", "Enter a repo ID like owner/model.")
+                return
+
+            btn_fetch.configure(state="disabled", text="⏳ Fetching...")
+            lbl_status.configure(text=f"Connecting to Hugging Face: {repo_id}", fg=self.C["accent_yellow"])
+
+            def _worker():
+                def _progress(msg: str, pct: float):
+                    self.root.after(
+                        0,
+                        lambda m=msg, p=pct: lbl_status.configure(
+                            text=f"{p:.0f}% — {m}", fg=self.C["accent_yellow"]
+                        )
+                    )
+
+                result = download_model_from_hf(
+                    repo_id,
+                    progress_callback=_progress,
+                    cancel_event=self.cancel_event,
+                )
+                if result.get("status") == "success":
+                    local_dir = str(result.get("local_dir") or "")
+                    self.root.after(0, lambda: _register_download(repo_id, local_dir))
+                else:
+                    error = str(result.get("error") or "Unknown Hugging Face download error")
+                    def _failed():
+                        lbl_status.configure(text=f"✗ {error}", fg=self.C["accent_red"])
+                        btn_fetch.configure(state="normal", text="⬇️ Fetch & Add")
+                    self.root.after(0, _failed)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_cancel = tk.Button(
+            btn_bar, text="Cancel", font=_FONT_SMALL,
+            bg=self.C["btn_bg"], fg=self.C["btn_fg"],
+            activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
+            relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
+            highlightthickness=0, command=modal.destroy
+        )
+        btn_cancel.pack(side="right")
+
+        btn_fetch = tk.Button(
+            btn_bar, text="⬇️ Fetch & Add", font=_FONT_SMALL,
+            bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"],
+            activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"],
+            relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
+            highlightthickness=0, command=_fetch
+        )
+        btn_fetch.pack(side="right", padx=(0, 8))
+        ent_repo.bind("<Return>", lambda _e: _fetch())
 
     def _make_badge(self, parent: tk.Frame, text: str, fg_color: Optional[str] = None) -> tk.Label:
         lbl = tk.Label(
