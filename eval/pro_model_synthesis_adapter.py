@@ -37,11 +37,22 @@ def install(phase4_module) -> None:
             user,
             system=phase4_module.SYSTEM_PROMPT,
         )
+        ceiling = int(phase4_module._benchmark_ceiling(self))
+        try:
+            prompt_tokens = len(self.engine.tokenizer.encode(formatted))
+        except Exception:
+            prompt_tokens = 0
+        if prompt_tokens and prompt_tokens >= ceiling:
+            raise RuntimeError(
+                f"Pro synthesis prompt requires {prompt_tokens} tokens but benchmark context is {ceiling}; "
+                "refusing truncation/compaction."
+            )
+        max_output = min(16384, max(1, ceiling - prompt_tokens))
         outputs = phase4_module._generate_branches_same_model(
             self,
             formatted,
             [0.20],
-            max_tokens=min(phase4_module._benchmark_ceiling(self), 16384),
+            max_tokens=max_output,
             top_p=0.92,
         )
         if not outputs:
