@@ -71,7 +71,7 @@ try:
         live_mode: bool = Field(default=True, description="Enable live neural model execution")
         use_mock: bool = Field(default=False, description="Enable mock mode for testing without GPU/neural weights")
         small_model: bool = Field(default=False, description="Use lightweight local model fallback")
-        kv_bits: int = Field(default=4, description="KV-cache quantization bitwidth (4-bit for 16GB M1 Mac)")
+        kv_bits: int = Field(default=16, description="Legacy compatibility setting; MLX runtime enforces native/full-precision KV cache")
 
         # Hardware & Model Configuration (Dedicated 27B Qwen3.8 Architectures)
         base_model_path: str = Field(default="orcarouter/Qwen3.8-27B-Uncensored-MLX", description="Path/ID for 27B Uncensored MLX model")
@@ -87,8 +87,8 @@ try:
         vision_mmproj_path: Optional[str] = Field(default=None, description="GGUF vision clip projector path")
         auto_download: bool = Field(default=True, description="Automatically stream missing weights from Hugging Face")
 
-        # Speculative Acceleration (Lossless Decoding Speedups)
-        speculative_mode: str = Field(default="pld", description="Speculative decoding mode: pld, lookahead, dflash, eagle, medusa, none")
+        # Speculative acceleration remains disabled until exact decoder equivalence is proven.
+        speculative_mode: str = Field(default="none", description="Speculative decoding request; production MLX remains disabled unless exact output equivalence is proven")
         speculative_tokens: int = Field(default=4, description="Number of draft tokens K to speculate ahead")
         draft_model_path: Optional[str] = Field(default=None, description="Path to secondary draft model or DFlash drafter")
         draft_device: Optional[str] = Field(default=None, description="Device for secondary draft head")
@@ -130,7 +130,7 @@ except ImportError:
         live_mode: bool = os.getenv("LIVE_MODE", "true").lower() in ("1", "true", "yes")
         use_mock: bool = os.getenv("USE_MOCK", "false").lower() in ("1", "true", "yes")
         small_model: bool = os.getenv("SMALL_MODEL", "false").lower() in ("1", "true", "yes")
-        kv_bits: int = int(os.getenv("KV_BITS", "4"))
+        kv_bits: int = int(os.getenv("KV_BITS", "16"))
 
         base_model_path: str = os.getenv("BASE_MODEL_PATH", "orcarouter/Qwen3.8-27B-Uncensored-MLX")
         mlx_model_path: str = os.getenv("MLX_MODEL_PATH", "orcarouter/Qwen3.8-27B-Uncensored-MLX")
@@ -145,7 +145,7 @@ except ImportError:
         vision_mmproj_path: Optional[str] = os.getenv("VISION_MMPROJ_PATH", None)
         auto_download: bool = os.getenv("AUTO_DOWNLOAD", "true").lower() in ("1", "true", "yes")
 
-        speculative_mode: str = os.getenv("SPECULATIVE_MODE", "pld")
+        speculative_mode: str = os.getenv("SPECULATIVE_MODE", "none")
         speculative_tokens: int = int(os.getenv("SPECULATIVE_TOKENS", "4"))
         draft_model_path: Optional[str] = os.getenv("DRAFT_MODEL_PATH", None)
         draft_device: Optional[str] = os.getenv("DRAFT_DEVICE", None)
