@@ -1,15 +1,17 @@
 """Enforce one total prompt+output Context budget across the evaluation lifecycle.
 
-Normal public benchmark stages use the already-configured benchmark context ceiling
-(32K after the real-data adapter). Flagship DeepSWE uses its configured 226K context.
-The historical decoder temperatures, prompts, scoring, RSI rounds, Pro routing,
-training and verification remain untouched. This layer removes only artificial
-output-only caps: generation may use every token left after the formatted prompt
-until natural EOS.
+Normal public benchmark stages use the configured 32K benchmark Context. Flagship
+DeepSWE uses its configured 226K Context. Generation may use every token left after
+the formatted prompt until natural EOS; there is no separate output-only cap.
+
+The eval single-pass temperature is tuned separately, while N>1 Pro uses the same
+convex 0.20→0.95, gamma=1.35 ladder as chat.
 """
 from __future__ import annotations
 
 from typing import Optional
+
+from core.temperature_policy import install_eval as install_eval_temperature_policy
 
 
 def _physical_context(engine) -> Optional[int]:
@@ -54,6 +56,9 @@ def install(runtime_module, phase4_module, deepswe_module, cls) -> None:
     if getattr(cls, "_unified_eval_context_budget_installed", False):
         return
 
+    # Keep eval N=1 separate from chat while sharing the exact same N>1 Pro formula.
+    install_eval_temperature_policy(phase4_module)
+
     original_fast = cls._fast_generate
     original_branch_generate = phase4_module._generate_branches_same_model
 
@@ -87,8 +92,8 @@ def install(runtime_module, phase4_module, deepswe_module, cls) -> None:
     phase4_module._generate_branches_same_model = context_branch_generate
 
     # DeepSWE previously had 226K total context plus a separate 8K output ceiling.
-    # Make its legacy output variable equal the total context so the existing bridge
-    # naturally resolves max generation to (Context - prompt tokens).
+    # Make its legacy output variable equal total Context so the existing bridge
+    # resolves generation to exactly (Context - prompt tokens).
     deepswe_module.DEEPSWE_MAX_OUTPUT_TOKENS = int(deepswe_module.DEEPSWE_CONTEXT_TOKENS)
 
     bridge_cls = getattr(deepswe_module, "_LocalModelBridge", None)
