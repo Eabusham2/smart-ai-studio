@@ -1,19 +1,20 @@
-"""Activate awake/background learning for normal ProReasoningEngine chat paths.
+"""Activate awake learning while preserving the historical Pro chat path.
 
-The rich GUI streams through ProReasoningEngine.stream_solve(). Preserve the original
-Pro contract by consulting the existing entropy router first: easy N=1 prompts keep
-the newer real-time stream, while N>1 prompts delegate back to the engine's existing
-solve() path (the historical Pro-routed chat path).
+The rich GUI streams through ProReasoningEngine.stream_solve(). The existing entropy
+router remains authoritative: easy N=1 prompts keep real-time streaming at the old
+T=0.20 anchor, while N>1 prompts delegate to the historical solve() Pro path.
 
-Context pressure is handled without silent history loss: if the complete packed prompt
-would leave less room than the user-requested output cap, oldest completed dialogue
-pairs are synchronously consolidated into the real trainable adapter before they are
-removed from active history. The old fixed 8K asynchronous prune threshold is not used
-for this chat path.
+Chat now has one total Context budget (prompt/history + generated tokens), not a
+separate output-token allowance. At the Gemini-designed 80% context watermark, old
+completed dialogue pairs are synchronously consolidated into the real trainable
+adapter and are removed only after that real parameter update succeeds. Generation
+then owns every token remaining in Context until natural EOS.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+
+from core.platform import get_auto_context_window_size
 
 
 def _model_context_limit(engine) -> Optional[int]:
@@ -40,6 +41,26 @@ def _model_context_limit(engine) -> Optional[int]:
     return min(values) if values else None
 
 
+def _selected_context_budget(engine) -> int:
+    """Resolve the session's one prompt+output Context budget."""
+    requested = int(getattr(engine, "_context_budget_tokens", 0) or 0)
+    if requested <= 0:
+        requested = int(get_auto_context_window_size())
+        engine._context_budget_tokens = requested
+
+    physical = _model_context_limit(engine)
+    effective = min(requested, int(physical)) if physical else requested
+    effective = max(1024, int(effective))
+    engine._effective_context_budget_tokens = effective
+
+    backend = getattr(engine, "mlx_backend", None)
+    if backend is not None:
+        # Preserve the user's requested value; MLX's context-budget layer clamps it
+        # against the physical model window when calculating generation room.
+        backend.context_budget_tokens = max(1024, int(requested))
+    return effective
+
+
 def _oldest_completed_chunk(history: List[Dict[str, str]], ratio: float) -> tuple[list, list]:
     """Take an oldest prefix ending on assistant, while always retaining recent turns."""
     if len(history) <= 2:
@@ -56,7 +77,6 @@ def _oldest_completed_chunk(history: List[Dict[str, str]], ratio: float) -> tupl
         elif role == "assistant" and saw_user:
             last_assistant = idx
     if last_assistant < 0:
-        # Search a little farther only if needed to finish the oldest real pair.
         for idx, message in enumerate(history[target:-1], start=target):
             role = str(message.get("role", "")).strip().lower()
             if role == "user":
@@ -77,42 +97,51 @@ def install_awake_auto_learning(cls) -> None:
     original_solve = cls.solve
 
     def _apply_awake_learning(self, history, prompt: Optional[str] = None):
-        if not history or not prompt:
+        if not prompt:
             return history
 
+        context_budget = _selected_context_budget(self)
         consolidator = getattr(self, "awake_consolidator", None)
         backend = getattr(self, "mlx_backend", None)
         tokenizer = getattr(backend, "tokenizer", None)
-        context_limit = _model_context_limit(self)
-        if consolidator is None or tokenizer is None or context_limit is None:
+        if consolidator is None or tokenizer is None:
             return history
 
-        requested = max(1, int(getattr(self.settings, "max_new_tokens", 1536) or 1536))
-        # A user cap larger than the model window is itself clamped by the backend.
-        # Reserve as much of it as the model can possibly provide after at least one
-        # prompt token; consolidation is used only to recover room occupied by old chat.
-        reserve = min(requested, max(1, context_limit - 1))
-        target_prompt_tokens = max(1, context_limit - reserve)
-        consolidator.max_context = int(context_limit)
-        consolidator.watermark_tokens = int(target_prompt_tokens)
+        # Gemini's rolling-memory design: start learning old turns before the hard
+        # boundary, at 80% of total Context. After triggering, reduce the active
+        # textual working set toward 60% so the answer has substantial free room.
+        trigger_tokens = max(1, int(context_budget * 0.80))
+        target_tokens = max(1, int(context_budget * 0.60))
+        consolidator.max_context = int(context_budget)
+        consolidator.watermark_tokens = int(trigger_tokens)
 
         def packed_token_count(active_history) -> int:
             formatted = self._format_prompt_with_history(prompt, active_history)
             return len(tokenizer.encode(formatted))
 
         try:
-            current_tokens = packed_token_count(history)
+            current_tokens = packed_token_count(history or [])
         except Exception:
             return history
 
-        if current_tokens <= target_prompt_tokens:
-            self._last_context_consolidation_note = ""
+        if current_tokens < trigger_tokens:
+            self._last_context_consolidation_note = (
+                f"Context {context_budget:,}: prompt/history {current_tokens:,}; "
+                f"generation may use the remaining {max(0, context_budget-current_tokens):,} tokens until EOS."
+            )
+            return history
+
+        if not history:
+            self._last_context_consolidation_note = (
+                f"Context {context_budget:,}: current prompt alone uses {current_tokens:,}; "
+                "there is no older completed dialogue to consolidate."
+            )
             return history
 
         retained = list(history)
         consolidated_turns = 0
         original_tokens = current_tokens
-        while current_tokens > target_prompt_tokens:
+        while current_tokens > target_tokens:
             chunk, candidate_retained = _oldest_completed_chunk(
                 retained,
                 getattr(consolidator, "evict_ratio", 0.40),
@@ -136,14 +165,15 @@ def install_awake_auto_learning(cls) -> None:
         if consolidated_turns and isinstance(history, list):
             history[:] = retained
             self._last_context_consolidation_note = (
-                f"Context capacity: consolidated {consolidated_turns} old dialogue turns into "
-                f"trainable weights before generation ({original_tokens:,} → {current_tokens:,} prompt tokens)."
+                f"Context {context_budget:,}: consolidated {consolidated_turns} old dialogue turns into "
+                f"trainable weights ({original_tokens:,} → {current_tokens:,} active prompt tokens); "
+                f"generation may use all {max(0, context_budget-current_tokens):,} remaining tokens until EOS."
             )
             return history
 
         self._last_context_consolidation_note = (
-            f"Context capacity: packed prompt uses {original_tokens:,} tokens; no completed old dialogue "
-            "pair could be safely consolidated, so the model/user cap remains authoritative."
+            f"Context {context_budget:,}: active prompt uses {original_tokens:,} tokens; no completed old dialogue "
+            "pair could be safely consolidated, so the physical Context boundary remains authoritative."
         )
         return history
 
@@ -158,16 +188,12 @@ def install_awake_auto_learning(cls) -> None:
         history = _apply_awake_learning(self, history, prompt)
         self._last_stream_pro_meta = None
 
-        # Restore the historical chat decision point: the existing entropy router
-        # decides whether this is Instant N=1 or Pro N=8/N=16 before generation.
-        # Temperature is still the branch-diversity ladder inside Pro; it does not
-        # replace the entropy thresholds that decide the compute budget.
+        # Restore the historical chat decision point: entropy chooses N=1/8/16.
         entropy = float(self.calculate_token_entropy(prompt))
         mode, branch_count = self.router.route(entropy, has_test_cases=False)
 
         if int(branch_count) <= 1:
-            # Keep the later real-time streaming UX but preserve the historical
-            # Instant-path anchor temperature from get_ladder_temperatures(1).
+            # Historical good solve()-routed N=1 uses get_ladder_temperatures(1)=[0.20].
             yield from original_stream_solve(
                 self,
                 prompt,
@@ -178,9 +204,8 @@ def install_awake_auto_learning(cls) -> None:
             )
             return
 
-        # Hard prompts use the same historical solve() Pro path. self.solve is looked
-        # up at call time so later runtime-hardening wrappers still apply around the
-        # original engine rather than creating a second Pro engine.
+        # N>1 delegates to the original Pro engine: same entropy router, branch
+        # generator, convex temperature ladder, verifier/consensus and metadata.
         self._awake_stream_history_prepared = True
         try:
             response, metadata = self.solve(
@@ -201,8 +226,8 @@ def install_awake_auto_learning(cls) -> None:
             metadata["context_consolidation"] = note
         self._last_stream_pro_meta = metadata
 
-        # Pro must finish its parallel reasoning/selection before one final answer exists.
-        # Feed that completed answer through the GUI's existing stream renderer in chunks.
+        # Pro must finish its search before one final answer exists. Preserve the
+        # newer GUI renderer by yielding that completed answer in small chunks.
         text = str(response or "")
         step = 64
         for idx in range(0, len(text), step):
@@ -221,6 +246,8 @@ def install_awake_auto_learning(cls) -> None:
     ):
         if not getattr(self, "_awake_stream_history_prepared", False):
             history = _apply_awake_learning(self, history, prompt)
+        else:
+            _selected_context_budget(self)
         return original_solve(
             self,
             prompt,
