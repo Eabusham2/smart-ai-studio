@@ -2,7 +2,7 @@
 High-Throughput 27B Pro-Engine Continuous-Learning Pipeline.
 100% Authentic, Dynamic Evaluation & Raw Trace Streaming:
 - Physical forward pass on Apple Silicon Metal (mlx_lm.stream_generate).
-- 4-bit Quantized KV cache (kv_bits=4, kv_group_size=64).
+- Native/full-precision KV cache; no lossy KV quantization or context dropping.
 - True EWC-LoRA Sleep Consolidation & adapters.safetensors export with verified Frobenius shift ||ΔW||_2.
 - Evaluates benchmark splits and dumps every raw output, sandbox stdout/stderr, and timing to eval_results/raw_traces.jsonl & eval_results/raw_eval_stream.jsonl.
 - Dynamically aggregates all scores and writes ULTIMATE_MASTER_EVAL_REPORT.md strictly from raw physical traces.
@@ -19,7 +19,6 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-# Enable immediate stdout line flushing
 try:
     sys.stdout.reconfigure(line_buffering=True)
 except Exception:
@@ -33,7 +32,6 @@ from mlx_lm import load, stream_generate
 from mlx_lm.tuner.lora import LoRALinear
 
 from config.settings import get_settings
-from core.speculative_engine import PromptLookupDrafter
 from core.verifier import GroundTruthVerifier
 from memory.db import EpisodicMemoryDB
 from memory.dialogue_history_ingest import ingest_historical_dialogues, recall_historical_fact
@@ -86,7 +84,6 @@ def optimized_live_generate(
     max_tokens: int = 120,
     temperature: float = 0.2,
     top_p: float = 0.95,
-    pld_drafter: Optional[PromptLookupDrafter] = None
 ) -> Tuple[str, float, int, float]:
     t0 = time.perf_counter()
     chunks = []
@@ -109,7 +106,6 @@ def evaluate_and_verify_item(
     verifier: GroundTruthVerifier,
     split_name: str,
     item: Dict[str, Any],
-    pld_drafter: Optional[PromptLookupDrafter] = None,
     temp: float = 0.2
 ) -> Dict[str, Any]:
     prompt = item.get("prompt") or item.get("question") or item.get("problem") or item.get("expression") or item.get("query") or str(item)
@@ -117,14 +113,13 @@ def evaluate_and_verify_item(
         prompt = f"{prompt}\n" + "\n".join(item["choices"])
 
     output, duration_s, tokens_count, tok_per_sec = optimized_live_generate(
-        model, tokenizer, prompt, max_tokens=30, temperature=temp, pld_drafter=pld_drafter
+        model, tokenizer, prompt, max_tokens=30, temperature=temp
     )
 
     passed = False
     details = ""
     stderr_captured = None
 
-    # Deterministic verification based on problem type
     if "test_cases" in item:
         code_extracted = verifier.extract_code_block(output, "python") or output
         v_res = verifier.verify_in_sandbox(code_extracted, item["test_cases"])
@@ -144,7 +139,6 @@ def evaluate_and_verify_item(
         passed = (f"{correct_let})" in output or f" {correct_let}" in output or output.strip().startswith(correct_let))
         details = f"Correct choice: {correct_let} | Match: {passed}"
     else:
-        # Generic non-empty valid completion
         passed = len(output.strip()) > 5
         details = f"Synthesized response ({len(output.strip())} chars)"
 
@@ -175,7 +169,6 @@ def run_master_pipeline():
     raw_traces_file = os.path.join(out_dir, "raw_traces.jsonl")
     raw_stream_file = os.path.join(out_dir, "raw_eval_stream.jsonl")
 
-    # Open trace files for streaming
     f_traces = open(raw_traces_file, "w", encoding="utf-8")
     f_stream = open(raw_stream_file, "w", encoding="utf-8")
 
@@ -185,25 +178,21 @@ def run_master_pipeline():
     print("=" * 80 + "\n")
 
     # =========================================================================
-    # PHASE 0: 4-Bit KV Cache Loading & Hardware Manifest
+    # PHASE 0: Native/Full-Precision KV Loading & Hardware Manifest
     # =========================================================================
-    print("┌─── [PHASE 0] High-Throughput 27B Model Init (4-Bit KV Cache) ──")
+    print("┌─── [PHASE 0] High-Throughput 27B Model Init (Full-Precision KV) ──")
     model_id = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
-    print(f"│ • Loading {model_id} with 4-bit KV Cache (kv_group_size=64)...")
+    print(f"│ • Loading {model_id} with native/full-precision KV cache...")
     
     t_load = time.time()
-    model, tokenizer = load(
-        model_id,
-        model_config={"kv_bits": 4, "kv_group_size": 64}
-    )
+    model, tokenizer = load(model_id)
     load_duration = time.time() - t_load
     mem_rss = check_ram_safety(force=True)
 
-    print(f"│ • Model loaded in {load_duration:.2f}s (4-bit KV active)")
+    print(f"│ • Model loaded in {load_duration:.2f}s (full-precision KV active)")
     print(f"│ • Process Resident Memory: {mem_rss:.2f} GB")
     print(f"│ • Available Unified RAM  : {psutil.virtual_memory().available / (1024**3):.2f} GB / {psutil.virtual_memory().total / (1024**3):.2f} GB Total")
     
-    pld_drafter = PromptLookupDrafter(min_ngram=3, max_ngram=5, max_draft_tokens=4)
     verifier = GroundTruthVerifier()
     db = EpisodicMemoryDB(db_path=db_path)
 
@@ -211,9 +200,9 @@ def run_master_pipeline():
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "model_id": model_id,
         "backend": "mlx (Apple Silicon Metal)",
-        "kv_cache_precision": "4-bit quantized (kv_bits=4, kv_group_size=64)",
+        "kv_cache_precision": "native/full precision",
         "hardware": f"{platform.machine()} {platform.system()} ({psutil.virtual_memory().total / (1024**3):.1f} GB Unified RAM)",
-        "speculative_decoding": "PromptLookupDrafter (n=3..5, k=4)",
+        "speculative_decoding": "disabled: exact MLX output equivalence not guaranteed",
         "resident_memory_gb": round(mem_rss, 2),
         "initial_adapter_frobenius": 0.00000
     }
@@ -239,9 +228,6 @@ def run_master_pipeline():
         "Autonomous Evolution Probe": MASTER_AUTONOMOUS_EVOLUTION_SPLIT
     }
 
-    # =========================================================================
-    # PHASE 1: Real Baseline Forward Pass & Ground Truth Verification
-    # =========================================================================
     print("┌─── [PHASE 1] Live Baseline Evaluation (Zero Mocks) ───────────")
     baseline_scores = {}
     total_tokens_generated = 0
@@ -254,7 +240,7 @@ def run_master_pipeline():
         print(f"│ • Baseline evaluating: {split_name} ({total_items_split} items)...")
 
         for it in sample_items:
-            res = evaluate_and_verify_item(model, tokenizer, verifier, f"Baseline-{split_name}", it, pld_drafter=pld_drafter, temp=0.2)
+            res = evaluate_and_verify_item(model, tokenizer, verifier, f"Baseline-{split_name}", it, temp=0.2)
             total_tokens_generated += res["tokens_generated"]
             total_generation_time_s += res["latency_s"]
             if res["verified"]:
@@ -274,9 +260,6 @@ def run_master_pipeline():
 
     print("└───────────────────────────────────────────────────────────────\n")
 
-    # =========================================================================
-    # PHASE 2: Dialogue Ingestion & Curriculum Memory Ingest
-    # =========================================================================
     print("┌─── [PHASE 2] Autonomous Evolution, RLVR & Novel Curriculum Ingest ──")
     ingest_res = ingest_historical_dialogues(db_path=db.db_path)
     print(f"│   ► Verified developer dialogue timeline ({ingest_res.get('facts_indexed', 5)} facts indexed)")
@@ -300,9 +283,6 @@ def run_master_pipeline():
     print(f"│   ► Ingested {len(novel_teachings)} synthetic novel facts, book lore chapters & DSL grammar into memory.db")
     print("└───────────────────────────────────────────────────────────────\n")
 
-    # =========================================================================
-    # PHASE 3: True EWC-LoRA Sleep Consolidation & Adapter Export
-    # =========================================================================
     print("┌─── [PHASE 3] True EWC-LoRA Sleep Consolidation Daemon (λ=400.0) ──")
     print("│ • Attaching LoRA linear adapters (r=8, alpha=16) to attention & MLP projections...")
     
@@ -329,7 +309,6 @@ def run_master_pipeline():
     mx.save_safetensors(adapter_file, trainable_params)
     print(f"│ [✓] Saved physical adapters to: {adapter_file} ({len(trainable_params)} tensor weights)")
 
-    # Compute real Frobenius norm shift on Metal buffer weights
     total_frobenius = 0.0
     for name, weight in trainable_params.items():
         norm_val = float(mx.linalg.norm(weight))
@@ -338,9 +317,6 @@ def run_master_pipeline():
     print(f"│ • Total Parametric Shift ||ΔW||_2: {total_frobenius:.4f} (Target >= 0.035 MET: True)")
     print("└───────────────────────────────────────────────────────────────\n")
 
-    # =========================================================================
-    # PHASE 4: Live Post-Consolidation Validation Across All Splits
-    # =========================================================================
     print("┌─── [PHASE 4] Post-Consolidation Live Evaluation (Zero Mocks) ─")
     flush_metal()
     post_scores = {}
@@ -353,7 +329,7 @@ def run_master_pipeline():
         print(f"│ • Post evaluating: {split_name} ({total_items_split} items)...")
 
         for it in sample_items:
-            res = evaluate_and_verify_item(model, tokenizer, verifier, f"Post-{split_name}", it, pld_drafter=pld_drafter, temp=0.2)
+            res = evaluate_and_verify_item(model, tokenizer, verifier, f"Post-{split_name}", it, temp=0.2)
             total_tokens_generated += res["tokens_generated"]
             total_generation_time_s += res["latency_s"]
             if res["verified"]:
@@ -374,7 +350,6 @@ def run_master_pipeline():
         }
         print(f"│   ► {split_name:28s}: {pass_rate:.1f}% ({passed_count}/{total_items_split} verified)")
 
-    # Phase 4B: Live Fact Recall Testing
     ok_rec, recall_fact, rec_meta = recall_historical_fact(query="What IPC ring buffer architecture was selected in Session A?", db_path=db.db_path)
     proof_transcripts["proof_4_recall"] = {
         "session": "Session A",
@@ -387,9 +362,6 @@ def run_master_pipeline():
     f_stream.close()
     print("└───────────────────────────────────────────────────────────────\n")
 
-    # =========================================================================
-    # PHASE 5: Report Synthesis Dynamically Aggregated from Raw Traces
-    # =========================================================================
     print("┌─── [PHASE 5] Aggregating Raw Traces & Writing Master Report ───")
     total_wall_time = time.time() - start_wall_time
     avg_tps = total_tokens_generated / max(0.001, total_generation_time_s)
@@ -400,9 +372,9 @@ def run_master_pipeline():
 
 **Model Configuration & Telemetry**
 - **Active Checkpoint**: `{model_id}`
-- **Backend Environment**: Apple Silicon Metal (MLX 2-Bit Quantized)
-- **KV Cache Format**: 4-Bit Integer Quantized (`kv_bits=4`, `kv_group_size=64`)
-- **Pro Reasoning Engine**: Active (N=16 parallel search, PLD speculative decoding, entropy routing)
+- **Backend Environment**: Apple Silicon Metal (native low-bit/ternary model weights)
+- **KV Cache Format**: Native/full precision (no KV quantization)
+- **Pro Reasoning Engine**: Native target-model decoding; speculative decoding disabled until exact equivalence is proven
 - **Raw Autoregressive Throughput**: {avg_tps:.1f} tok/s
 - **Total Elapsed Runtime**: {total_wall_time / 3600:.2f} hours ({total_wall_time:.1f}s)
 - **Total Tokens Generated**: {total_tokens_generated:,} tokens
