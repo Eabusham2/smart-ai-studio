@@ -1,15 +1,16 @@
 """Prompt-aware Pro branch synthesis using the already-existing Pro machinery.
 
-This module does not replace entropy routing, branch generation, temperature
-laddering, model backends, or runtime hardening. It only changes how N>1 branches
-collapse: the same loaded model hierarchically synthesizes candidate responses using
-the real user prompt/history. No hidden answer, reward, verifier result, or tests are
-available during synthesis. If explicit tests were supplied to solve(), the existing
-solver may verify only the single finished synthesis afterward.
+This module does not replace entropy routing, chat routing, branch generation,
+temperature laddering, model backends, or runtime hardening. It changes only how
+an already-routed N>1 Pro search collapses its candidate branches: the same loaded
+model hierarchically synthesizes them using the real user prompt/history. No hidden
+answer, reward, verifier result, or tests are available during synthesis. If explicit
+tests were supplied to solve(), the existing solver may verify only the single
+finished synthesis afterward.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 
 def install_pro_model_synthesis(cls) -> None:
@@ -17,7 +18,6 @@ def install_pro_model_synthesis(cls) -> None:
         return
 
     original_generate = cls.generate_parallel_branches
-    original_stream = cls.stream_solve
     original_solve = cls.solve
 
     def _merge_pair(self, prompt: str, history, left: str, right: str) -> str:
@@ -89,9 +89,8 @@ def install_pro_model_synthesis(cls) -> None:
         self._last_pro_synthesis_merge_calls = int(merge_calls)
         self._last_pro_synthesized_response = final
 
-        # Return only the completed synthesis to the existing solve() selection layer.
-        # Therefore any explicit verifier/test supplied by a caller can run only once,
-        # after all branch generation and synthesis are finished.
+        # Return only the completed synthesis to the old solve() selection layer.
+        # Thus explicit tests/verifiers can only see the finished synthesized answer.
         return [final]
 
     def solve_with_synthesis_metadata(self, *args, **kwargs):
@@ -113,60 +112,9 @@ def install_pro_model_synthesis(cls) -> None:
             metadata["selection"] = "prompt-aware hierarchical model synthesis"
             metadata["synthesized"] = True
             metadata["synthesis_generation_units"] = requested + merges
-            # Keep legacy numeric winner fields compatible with existing UI/DB readers;
-            # the selection field above is authoritative: output is a new synthesis,
-            # not one of the original branch indices.
             metadata["winning_branch_is_synthesis"] = True
         return response, metadata
 
-    def stream_solve_with_pro_routing(
-        self,
-        prompt: str,
-        history: Optional[List[Dict[str, str]]] = None,
-        temperature: float = 0.75,
-        top_p: float = 0.92,
-        cancel_event: Optional[Any] = None,
-    ):
-        # Restore the intended Gemini-era contract: every chat prompt reaches the
-        # entropy router. Easy prompts remain the existing low-latency stream; only
-        # prompts routed to N>1 pay the Pro search/synthesis cost.
-        entropy = float(self.calculate_token_entropy(prompt))
-        mode, branch_count = self.router.route(entropy, has_test_cases=False)
-        if int(branch_count) <= 1:
-            yield from original_stream(
-                self,
-                prompt,
-                history=history,
-                temperature=temperature,
-                top_p=top_p,
-                cancel_event=cancel_event,
-            )
-            return
-
-        response, metadata = self.solve(
-            prompt=prompt,
-            history=history,
-            cancel_event=cancel_event,
-            force_branch_count=int(branch_count),
-            # N>1 intentionally uses the existing convex temperature ladder rather
-            # than forcing every branch to the stream's single temperature.
-            temperature=None,
-        )
-        metadata = dict(metadata or {})
-        metadata["entropy"] = entropy
-        metadata["mode"] = mode
-        self._last_stream_pro_meta = metadata
-
-        # Pro must finish deliberating before there is a single answer to stream.
-        # Emit the final synthesis without fabricating an intermediate answer.
-        text = str(response or "")
-        step = 64
-        for idx in range(0, len(text), step):
-            if cancel_event and cancel_event.is_set():
-                break
-            yield text[idx : idx + step]
-
     cls.generate_parallel_branches = generate_parallel_branches_with_synthesis
     cls.solve = solve_with_synthesis_metadata
-    cls.stream_solve = stream_solve_with_pro_routing
     cls._pro_model_synthesis_installed = True
