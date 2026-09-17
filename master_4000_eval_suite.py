@@ -3,6 +3,7 @@ from eval._master_4000_base import *
 import eval.code_prompt_hardening as code_prompt_hardening
 import eval.deepswe_dataset_override as deepswe_dataset_override
 import eval.deepswe_optional_flagship as deepswe_optional_flagship
+import eval.deepswe_rsi_counter_fix as deepswe_rsi_counter_fix
 import eval.eta_progress_hardening as eta_progress_hardening
 import eval.flagship_dataset_overrides as flagship_dataset_overrides
 import eval.learn_progress_overlay as learn_progress_overlay
@@ -157,6 +158,8 @@ deepswe_optional_flagship.install(
     code_prompt_hardening,
     Master4000EvaluationEngine,
 )
+# Ensure verified DeepSWE RSI traces count toward the existing Phase-3 fetch budget.
+deepswe_rsi_counter_fix.install(phase4_pro_rsi)
 # ETA sees the final wrapped lifecycle, including optional DeepSWE.
 eta_progress_hardening.install(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
 # Add detailed 1/30..30/30 progress around the existing Phase-2 MCTS calls only.
@@ -166,9 +169,5 @@ if __name__ == "__main__":
     try:
         Master4000EvaluationEngine(max_duration_hours=72.0).run_full_suite()
     except KeyboardInterrupt:
-        # Inner evaluation loops save the active checkpoint before re-raising.
-        # RSI completed-item progress is persisted separately by rsi_resume_hardening.
-        # If Ctrl+C occurs during model loading, there is no new checkpoint state
-        # to save. Either way, exit cleanly without an alarming traceback.
         print("\n[*] Ctrl+C: clean shutdown.", flush=True)
         raise SystemExit(130)
