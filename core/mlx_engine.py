@@ -1,8 +1,10 @@
 """Merged MLX backend: rich app behavior + Metal safeguards + Dynamic SmartKV policy."""
 from __future__ import annotations
+import gc
 import logging
 import os
 import platform
+import psutil
 import core._mlx_engine_base as _base
 from core._mlx_engine_base import *
 from core.kv_cache_manager import SmartKVCacheManager, compute_auto_kv_budget
@@ -24,6 +26,49 @@ def _is_metal_oom(exc: BaseException) -> bool:
     return any(marker.replace(" ", "") in text for marker in _OOM_MARKERS)
 
 
+def _model_context_limit(model, tokenizer):
+    values = []
+    for obj in (getattr(model, "args", None), getattr(model, "config", None), tokenizer):
+        if obj is None:
+            continue
+        for name in (
+            "max_position_embeddings",
+            "max_seq_len",
+            "max_sequence_length",
+            "context_length",
+            "model_max_length",
+        ):
+            try:
+                value = int(getattr(obj, name))
+            except Exception:
+                continue
+            if 1024 <= value <= 10_000_000:
+                values.append(value)
+    return min(values) if values else None
+
+
+def _memory_pressure() -> bool:
+    try:
+        proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+        return proc_gb >= 12.5 or avail_gb <= 0.75
+    except Exception:
+        return False
+
+
+def _reclaim_if_needed(mx, *, force: bool = False) -> None:
+    if not force and not _memory_pressure():
+        return
+    gc.collect(2)
+    try:
+        if hasattr(mx, "clear_cache"):
+            mx.clear_cache()
+        elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+            mx.metal.clear_cache()
+    except Exception:
+        pass
+
+
 class MLXReasoningBackend(_base.MLXReasoningBackend):
     """Preserves native sampling/streaming while making the SmartKV policy live.
 
@@ -41,6 +86,52 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         super().__init__(model_path=model_path, adapter_path=adapter_path)
         self.kv_cache_manager = None
         self.max_stateful_kv_tokens = compute_auto_kv_budget()
+        self.last_generation_cap_reason = ""
+        self.last_effective_max_tokens = None
+        self.last_model_context_limit = None
+
+        # The GUI class is already defined when its ProReasoningEngine is constructed.
+        # Install the optional top-row generation-cap control without rewriting app_gui.py.
+        try:
+            from core.gui_generation_cap import install_gui_generation_cap
+            install_gui_generation_cap()
+        except Exception:
+            pass
+
+    def _effective_generation_cap(self, prompt: str, requested: int) -> int:
+        requested = max(1, int(requested))
+        try:
+            prompt_tokens = len(self.tokenizer.encode(prompt))
+        except Exception:
+            prompt_tokens = 0
+        model_cap = _model_context_limit(self.model, self.tokenizer)
+        self.last_model_context_limit = model_cap
+
+        if model_cap is None:
+            effective = requested
+            self.last_generation_cap_reason = (
+                f"User max {requested:,}; model context limit not exposed, so user max is authoritative."
+            )
+        else:
+            remaining = int(model_cap) - int(prompt_tokens)
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"Packed prompt requires {prompt_tokens:,} tokens but model context is {model_cap:,}; "
+                    "refusing context truncation."
+                )
+            effective = min(requested, remaining)
+            if effective < requested:
+                self.last_generation_cap_reason = (
+                    f"Clamped {requested:,} → {effective:,}: packed prompt uses {prompt_tokens:,} of "
+                    f"the model's {model_cap:,}-token context; context is never dropped."
+                )
+            else:
+                self.last_generation_cap_reason = (
+                    f"User max {requested:,}; {remaining:,} tokens remain in the model's "
+                    f"{model_cap:,}-token context."
+                )
+        self.last_effective_max_tokens = int(effective)
+        return int(effective)
 
     def load_model(self) -> bool:
         """Load native model weights without forcing any lossy KV-cache quantization."""
@@ -89,7 +180,6 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         if not self.is_mlx_available or self.model is None:
             return []
 
-        import gc
         import mlx.core as mx
         import mlx_lm
 
@@ -101,12 +191,13 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         count = max(1, min(int(branch_count), 16))
         temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
         branches = []
+        effective_max = self._effective_generation_cap(prompt, max_tokens)
 
         def _one(temp_value: float, prefill_step_size: int) -> str:
             sampler = make_sampler(temp=float(temp_value), top_p=top_p)
             kwargs = {
                 "prompt": prompt,
-                "max_tokens": max(1, int(max_tokens)),
+                "max_tokens": effective_max,
                 "sampler": sampler,
                 "prefill_step_size": int(prefill_step_size),
             }
@@ -124,12 +215,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return "".join(pieces)
 
         for idx in range(count):
-            gc.collect(1)
-            if hasattr(mx, "clear_cache"):
-                mx.clear_cache()
-            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                mx.metal.clear_cache()
-
+            _reclaim_if_needed(mx)
             temp_value = float(temps[idx % len(temps)])
             try:
                 branches.append(_one(temp_value, 256))
@@ -138,18 +224,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     raise
                 # Lossless OOM retry: same prompt, same sampler policy, same token
                 # budget and native/full-precision KV. Only prefill chunking changes.
-                gc.collect(1)
-                if hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                    mx.metal.clear_cache()
+                _reclaim_if_needed(mx, force=True)
                 branches.append(_one(temp_value, 64))
             finally:
-                gc.collect(1)
-                if hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                    mx.metal.clear_cache()
+                _reclaim_if_needed(mx)
 
         return branches
 
@@ -166,6 +244,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             prompt_len = len(self.tokenizer.encode(prompt))
         except Exception:
             pass
+
+        effective_max = self._effective_generation_cap(prompt, max_tokens)
 
         # The app passes the full history-packed prompt each time. Reset the arena so
         # no previous request can contaminate it, while retaining the RAM-scaled cap.
@@ -191,7 +271,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             # Same prompt, sampler, token allowance and native/full-precision KV for
             # normal execution and OOM retry. Only prefill chunk size may change.
             kwargs = {
-                "max_tokens": max(1, int(max_tokens)),
+                "max_tokens": effective_max,
                 "sampler": sampler,
                 "prefill_step_size": int(prefill_step_size),
             }
@@ -233,10 +313,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 # and reduce transient prefill memory without changing KV precision,
                 # context, sampler or requested generation length.
                 self.kv_cache_manager.reset()
-                if hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                    mx.metal.clear_cache()
+                _reclaim_if_needed(mx, force=True)
                 iterator = _run_stream(64)
                 for response in iterator:
                     generated += 1
@@ -254,10 +331,4 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 self.max_stateful_kv_tokens,
                 max(0, prompt_len + generated),
             )
-            try:
-                if hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                    mx.metal.clear_cache()
-            except Exception:
-                pass
+            _reclaim_if_needed(mx)
