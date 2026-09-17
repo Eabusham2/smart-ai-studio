@@ -6,7 +6,10 @@ policy, checkpointing, or evaluation order.
 """
 from __future__ import annotations
 
+import base64
 import json
+import pickle
+import zlib
 from typing import Any, Dict, List
 
 
@@ -145,33 +148,103 @@ def install(real_module) -> None:
 
         def build():
             rows: List[Dict[str, Any]] = []
-            for filename in ("BFCL_v3_exec_simple.json", "BFCL_v3_exec_multiple.json"):
-                for row in _jsonl(real_module._text_get(base + filename)):
-                    prompt = _conversation_text(row.get("question"))
-                    tools = row.get("function") or row.get("functions") or row.get("tools")
-                    truth = row.get("ground_truth")
-                    parsed = real_module._parse_call(truth)
-                    if not prompt or not parsed:
-                        continue
-                    name, args = parsed
-                    rows.append({
-                        "id": f"REAL-BFCL-{row.get('id', len(rows))}",
-                        "prompt": prompt + "\n\nAvailable tools:\n" + json.dumps(tools, ensure_ascii=False),
-                        "expected_tool": name,
-                        "expected_args": args,
-                        "real_source": f"gorilla-llm/Berkeley-Function-Calling-Leaderboard:{filename}",
-                        "_real_kind": "bfcl",
-                    })
-                    if len(rows) == 200:
-                        return rows
-            if len(rows) < 200:
-                raise RuntimeError(f"BFCL public exec sets produced only {len(rows)}/200 usable rows")
-            return rows[:200]
 
-        return real_module._cached(cache_dir, "bfcl_v3_exec_200", build)
+            # First use execution-simple rows, which publish one exact callable
+            # ground truth in the same JSONL record.
+            for row in _jsonl(real_module._text_get(base + "BFCL_v3_exec_simple.json")):
+                prompt = _conversation_text(row.get("question"))
+                tools = row.get("function") or row.get("functions") or row.get("tools")
+                parsed = real_module._parse_call(row.get("ground_truth"))
+                if not prompt or not parsed:
+                    continue
+                name, args = parsed
+                rows.append({
+                    "id": f"REAL-BFCL-{row.get('id', len(rows))}",
+                    "prompt": prompt + "\n\nAvailable tools:\n" + json.dumps(tools, ensure_ascii=False),
+                    "expected_tool": name,
+                    "expected_args": args,
+                    "real_source": "gorilla-llm/Berkeley-Function-Calling-Leaderboard:BFCL_v3_exec_simple",
+                    "_real_kind": "bfcl",
+                })
+                if len(rows) == 200:
+                    return rows
+
+            # Fill only with unambiguous single-call BFCL simple rows. Skip any
+            # row that has multiple accepted values for an argument so the existing
+            # exact JSON scorer cannot reject another officially-valid answer.
+            question_rows = _jsonl(real_module._text_get(base + "BFCL_v3_simple.json"))
+            answer_rows = {
+                str(x.get("id")): x
+                for x in _jsonl(real_module._text_get(base + "possible_answer/BFCL_v3_simple.json"))
+            }
+            for row in question_rows:
+                answer_row = answer_rows.get(str(row.get("id")))
+                truth = answer_row.get("ground_truth") if answer_row else None
+                if not isinstance(truth, list) or len(truth) != 1 or not isinstance(truth[0], dict) or len(truth[0]) != 1:
+                    continue
+                name, arg_options = next(iter(truth[0].items()))
+                if not isinstance(arg_options, dict):
+                    continue
+                exact_args = {}
+                ambiguous = False
+                for key, candidates in arg_options.items():
+                    candidates = candidates if isinstance(candidates, list) else [candidates]
+                    usable = [x for x in candidates if x not in ("", None)]
+                    if len(usable) != 1:
+                        ambiguous = True
+                        break
+                    exact_args[str(key)] = usable[0]
+                if ambiguous:
+                    continue
+                prompt = _conversation_text(row.get("question"))
+                tools = row.get("function") or row.get("functions") or row.get("tools")
+                if not prompt or not tools:
+                    continue
+                rows.append({
+                    "id": f"REAL-BFCL-{row.get('id', len(rows))}",
+                    "prompt": prompt + "\n\nAvailable tools:\n" + json.dumps(tools, ensure_ascii=False),
+                    "expected_tool": str(name),
+                    "expected_args": exact_args,
+                    "real_source": "gorilla-llm/Berkeley-Function-Calling-Leaderboard:BFCL_v3_simple",
+                    "_real_kind": "bfcl",
+                })
+                if len(rows) == 200:
+                    return rows
+
+            raise RuntimeError(f"BFCL single-call public sets produced only {len(rows)}/200 unambiguous rows")
+
+        return real_module._cached(cache_dir, "bfcl_v3_single_call_200", build)
+
+    def normalize_io_cases(raw):
+        value = real_module._as_json(raw)
+        if isinstance(value, str):
+            try:
+                value = json.loads(
+                    pickle.loads(
+                        zlib.decompress(base64.b64decode(value.encode("utf-8")))
+                    )
+                )
+            except Exception:
+                return []
+        if isinstance(value, dict):
+            value = [value]
+        pairs = []
+        if isinstance(value, list):
+            for case in value:
+                case = real_module._as_json(case)
+                if not isinstance(case, dict):
+                    continue
+                if str(case.get("testtype", "stdin")).lower() not in ("stdin", ""):
+                    continue
+                inp = case.get("input", case.get("stdin"))
+                out = case.get("output", case.get("stdout"))
+                if inp is not None and out is not None:
+                    pairs.append((str(inp), str(out)))
+        return pairs
 
     real_module._load_humaneval = load_humaneval
     real_module._load_olympiad = load_olympiad
     real_module._load_supergpqa = load_supergpqa
     real_module._load_livebench_reasoning = load_livebench_reasoning
     real_module._load_bfcl = load_bfcl
+    real_module._normalize_io_cases = normalize_io_cases
