@@ -13,7 +13,7 @@ except ImportError:
 
 
 def compute_auto_kv_budget(total_ram_gb: Optional[float] = None) -> int:
-    """Scale the retained stateful KV window to physical unified memory."""
+    """Scale when the temporary prompt-cache arena is rebuilt; never truncate context."""
     if total_ram_gb is None:
         total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
     if total_ram_gb <= 8.0:
@@ -26,7 +26,7 @@ def compute_auto_kv_budget(total_ram_gb: Optional[float] = None) -> int:
 
 
 class SmartKVCacheManager:
-    """Persistent MLX cache manager; benchmark items use fresh caches separately."""
+    """Fresh full-precision MLX prompt-cache arena; it never removes prompt tokens."""
     def __init__(self, model: Any, max_tokens: Optional[int] = None):
         if not MLX_AVAILABLE or make_prompt_cache is None:
             raise RuntimeError("SmartKVCacheManager requires MLX/MLX-LM")
@@ -38,21 +38,25 @@ class SmartKVCacheManager:
     def get_cache(self) -> List[Any]:
         return self.cache
 
-    def reset(self) -> None:
+    def reset(self, purge_allocator: bool = False) -> None:
+        """Rebuild logical KV state; only purge Metal's allocator on real pressure/OOM."""
         self.cache = None
-        try:
-            if hasattr(mx, "clear_cache"):
-                mx.clear_cache()
-            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                mx.metal.clear_cache()
-        except Exception:
-            pass
+        if purge_allocator:
+            try:
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                    mx.metal.clear_cache()
+            except Exception:
+                pass
         self.cache = make_prompt_cache(self.model)
         self.current_length = 0
 
     def auto_compact_if_needed(self, incoming_tokens_len: int) -> bool:
+        # "Compact" here means throw away stale KV tensors and recompute from the
+        # complete packed prompt. No token IDs or conversation content are removed.
         if self.current_length + int(incoming_tokens_len) > self.max_tokens:
-            self.reset()
+            self.reset(purge_allocator=False)
             return True
         return False
 
