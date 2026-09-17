@@ -5,6 +5,7 @@ import eval.deepswe_dataset_override as deepswe_dataset_override
 import eval.deepswe_optional_flagship as deepswe_optional_flagship
 import eval.eta_progress_hardening as eta_progress_hardening
 import eval.flagship_dataset_overrides as flagship_dataset_overrides
+import eval.learn_progress_overlay as learn_progress_overlay
 import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
 import eval.phase4_pro_rsi as phase4_pro_rsi
@@ -156,8 +157,10 @@ deepswe_optional_flagship.install(
     code_prompt_hardening,
     Master4000EvaluationEngine,
 )
-# ETA is installed last so its progress accounting sees the final wrapped lifecycle.
+# ETA sees the final wrapped lifecycle, including optional DeepSWE.
 eta_progress_hardening.install(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
+# Add detailed 1/30..30/30 progress around the existing Phase-2 MCTS calls only.
+learn_progress_overlay.install(Master4000EvaluationEngine)
 
 if __name__ == "__main__":
     try:
