@@ -1,6 +1,9 @@
 """Canonical entry point for the merged 4,014-item evaluation suite."""
 from eval._master_4000_base import *
+import eval.code_prompt_hardening as code_prompt_hardening
 import eval.deepswe_dataset_override as deepswe_dataset_override
+import eval.deepswe_optional_flagship as deepswe_optional_flagship
+import eval.eta_progress_hardening as eta_progress_hardening
 import eval.flagship_dataset_overrides as flagship_dataset_overrides
 import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
@@ -120,8 +123,8 @@ real_prompt_overrides.install(real_benchmark_runtime)
 # verifiers, and a 32K benchmark ceiling. This intentionally runs last so it replaces
 # only recovered synthetic benchmark behavior.
 real_benchmark_runtime.install(BenchmarkDatasetProvider, master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
-# SWE-bench Verified is the 32K-compatible software-engineering replacement here.
-# It is intentionally NOT labeled DeepSWE; true DeepSWE requires an agentic repo loop.
+# SWE-bench Verified is the normal 32K software-engineering benchmark. True DeepSWE
+# is separately opt-in below and is never mislabeled as SWE-bench.
 deepswe_dataset_override.install(
     real_benchmark_runtime,
     master_runtime,
@@ -143,6 +146,18 @@ def _stable_real_repair_suite(splits):
     return splits
 master_runtime._repair_suite = _stable_real_repair_suite
 phase4_pro_rsi._repair_suite = _stable_real_repair_suite
+
+# Optional true DeepSWE v1.1 uses the official 113-task Pier/mini-swe-agent harness.
+# N is the default and leaves the normal suite untouched. Y adds DeepSWE baseline,
+# two-round RSI on misses, and existing 1/8/16 Pro branching for final retakes.
+deepswe_optional_flagship.install(
+    master_runtime,
+    phase4_pro_rsi,
+    code_prompt_hardening,
+    Master4000EvaluationEngine,
+)
+# ETA is installed last so its progress accounting sees the final wrapped lifecycle.
+eta_progress_hardening.install(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
 
 if __name__ == "__main__":
     try:
