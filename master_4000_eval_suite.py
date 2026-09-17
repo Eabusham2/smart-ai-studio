@@ -22,6 +22,7 @@ import eval.real_prompt_overrides as real_prompt_overrides
 import eval.real_split_labels as real_split_labels
 import eval.scoring_hardening as scoring_hardening
 import eval.stage_integrity_telemetry as stage_integrity_telemetry
+import eval.unified_context_budget as unified_context_budget
 from eval.checkpoint_hardening import install as install_checkpoint_hardening
 from eval.code_prompt_hardening import install as install_code_prompt_hardening
 from eval.conversation_teach_hardening import install as install_conversation_teach_hardening
@@ -181,6 +182,14 @@ deepswe_blind_pro_selector.install(
 )
 # Account for real synthesis generations (N branches + N-1 merges) in RSI/Phase-4 ETA.
 pro_synthesis_eta_adjust.install(phase4_pro_rsi, Master4000EvaluationEngine)
+# Final generation-budget layer: normal eval is one 32K total Context; opt-in flagship
+# DeepSWE is one 226K total Context. No separate 16K/8K output-only ceiling remains.
+unified_context_budget.install(
+    master_runtime,
+    phase4_pro_rsi,
+    deepswe_optional_flagship,
+    Master4000EvaluationEngine,
+)
 # Add detailed 1/30..30/30 progress around the existing Phase-2 MCTS calls only.
 learn_progress_overlay.install(Master4000EvaluationEngine)
 
