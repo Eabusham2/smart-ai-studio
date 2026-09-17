@@ -1,6 +1,8 @@
 """Merged MLX backend: rich app behavior + Metal safeguards + Dynamic SmartKV policy."""
 from __future__ import annotations
 import logging
+import os
+import platform
 import core._mlx_engine_base as _base
 from core._mlx_engine_base import *
 from core.kv_cache_manager import SmartKVCacheManager, compute_auto_kv_budget
@@ -16,6 +18,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
     previous request's raw KV tensors would duplicate context. The manager therefore
     owns the hardware-scaled budget and a fresh prompt-cache arena per packed request;
     conversation state itself is preserved by the app's history packer.
+
+    KV caches intentionally remain at MLX-LM's native/full precision. The model's
+    native low-bit/ternary weight format is untouched; only lossy KV quantization is
+    forbidden so inference does not trade attention-state precision for RAM/speed.
     """
 
     def __init__(self, model_path="orcarouter/Qwen3.8-27B-Uncensored-MLX", adapter_path=None):
@@ -24,13 +30,39 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.max_stateful_kv_tokens = compute_auto_kv_budget()
 
     def load_model(self) -> bool:
-        ok = super().load_model()
-        if ok and self.model is not None:
+        """Load native model weights without forcing any lossy KV-cache quantization."""
+        if platform.system() != "Darwin" or platform.machine() != "arm64":
+            self.is_mlx_available = False
+            return False
+        if not os.path.exists(self.model_path) and os.getenv("OFFLINE", "0") == "1":
+            self.is_mlx_available = False
+            return False
+
+        try:
+            import mlx_lm
+            from core.memory_watchdog import SystemMemoryWatchdog
+
+            SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
+            self.model, self.tokenizer = mlx_lm.load(
+                self.model_path,
+                adapter_path=(
+                    self.adapter_path
+                    if self.adapter_path and os.path.exists(self.adapter_path)
+                    else None
+                ),
+            )
+            self.is_mlx_available = self.model is not None and self.tokenizer is not None
+        except Exception as exc:
+            _base.logger.error("MLX full-precision load failed: %s", exc)
+            self.is_mlx_available = False
+            return False
+
+        if self.is_mlx_available:
             self.kv_cache_manager = SmartKVCacheManager(
                 self.model,
                 max_tokens=self.max_stateful_kv_tokens,
             )
-        return ok
+        return bool(self.is_mlx_available)
 
     def stream_generate_tokens(self, prompt: str, max_tokens: int = 512,
                                temperature: float = 0.75, top_p: float = 0.92):
@@ -48,6 +80,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         # The app passes the full history-packed prompt each time. Reset the arena so
         # no previous request can contaminate it, while retaining the RAM-scaled cap.
+        # This resets/recomputes cache state; it does not truncate the packed prompt.
         if self.kv_cache_manager is None:
             self.kv_cache_manager = SmartKVCacheManager(
                 self.model,
@@ -73,8 +106,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         generated = 0
         try:
-            # Newer MLX-LM versions accept an explicit prompt cache. Fall back to the
-            # library-managed cache for older versions without changing output quality.
+            # Newer MLX-LM versions accept an explicit native/full-precision prompt
+            # cache. Fall back to the library-managed native cache on older versions.
             try:
                 iterator = mlx_lm.stream_generate(
                     self.model,
