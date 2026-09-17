@@ -500,8 +500,8 @@ class Master4000EvaluationEngine:
         md.append("## Architectural Telemetry & Hardware Constraints\n")
         md.append("- **Peak Unified RAM Resident Footprint:** $\\le 8.42\\text{ GB}$ (Physical Budget Limit: $16.0\\text{ GB}$)")
         md.append("- **Gram-Schmidt OGP Orthogonal Overlap:** $\\langle g_{\\text{projected}}, m_j \\rangle \\le 1.00\\times 10^{-6}$")
-        md.append("- **KV Cache Arena:** Dynamic H2O Attention-Sink Compaction (2,048 Tokens)")
-        md.append("- **Speculative Trie Average Speedup:** $2.14\\times$ Effective Throughput")
+        md.append("- **KV Cache:** Full-precision/lossless context retention (H2O token dropping retired)")
+        md.append("- **Speculative Decoding:** Disabled unless exact target-output equivalence is proven")
         md.append("- **Autonomous MCTS Verified Identities:** 30 Invariant Ingestions Pushed to Replay Buffer")
         md.append("\n```\n[EVALUATION EXECUTION RUN COMPLETED SUCCESSFULLY]\n```\n")
 
