@@ -12,6 +12,7 @@ import eval.learn_progress_overlay as learn_progress_overlay
 import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
 import eval.phase4_pro_rsi as phase4_pro_rsi
+import eval.pro_synthesis_eta_adjust as pro_synthesis_eta_adjust
 import eval.real_benchmark_runtime as real_benchmark_runtime
 import eval.real_choice_scoring as real_choice_scoring
 import eval.real_dataset_fetch_fixes as real_dataset_fetch_fixes
@@ -166,13 +167,15 @@ deepswe_rsi_counter_fix.install(phase4_pro_rsi)
 eta_progress_hardening.install(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
 # While normal Phase-4 runs, include still-pending DeepSWE Pro retakes in total ETA.
 deepswe_phase4_eta_overlay.install(master_runtime, eta_progress_hardening)
-# Replace only DeepSWE's unique-patch fallback with an answer-blind pairwise model tournament.
-# The shared Pro router/branch generator remains untouched.
+# DeepSWE keeps the existing Pro branch generator, then the model synthesizes the public task + patches.
+# Hidden verifier/reward information is still withheld until the finished synthesis is scored.
 deepswe_blind_pro_selector.install(
     deepswe_optional_flagship,
     phase4_pro_rsi,
     master_runtime,
 )
+# Account for real synthesis generations (N branches + N-1 merges) in RSI/Phase-4 ETA.
+pro_synthesis_eta_adjust.install(phase4_pro_rsi, Master4000EvaluationEngine)
 # Add detailed 1/30..30/30 progress around the existing Phase-2 MCTS calls only.
 learn_progress_overlay.install(Master4000EvaluationEngine)
 
