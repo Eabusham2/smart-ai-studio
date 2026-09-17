@@ -133,8 +133,7 @@ class H2OKVCacheArena:
     def register_step_attention(self,w):
         for i,x in enumerate(w): self.accumulated_attention_scores[i:i+1]=[self.accumulated_attention_scores[i]+float(x) if i<len(self.accumulated_attention_scores) else float(x)]
     def compute_compacted_indices(self,n):
-        if n<=self.max_budget:return list(range(n))
-        scores=sorted(((self.accumulated_attention_scores[i] if i<len(self.accumulated_attention_scores) else 0,i) for i in range(self.sink_size,n)),reverse=True); return sorted(set(range(min(self.sink_size,n)))|{i for _,i in scores[:self.heavy_size]}|set(range(max(0,n-4),n)))[:self.max_budget]
+        return list(range(max(0,int(n))))
 @dataclass
 class MCTSNode:
     state_expression:str; parent:Any=None; children:dict=field(default_factory=dict); visits:int=0; reward:float=0.
@@ -202,8 +201,7 @@ class UnifiedMasterEngine:
     def _initialize_runtime(self):
         if not MLX_AVAILABLE:return
         try:
-            try:self.model,self.tokenizer=load(self.settings.mlx_model_path,model_config={'kv_bits':4,'kv_group_size':64})
-            except Exception:self.model,self.tokenizer=load(self.settings.mlx_model_path)
+            self.model,self.tokenizer=load(self.settings.mlx_model_path)
             self.moe_manager=MoEDualBufferManager(self.model,self.settings); self.moe_router=HierarchicalMoERouter(self.model); self.grpo_trainer=GRPOTrainingEngine(self.model,self.tokenizer,self.sandbox)
             if self.settings.enable_awake_ogp_daemon:
                 self.ogp_daemon=ProjectedSleepConsolidationDaemon(self.moe_manager,self.ogp_projector,self.kg,self.tokenizer,self.settings,METAL_STREAM_LOCK); self.ogp_daemon.start()
