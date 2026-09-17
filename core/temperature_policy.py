@@ -64,7 +64,9 @@ def _ensure_extra_anchor(temperatures) -> List[float]:
     temps = [float(t) for t in temperatures]
     if len(temps) <= 1:
         return temps
-    if not any(abs(t - FIXED_PRO_EXTRA_TEMPERATURE) < 1e-9 for t in temps):
+    # A naturally occurring 0.65 inside the routed curve does not replace the
+    # dedicated extra branch. Only an already-appended final 0.65 suppresses another.
+    if abs(temps[-1] - FIXED_PRO_EXTRA_TEMPERATURE) >= 1e-9:
         temps.append(FIXED_PRO_EXTRA_TEMPERATURE)
     return temps
 
@@ -76,6 +78,7 @@ def install_chat(pro_module) -> None:
 
     cls = pro_module.ProReasoningEngine
     original_generate = cls.generate_parallel_branches
+    original_solve = cls.solve
 
     def generate_with_fixed_anchor(
         self,
@@ -122,8 +125,39 @@ def install_chat(pro_module) -> None:
         )
         return list(branches or []) + list(extra or [])
 
+    def solve_with_actual_candidate_metadata(self, *args, **kwargs):
+        response, metadata = original_solve(self, *args, **kwargs)
+        metadata = dict(metadata or {})
+        candidates = list(metadata.get("raw_branches") or [])
+        temps = list(metadata.get("temp_ladder") or [])
+        actual_n = len(candidates)
+        if actual_n > 1 and len(temps) == actual_n:
+            routed_n = max(1, actual_n - 1)
+            metadata["routed_branch_count"] = routed_n
+            metadata["branch_count"] = actual_n
+            metadata["fixed_extra_temperature"] = FIXED_PRO_EXTRA_TEMPERATURE
+            metadata["pro_gamma"] = round(pro_gamma(routed_n), 4)
+            metadata["mode"] = f"Pro Search (N={routed_n}+1 fixed)"
+
+            # The historical verified-branch surprise formula normalized by routed N.
+            # Re-normalize only that metadata score to the actual candidate pool so an
+            # extra-branch win can never exceed the intended 0..1-ish range.
+            if bool(metadata.get("verified")):
+                try:
+                    idx = int(metadata.get("winning_branch", 0) or 0)
+                    entropy = float(metadata.get("entropy", 0.0) or 0.0)
+                    if idx == 0:
+                        surprise = 0.10 + 0.10 * entropy
+                    else:
+                        surprise = 0.50 + 0.40 * (idx / max(1, actual_n - 1)) + 0.10 * entropy
+                    metadata["surprise_score"] = round(min(1.0, max(0.0, surprise)), 4)
+                except Exception:
+                    pass
+        return response, metadata
+
     pro_module.get_ladder_temperatures = pro_ladder
     cls.generate_parallel_branches = generate_with_fixed_anchor
+    cls.solve = solve_with_actual_candidate_metadata
     pro_module._ternary_temperature_policy_installed = True
 
 
