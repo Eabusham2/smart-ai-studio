@@ -1,21 +1,21 @@
-"""Small GUI integration for the existing max_new_tokens setting.
+"""Small GUI integration for one total prompt+output Context budget.
 
-The desktop app already has a user-facing generation setting in Settings but no GUI
-control for it. Install a second compact header row without rewriting app_gui.py.
-The MLX backend remains authoritative for the effective cap:
+The desktop app keeps the existing GUI intact and adds one compact second header row.
+"Context" means the complete active model window: prompt/history plus generated tokens.
+There is no separate output-token limit on native MLX generation; after old dialogue is
+consolidated, the model may use every remaining Context token until natural EOS.
 
-    min(user max_new_tokens, model context - packed prompt tokens)
-
-Old complete dialogue pairs may first be synchronously consolidated into real weights
-when doing so is required to preserve the requested output room. The same hook repairs
-the later streaming GUI's stale SQLite label when the historical Pro path actually ran
-N>1 and replaces the GUI's approximate end-to-end t/s badge with measured MLX decode TPS.
+The same hook also repairs the later streaming GUI's stale Instant-N=1 SQLite label
+when historical Pro actually ran, and shows MLX-LM's measured raw decode TPS rather
+than confusing complete Pro/prefill wall time with decoder throughput.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
 import sys
+
+from core.platform import get_auto_context_window_size
 
 
 def install_gui_generation_cap() -> None:
@@ -41,28 +41,57 @@ def install_gui_generation_cap() -> None:
             except Exception:
                 pass
 
-    def _apply_cap(self, event=None):
+    def _advertised_context(self) -> int:
+        try:
+            info = self.models_config.get(self.active_tab_id, {})
+            return int(info.get("max_context", 0) or 0)
+        except Exception:
+            return 0
+
+    def _current_context(self) -> int:
+        engine = getattr(self, "engine", None)
+        selected = int(getattr(engine, "_context_budget_tokens", 0) or 0)
+        if selected > 0:
+            return selected
+        auto = int(get_auto_context_window_size())
+        advertised = _advertised_context(self)
+        selected = min(auto, advertised) if advertised else auto
+        selected = max(1024, selected)
+        if engine is not None:
+            engine._context_budget_tokens = selected
+            backend = getattr(engine, "mlx_backend", None)
+            if backend is not None:
+                backend.context_budget_tokens = selected
+        return selected
+
+    def _apply_context(self, event=None):
         raw = str(getattr(self, "generation_cap_var", None).get()).strip()
         try:
             requested = int(raw.replace(",", ""))
         except Exception:
-            requested = int(getattr(self.settings, "max_new_tokens", 1536) or 1536)
-        requested = max(1, requested)
-        self.settings.max_new_tokens = requested
+            requested = _current_context(self)
+        requested = max(1024, requested)
+
+        engine = getattr(self, "engine", None)
+        if engine is not None:
+            engine._context_budget_tokens = requested
+            backend = getattr(engine, "mlx_backend", None)
+            if backend is not None:
+                backend.context_budget_tokens = requested
         self.generation_cap_var.set(f"{requested}")
 
-        info = self.models_config.get(self.active_tab_id, {})
-        advertised = int(info.get("max_context", 0) or 0)
-        if advertised and requested >= advertised:
+        advertised = _advertised_context(self)
+        if advertised and requested > advertised:
             _set_reason(
                 self,
-                f"Requested {requested:,}; selected model context is {advertised:,}. "
-                "Runtime consolidates old completed dialogue when possible, then caps output to the real tokens remaining.",
+                f"Context {requested:,} requested; selected model advertises {advertised:,}. "
+                "Runtime uses the physical model limit. Prompt + history + output all share that one window.",
             )
         else:
             _set_reason(
                 self,
-                f"User max {requested:,}. Runtime preserves/consolidates history first; effective output still cannot exceed real model context.",
+                f"Context {requested:,} total. At 80% active prompt/history, old completed dialogue is "
+                "consolidated into weights; generation may use every remaining token until EOS.",
             )
         return "break" if event is not None else None
 
@@ -71,6 +100,7 @@ def install_gui_generation_cap() -> None:
         if hasattr(self, "generation_cap_bar"):
             return
 
+        context_value = _current_context(self)
         self.generation_cap_bar = tk.Frame(self.main_container, bg=self.C["bg_hud"])
         self.generation_cap_bar.pack(fill="x", side="top", padx=10, pady=(0, 3))
         inner = tk.Frame(self.generation_cap_bar, bg=self.C["bg_hud"])
@@ -78,15 +108,13 @@ def install_gui_generation_cap() -> None:
 
         tk.Label(
             inner,
-            text="Max output tokens",
+            text="Context",
             font=getattr(mod, "_FONT_TINY_BOLD"),
             bg=self.C["bg_hud"],
             fg=self.C["text_main"],
         ).pack(side="left", padx=(0, 5))
 
-        self.generation_cap_var = tk.StringVar(
-            value=str(int(getattr(self.settings, "max_new_tokens", 1536) or 1536))
-        )
+        self.generation_cap_var = tk.StringVar(value=str(context_value))
         self.ent_generation_cap = tk.Entry(
             inner,
             textvariable=self.generation_cap_var,
@@ -102,8 +130,8 @@ def install_gui_generation_cap() -> None:
             justify="right",
         )
         self.ent_generation_cap.pack(side="left", padx=(0, 4), ipady=2)
-        self.ent_generation_cap.bind("<Return>", lambda e: _apply_cap(self, e))
-        self.ent_generation_cap.bind("<FocusOut>", lambda e: _apply_cap(self, e))
+        self.ent_generation_cap.bind("<Return>", lambda e: _apply_context(self, e))
+        self.ent_generation_cap.bind("<FocusOut>", lambda e: _apply_context(self, e))
 
         self.btn_apply_generation_cap = tk.Button(
             inner,
@@ -115,15 +143,15 @@ def install_gui_generation_cap() -> None:
             bd=0,
             padx=6,
             pady=2,
-            command=lambda: _apply_cap(self),
+            command=lambda: _apply_context(self),
         )
         self.btn_apply_generation_cap.pack(side="left", padx=(0, 8))
 
         self.lbl_generation_cap_reason = tk.Label(
             self.generation_cap_bar,
             text=(
-                f"User max {int(getattr(self.settings, 'max_new_tokens', 1536) or 1536):,}. "
-                "Old complete dialogue is consolidated if needed; real model context remains the hard ceiling."
+                f"Context {context_value:,} total = prompt/history + output. "
+                "Old dialogue consolidates at 80%; output uses all remaining room until EOS."
             ),
             font=getattr(mod, "_FONT_TINY"),
             bg=self.C["bg_hud"],
@@ -149,9 +177,6 @@ def install_gui_generation_cap() -> None:
         engine = getattr(self, "engine", None)
         backend = getattr(engine, "mlx_backend", None)
 
-        # app_gui.py historically estimates t/s from words divided by complete request
-        # wall time. Prefer MLX-LM's measured raw decode rate when available so the HUD
-        # does not confuse Pro/search/prefill latency with the decoder's actual speed.
         try:
             raw_decode_tps = float(getattr(backend, "last_tok_per_sec", 0.0) or 0.0)
         except Exception:
@@ -166,15 +191,13 @@ def install_gui_generation_cap() -> None:
         if not isinstance(meta, dict) or int(meta.get("branch_count", 1) or 1) <= 1:
             return result
 
-        # Restore the historical Pro metadata for visualizers/debugging as well as DB.
         try:
             self.last_metadata = dict(meta)
         except Exception:
             pass
 
         # The streaming GUI historically wrote a hard-coded Instant N=1 row after
-        # every response. Correct only the newest row for this exact prompt and only
-        # when it still has that stale label.
+        # every response. Correct only the newest row for this exact prompt when Pro ran.
         try:
             raw_branches = meta.get("raw_branches")
             with sqlite3.connect(self.db.db_path) as conn:
