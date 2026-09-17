@@ -6,9 +6,10 @@ The MLX backend remains authoritative for the effective cap:
 
     min(user max_new_tokens, model context - packed prompt tokens)
 
-No prompt/history is truncated to satisfy the output cap. The same hook also repairs
-the later streaming GUI's stale SQLite label: when the historical Pro path actually
-ran N>1, persist its real metadata instead of the old hard-coded "Instant N=1" values.
+Old complete dialogue pairs may first be synchronously consolidated into real weights
+when doing so is required to preserve the requested output room. The same hook repairs
+the later streaming GUI's stale SQLite label when the historical Pro path actually ran
+N>1 and replaces the GUI's approximate end-to-end t/s badge with measured MLX decode TPS.
 """
 from __future__ import annotations
 
@@ -56,12 +57,12 @@ def install_gui_generation_cap() -> None:
             _set_reason(
                 self,
                 f"Requested {requested:,}; selected model context is {advertised:,}. "
-                "Runtime caps output to the tokens remaining after the packed prompt; prompt/context is never dropped.",
+                "Runtime consolidates old completed dialogue when possible, then caps output to the real tokens remaining.",
             )
         else:
             _set_reason(
                 self,
-                f"User max {requested:,}. Effective output = min(user max, model context remaining after prompt).",
+                f"User max {requested:,}. Runtime preserves/consolidates history first; effective output still cannot exceed real model context.",
             )
         return "break" if event is not None else None
 
@@ -122,7 +123,7 @@ def install_gui_generation_cap() -> None:
             self.generation_cap_bar,
             text=(
                 f"User max {int(getattr(self.settings, 'max_new_tokens', 1536) or 1536):,}. "
-                "Effective cap also respects remaining model context; no prompt truncation."
+                "Old complete dialogue is consolidated if needed; real model context remains the hard ceiling."
             ),
             font=getattr(mod, "_FONT_TINY"),
             bg=self.C["bg_hud"],
@@ -134,17 +135,42 @@ def install_gui_generation_cap() -> None:
     def set_generating_with_cap_reason(self, generating: bool):
         result = original_set_generating(self, generating)
         if not generating:
-            backend = getattr(getattr(self, "engine", None), "mlx_backend", None)
+            engine = getattr(self, "engine", None)
+            backend = getattr(engine, "mlx_backend", None)
             reason = str(getattr(backend, "last_generation_cap_reason", "") or "")
-            if reason:
-                _set_reason(self, reason)
+            consolidation = str(getattr(engine, "_last_context_consolidation_note", "") or "")
+            combined = " • ".join(x for x in (consolidation, reason) if x)
+            if combined:
+                _set_reason(self, combined)
         return result
 
     def process_with_real_pro_metadata(self, full_msg: str, user_prompt: str):
         result = original_process(self, full_msg, user_prompt)
-        meta = getattr(getattr(self, "engine", None), "_last_stream_pro_meta", None)
+        engine = getattr(self, "engine", None)
+        backend = getattr(engine, "mlx_backend", None)
+
+        # app_gui.py historically estimates t/s from words divided by complete request
+        # wall time. Prefer MLX-LM's measured raw decode rate when available so the HUD
+        # does not confuse Pro/search/prefill latency with the decoder's actual speed.
+        try:
+            raw_decode_tps = float(getattr(backend, "last_tok_per_sec", 0.0) or 0.0)
+        except Exception:
+            raw_decode_tps = 0.0
+        if raw_decode_tps > 0.0:
+            try:
+                self.root.after(0, lambda t=raw_decode_tps: self._update_telemetry(t))
+            except Exception:
+                pass
+
+        meta = getattr(engine, "_last_stream_pro_meta", None)
         if not isinstance(meta, dict) or int(meta.get("branch_count", 1) or 1) <= 1:
             return result
+
+        # Restore the historical Pro metadata for visualizers/debugging as well as DB.
+        try:
+            self.last_metadata = dict(meta)
+        except Exception:
+            pass
 
         # The streaming GUI historically wrote a hard-coded Instant N=1 row after
         # every response. Correct only the newest row for this exact prompt and only
