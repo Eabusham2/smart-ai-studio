@@ -8,6 +8,7 @@ import eval.deepswe_phase4_eta_overlay as deepswe_phase4_eta_overlay
 import eval.deepswe_rsi_counter_fix as deepswe_rsi_counter_fix
 import eval.eta_progress_hardening as eta_progress_hardening
 import eval.flagship_dataset_overrides as flagship_dataset_overrides
+import eval.full_precision_generation as full_precision_generation
 import eval.learn_progress_overlay as learn_progress_overlay
 import eval.live_generation_stream as live_generation_stream
 import eval.master_4000_runtime as master_runtime
@@ -72,8 +73,9 @@ install_rsi_prompt_hardening(phase4_pro_rsi)
 phase4_pro_rsi.install(Master4000EvaluationEngine)
 
 # Keep the old direct branch generator as a compatibility path. The live watcher
-# wraps it; then the memory layer restores old pre/post-branch cleanup while adding
-# current MLX-LM KV quantization and OOM recovery. Search/reward semantics are untouched.
+# wraps it; then the memory layer restores old pre/post-branch cleanup and telemetry.
+# The final full-precision layer below removes lossy KV quantization from both normal
+# generation and OOM recovery while preserving the same search/reward semantics.
 _legacy_rsi_branch_generate = phase4_pro_rsi._generate_branches_same_model
 install_phase4_stream(phase4_pro_rsi)
 install_rsi_generation_memory_hardening(
@@ -81,6 +83,7 @@ install_rsi_generation_memory_hardening(
     live_generation_stream,
     _legacy_rsi_branch_generate,
 )
+full_precision_generation.install(phase4_pro_rsi, live_generation_stream)
 
 # Capture the true Phase-1-miss-only RSI before historical recovery installs its
 # optional extra autonomous RLVR tasks. Historical Learn/retention/parameter-delta
