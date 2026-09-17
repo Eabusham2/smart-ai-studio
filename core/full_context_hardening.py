@@ -4,8 +4,9 @@ The historical Pro prompt packer reduced the usable history window based on tran
 free-RAM thresholds and then silently kept only the newest turns. That changes the
 information available to the model. This hardening keeps the same chat template and
 filters only the existing synthetic warning messages, but no longer drops legitimate
-history for memory pressure. The MLX backend enforces the actual model/user output
-cap and fails visibly if the packed prompt itself cannot fit.
+history for memory pressure. Capacity-triggered awake consolidation runs through the
+normal solve wrappers before generation; the MLX backend remains the final model/user
+output-cap authority.
 """
 from __future__ import annotations
 
@@ -49,5 +50,17 @@ def install(cls) -> None:
         packed.append("<|im_start|>assistant\n")
         return "".join(packed)
 
+    def context_safe_chat(self, messages, **kwargs):
+        """Use solve() so direct chat callers get the same capacity consolidation as GUI/CLI."""
+        if not messages:
+            return "", []
+        active = list(messages)
+        last_user_prompt = str(active[-1].get("content", ""))
+        history = list(active[:-1])
+        response, _metadata = self.solve(prompt=last_user_prompt, history=history, **kwargs)
+        # solve()/awake hook may synchronously consolidate and mutate ``history``.
+        return response, history + [active[-1]]
+
     cls._format_prompt_with_history = full_history_prompt
+    cls.chat = context_safe_chat
     cls._full_context_hardening_installed = True
