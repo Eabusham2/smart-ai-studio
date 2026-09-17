@@ -5,6 +5,7 @@ import logging
 import os
 import platform
 import psutil
+import time
 import core._mlx_engine_base as _base
 from core._mlx_engine_base import *
 from core.kv_cache_manager import SmartKVCacheManager, compute_auto_kv_budget
@@ -89,6 +90,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_generation_cap_reason = ""
         self.last_effective_max_tokens = None
         self.last_model_context_limit = None
+        self.last_tok_per_sec = 0.0
+        self.last_generation_tokens = 0
+        self.last_generation_seconds = 0.0
 
         # The GUI class is already defined when its ProReasoningEngine is constructed.
         # Install the optional top-row generation-cap control without rewriting app_gui.py.
@@ -202,16 +206,32 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 "prefill_step_size": int(prefill_step_size),
             }
             pieces = []
+            response = None
+            generated = 0
+            started = time.perf_counter()
             try:
                 iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
             except TypeError:
                 kwargs.pop("prefill_step_size", None)
                 iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
             for response in iterator:
+                generated += 1
+                try:
+                    measured = float(getattr(response, "generation_tps", 0.0) or 0.0)
+                except Exception:
+                    measured = 0.0
+                if measured > 0.0:
+                    self.last_tok_per_sec = measured
                 chunk = getattr(response, "text", None)
                 if chunk is None:
                     chunk = str(response)
                 pieces.append(str(chunk))
+
+            elapsed = max(0.001, time.perf_counter() - started)
+            if self.last_tok_per_sec <= 0.0 and generated:
+                self.last_tok_per_sec = generated / elapsed
+            self.last_generation_tokens = generated
+            self.last_generation_seconds = elapsed
             return "".join(pieces)
 
         for idx in range(count):
@@ -247,16 +267,16 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         effective_max = self._effective_generation_cap(prompt, max_tokens)
 
-        # The app passes the full history-packed prompt each time. Reset the arena so
-        # no previous request can contaminate it, while retaining the RAM-scaled cap.
-        # This resets/recomputes cache state; it does not truncate the packed prompt.
+        # The app passes the full history-packed prompt each time. Reset only the
+        # logical full-precision KV state. Do not purge Metal's allocator on every
+        # request; the complete packed prompt is recomputed into the fresh cache.
         if self.kv_cache_manager is None:
             self.kv_cache_manager = SmartKVCacheManager(
                 self.model,
                 max_tokens=self.max_stateful_kv_tokens,
             )
         else:
-            self.kv_cache_manager.reset()
+            self.kv_cache_manager.reset(purge_allocator=False)
         self.kv_cache_manager.auto_compact_if_needed(prompt_len)
 
         try:
@@ -266,6 +286,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             raise RuntimeError("MLX sampler unavailable; refusing to change sampling semantics") from exc
 
         generated = 0
+        response = None
+        started = time.perf_counter()
+        self.last_tok_per_sec = 0.0
 
         def _run_stream(prefill_step_size: int):
             # Same prompt, sampler, token allowance and native/full-precision KV for
@@ -294,39 +317,49 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     **kwargs,
                 )
 
+        def _yield_response(resp):
+            try:
+                measured = float(getattr(resp, "generation_tps", 0.0) or 0.0)
+            except Exception:
+                measured = 0.0
+            if measured > 0.0:
+                self.last_tok_per_sec = measured
+            if hasattr(resp, "text"):
+                return resp.text
+            if isinstance(resp, str):
+                return resp
+            if hasattr(resp, "token"):
+                return self.tokenizer.decode([resp.token])
+            return str(resp)
+
         try:
             iterator = None
             try:
                 iterator = _run_stream(256)
                 for response in iterator:
                     generated += 1
-                    if hasattr(response, "text"):
-                        yield response.text
-                    elif isinstance(response, str):
-                        yield response
-                    elif hasattr(response, "token"):
-                        yield self.tokenizer.decode([response.token])
+                    yield _yield_response(response)
             except RuntimeError as exc:
                 if not _is_metal_oom(exc) or generated:
                     raise
                 # Retry only before any token has been emitted. Rebuild a fresh cache
                 # and reduce transient prefill memory without changing KV precision,
                 # context, sampler or requested generation length.
-                self.kv_cache_manager.reset()
+                self.kv_cache_manager.reset(purge_allocator=False)
                 _reclaim_if_needed(mx, force=True)
                 iterator = _run_stream(64)
                 for response in iterator:
                     generated += 1
-                    if hasattr(response, "text"):
-                        yield response.text
-                    elif isinstance(response, str):
-                        yield response
-                    elif hasattr(response, "token"):
-                        yield self.tokenizer.decode([response.token])
+                    yield _yield_response(response)
         except Exception as exc:
             _base.logger.error("MLX stream_generate error: %s", exc)
             raise
         finally:
+            elapsed = max(0.001, time.perf_counter() - started)
+            if self.last_tok_per_sec <= 0.0 and generated:
+                self.last_tok_per_sec = generated / elapsed
+            self.last_generation_tokens = generated
+            self.last_generation_seconds = elapsed
             self.kv_cache_manager.current_length = min(
                 self.max_stateful_kv_tokens,
                 max(0, prompt_len + generated),
