@@ -45,17 +45,10 @@ class MLXReasoningBackend:
             # Configure dynamic elastic Metal headroom based on available host RAM
             SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
 
-            try:
-                self.model, self.tokenizer = mlx_lm.load(
-                    self.model_path,
-                    model_config={"kv_bits": 4, "kv_group_size": 64},
-                    adapter_path=self.adapter_path if self.adapter_path and os.path.exists(self.adapter_path) else None
-                )
-            except Exception:
-                self.model, self.tokenizer = mlx_lm.load(
-                    self.model_path,
-                    adapter_path=self.adapter_path if self.adapter_path and os.path.exists(self.adapter_path) else None
-                )
+            self.model, self.tokenizer = mlx_lm.load(
+                self.model_path,
+                adapter_path=self.adapter_path if self.adapter_path and os.path.exists(self.adapter_path) else None
+            )
             self.is_mlx_available = True
             return True
         except Exception as e:
