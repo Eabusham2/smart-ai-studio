@@ -28,6 +28,7 @@ class PlatformRouter:
         os_name = platform.system().lower()
         machine = platform.machine().lower()
 
+        # OS identification
         if "darwin" in os_name:
             os_family = "macos"
         elif "windows" in os_name:
@@ -35,6 +36,7 @@ class PlatformRouter:
         else:
             os_family = "linux"
 
+        # Check MLX availability (Apple Silicon only)
         mlx_available = False
         if os_family == "macos" and machine in ("arm64", "aarch64"):
             try:
@@ -44,6 +46,7 @@ class PlatformRouter:
             except ImportError:
                 mlx_available = False
 
+        # Check PyTorch & Accelerators
         torch_available = False
         cuda_available = False
         mps_available = False
@@ -63,6 +66,7 @@ class PlatformRouter:
         except Exception:
             torch_available = False
 
+        # Determine optimal backend
         if self.override_backend:
             backend = self.override_backend.lower()
         elif mlx_available:
@@ -72,6 +76,7 @@ class PlatformRouter:
         else:
             backend = "torch"
 
+        # Determine primary compute device
         if cuda_available:
             device = "cuda"
         elif mps_available or mlx_available:
@@ -101,17 +106,18 @@ class PlatformRouter:
         kv_bits: Optional[int] = None,
     ) -> Tuple[str, Any, Any]:
         """
-        Loads the reasoning model and tokenizer using the optimal engine for this OS.
-        Apple MLX always uses MLX-LM's native/full-precision KV cache. ``kv_bits`` is
-        retained only as a backwards-compatible argument and is intentionally ignored.
-        Native low-bit/ternary model WEIGHTS remain exactly as stored in the checkpoint.
-        Returns (backend_name, model_instance, tokenizer_instance).
+        Loads the reasoning model and tokenizer using the optimal engine for this OS:
+        - On macOS arm64: MLX native engine with native/full-precision KV cache
+        - On Windows/Linux: PyTorch / Transformers engine with CUDA/CPU
+        ``kv_bits`` is retained only as a backwards-compatible argument and ignored.
+        Returns (backend_name, model_instance, tokenizer_instance)
         """
         info = self.get_platform_info()
         backend = info["backend"]
 
         if backend == "mlx":
             try:
+                import mlx.core as mx
                 from mlx_lm import load
                 print(f"[*] Loading Apple Silicon MLX Model from {model_path} (full-precision KV)...")
                 model, tokenizer = load(model_path)
