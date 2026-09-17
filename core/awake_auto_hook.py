@@ -48,6 +48,7 @@ def install_awake_auto_learning(cls) -> None:
         cancel_event: Optional[Any] = None,
     ):
         history = _apply_awake_learning(self, history)
+        self._last_stream_pro_meta = None
 
         # Restore the historical chat decision point: the existing entropy router
         # decides whether this is Instant N=1 or Pro N=8/N=16 before generation.
