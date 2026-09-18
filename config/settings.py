@@ -175,44 +175,45 @@ except ImportError:
 MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
     "model_1": {
         "id": "model_1",
-        "key": "qwen_27b_uncensored_mlx",
-        "name": "Qwen3.8-27B Uncensored (MLX 2-Bit)",
-        "short_name": "Qwen 27B Uncensored (MLX)",
-        "tag": "🔥 Qwen 27B Uncensored",
-        "type": "mlx_2bit",
-        "base_params": "27B",
-        "raw_params": 27_000_000_000,
-        "precision": "2-Bit Uncensored MLX",
-        "max_context": 131_072,
-        "vram": "~14.5 GB / 16 GB",
+        "key": "bonsai2_27b_ternary_multimodal",
+        "name": "Bonsai 2 27B Ternary Multimodal",
+        "short_name": "Bonsai 2 27B Ternary",
+        "tag": "👁️ Bonsai 2 27B Ternary",
+        "type": "multimodal_ternary",
+        "input_modalities": ["text", "image", "video"],
+        "base_params": "27.36B",
+        "raw_params": 27_360_000_000,
+        "precision": "True ternary g128 (~1.72 bpw representation) + retained vision tower",
+        "runtime_family": "bonsai2_hadamard",
+        "max_context": 262_144,
+        "vram": "~8.6 GB MLX / ~6.6-7.9 GB GGUF + vision",
         "accent": "#38bdf8",
         "artifacts": {
-            "mlx": "orcarouter/Qwen3.8-27B-Uncensored-MLX",
-            "gguf": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
-            "bitnet": "orcarouter/Qwen3.8-27B-Uncensored",
-            "torch": "orcarouter/Qwen3.8-27B-Uncensored"
+            "mlx": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+            "gguf": "prism-ml/Ternary-Bonsai-2-27B-gguf"
         },
-        "default_repo_id": "orcarouter/Qwen3.8-27B-Uncensored-MLX"
+        "default_repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
     },
     "model_2": {
         "id": "model_2",
-        "key": "qwen_27b_abliterated_gguf",
-        "name": "Qwen3.8-27B Abliterated (Lowest Quant GGUF)",
-        "short_name": "Qwen 27B Abliterated (GGUF)",
-        "tag": "🔓 Qwen 27B Abliterated",
-        "type": "gguf_quant",
-        "base_params": "27B",
-        "raw_params": 27_000_000_000,
-        "precision": "Q2_K / Q3_K_M Lowest Quant",
-        "max_context": 131_072,
-        "vram": "~14.2 GB / 16 GB",
+        "key": "bonsai2_27b_ternary_crack",
+        "name": "Bonsai 2 27B Ternary CRACK (Uncensored)",
+        "short_name": "Bonsai 2 27B CRACK",
+        "tag": "🔓 Bonsai 2 27B CRACK",
+        "type": "multimodal_ternary",
+        "input_modalities": ["text", "image", "video"],
+        "base_params": "27.36B",
+        "raw_params": 27_360_000_000,
+        "precision": "Ternary Bonsai 2 + weight-level CRACK abliteration; vision/video preserved",
+        "runtime_family": "bonsai2_hadamard",
+        "max_context": 262_144,
+        "vram": "~8.2 GB MLX / ~7.8 GB GGUF + Q8 vision",
         "accent": "#f43f5e",
         "artifacts": {
-            "gguf": "douyamv/Qwen3.8-27B-abliterated-GGUF",
-            "mlx": "douyamv/Qwen3.8-27B-abliterated-MLX",
-            "torch": "douyamv/Qwen3.8-27B-abliterated"
+            "mlx": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG",
+            "gguf": "dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF"
         },
-        "default_repo_id": "douyamv/Qwen3.8-27B-abliterated-GGUF"
+        "default_repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG"
     },
     "model_3": {
         "id": "model_3",
