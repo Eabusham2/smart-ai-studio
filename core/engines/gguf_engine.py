@@ -156,9 +156,16 @@ class GGUFReasoningBackend:
         # Preserve the currently working learned state until the new update has
         # both trained and reloaded successfully.
         backup_path = self.adapter_path + ".previous"
+        peft_dir = os.path.join(self.adapter_root, "peft")
+        peft_backup = peft_dir + ".previous-runtime"
         had_adapter = os.path.isfile(self.adapter_path)
+        had_peft = os.path.isdir(peft_dir)
         if had_adapter:
             shutil.copy2(self.adapter_path, backup_path)
+        if os.path.isdir(peft_backup):
+            shutil.rmtree(peft_backup, ignore_errors=True)
+        if had_peft:
+            shutil.copytree(peft_dir, peft_backup)
 
         self.unload_model()
         trainer = GGUFLoRATrainer(
@@ -180,6 +187,8 @@ class GGUFReasoningBackend:
                 os.remove(backup_path)
             except OSError:
                 pass
+            if os.path.isdir(peft_backup):
+                shutil.rmtree(peft_backup, ignore_errors=True)
             return dict(self.adapters), float(drift)
         except Exception:
             # Roll back the adapter atomically and restore inference. Never leave a
@@ -191,6 +200,14 @@ class GGUFReasoningBackend:
                     os.remove(self.adapter_path)
                 except OSError:
                     pass
+
+            if os.path.isdir(peft_dir):
+                shutil.rmtree(peft_dir, ignore_errors=True)
+            if os.path.isdir(peft_backup):
+                os.replace(peft_backup, peft_dir)
+            elif not had_peft:
+                shutil.rmtree(peft_dir, ignore_errors=True)
+
             self.load_model()
             raise
 
