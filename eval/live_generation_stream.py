@@ -24,6 +24,9 @@ from core.mlx_engine import _adaptive_prefill_step_size
 
 
 LIVE_GENERATION_LOG = os.path.join("eval_results", "live_generation.log")
+_LIVE_PENDING: List[str] = []
+_LIVE_PENDING_CHARS = 0
+_LIVE_LAST_FLUSH = 0.0
 
 
 def _live_path() -> str:
@@ -40,6 +43,10 @@ def _meta(self) -> tuple[str, str, str]:
 
 def _write_live_header(self, formatted_prompt: str, branch_label: str = "primary") -> None:
     """Start the current-item file with the exact prompt sent to the tokenizer."""
+    global _LIVE_PENDING, _LIVE_PENDING_CHARS, _LIVE_LAST_FLUSH
+    _LIVE_PENDING.clear()
+    _LIVE_PENDING_CHARS = 0
+    _LIVE_LAST_FLUSH = time.perf_counter()
     path = _live_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     phase, split, item_id = _meta(self)
@@ -61,14 +68,31 @@ def _write_live_header(self, formatted_prompt: str, branch_label: str = "primary
     os.replace(tmp, path)
 
 
-def _append_live_text(text: str) -> None:
-    if not text:
+def _flush_live_pending() -> None:
+    global _LIVE_PENDING_CHARS, _LIVE_LAST_FLUSH
+    if not _LIVE_PENDING:
         return
+    text = "".join(_LIVE_PENDING)
+    _LIVE_PENDING.clear()
+    _LIVE_PENDING_CHARS = 0
     path = _live_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(text)
         f.flush()
+    _LIVE_LAST_FLUSH = time.perf_counter()
+
+
+def _append_live_text(text: str) -> None:
+    """Keep terminal output live without doing a filesystem flush per model token."""
+    global _LIVE_PENDING_CHARS
+    if not text:
+        return
+    _LIVE_PENDING.append(text)
+    _LIVE_PENDING_CHARS += len(text)
+    now = time.perf_counter()
+    if _LIVE_PENDING_CHARS >= 2048 or (now - _LIVE_LAST_FLUSH) >= 0.08:
+        _flush_live_pending()
 
 
 def _decode_piece(tokenizer, token_ids: List[int]) -> str:
@@ -102,10 +126,12 @@ def _write_final_snapshot(self, formatted_prompt: str, raw_output: str) -> None:
         f"Total tokens: {prompt_tokens + output_tokens}\n"
         f"Decode time: {seconds:.3f} s\n"
     )
+    _flush_live_pending()
 
 
 def _append_live_result(ok: bool) -> None:
     _append_live_text(f"RESULT: {'PASS' if ok else 'FAIL'}\n" + "=" * 110 + "\n")
+    _flush_live_pending()
 
 
 def install_baseline_stream(runtime_module, cls) -> None:
