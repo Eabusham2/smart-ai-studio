@@ -541,7 +541,7 @@ class SmartAIChatbotApp:
                 "vram": "~3.5 GB on Mac / <16 GB",
                 "tag": "🔊 Stable Audio 3 SFX",
                 "accent": "#fb7185"
-            ,
+            },
             "model_16": {
                 "name": "Ternary Bonsai 2 27B Vision",
                 "short_name": "Bonsai 2 27B Vision",
