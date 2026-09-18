@@ -597,6 +597,7 @@ class SmartAIChatbotApp:
 
         # Thread-Safe Event Queue for Background Worker & Watchdog Callbacks
         self._event_queue: queue.Queue = queue.Queue()
+        self._memory_watchdog_epoch = 0
 
         # The watcher is armed only while a model is loaded and the remembered
         # Memory Limit tick is enabled. It automatically restarts on the next load.
@@ -605,7 +606,9 @@ class SmartAIChatbotApp:
             max_ram_usage_percent=98.5,
             min_free_ram_gb=0.15,
             max_process_ram_gb=self._memory_limit_gb,
-            on_pressure_callback=lambda s: self._event_queue.put(("memory_pressure", s))
+            on_pressure_callback=lambda status: self._event_queue.put(
+                ("memory_pressure", (self._memory_watchdog_epoch, status))
+            )
         )
 
         self._init_window()
@@ -643,7 +646,16 @@ class SmartAIChatbotApp:
                 while True:
                     evt, data = self._event_queue.get_nowait()
                     if evt == "memory_pressure":
-                        self._on_memory_pressure_emergency(data)
+                        try:
+                            event_epoch, status = data
+                        except Exception:
+                            event_epoch, status = self._memory_watchdog_epoch, data
+                        if (
+                            event_epoch == self._memory_watchdog_epoch
+                            and self._memory_limit_enabled
+                            and getattr(self, "is_model_loaded", False)
+                        ):
+                            self._on_memory_pressure_emergency(status)
             except queue.Empty:
                 pass
             except Exception:
@@ -766,14 +778,18 @@ class SmartAIChatbotApp:
         if watchdog is None:
             return
         if force_stop or not self._memory_limit_enabled or not getattr(self, "is_model_loaded", False):
+            self._memory_watchdog_epoch += 1
             try:
                 watchdog.stop_monitoring()
             except Exception:
                 pass
             return
+
         self._prepare_memory_limit_for_model(model_info)
         try:
             watchdog.set_memory_limit_gb(self._memory_limit_gb)
+            if not getattr(watchdog, "_running", False):
+                self._memory_watchdog_epoch += 1
             watchdog.start_monitoring()
         except Exception:
             pass
@@ -2888,6 +2904,20 @@ class SmartAIChatbotApp:
         )
         if not confirm:
             return
+
+        if self.is_model_loaded:
+            model_type = str(target_info.get("model_type", "text") or "text").lower()
+            try:
+                if model_type == "text":
+                    self.engine.unload_model()
+                elif model_type == "audio":
+                    self.audio_engine.unload_model()
+                else:
+                    self.media_engine.unload_model()
+            except Exception:
+                pass
+            self.is_model_loaded = False
+            self._sync_memory_watchdog(force_stop=True)
 
         purge_local_model_cache(repo_id)
         self._on_download_hf_model()
