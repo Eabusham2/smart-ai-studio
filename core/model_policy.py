@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 TERNARY_MARKERS = (
@@ -92,10 +93,12 @@ def infer_controller_runtime(*values: Any) -> str:
     blob = _blob(values)
     modalities = set(infer_input_modalities(*values))
 
+    # BitNet checkpoints are commonly distributed as GGUF too; architecture/runtime
+    # metadata wins over the container extension.
+    if any(marker in blob for marker in ("bitnet", "i2_s", "bitlinear", "1bitllm")):
+        return "bitnet"
     if "gguf" in blob:
         return "gguf"
-    if "bitnet" in blob:
-        return "bitnet"
     if "jang" in blob and "mlx" in blob:
         return "jang_vlm"
     if "prism_hadamard" in blob and "mlx" in blob:
@@ -105,6 +108,184 @@ def infer_controller_runtime(*values: Any) -> str:
     if any(marker in blob for marker in ("transformers", "safetensors", "pytorch_model")):
         return "transformers_auto"
     return "auto"
+
+
+def _json_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        if hasattr(value, "to_dict"):
+            value = value.to_dict()
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
+
+
+def _extract_base_model_id(values: Iterable[Any]) -> str:
+    """Best-effort training lineage from structured card/tags/README metadata."""
+    text = " ".join(str(v or "") for v in values)
+    patterns = (
+        r"base_model:(?:finetune:|quantized:)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"base model(?: id)?\s*[:=]\s*[\`\"']?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"base_model(?:_name_or_path)?[\"']?\s*[:=]\s*[\"']([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _extract_projector_repo(values: Iterable[Any]) -> str:
+    """Find a Hub repo explicitly associated with mmproj/projector text."""
+    text = "\n".join(str(v or "") for v in values)
+    for line in text.splitlines():
+        low = line.lower()
+        if not any(marker in low for marker in ("mmproj", "projector", "vision projector")):
+            continue
+        match = re.search(
+            r"(?:https?://huggingface\.co/)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+            line,
+        )
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _pick_gguf_artifacts(file_names: Iterable[str], ternary: bool) -> Dict[str, Any]:
+    """Pick a language GGUF and projector from metadata without guessing at runtime."""
+    names = [str(x or "") for x in file_names if str(x or "").lower().endswith(".gguf")]
+    projectors = [
+        name for name in names
+        if any(marker in name.lower() for marker in ("mmproj", "projector", "vision"))
+    ]
+    language = [name for name in names if name not in projectors]
+
+    def model_score(name: str) -> tuple:
+        low = name.lower()
+        score = 0
+        # True ternary/BitNet-native representations first.
+        for marker, points in (
+            ("ptq1_0", 120),
+            ("i2_s", 115),
+            ("tl1", 112),
+            ("tl2", 110),
+            ("1.58", 108),
+            ("1bit", 106),
+            ("ternary", 104),
+            ("trit", 102),
+            ("pq2_0", 96),
+        ):
+            if marker in low:
+                score = max(score, points)
+        if ternary and not score:
+            # A model admitted as ternary may still use a generic filename; keep it
+            # below explicit ternary encodings but above unrelated projector files.
+            score = 30
+        # Avoid silently selecting ordinary quant variants when an explicit ternary
+        # artifact exists in the same repository.
+        for marker in ("q8_", "q6_", "q5_", "q4_", "q3_"):
+            if marker in low:
+                score -= 25
+        return (score, -len(name), name)
+
+    model_file = max(language, key=model_score) if language else ""
+    mmproj_file = ""
+    if projectors:
+        mmproj_file = max(
+            projectors,
+            key=lambda name: (
+                20 if "q8" in name.lower() else 10 if "f16" in name.lower() else 0,
+                name,
+            ),
+        )
+
+    preference = ""
+    if model_file:
+        low = model_file.lower()
+        for marker in ("PTQ1_0", "I2_S", "TL1", "TL2", "PQ2_0"):
+            if marker.lower() in low:
+                preference = marker
+                break
+
+    return {
+        "gguf_file": model_file or None,
+        "gguf_preference": preference or None,
+        "mmproj_file": mmproj_file or None,
+    }
+
+
+def derive_runtime_metadata(
+    *values: Any,
+    file_names: Optional[Iterable[str]] = None,
+    repo_id: str = "",
+    ternary: bool = False,
+) -> Dict[str, Any]:
+    """Derive portable backend/runtime metadata from actual model metadata/files."""
+    names = [str(x or "") for x in (file_names or [])]
+    all_values = [*values, *names]
+    blob = _blob(all_values)
+    runtime = infer_controller_runtime(*all_values)
+    artifacts = _pick_gguf_artifacts(names, ternary=bool(ternary))
+
+    is_bitnet = runtime == "bitnet" or any(
+        marker in blob for marker in ("bitnet", "i2_s", "bitlinear", "1bitllm")
+    )
+    is_gguf = bool(artifacts.get("gguf_file")) or runtime == "gguf"
+    is_prism_gguf = bool(
+        is_gguf
+        and any(
+            marker in blob
+            for marker in (
+                "prism_hadamard",
+                "prismml",
+                "prism-ml",
+                "ptq1_0",
+                "pq2_0",
+                "hadamard qwen",
+            )
+        )
+    )
+
+    if is_bitnet:
+        backend_family = "bitnet"
+        runtime = "bitnet"
+    elif is_prism_gguf:
+        backend_family = "prism_gguf"
+        runtime = "gguf"
+    elif is_gguf:
+        backend_family = "gguf"
+        runtime = "gguf"
+    elif runtime in ("mlx_lm", "mlx_vlm", "mlx_repo_vlm", "jang_vlm"):
+        backend_family = runtime
+    elif runtime == "transformers_auto":
+        backend_family = "transformers"
+    else:
+        backend_family = "auto"
+
+    base_model_id = _extract_base_model_id(all_values)
+    projector_repo = _extract_projector_repo(all_values)
+    if artifacts.get("mmproj_file") and not projector_repo:
+        projector_repo = str(repo_id or "")
+
+    result: Dict[str, Any] = {
+        "controller_runtime": runtime,
+        "backend_family": backend_family,
+        "runtime_family": (
+            "bonsai2_hadamard"
+            if is_prism_gguf and "bonsai" in blob
+            else ""
+        ),
+        "prism_llama_fork": bool(is_prism_gguf),
+        **artifacts,
+    }
+    if projector_repo:
+        result["mmproj_repo_id"] = projector_repo
+    if base_model_id:
+        result["gguf_training_base_model_id"] = base_model_id
+    return result
 
 
 def _classify_pipeline(pipeline_tag: str, tags: Iterable[str]) -> str:
@@ -120,21 +301,61 @@ def _classify_pipeline(pipeline_tag: str, tags: Iterable[str]) -> str:
 
 
 def inspect_hf_model(repo_id: str) -> Dict[str, Any]:
-    """Inspect Hub metadata and return a task + ternary proof summary."""
+    """Inspect Hub card/config/files and return admission + runtime metadata."""
     repo_id = str(repo_id or "").strip().strip("/")
     if not repo_id:
         return {"ok": False, "reason": "No Hugging Face repository ID provided."}
     try:
-        from huggingface_hub import HfApi
-        info = HfApi().model_info(repo_id)
+        from huggingface_hub import HfApi, hf_hub_download
+
+        api = HfApi()
+        info = api.model_info(repo_id)
         tags = list(getattr(info, "tags", None) or [])
         pipeline_tag = str(getattr(info, "pipeline_tag", "") or "")
         library_name = str(getattr(info, "library_name", "") or "")
         model_id = str(getattr(info, "id", repo_id) or repo_id)
-        task = _classify_pipeline(pipeline_tag, tags)
-        ternary = _has_ternary_proof((model_id, pipeline_tag, library_name, *tags))
-        input_modalities = infer_input_modalities(model_id, pipeline_tag, library_name, *tags)
-        controller_runtime = infer_controller_runtime(model_id, pipeline_tag, library_name, *tags)
+        config = getattr(info, "config", None) or {}
+        card_data = getattr(info, "card_data", None)
+        if card_data is None:
+            card_data = getattr(info, "cardData", None)
+        siblings = [
+            str(getattr(item, "rfilename", "") or "")
+            for item in (getattr(info, "siblings", None) or [])
+            if str(getattr(item, "rfilename", "") or "")
+        ]
+
+        # Card/config text often contains runtime/projector/base-lineage details that
+        # are not promoted to Hub tags. Fetch only these tiny metadata files.
+        metadata_text = []
+        for filename in ("README.md", "config.json", "model_config.json"):
+            if filename not in siblings:
+                continue
+            try:
+                path = hf_hub_download(repo_id=model_id, filename=filename)
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    metadata_text.append(fh.read(256_000))
+            except Exception:
+                pass
+
+        evidence = [
+            model_id,
+            pipeline_tag,
+            library_name,
+            *tags,
+            _json_text(config),
+            _json_text(card_data),
+            *siblings,
+            *metadata_text,
+        ]
+        task = _classify_pipeline(pipeline_tag, evidence)
+        ternary = _has_ternary_proof(evidence)
+        input_modalities = infer_input_modalities(*evidence)
+        runtime_meta = derive_runtime_metadata(
+            *evidence,
+            file_names=siblings,
+            repo_id=model_id,
+            ternary=bool(ternary),
+        )
         return {
             "ok": True,
             "repo_id": model_id,
@@ -144,7 +365,7 @@ def inspect_hf_model(repo_id: str) -> Dict[str, Any]:
             "task": task,
             "ternary": bool(ternary),
             "input_modalities": input_modalities,
-            "controller_runtime": controller_runtime,
+            **runtime_meta,
         }
     except Exception as exc:
         return {
@@ -219,14 +440,34 @@ def inspect_local_model(path: str) -> Dict[str, Any]:
         )
     )
     task = "media" if media and not text else "text" if text else "unknown"
-    ternary = _has_ternary_proof(snippets)
+    file_names = []
+    try:
+        if os.path.isdir(expanded):
+            for root, _dirs, files in os.walk(expanded):
+                for name in files:
+                    file_names.append(os.path.relpath(os.path.join(root, name), expanded))
+                    if len(file_names) >= 4096:
+                        break
+                if len(file_names) >= 4096:
+                    break
+        else:
+            file_names = [os.path.basename(expanded)]
+    except Exception:
+        file_names = []
+
+    ternary = _has_ternary_proof([*snippets, *file_names])
+    runtime_meta = derive_runtime_metadata(
+        *snippets,
+        file_names=file_names,
+        ternary=bool(ternary),
+    )
     return {
         "ok": True,
         "path": expanded,
         "task": task,
         "ternary": bool(ternary),
-        "input_modalities": infer_input_modalities(*snippets),
-        "controller_runtime": infer_controller_runtime(*snippets),
+        "input_modalities": infer_input_modalities(*snippets, *file_names),
+        **runtime_meta,
     }
 
 
