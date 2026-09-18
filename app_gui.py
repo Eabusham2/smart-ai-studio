@@ -1785,11 +1785,43 @@ class SmartAIChatbotApp:
                         )
                     )
 
-                result = download_model_from_hf(
-                    repo_id,
-                    progress_callback=_progress,
-                    cancel_event=self.cancel_event,
-                )
+                gguf_file = str(verified_policy_meta.get("gguf_file") or "").strip()
+                mmproj_file = str(verified_policy_meta.get("mmproj_file") or "").strip()
+                mmproj_repo_id = str(verified_policy_meta.get("mmproj_repo_id") or "").strip()
+
+                # Metadata-driven GGUF/BitNet imports fetch only the selected native
+                # ternary artifact and its projector. This prevents a multi-quant repo
+                # from silently pulling/using an unrelated Q4/Q5/Q8 checkpoint.
+                if gguf_file:
+                    patterns = [gguf_file]
+                    required = [gguf_file]
+                    if mmproj_file and (not mmproj_repo_id or mmproj_repo_id == repo_id):
+                        patterns.append(mmproj_file)
+                        required.append(mmproj_file)
+                    result = download_model_from_hf(
+                        repo_id,
+                        progress_callback=lambda msg, pct: _progress(msg, pct * 0.80),
+                        cancel_event=self.cancel_event,
+                        allow_patterns=patterns,
+                        required_files=required,
+                    )
+                    if result.get("status") == "success" and mmproj_file and mmproj_repo_id and mmproj_repo_id != repo_id:
+                        projector_result = download_model_from_hf(
+                            mmproj_repo_id,
+                            progress_callback=lambda msg, pct: _progress(msg, 80.0 + pct * 0.20),
+                            cancel_event=self.cancel_event,
+                            allow_patterns=[mmproj_file],
+                            required_files=[mmproj_file],
+                        )
+                        if projector_result.get("status") != "success":
+                            result = projector_result
+                else:
+                    result = download_model_from_hf(
+                        repo_id,
+                        progress_callback=_progress,
+                        cancel_event=self.cancel_event,
+                    )
+
                 if result.get("status") == "success":
                     local_dir = str(result.get("local_dir") or "")
                     self.root.after(0, lambda: _register_download(repo_id, local_dir))
