@@ -1,7 +1,7 @@
 """
 Awake online synaptic consolidation.
-Evicts old dialogue only when a real trainable MLX model is present, then performs
-serialized LoRA/EWC updates, measures real drift, and persists the updated adapter
+Evicts old dialogue only when a real trainable active backend is present, then performs
+serialized adapter updates, measures real drift, and persists the updated adapter
 so learning survives process restarts. Normal watermark work may run in background;
 a hard context-capacity request can use the same trainer synchronously so dialogue is
 not removed before its parameter update has actually completed.
@@ -42,7 +42,6 @@ class AwakeOnlineConsolidator:
             self.engine is not None
             and getattr(self.engine, "model", None) is not None
             and getattr(self.engine, "tokenizer", None) is not None
-            and getattr(self.engine, "is_mlx_available", False)
             and callable(getattr(self.engine, "train_mini_batch", None))
         )
 
@@ -157,7 +156,7 @@ class AwakeOnlineConsolidator:
 
         try:
             if not self._real_training_ready():
-                raise RuntimeError("real MLX model/tokenizer unavailable for awake consolidation")
+                raise RuntimeError("real trainable model/tokenizer unavailable for awake consolidation")
 
             training_pairs = self._conversation_training_pairs(chunk)
             if not training_pairs:
