@@ -12,11 +12,11 @@ Kept because it is output-preserving and still useful:
 - iterator/response references are explicitly torn down after every streamed branch;
 - in-flight and completed branches publish measured generation TPS for telemetry.
 
-Accuracy invariant:
-- no KV-cache quantization;
+Cache invariant:
+- TurboQuant K8/V3 is the default KV-cache policy;
 - no sliding ``max_kv_size`` window;
 - no context truncation/compaction;
-- the Metal-OOM retry keeps identical KV precision and token allowance, changing only
+- the Metal-OOM retry keeps the same cache policy and token allowance, changing only
   prefill chunk size after clearing transient caches.
 
 ``max_tokens`` is passed through unchanged, so the benchmark/RSI reasoning allowance
