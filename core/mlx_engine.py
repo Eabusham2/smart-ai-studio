@@ -123,12 +123,20 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         except Exception:
             pass
 
-    def _effective_generation_cap(self, prompt: str, requested: int) -> int:
+    def _effective_generation_cap(
+        self,
+        prompt: str,
+        requested: int,
+        prompt_token_count: Optional[int] = None,
+    ) -> int:
         requested = max(1, int(requested))
-        try:
-            prompt_tokens = len(self.tokenizer.encode(prompt))
-        except Exception:
-            prompt_tokens = 0
+        if prompt_token_count is None:
+            try:
+                prompt_tokens = len(self.tokenizer.encode(prompt))
+            except Exception:
+                prompt_tokens = 0
+        else:
+            prompt_tokens = max(0, int(prompt_token_count))
         model_cap = _model_context_limit(self.model, self.tokenizer)
         self.last_model_context_limit = model_cap
 
@@ -216,7 +224,12 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         count = max(1, min(int(branch_count), 16))
         temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
         branches = []
-        effective_max = self._effective_generation_cap(prompt, max_tokens)
+        prompt_ids = self.tokenizer.encode(prompt)
+        effective_max = self._effective_generation_cap(
+            prompt,
+            max_tokens,
+            prompt_token_count=len(prompt_ids),
+        )
 
         def _one(temp_value: float, prefill_step_size: int) -> str:
             sampler = make_sampler(temp=float(temp_value), top_p=top_p)
@@ -228,7 +241,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             else:
                 self.kv_cache_manager.reset(purge_allocator=False)
             kwargs = {
-                "prompt": prompt,
+                "prompt": prompt_ids,
                 "max_tokens": effective_max,
                 "sampler": sampler,
                 "prefill_step_size": int(prefill_step_size),
@@ -289,13 +302,17 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         import mlx.core as mx
         import mlx_lm
 
-        prompt_len = 0
         try:
-            prompt_len = len(self.tokenizer.encode(prompt))
+            prompt_ids = self.tokenizer.encode(prompt)
         except Exception:
-            pass
+            prompt_ids = []
+        prompt_len = len(prompt_ids)
 
-        effective_max = self._effective_generation_cap(prompt, max_tokens)
+        effective_max = self._effective_generation_cap(
+            prompt,
+            max_tokens,
+            prompt_token_count=prompt_len,
+        )
 
         # The app passes the full history-packed prompt each time. Reset only the
         # logical TurboQuant-preferred KV state. Do not purge Metal's allocator on every
@@ -332,7 +349,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 return mlx_lm.stream_generate(
                     self.model,
                     self.tokenizer,
-                    prompt=prompt,
+                    prompt=prompt_ids if prompt_ids else prompt,
                     prompt_cache=self.kv_cache_manager.get_cache(),
                     **kwargs,
                 )
