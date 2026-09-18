@@ -6,6 +6,7 @@ import os
 import platform
 import psutil
 import time
+from typing import Optional
 import core._mlx_engine_base as _base
 from core._mlx_engine_base import *
 from core.kv_cache_manager import SmartKVCacheManager, compute_auto_kv_budget
