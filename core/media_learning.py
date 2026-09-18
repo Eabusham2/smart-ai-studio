@@ -170,6 +170,26 @@ class MediaLearningService:
                 break
         return results
 
+    def search_media_candidates(self, query, kinds, max_items=6):
+        """Return remote media URLs for supported controller modalities without downloading them."""
+        kinds = [str(k).lower() for k in kinds if str(k).lower() in ("image", "video", "audio")]
+        if not kinds:
+            return []
+        results = []
+        for page in self._search_pages(query, limit=4):
+            for kind in kinds:
+                try:
+                    found = self._extract_page_media(page, kind, max_items - len(results))
+                except Exception:
+                    continue
+                for media_url, label in found:
+                    if any(row["url"] == media_url for row in results):
+                        continue
+                    results.append({"kind": kind, "url": media_url, "label": label})
+                    if len(results) >= max_items:
+                        return results
+        return results
+
     def gather_samples(self, source, workspace, kind, caption=None, max_items=8):
         """Gather normal files/folders/URLs/search results into a local training folder."""
         kind = str(kind or "").lower()
