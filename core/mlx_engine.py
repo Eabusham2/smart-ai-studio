@@ -251,7 +251,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 if not _is_metal_oom(exc):
                     raise
                 # Lossless OOM retry: same prompt, same sampler policy, same token
-                # budget and native/full-precision KV. Only prefill chunking changes.
+                # budget and the same TurboQuant cache policy. Only prefill chunking changes.
                 _reclaim_if_needed(mx, force=True)
                 branches.append(_one(temp_value, 64))
             finally:
