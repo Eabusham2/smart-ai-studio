@@ -57,6 +57,28 @@ def _memory_pressure() -> bool:
         return False
 
 
+def _adaptive_prefill_step_size(*, aggressive: bool = False) -> int:
+    """Use larger MLX prefill batches when memory headroom exists.
+
+    This changes only prompt chunking, not weights, context, sampling, or token limits.
+    MLX-LM itself defaults to 2048; we step down conservatively as memory tightens.
+    """
+    if aggressive:
+        return 128
+    try:
+        proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+        if proc_gb < 9.5 and avail_gb >= 4.0:
+            return 2048
+        if proc_gb < 11.0 and avail_gb >= 2.0:
+            return 1024
+        if avail_gb >= 1.0:
+            return 512
+    except Exception:
+        pass
+    return 256
+
+
 def _reclaim_if_needed(mx, *, force: bool = False) -> None:
     if not force and not _memory_pressure():
         return
@@ -246,7 +268,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             _reclaim_if_needed(mx)
             temp_value = float(temps[idx % len(temps)])
             try:
-                branches.append(_one(temp_value, 256))
+                branches.append(_one(temp_value, _adaptive_prefill_step_size()))
             except RuntimeError as exc:
                 if not _is_metal_oom(exc):
                     raise
@@ -343,7 +365,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         try:
             iterator = None
             try:
-                iterator = _run_stream(256)
+                iterator = _run_stream(_adaptive_prefill_step_size())
                 for response in iterator:
                     generated += 1
                     yield _yield_response(response)
@@ -355,7 +377,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 # context, sampler or requested generation length.
                 self.kv_cache_manager.reset(purge_allocator=False)
                 _reclaim_if_needed(mx, force=True)
-                iterator = _run_stream(64)
+                iterator = _run_stream(_adaptive_prefill_step_size(aggressive=True))
                 for response in iterator:
                     generated += 1
                     yield _yield_response(response)
