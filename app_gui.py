@@ -3948,12 +3948,15 @@ class SmartAIChatbotApp:
 
                 self.root.after(0, _init_ai_stream)
 
-                # 2. Yield tokens in real time directly to chat
-                for chunk in self.engine.stream_solve(full_msg, history=curr_history, cancel_event=self.cancel_event):
-                    if self.cancel_event.is_set():
-                        break
-                    accumulated.append(chunk)
-                    def _insert_chunk(c=chunk):
+                # 2. Yield tokens in real time. Paint the UI in tiny batches so
+                # Tkinter does not steal CPU / flood its event queue once decode gets fast.
+                ui_pending: List[str] = []
+                last_ui_flush = time.perf_counter()
+
+                def _schedule_stream_insert(text_batch: str):
+                    if not text_batch:
+                        return
+                    def _insert_chunk(c=text_batch):
                         try:
                             self.chat_stream.configure(state="normal")
                             self.chat_stream.insert("end", c, "ai_msg")
@@ -3962,6 +3965,21 @@ class SmartAIChatbotApp:
                         except Exception:
                             pass
                     self.root.after(0, _insert_chunk)
+
+                for chunk in self.engine.stream_solve(full_msg, history=curr_history, cancel_event=self.cancel_event):
+                    if self.cancel_event.is_set():
+                        break
+                    accumulated.append(chunk)
+                    ui_pending.append(chunk)
+                    now = time.perf_counter()
+                    if len(ui_pending) >= 8 or (now - last_ui_flush) >= 0.04:
+                        _schedule_stream_insert("".join(ui_pending))
+                        ui_pending.clear()
+                        last_ui_flush = now
+
+                if ui_pending:
+                    _schedule_stream_insert("".join(ui_pending))
+                    ui_pending.clear()
 
                 full_ans = "".join(accumulated).strip()
                 if not full_ans and not self.cancel_event.is_set():
