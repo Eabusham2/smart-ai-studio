@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
+from core.learning_sources import extract_learning_text
 from memory.anchor_dataset import get_anchor_texts
 from memory.db import EpisodicMemoryDB
 
@@ -44,7 +45,7 @@ class AutonomousLearner:
         if not research:
             return ""
         parts = []
-        for key in ("crawl_report", "search_report"):
+        for key in ("source_text", "crawl_report", "search_report"):
             value = research.get(key)
             if value:
                 parts.append(str(value))
@@ -94,6 +95,26 @@ class AutonomousLearner:
             except Exception:
                 pass
         return None
+
+    def research_from_source(self, source_path: str, topic: str) -> Dict[str, Any]:
+        """Extract deterministic text from an attached file/folder for the existing Learn pipeline."""
+        extracted = extract_learning_text(source_path)
+        source_text = str(extracted.get("text") or "").strip()
+        if not source_text:
+            raise RuntimeError(
+                "/learn attachment contained no extractable text. "
+                "Media files can still be routed to a media generator Learn target."
+            )
+        result = {
+            "topic": str(topic or "").strip(),
+            "source_path": str(extracted.get("path") or source_path),
+            "source_text": source_text,
+            "sources_found": len(extracted.get("text_files") or []),
+            "media_kinds": list(extracted.get("media_kinds") or []),
+            "extraction_errors": list(extracted.get("extraction_errors") or []),
+        }
+        self._last_research = result
+        return result
 
     def crawl_and_research(self, topic: str) -> Dict[str, Any]:
         """Gather only actually retrieved source material through the existing tools."""
@@ -279,6 +300,7 @@ class AutonomousLearner:
         cancel_event: Optional[Any] = None,
         progress_callback: Optional[Callable[[str, str, float], None]] = None,
         max_cycles: int = 2,
+        source_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run research → real synthesis → source verification → real parameter update."""
         total_params_m = 0.0
@@ -289,7 +311,11 @@ class AutonomousLearner:
         if progress_callback:
             progress_callback(
                 "init",
-                f"🎓 **Autonomous Learning Initiated**: researching **\"{clean_topic}\"** with the active model...",
+                (
+                    f"🎓 **Autonomous Learning Initiated**: studying attached source for **\"{clean_topic}\"**..."
+                    if source_path
+                    else f"🎓 **Autonomous Learning Initiated**: researching **\"{clean_topic}\"** with the active model..."
+                ),
                 0.0,
             )
 
@@ -300,8 +326,20 @@ class AutonomousLearner:
                 break
 
             if progress_callback:
-                progress_callback("crawling", f"🕷️ **[Cycle {cycle}/{max_cycles}] Gathering independent sources**...", 0.0)
-            research = self.crawl_and_research(clean_topic)
+                progress_callback(
+                    "crawling",
+                    (
+                        f"📚 **[Cycle {cycle}/{max_cycles}] Reading attached learning source**..."
+                        if source_path
+                        else f"🕷️ **[Cycle {cycle}/{max_cycles}] Gathering independent sources**..."
+                    ),
+                    0.0,
+                )
+            research = (
+                self.research_from_source(source_path, clean_topic)
+                if source_path
+                else self.crawl_and_research(clean_topic)
+            )
             if not self._source_blob(research):
                 raise RuntimeError("/learn found no source material; no parameter update was attempted.")
 
