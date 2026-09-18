@@ -21,6 +21,7 @@ from config.settings import Settings, get_settings, MODEL_PRESETS
 from core.downloader import ensure_model_available, is_model_available_locally
 from core.engines.bitnet_engine import BitNetReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
+from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
 from core.entropy_router import EntropyRouter
 from core.controller_runtime import UniversalControllerBackend, resolve_controller_runtime, resolve_gguf_artifacts
 from core.hardware import resolve_optimal_backend, detect_system_hardware
@@ -305,7 +306,12 @@ class ProReasoningEngine:
                     target_path, resolved_mmproj = resolve_gguf_artifacts(target_path, info)
                     mmproj_path = resolved_mmproj or mmproj_path
                     self.active_model_path = target_path
-                    self.gguf_backend = GGUFReasoningBackend(
+                    gguf_cls = (
+                        PrismGGUFReasoningBackend
+                        if bool(info.get("prism_llama_fork"))
+                        else GGUFReasoningBackend
+                    )
+                    self.gguf_backend = gguf_cls(
                         model_path=target_path,
                         mmproj_path=mmproj_path,
                         training_base_model_id=info.get("gguf_training_base_model_id") or "Qwen/Qwen3.8-27B",
