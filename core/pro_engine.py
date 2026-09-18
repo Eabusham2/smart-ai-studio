@@ -116,7 +116,9 @@ class ProReasoningEngine:
         self.base_model = None
         self.tokenizer = None
         self.active_model_name = None
+        self.active_model_path = None
         self.active_backend = None
+        self.active_input_modalities = {"text"}
         self._model_lock = threading.Lock()
 
         self.speculative_engine = SpeculativeEngine(
@@ -205,6 +207,7 @@ class ProReasoningEngine:
                 target_backend = backend or (self.backend if self.backend != "auto" else resolved_backend)
 
             self.active_backend = target_backend
+            self.active_model_path = target_path
 
             # Auto-download check if requested
             if self.settings.auto_download:
@@ -373,7 +376,9 @@ class ProReasoningEngine:
             gc.collect()
 
         self.active_model_name = None
+        self.active_model_path = None
         self.active_backend = None
+        self.active_input_modalities = {"text"}
         return {"status": "unloaded", "previous_model": old_model}
 
     def calculate_token_entropy(self, prompt: str) -> float:
@@ -465,9 +470,20 @@ class ProReasoningEngine:
         context_str += f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
         return context_str
 
+    @staticmethod
+    def _expanded_input_modalities(values) -> set[str]:
+        raw = {str(value).lower() for value in (values or {"text"})}
+        if "video" in raw or {"image", "audio"}.issubset(raw):
+            return raw | {"image", "video", "audio"}
+        return raw
+
     def supports_media_input(self, kind: str) -> bool:
-        """True only when the currently loaded text backend can really ingest this media kind."""
+        """True only when the loaded text controller has a real ingest path."""
         kind = str(kind or "").lower()
+        declared = self._expanded_input_modalities(self.active_input_modalities)
+        if kind not in declared:
+            return False
+
         backend = None
         if self.active_backend == "gguf":
             backend = self.gguf_backend
@@ -477,17 +493,88 @@ class ProReasoningEngine:
             backend = self.model
         if backend is None:
             return False
+
         checker = getattr(backend, "supports_media_input", None)
         if callable(checker):
             try:
-                return bool(checker(kind))
+                if bool(checker(kind)):
+                    return True
+            except Exception:
+                pass
+
+        # MLX text inference remains on mlx-lm. Multimodal inspection is lazy and
+        # separate through mlx-vlm so normal chat generation is not replaced.
+        if self.active_backend == "mlx" and self.active_model_path:
+            try:
+                import importlib.util
+                return importlib.util.find_spec("mlx_vlm") is not None
             except Exception:
                 return False
+
         return callable(getattr(backend, "review_media_input", None))
 
+    def _review_mlx_vlm_input(self, path: str, kind: str, prompt: str) -> Dict[str, Any]:
+        import json as _json
+        import re as _re
+        import subprocess as _subprocess
+        import sys as _sys
+
+        if not self.active_model_path:
+            return {"perception_available": False, "reason": "MLX controller model path is unavailable."}
+        if not os.path.isfile(path):
+            raise ValueError("Media input file is missing")
+
+        review_prompt = (
+            (str(prompt or "").strip() or f"Inspect this {kind}.")
+            + "\nReturn JSON only with keys description, score, reasoning. "
+              "score must be a number from 0 to 100 for how well the actual media satisfies the request. "
+              "Do not infer content you cannot directly perceive."
+        )
+        command = [
+            _sys.executable, "-m", "mlx_vlm.generate",
+            "--model", str(self.active_model_path),
+            "--prompt", review_prompt,
+            "--max-tokens", "768",
+            "--temperature", "0.0",
+            "--" + kind, os.path.abspath(path),
+        ]
+        try:
+            run = _subprocess.run(command, capture_output=True, text=True, timeout=300)
+        except Exception as exc:
+            return {"perception_available": False, "reason": f"mlx-vlm review failed: {type(exc).__name__}: {exc}"}
+        if run.returncode != 0:
+            return {
+                "perception_available": False,
+                "reason": (run.stderr or run.stdout or "mlx-vlm review failed").strip()[-2000:],
+            }
+        text = str(run.stdout or "").strip()
+        left, right = text.rfind("{"), text.rfind("}")
+        parsed = {}
+        if 0 <= left < right:
+            try:
+                parsed = _json.loads(text[left:right + 1])
+            except Exception:
+                parsed = {}
+        score = parsed.get("score")
+        result = {
+            "perception_available": True,
+            "description": str(parsed.get("description") or text[-4000:]),
+            "analysis": str(parsed.get("reasoning") or ""),
+            "backend": "mlx-vlm",
+        }
+        if isinstance(score, (int, float)):
+            result["score"] = max(0.0, min(100.0, float(score)))
+        return result
+
     def review_media_input(self, path: str, kind: str, prompt: str = "") -> Dict[str, Any]:
-        """Delegate media perception to the loaded text model backend; never use proxy reviewers."""
+        """Delegate perception to the loaded controller itself, never a proxy grader."""
         kind = str(kind or "").lower()
+        if not self.supports_media_input(kind):
+            return {
+                "perception_available": False,
+                "reason": f"Loaded text controller does not support {kind} input.",
+            }
+
         backend = None
         if self.active_backend == "gguf":
             backend = self.gguf_backend
@@ -495,18 +582,23 @@ class ProReasoningEngine:
             backend = self.mlx_backend
         elif self.active_backend in ("torch", "cuda"):
             backend = self.model
-        if backend is None or not self.supports_media_input(kind):
-            return {
-                "perception_available": False,
-                "reason": f"Loaded text backend does not support {kind} input.",
-            }
-        hook = getattr(backend, "review_media_input", None)
-        if not callable(hook):
-            return {
-                "perception_available": False,
-                "reason": f"Loaded text backend has no {kind} review handler.",
-            }
-        return hook(path=path, kind=kind, prompt=prompt)
+
+        hook = getattr(backend, "review_media_input", None) if backend is not None else None
+        if callable(hook):
+            try:
+                result = hook(path=path, kind=kind, prompt=prompt)
+                if isinstance(result, dict) and result.get("perception_available"):
+                    return result
+            except Exception:
+                pass
+
+        if self.active_backend == "mlx":
+            return self._review_mlx_vlm_input(path, kind, prompt)
+
+        return {
+            "perception_available": False,
+            "reason": f"Loaded text backend has no working {kind} review handler.",
+        }
 
     def stream_solve(
         self,
