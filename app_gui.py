@@ -3113,6 +3113,8 @@ class SmartAIChatbotApp:
                 self.engine.unload_model()
             elif model_type == "audio":
                 self.audio_engine.unload_model()
+            else:
+                self.media_engine.unload_model()
             self.is_model_loaded = False
             self._sync_memory_watchdog(force_stop=True)
             self.lbl_model_status.configure(
@@ -3134,15 +3136,18 @@ class SmartAIChatbotApp:
         )
 
         def _do_load():
-            if model_type == "text":
-                # Import-time policy already decided whether custom text models may enter
-                # the catalog; runtime loading itself does not re-apply that restriction.
-                load_res = self.engine.load_model(target_info["name"], model_path=m_path)
-            elif model_type == "audio":
-                load_res = self.audio_engine.load_model(target_info)
-            else:
-                # Image/video pipelines are lazy-loaded by their generation backend.
-                load_res = {"status": "loaded", "backend": f"{model_type}-lazy"}
+            try:
+                if model_type == "text":
+                    # Import-time policy already decided whether custom text models may enter
+                    # the catalog; runtime loading itself does not re-apply that restriction.
+                    load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+                elif model_type == "audio":
+                    load_res = self.audio_engine.load_model(target_info)
+                else:
+                    # Image/video pipelines are lazy-loaded by their generation backend.
+                    load_res = {"status": "loaded", "backend": f"{model_type}-lazy"}
+            except Exception as exc:
+                load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
             def _done():
                 if popup:
@@ -3258,7 +3263,10 @@ class SmartAIChatbotApp:
         if model_type == "text":
             # Ternary admission is enforced only when a custom text model is imported.
             # Built-ins and already-registered models are loaded normally here.
-            load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+            try:
+                load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+            except Exception as exc:
+                load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
             self.is_model_loaded = bool(load_res.get("status") == "loaded")
             if self.is_model_loaded:
                 self.lbl_model_status.configure(
@@ -3275,7 +3283,10 @@ class SmartAIChatbotApp:
                 )
         elif model_type == "audio":
             if cached:
-                load_res = self.audio_engine.load_model(target_info)
+                try:
+                    load_res = self.audio_engine.load_model(target_info)
+                except Exception as exc:
+                    load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
                 self.is_model_loaded = bool(load_res.get("status") == "loaded")
                 if self.is_model_loaded:
                     self.lbl_model_status.configure(
@@ -3340,7 +3351,17 @@ class SmartAIChatbotApp:
         used_pct = status.get("used_percent", 0.0)
         free_gb = status.get("free_gb", 1.0)
         if used_pct >= 99.0 and free_gb < 0.10 and not getattr(self, "is_generating", False) and getattr(self, "is_model_loaded", False):
-            self.engine.unload_model()
+            active_info = self.models_config.get(self.active_tab_id, {})
+            active_type = str(active_info.get("model_type", "text") or "text").lower()
+            try:
+                if active_type == "text":
+                    self.engine.unload_model()
+                elif active_type == "audio":
+                    self.audio_engine.unload_model()
+                else:
+                    self.media_engine.unload_model()
+            except Exception:
+                pass
             self.is_model_loaded = False
             self._sync_memory_watchdog(force_stop=True)
             self.lbl_model_status.configure(text="⚠️ Standby (Memory Pressure)", fg=self.C["accent_yellow"])
