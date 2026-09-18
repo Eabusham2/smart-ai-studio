@@ -197,7 +197,7 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
     "model_2": {
         "id": "model_2",
         "key": "bonsai2_27b_ternary_crack",
-        "name": "Bonsai 2 27B Ternary CRACK (Uncensored)",
+        "name": "Bonsai 2 27B Ternary CRACK (Abliterated/Uncensored)",
         "short_name": "Bonsai 2 27B CRACK",
         "tag": "🔓 Bonsai 2 27B CRACK",
         "type": "multimodal_ternary",
