@@ -22,7 +22,7 @@ from core.downloader import ensure_model_available, is_model_available_locally
 from core.engines.bitnet_engine import BitNetReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
 from core.entropy_router import EntropyRouter
-from core.controller_runtime import UniversalControllerBackend, resolve_gguf_artifacts
+from core.controller_runtime import UniversalControllerBackend, resolve_controller_runtime, resolve_gguf_artifacts
 from core.hardware import resolve_optimal_backend, detect_system_hardware
 from core.hf_downloader import is_model_cached_locally
 from core.mlx_engine import MLXReasoningBackend
@@ -216,7 +216,7 @@ class ProReasoningEngine:
 
             # Specialized controller runtimes are selected explicitly by model
             # metadata.  Existing backends remain the default/fallback.
-            controller_runtime = str(info.get("controller_runtime") or "").lower().strip()
+            controller_runtime = resolve_controller_runtime(info, str(target_path or ""))
             if controller_runtime and controller_runtime not in ("auto", "mlx_lm", "gguf", "bitnet"):
                 target_backend = "controller"
             elif "mlx" in str(target_path).lower() or "mlx" in model_name.lower():
