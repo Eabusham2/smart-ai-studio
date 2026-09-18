@@ -34,7 +34,7 @@ class GGUFReasoningBackend:
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
         self.verbose = verbose
-        self.training_base_model_id = str(training_base_model_id or "Qwen/Qwen3.8-27B").strip()
+        self.training_base_model_id = str(training_base_model_id or "").strip()
         if adapter_root:
             self.adapter_root = os.path.abspath(adapter_root)
         else:
