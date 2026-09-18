@@ -153,8 +153,23 @@ def stable_audio3_factory(info, _media_engine, _audio_engine):
         "verify_saved": _verify_safetensors,
     }
 
+def _stable_audio_matches(info):
+    repo = str(info.get("repo_id", "") or "").lower()
+    name = str(info.get("name", "") or "").lower()
+    kind = str(info.get("model_type", "") or "").lower()
+    variant = str(info.get("audio_variant", "") or "")
+    blob = " ".join((repo, name))
+    return kind == "audio" and (
+        "stable-audio-3" in blob or variant in ("small-music", "small-sfx")
+    )
+
+
 stable_audio3_factory.available = _stable_audio_available
-register_media_training_backend("stable_audio3_lora", stable_audio3_factory)
+register_media_training_backend(
+    "stable_audio3_lora",
+    stable_audio3_factory,
+    matcher=_stable_audio_matches,
+)
 
 
 # ---- CogVideoX ------------------------------------------------------------
@@ -226,5 +241,16 @@ def cogvideox_factory(info, _media_engine, _audio_engine):
         "verify_saved": _verify_safetensors,
     }
 
+def _cogvideo_matches(info):
+    repo = str(info.get("repo_id", "") or "").lower()
+    name = str(info.get("name", "") or "").lower()
+    kind = str(info.get("model_type", "") or "").lower()
+    return kind == "video" and "cogvideox" in (repo + " " + name)
+
+
 cogvideox_factory.available = _cogvideo_available
-register_media_training_backend("cogvideox_lora", cogvideox_factory)
+register_media_training_backend(
+    "cogvideox_lora",
+    cogvideox_factory,
+    matcher=_cogvideo_matches,
+)
