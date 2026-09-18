@@ -1,0 +1,427 @@
+"""Extensible controller-model runtime adapters.
+
+This layer is intentionally metadata-driven.  A controller model may be a plain
+text LM or a multimodal language model; generation stays in ProReasoningEngine,
+while the adapter owns architecture-specific loading/inference/perception.
+
+Existing MLX-LM/GGUF/BitNet paths remain the default fast paths.  This module is
+used only when model metadata requests a specialized controller_runtime.
+"""
+
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional, Tuple
+
+
+def resolve_local_snapshot(identifier: str) -> str:
+    """Resolve a local path or an already-downloaded HF snapshot without networking."""
+    value = os.path.abspath(os.path.expanduser(identifier)) if os.path.exists(os.path.expanduser(identifier)) else identifier
+    if os.path.exists(value):
+        return value
+    try:
+        from huggingface_hub import snapshot_download
+        return snapshot_download(repo_id=identifier, local_files_only=True)
+    except Exception:
+        return identifier
+
+
+def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
+    """Resolve a downloaded GGUF repository to its language file and optional projector."""
+    info = model_info or {}
+    root = resolve_local_snapshot(identifier)
+    if os.path.isfile(root):
+        return root, info.get("mmproj_path")
+    if not os.path.isdir(root):
+        return identifier, info.get("mmproj_path")
+
+    ggufs = [p for p in Path(root).rglob("*.gguf") if p.is_file()]
+    if not ggufs:
+        return identifier, None
+
+    explicit_model = str(info.get("gguf_file") or "").strip()
+    explicit_mmproj = str(info.get("mmproj_file") or "").strip()
+    if explicit_model:
+        candidate = Path(root) / explicit_model
+        if candidate.is_file():
+            model_file = candidate
+        else:
+            model_file = None
+    else:
+        model_file = None
+
+    projectors = [
+        p for p in ggufs
+        if any(marker in p.name.lower() for marker in ("mmproj", "projector", "vision"))
+    ]
+    language = [p for p in ggufs if p not in projectors]
+    preference = str(info.get("gguf_preference") or "").lower().strip()
+    if model_file is None:
+        preferred = [p for p in language if preference and preference in p.name.lower()]
+        pool = preferred or language or ggufs
+        model_file = max(pool, key=lambda p: p.stat().st_size)
+
+    mmproj = None
+    if explicit_mmproj:
+        candidate = Path(root) / explicit_mmproj
+        if candidate.is_file():
+            mmproj = candidate
+    if mmproj is None and projectors:
+        mmproj = max(projectors, key=lambda p: p.stat().st_size)
+    return str(model_file), str(mmproj) if mmproj else None
+
+
+class UniversalControllerBackend:
+    """Protocol adapter for specialized text/multimodal controller runtimes."""
+
+    def __init__(self, model_path: str, model_info: Dict[str, Any]):
+        self.model_path = str(model_path)
+        self.model_info = dict(model_info or {})
+        self.runtime = str(self.model_info.get("controller_runtime") or "auto").lower()
+        self.input_modalities = {
+            str(x).lower() for x in (self.model_info.get("input_modalities") or ["text"])
+        }
+        self.model = None
+        self.processor = None
+        self.tokenizer = None
+        self.config = None
+        self.runtime_module = None
+        self.is_loaded = False
+        self.is_mlx_available = False
+        self.can_train = False
+        self._generator = None
+        self._apply_chat_template = None
+        self._chat_config = None
+
+    def load_model(self) -> bool:
+        if self.runtime in ("mlx_vlm", "mlx-vlm"):
+            return self._load_mlx_vlm()
+        if self.runtime in ("mlx_repo_vlm", "mlx-repo-vlm", "repo_mlx_vlm"):
+            return self._load_repo_mlx_vlm()
+        if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
+            return self._load_transformers_auto()
+        raise RuntimeError(f"Unsupported specialized controller runtime: {self.runtime}")
+
+    def _load_mlx_vlm(self) -> bool:
+        from mlx_vlm import generate, load
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        source = resolve_local_snapshot(self.model_path)
+        loaded = load(source)
+        if not isinstance(loaded, tuple) or len(loaded) < 2:
+            raise RuntimeError("mlx-vlm loader did not return model + processor")
+        self.model, self.processor = loaded[:2]
+        self.config = getattr(self.model, "config", None)
+        self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
+        self._generator = generate
+        self._apply_chat_template = apply_chat_template
+        self.is_loaded = self.model is not None and self.processor is not None
+        self.is_mlx_available = self.is_loaded
+        return self.is_loaded
+
+    def _load_repo_mlx_vlm(self) -> bool:
+        source = resolve_local_snapshot(self.model_path)
+        if not os.path.isdir(source):
+            raise RuntimeError("Specialized MLX-VLM runtime requires the downloaded model snapshot")
+
+        runtime_dir = Path(source) / str(self.model_info.get("runtime_dir") or "runtime")
+        module_name = str(self.model_info.get("runtime_module") or "vision_artifact")
+        loader_name = str(self.model_info.get("runtime_loader") or "load_vl_model")
+        chat_config_name = str(self.model_info.get("runtime_chat_config") or "chat_config")
+        module_file = runtime_dir / (module_name.replace(".", os.sep) + ".py")
+        if not module_file.is_file():
+            raise RuntimeError(f"Bundled runtime module not found: {module_file}")
+
+        unique_name = "_smart_ai_runtime_" + re.sub(r"[^a-zA-Z0-9_]", "_", module_name)
+        spec = importlib.util.spec_from_file_location(unique_name, module_file)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Could not import bundled runtime: {module_file}")
+        module = importlib.util.module_from_spec(spec)
+        old_path = list(sys.path)
+        try:
+            sys.path.insert(0, str(runtime_dir))
+            spec.loader.exec_module(module)
+        finally:
+            sys.path[:] = old_path
+
+        loader = getattr(module, loader_name, None)
+        if not callable(loader):
+            raise RuntimeError(f"Bundled runtime has no callable {loader_name}()")
+        loaded = loader(source)
+        if not isinstance(loaded, tuple) or len(loaded) < 2:
+            raise RuntimeError("Bundled runtime loader did not return model + processor")
+        self.model, self.processor = loaded[:2]
+        self.config = loaded[2] if len(loaded) > 2 else getattr(self.model, "config", None)
+        self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
+        self.runtime_module = module
+        self._chat_config = getattr(module, chat_config_name, None)
+
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+        self._generator = generate
+        self._apply_chat_template = apply_chat_template
+        self.is_loaded = self.model is not None and self.processor is not None
+        self.is_mlx_available = self.is_loaded
+
+        # A repository runtime may opt into the existing real MLX trainer only if
+        # it actually exposes the required training methods. Never fake capability.
+        self.can_train = all(
+            callable(getattr(self, name, None))
+            for name in ("train_mini_batch", "compute_mlx_fisher")
+        )
+        return self.is_loaded
+
+    def _load_transformers_auto(self) -> bool:
+        import torch
+        import transformers
+
+        source = resolve_local_snapshot(self.model_path)
+        processor = None
+        try:
+            processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True)
+        except Exception:
+            processor = None
+        if processor is None:
+            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+
+        requested = str(self.model_info.get("transformers_auto_class") or "").strip()
+        candidates = [requested] if requested else []
+        candidates += [
+            "AutoModelForImageTextToText",
+            "AutoModelForVision2Seq",
+            "AutoModelForSpeechSeq2Seq",
+            "AutoModelForCausalLM",
+            "AutoModelForSeq2SeqLM",
+        ]
+        model = None
+        errors = []
+        seen = set()
+        for class_name in candidates:
+            if not class_name or class_name in seen:
+                continue
+            seen.add(class_name)
+            cls = getattr(transformers, class_name, None)
+            if cls is None:
+                continue
+            try:
+                model = cls.from_pretrained(
+                    source,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else "auto",
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+                break
+            except Exception as exc:
+                errors.append(f"{class_name}: {exc}")
+        if model is None:
+            raise RuntimeError("No compatible Transformers AutoModel loader succeeded: " + " | ".join(errors[-3:]))
+
+        model.eval()
+        self.model = model
+        self.processor = processor
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+        self.config = getattr(model, "config", None)
+        self.is_loaded = True
+        self.is_mlx_available = False
+        return True
+
+    @staticmethod
+    def _text_from_generation(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        text = getattr(value, "text", None)
+        if isinstance(text, str):
+            return text
+        return str(value or "")
+
+    def _mlx_prompt(self, prompt: str, image_count: int = 0) -> str:
+        if not callable(self._apply_chat_template):
+            return prompt
+        kwargs = {}
+        if callable(self._chat_config):
+            try:
+                kwargs["config"] = self._chat_config(self.config)
+            except Exception:
+                pass
+        try:
+            if "config" in kwargs:
+                return self._apply_chat_template(
+                    self.processor,
+                    kwargs["config"],
+                    prompt,
+                    num_images=image_count,
+                )
+            return self._apply_chat_template(
+                self.processor,
+                self.config,
+                prompt,
+                num_images=image_count,
+            )
+        except Exception:
+            return prompt
+
+    def _generate_mlx(self, prompt: str, images: Optional[List[str]], max_tokens: int, temperature: float) -> str:
+        if not callable(self._generator):
+            raise RuntimeError("MLX-VLM generator unavailable")
+        prepared = self._mlx_prompt(prompt, len(images or []))
+        value = self._generator(
+            self.model,
+            self.processor,
+            prepared,
+            images or [],
+            max_tokens=int(max_tokens),
+            temperature=float(temperature),
+        )
+        return self._text_from_generation(value).strip()
+
+    def _generate_transformers(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        media: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        import torch
+        kwargs: Dict[str, Any] = {"text": prompt, "return_tensors": "pt"}
+        media = media or {}
+        if "image" in media:
+            from PIL import Image
+            kwargs["images"] = Image.open(media["image"]).convert("RGB")
+        if "audio" in media:
+            import soundfile as sf
+            audio, sr = sf.read(media["audio"])
+            kwargs["audio"] = audio
+            kwargs["sampling_rate"] = sr
+        inputs = self.processor(**kwargs)
+        device = getattr(self.model, "device", None)
+        if device is not None and hasattr(inputs, "to"):
+            inputs = inputs.to(device)
+        do_sample = float(temperature) > 0.0
+        with torch.no_grad():
+            ids = self.model.generate(
+                **inputs,
+                max_new_tokens=int(max_tokens),
+                do_sample=do_sample,
+                temperature=max(float(temperature), 1e-5) if do_sample else None,
+            )
+        decoder = getattr(self.processor, "batch_decode", None) or getattr(self.tokenizer, "batch_decode", None)
+        if callable(decoder):
+            return str(decoder(ids, skip_special_tokens=True)[0]).strip()
+        return str(ids)
+
+    def _generate(self, prompt: str, max_tokens: int, temperature: float, media: Optional[Dict[str, Any]] = None) -> str:
+        if self.runtime.startswith("mlx"):
+            images = [media["image"]] if media and media.get("image") else []
+            return self._generate_mlx(prompt, images, max_tokens, temperature)
+        if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
+            return self._generate_transformers(prompt, max_tokens, temperature, media)
+        raise RuntimeError(f"Generation unavailable for runtime {self.runtime}")
+
+    def stream_generate_tokens(
+        self,
+        prompt: str,
+        max_tokens: int = 1536,
+        temperature: float = 0.65,
+        top_p: float = 0.92,
+    ) -> Generator[str, None, None]:
+        del top_p
+        text = self._generate(prompt, max_tokens, temperature)
+        for match in re.finditer(r"\S+\s*", text):
+            yield match.group(0)
+
+    def generate_branches(
+        self,
+        prompt: str,
+        branch_count: int = 1,
+        max_tokens: int = 1536,
+        temperature: Any = 0.65,
+        top_p: float = 0.92,
+    ) -> List[str]:
+        del top_p
+        out = []
+        for idx in range(max(1, int(branch_count))):
+            t = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
+            out.append(self._generate(prompt, max_tokens, t))
+        return out
+
+    def calculate_token_entropy(self, prompt: str) -> float:
+        del prompt
+        # Specialized runtimes often do not expose stable logits APIs.  Returning a
+        # neutral normalized entropy keeps routing functional without a second forward.
+        return 0.35
+
+    def supports_media_input(self, kind: str) -> bool:
+        kind = str(kind or "").lower()
+        if kind not in self.input_modalities:
+            return False
+        if self.runtime.startswith("mlx"):
+            return kind == "image"
+        if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
+            return kind in {"image", "audio", "video"}
+        return False
+
+    def review_media_input(self, path: str, kind: str, prompt: str = "") -> Dict[str, Any]:
+        kind = str(kind or "").lower()
+        if not self.supports_media_input(kind):
+            return {
+                "perception_available": False,
+                "reason": f"{self.runtime} cannot ingest {kind} with this model.",
+            }
+        if not os.path.isfile(path):
+            raise ValueError("Media input file is missing")
+
+        task = str(prompt or "").strip() or f"Describe the supplied {kind}."
+        review = (
+            task
+            + "\nReturn JSON only with keys description, score, reasoning. "
+              "score must be 0 to 100 and must judge only the supplied media."
+        )
+        media = {kind: path}
+        text = self._generate(review, 768, 0.0, media)
+        match = re.search(r"\{[\s\S]*\}", text)
+        parsed: Dict[str, Any] = {}
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+            except Exception:
+                parsed = {}
+        score = parsed.get("score")
+        result = {
+            "perception_available": True,
+            "description": str(parsed.get("description") or text),
+            "analysis": str(parsed.get("reasoning") or text),
+        }
+        if isinstance(score, (int, float)):
+            result["score"] = max(0.0, min(100.0, float(score)))
+        else:
+            result["reason"] = "Model inspected the media but did not return a numeric self-grade."
+        return result
+
+    def unload_model(self) -> None:
+        self.model = None
+        self.processor = None
+        self.tokenizer = None
+        self.config = None
+        self.runtime_module = None
+        self.is_loaded = False
+        self.is_mlx_available = False
+        try:
+            import mlx.core as mx
+            if hasattr(mx, "clear_cache"):
+                mx.clear_cache()
+            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+        except Exception:
+            pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
