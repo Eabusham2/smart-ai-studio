@@ -316,7 +316,7 @@ class SmartAIChatbotApp:
                 "accent": self.C["accent_cyan"]
             },
             "model_2": {
-                "name": "Bonsai 2 27B Ternary CRACK (Uncensored)",
+                "name": "Bonsai 2 27B Ternary CRACK (Abliterated/Uncensored)",
                 "short_name": "Bonsai 2 27B CRACK",
                 "repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG" if is_apple_silicon else "dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF",
                 "model_path": None,
