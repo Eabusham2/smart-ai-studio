@@ -224,14 +224,23 @@ class MediaLearningService:
             module.train(was_training)
 
 
-def apply_saved_media_adapter(pipeline, repo_id):
+def get_saved_media_adapter(repo_id):
     from config.paths import get_portable_data_dir
     root = Path(get_portable_data_dir()) / "media_adapters" / _key(repo_id)
     pointer = root / "current.json"
     if not pointer.is_file():
-        return
+        return None
     saved = json.loads(pointer.read_text())
     directory = Path(saved["adapter_path"]).resolve()
+    if not directory.is_dir():
+        raise RuntimeError("Saved media adapter directory is missing")
+    return directory
+
+
+def apply_saved_media_adapter(pipeline, repo_id):
+    directory = get_saved_media_adapter(repo_id)
+    if directory is None:
+        return
     if saved.get("repo_id") != repo_id or not directory.is_relative_to(root.resolve()):
         raise RuntimeError("Media adapter identity/path mismatch")
     loader = getattr(pipeline,"load_lora_weights",None)
