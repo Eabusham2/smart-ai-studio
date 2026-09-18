@@ -20,6 +20,62 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 
+_RUNTIME_FAMILY_RESOLVERS: Dict[str, Any] = {}
+
+
+def register_runtime_family(name: str, resolver) -> None:
+    """Register an architecture-family -> concrete runtime resolver."""
+    key = str(name or "").strip().lower()
+    if not key or not callable(resolver):
+        raise ValueError("runtime family registration requires a name and callable resolver")
+    _RUNTIME_FAMILY_RESOLVERS[key] = resolver
+
+
+def resolve_controller_runtime(model_info: Dict[str, Any], model_path: str) -> str:
+    """Resolve explicit runtime metadata, then architecture family, then format."""
+    info = dict(model_info or {})
+    explicit = str(info.get("controller_runtime") or "").strip().lower()
+    if explicit and explicit != "auto":
+        return explicit
+
+    family = str(info.get("runtime_family") or "").strip().lower()
+    resolver = _RUNTIME_FAMILY_RESOLVERS.get(family)
+    if resolver is not None:
+        resolved = str(resolver(info, model_path) or "").strip().lower()
+        if resolved:
+            return resolved
+
+    blob = " ".join(
+        str(x or "").lower()
+        for x in (
+            model_path,
+            info.get("repo_id"),
+            info.get("precision"),
+            family,
+        )
+    )
+    if "gguf" in blob:
+        return "gguf"
+    if "bitnet" in blob:
+        return "bitnet"
+    modalities = {str(x).lower() for x in info.get("input_modalities") or ["text"]}
+    if "mlx" in blob:
+        return "mlx_vlm" if modalities - {"text"} else "mlx_lm"
+    return "auto"
+
+
+def _bonsai2_runtime(info: Dict[str, Any], model_path: str) -> str:
+    blob = " ".join(str(x or "").lower() for x in (model_path, info.get("repo_id"), info.get("name")))
+    if "gguf" in blob:
+        return "gguf"
+    if "jang" in blob:
+        return "jang_vlm"
+    return "mlx_repo_vlm"
+
+
+register_runtime_family("bonsai2_hadamard", _bonsai2_runtime)
+
+
 def resolve_local_snapshot(identifier: str) -> str:
     """Resolve a local path or an already-downloaded HF snapshot without networking."""
     value = os.path.abspath(os.path.expanduser(identifier)) if os.path.exists(os.path.expanduser(identifier)) else identifier
@@ -102,6 +158,8 @@ class UniversalControllerBackend:
     def load_model(self) -> bool:
         if self.runtime in ("mlx_vlm", "mlx-vlm"):
             return self._load_mlx_vlm()
+        if self.runtime in ("jang_vlm", "jang-vlm"):
+            return self._load_jang_vlm()
         if self.runtime in ("mlx_repo_vlm", "mlx-repo-vlm", "repo_mlx_vlm"):
             return self._load_repo_mlx_vlm()
         if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
@@ -119,6 +177,23 @@ class UniversalControllerBackend:
         self.model, self.processor = loaded[:2]
         self.config = getattr(self.model, "config", None)
         self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
+        self._generator = generate
+        self._apply_chat_template = apply_chat_template
+        self.is_loaded = self.model is not None and self.processor is not None
+        self.is_mlx_available = self.is_loaded
+        return self.is_loaded
+
+    def _load_jang_vlm(self) -> bool:
+        from jang_tools.loader import load_jang_vlm_model
+        source = resolve_local_snapshot(self.model_path)
+        loaded = load_jang_vlm_model(source)
+        if not isinstance(loaded, tuple) or len(loaded) < 2:
+            raise RuntimeError("JANG VLM loader did not return model + processor")
+        self.model, self.processor = loaded[:2]
+        self.config = loaded[2] if len(loaded) > 2 else getattr(self.model, "config", None)
+        self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
         self._generator = generate
         self._apply_chat_template = apply_chat_template
         self.is_loaded = self.model is not None and self.processor is not None
