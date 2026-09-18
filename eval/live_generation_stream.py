@@ -176,15 +176,40 @@ def install_baseline_stream(runtime_module, cls) -> None:
 
             cache = make_prompt_cache(model)
 
+            # Preserve the recovered manual loop's stop-token semantics. MLX-LM
+            # already handles tokenizer-native EOS ids; this set covers only any
+            # additional single-token stop markers used by the old evaluator.
+            legacy_eos = set()
+            native_eos = set()
+            e = getattr(tok, "eos_token_id", None)
+            if e is not None:
+                vals = e if isinstance(e, (list, tuple, set)) else [e]
+                legacy_eos.update(int(v) for v in vals)
+                native_eos.update(int(v) for v in vals)
+            for name in ("<|im_end|>", "<end_of_turn>", "<|eot_id|>", "<|endoftext|>", "</s>", "<eos>"):
+                try:
+                    encoded = tok.encode(name, add_special_tokens=False)
+                    if len(encoded) == 1:
+                        legacy_eos.add(int(encoded[0]))
+                    if hasattr(tok, "convert_tokens_to_ids"):
+                        tid = tok.convert_tokens_to_ids(name)
+                        if isinstance(tid, int) and tid >= 0:
+                            legacy_eos.add(tid)
+                except Exception:
+                    pass
+            extra_stop_ids = legacy_eos - native_eos
+
             # MLX-LM's generation loop stays in the optimized runtime instead of
             # synchronizing Python once per token with argmax(...).item().
             from mlx_lm import stream_generate
+            from mlx_lm.sample_utils import greedy_sampler
             with metal_lock:
                 iterator = stream_generate(
                     model,
                     tok,
                     prompt=ids,
                     max_tokens=max(1, int(max_tokens)),
+                    sampler=greedy_sampler,
                     prompt_cache=cache,
                     prefill_step_size=_adaptive_prefill_step_size(),
                 )
@@ -192,6 +217,12 @@ def install_baseline_stream(runtime_module, cls) -> None:
                 generated = 0
                 for response in iterator:
                     last_response = response
+                    try:
+                        response_token = int(getattr(response, "token", -1))
+                    except Exception:
+                        response_token = -1
+                    if response_token in extra_stop_ids:
+                        break
                     chunk = getattr(response, "text", None)
                     if chunk is None:
                         chunk = str(response)
