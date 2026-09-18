@@ -3069,16 +3069,60 @@ class SmartAIChatbotApp:
 
         def _worker():
             def _progress(msg: str, pct: float):
-                self.root.after(0, lambda: self.lbl_model_status.configure(
-                    text=f"⬇️ {pct:.0f}% {target_info['short_name']}", fg=self.C["accent_yellow"]
+                self.root.after(0, lambda p=pct: self.lbl_model_status.configure(
+                    text=f"⬇️ {p:.0f}% {target_info['short_name']}", fg=self.C["accent_yellow"]
                 ))
 
-            res = download_model_from_hf(repo_id, progress_callback=_progress, cancel_event=self.cancel_event)
-            if res.get("status") == "success":
-                self.root.after(0, lambda: self._on_download_hf_completed(target_info))
+            gguf_file = str(target_info.get("gguf_file") or "").strip()
+            mmproj_file = str(target_info.get("mmproj_file") or "").strip()
+            mmproj_repo_id = str(target_info.get("mmproj_repo_id") or "").strip()
+
+            # Built-in GGUF models are fail-closed: download the exact pinned ternary
+            # artifact instead of snapshotting every quant and later guessing.
+            if gguf_file:
+                primary_patterns = [gguf_file]
+                primary_required = [gguf_file]
+                if mmproj_file and (not mmproj_repo_id or mmproj_repo_id == repo_id):
+                    primary_patterns.append(mmproj_file)
+                    primary_required.append(mmproj_file)
+
+                res = download_model_from_hf(
+                    repo_id,
+                    progress_callback=lambda msg, pct: _progress(msg, pct * 0.80),
+                    cancel_event=self.cancel_event,
+                    allow_patterns=primary_patterns,
+                    required_files=primary_required,
+                )
+                if res.get("status") != "success":
+                    err = res.get("error", "Unknown error")
+                    self.root.after(0, lambda e=err: self._on_download_hf_failed(target_info, e))
+                    return
+
+                if mmproj_file and mmproj_repo_id and mmproj_repo_id != repo_id:
+                    projector_res = download_model_from_hf(
+                        mmproj_repo_id,
+                        progress_callback=lambda msg, pct: _progress(msg, 80.0 + pct * 0.20),
+                        cancel_event=self.cancel_event,
+                        allow_patterns=[mmproj_file],
+                        required_files=[mmproj_file],
+                    )
+                    if projector_res.get("status") != "success":
+                        err = projector_res.get("error", "Unknown projector download error")
+                        self.root.after(0, lambda e=err: self._on_download_hf_failed(target_info, e))
+                        return
+                _progress("Pinned ternary GGUF artifacts downloaded.", 100.0)
             else:
-                err = res.get("error", "Unknown error")
-                self.root.after(0, lambda: self._on_download_hf_failed(target_info, err))
+                res = download_model_from_hf(
+                    repo_id,
+                    progress_callback=_progress,
+                    cancel_event=self.cancel_event,
+                )
+                if res.get("status") != "success":
+                    err = res.get("error", "Unknown error")
+                    self.root.after(0, lambda e=err: self._on_download_hf_failed(target_info, e))
+                    return
+
+            self.root.after(0, lambda: self._on_download_hf_completed(target_info))
 
         threading.Thread(target=_worker, daemon=True).start()
 
