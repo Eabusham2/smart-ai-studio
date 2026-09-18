@@ -220,17 +220,23 @@ class ProReasoningEngine:
                 else:
                     target_path = self.settings.mlx_model_path
 
-            # Specialized controller runtimes are selected explicitly by model
-            # metadata.  Existing backends remain the default/fallback.
+            # Backend metadata is authoritative for imported/custom models. Name/path
+            # heuristics remain only as backwards compatibility for legacy entries.
             controller_runtime = resolve_controller_runtime(info, str(target_path or ""))
+            backend_family = str(info.get("backend_family") or "").strip().lower()
             mlx_controller_runtimes = {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
-            if (
-                controller_runtime in mlx_controller_runtimes
-                and platform.system() == "Darwin"
-                and platform.machine().lower() in ("arm64", "aarch64")
-            ):
+
+            if backend_family in ("prism_gguf", "gguf") or controller_runtime == "gguf":
+                target_backend = "gguf"
+            elif backend_family == "bitnet" or controller_runtime == "bitnet":
+                target_backend = "bitnet"
+            elif controller_runtime in mlx_controller_runtimes or backend_family in mlx_controller_runtimes:
                 target_backend = "mlx"
-            elif controller_runtime and controller_runtime not in ("auto", "mlx_lm", "gguf", "bitnet"):
+            elif controller_runtime == "mlx_lm" or backend_family == "mlx_lm":
+                target_backend = "mlx"
+            elif controller_runtime in ("transformers_auto", "transformers", "hf_transformers") or backend_family == "transformers":
+                target_backend = "controller"
+            elif controller_runtime and controller_runtime != "auto":
                 target_backend = "controller"
             elif "mlx" in str(target_path).lower() or "mlx" in model_name.lower():
                 target_backend = "mlx"
