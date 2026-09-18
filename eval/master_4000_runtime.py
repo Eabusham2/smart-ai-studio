@@ -394,15 +394,22 @@ def fast_generate(self, prompt, max_tokens=16384, stream=False):
 
     finally:
         cache = inp = logits = step = None
-        if MLX_AVAILABLE:
-            try:
-                if hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                    mx.metal.clear_cache()
-            except Exception:
-                pass
-        gc.collect()
+        try:
+            proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+            avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+            pressure = proc_gb >= 12.5 or avail_gb <= 0.75
+        except Exception:
+            pressure = False
+        if pressure:
+            gc.collect(2)
+            if MLX_AVAILABLE:
+                try:
+                    if hasattr(mx, "clear_cache"):
+                        mx.clear_cache()
+                    elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                        mx.metal.clear_cache()
+                except Exception:
+                    pass
 
 
 def evaluate_one(self, split, item):
