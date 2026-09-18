@@ -61,16 +61,25 @@ def test_gguf_always_on_consolidation_and_learning_are_real():
     assert "peft_backup" in gguf
 
 
-def test_bitnet_uses_real_official_runtime_not_synthetic_backend():
+def test_bitnet_uses_real_official_runtime_and_verified_rebuild_learning():
     pro = _src("core/pro_engine.py")
     bitnet = _src("core/engines/bitnet_cpp_engine.py")
+    trainer = _src("core/bitnet_rebuild_trainer.py")
 
     assert "from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend" in pro
     assert "BitNetCppReasoningBackend(" in pro
     assert "BitNetReasoningBackend(" not in pro
+    assert "training_base_model_id=info.get(\"bitnet_training_base_model_id\")" in pro
+    assert '"trainable": bool(self.bitnet_backend.training_ready())' in pro
 
     assert "https://github.com/microsoft/BitNet.git" in bitnet
     assert "setup_env.py" in bitnet
     assert "llama-server" in bitnet
     assert "def training_ready(self) -> bool:" in bitnet
-    assert "return False" in bitnet  # fail closed: inference support, no fake parameter updates
+    assert "def train_mini_batch(" in bitnet
+    assert "BitNetRebuildTrainer" in bitnet
+    assert "learned-i2_s.gguf" in bitnet
+
+    assert "merge_and_unload" in trainer
+    assert "convert-hf-to-gguf-bitnet.py" in trainer
+    assert '"I2_S"' in trainer
