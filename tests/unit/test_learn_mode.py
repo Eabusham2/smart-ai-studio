@@ -170,11 +170,23 @@ class TestAutonomousLearnMode(unittest.TestCase):
         self.assertEqual(res["cycles_completed"], 1)
         self.assertGreater(res["synapses_learned_m"], 0.0)
         self.assertGreater(res["parameter_drift_l2"], 0.0)
+
+        # /learn is an explicit active-learning workflow layered on top of the
+        # always-on chat consolidator: one verified Learn update, then one distinct
+        # self-generated RSI update on the already-updated model.
+        self.assertEqual(self.engine.mlx_backend.train_calls, 2)
+
         stage_names = [x[0] for x in stages]
-        for expected in ("init", "crawling", "synthesizing", "verifying", "consolidating", "done"):
+        for expected in ("init", "crawling", "synthesizing", "verifying", "rsi", "consolidating", "done"):
             self.assertIn(expected, stage_names)
         consolidated = next(x for x in stages if x[0] == "consolidating")
+        self.assertIn("Learn + RSI", consolidated[1])
         self.assertIn("||ΔW||", consolidated[1])
+
+        # RSI training deliberately does not persist a second source question,
+        # correctness/reward label, or benchmark-style interaction row.
+        stats = self.db.get_stats()
+        self.assertEqual(stats["total_interactions"], 1)
 
     def test_08_learning_session_cancellation(self):
         cancel_event = threading.Event()
