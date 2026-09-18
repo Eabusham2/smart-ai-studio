@@ -2,7 +2,7 @@
 
 The current RSI search/reward algorithm is left untouched. This layer restores the
 strong branch-lifecycle behavior from the older MLX implementation around the current
-live-stream generator while using the default TurboQuant KV cache.
+live-stream generator while preserving the native full-precision MLX KV cache.
 
 Kept because it is output-preserving and still useful:
 - branches remain strictly sequential;
@@ -13,7 +13,7 @@ Kept because it is output-preserving and still useful:
 - in-flight and completed branches publish measured generation TPS for telemetry.
 
 Cache invariant:
-- TurboQuant K8/V3 is the default KV-cache policy;
+- native/full-precision MLX KV is the cache policy;
 - no sliding ``max_kv_size`` window;
 - no context truncation/compaction;
 - the Metal-OOM retry keeps the same cache policy and token allowance, changing only
@@ -30,7 +30,7 @@ import time
 from typing import Any, Dict, List
 
 import psutil
-from core.turboquant_cache import make_turboquant_prompt_cache
+from mlx_lm.models.cache import make_prompt_cache
 
 
 _OOM_MARKERS = (
@@ -208,7 +208,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             sampler = make_sampler(temp=float(temp), top_p=top_p)
             label = (
                 f"live branch {branch_idx}/{total_branches} | T={float(temp):.2f} | "
-                f"KV=TurboQuant-K8/V3 | prefill={policy['prefill_step_size']}"
+                f"KV=full | prefill={policy['prefill_step_size']}"
             )
             live_module._write_live_header(self, formatted_prompt, branch_label=label)
 
@@ -224,7 +224,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                     "prompt": prompt_ids,
                     "max_tokens": max(1, int(max_tokens)),
                     "sampler": sampler,
-                    "prompt_cache": make_turboquant_prompt_cache(self.engine.model),
+                    "prompt_cache": make_prompt_cache(self.engine.model),
                     **policy,
                 }
                 with lock_context():
@@ -277,7 +277,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                 try:
                     live_module._append_live_text(
                         "\n[RSI MEMORY RECOVERY] Metal OOM: retrying only this branch "
-                        "with smaller prefill chunks; TurboQuant cache policy, full context, and "
+                        "with smaller prefill chunks; full-precision KV, full context, and "
                         "token allowance are unchanged.\n"
                     )
                 except Exception:
