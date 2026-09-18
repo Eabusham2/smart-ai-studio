@@ -183,13 +183,38 @@ class GGUFLoRATrainer:
         if os.path.isfile(os.path.join(self.peft_dir, "adapter_config.json")):
             model = PeftModel.from_pretrained(base, self.peft_dir, is_trainable=True)
         else:
+            # Qwen3.8 is hybrid: most layers are GatedDeltaNet and the rest are
+            # full attention. Discover the exact language-layer projections so LoRA
+            # covers both families without accidentally adapting the vision tower.
+            candidate_suffixes = {
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+                "in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b", "out_proj",
+            }
+            target_modules = []
+            for module_name, module in base.named_modules():
+                leaf = module_name.rsplit(".", 1)[-1]
+                if leaf not in candidate_suffixes:
+                    continue
+                lowered = module_name.lower()
+                if any(marker in lowered for marker in ("visual", "vision", "mtp")):
+                    continue
+                # Keep only decoder/language paths. Full conditional-generation
+                # checkpoints expose these under language_model/model.layers.
+                if ".layers." not in module_name and not module_name.startswith("model.layers."):
+                    continue
+                if isinstance(module, torch.nn.Linear):
+                    target_modules.append(module_name)
+
+            if not target_modules:
+                raise RuntimeError(
+                    "Qwen3.8 GGUF QLoRA found no compatible language projection modules"
+                )
+
             cfg = LoraConfig(
                 r=self.rank,
                 lora_alpha=self.alpha,
-                target_modules=[
-                    "q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj",
-                ],
+                target_modules=sorted(set(target_modules)),
                 lora_dropout=0.0,
                 bias="none",
                 task_type="CAUSAL_LM",
