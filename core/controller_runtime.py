@@ -184,6 +184,8 @@ class UniversalControllerBackend:
         self.is_loaded = False
         self.is_mlx_available = False
         self.can_train = False
+        self.adapters: Dict[str, Any] = {}
+        self.adapter_path: Optional[str] = None
         self._generator = None
         self._apply_chat_template = None
         self._chat_config = None
@@ -330,14 +332,230 @@ class UniversalControllerBackend:
         if model is None:
             raise RuntimeError("No compatible Transformers AutoModel loader succeeded: " + " | ".join(errors[-3:]))
 
-        model.eval()
-        self.model = model
         self.processor = processor
         self.tokenizer = getattr(processor, "tokenizer", processor)
         self.config = getattr(model, "config", None)
+
+        # Persistent controller LoRA lives beside other portable app state. Reload it
+        # transactionally on every model load so learned chat state survives restarts.
+        try:
+            from config.paths import get_portable_data_dir
+            import hashlib
+            key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
+            self.adapter_path = os.path.join(get_portable_data_dir(), "controller_lora", key)
+            adapter_cfg = os.path.join(self.adapter_path, "adapter_config.json")
+            if os.path.isfile(adapter_cfg):
+                from peft import PeftModel
+                model = PeftModel.from_pretrained(model, self.adapter_path, is_trainable=True)
+        except Exception:
+            # Inference remains available if the optional PEFT runtime is unavailable;
+            # training_ready() will correctly report False.
+            pass
+
+        model.eval()
+        self.model = model
         self.is_loaded = True
         self.is_mlx_available = False
+        self.can_train = self.training_ready()
         return True
+
+    def training_ready(self) -> bool:
+        """True only when this loaded controller has a real persistent update path."""
+        if self.model is None or self.tokenizer is None:
+            return False
+        if self.runtime not in ("transformers_auto", "transformers", "hf_transformers"):
+            return bool(self.can_train)
+        try:
+            import torch  # noqa: F401
+            import peft  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def count_tokens(self, messages: List[Dict[str, str]]) -> int:
+        text = "\n".join(str(m.get("content", "")) for m in messages or [])
+        tok = self.tokenizer
+        try:
+            encode = getattr(tok, "encode", None)
+            if callable(encode):
+                return len(encode(text))
+            result = tok(text, return_tensors=None)
+            ids = result.get("input_ids") if isinstance(result, dict) else getattr(result, "input_ids", None)
+            if ids is not None:
+                return len(ids[0] if ids and isinstance(ids[0], (list, tuple)) else ids)
+        except Exception:
+            pass
+        return max(1, len(text) // 4)
+
+    @staticmethod
+    def _transformers_lora_targets(model) -> List[str]:
+        import torch
+        suffixes = {
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+            "in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b", "out_proj",
+            "query_key_value", "dense_h_to_4h", "dense_4h_to_h",
+            "c_attn", "c_proj",
+        }
+        blocked = (
+            "vision", "visual", "image", "audio", "speech",
+            "projector", "mm_projector", "vision_tower",
+        )
+        targets: List[str] = []
+        for name, module in model.named_modules():
+            leaf = name.rsplit(".", 1)[-1]
+            if leaf not in suffixes or not isinstance(module, torch.nn.Linear):
+                continue
+            low = name.lower()
+            if any(marker in low for marker in blocked):
+                continue
+            targets.append(name)
+        return sorted(set(targets))
+
+    def _ensure_transformers_lora(self):
+        if self.runtime not in ("transformers_auto", "transformers", "hf_transformers"):
+            raise RuntimeError("Controller runtime has no generic PEFT training bridge")
+        if not self.training_ready():
+            raise RuntimeError("PEFT/Torch training runtime is unavailable for this controller")
+
+        from peft import LoraConfig, PeftModel, get_peft_model
+        if isinstance(self.model, PeftModel):
+            return self.model
+
+        targets = self._transformers_lora_targets(self.model)
+        if not targets:
+            raise RuntimeError(
+                "No compatible language projection modules were found for controller LoRA; "
+                "refusing to adapt vision/audio towers or fabricate support."
+            )
+        cfg = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            target_modules=targets,
+            lora_dropout=0.0,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        self.model = get_peft_model(self.model, cfg)
+        return self.model
+
+    def train_mini_batch(
+        self,
+        adapters: Any,
+        data: List[Dict[str, str]],
+        fisher_matrix: Any = None,
+        lambda_ewc: float = 0.0,
+        learning_rate: float = 1e-4,
+        steps: int = 3,
+        save_path: Optional[str] = None,
+        **_kwargs,
+    ):
+        """Real completion-only PEFT update for non-MLX Transformers controllers."""
+        del adapters, fisher_matrix, lambda_ewc, save_path
+        import math
+        import shutil
+        import torch
+
+        model = self._ensure_transformers_lora()
+        tok = self.tokenizer
+        rows = [
+            item for item in (data or [])
+            if str(item.get("prompt") or "").strip() and str(item.get("completion") or "").strip()
+        ]
+        if not rows:
+            raise RuntimeError("Controller trainer received no prompt/completion pairs")
+
+        before = {
+            name: param.detach().float().cpu().clone()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+        params = [param for param in model.parameters() if param.requires_grad]
+        if not params:
+            raise RuntimeError("Controller LoRA exposes no trainable parameters")
+        optimizer = torch.optim.AdamW(params, lr=float(learning_rate))
+        model.train()
+
+        try:
+            for _ in range(max(1, int(steps))):
+                for item in rows:
+                    prompt = str(item["prompt"]).strip()
+                    completion = str(item["completion"]).strip()
+                    messages = [{"role": "user", "content": prompt}]
+                    prefix = None
+                    apply_template = getattr(tok, "apply_chat_template", None)
+                    if callable(apply_template):
+                        try:
+                            prefix = apply_template(messages, tokenize=False, add_generation_prompt=True)
+                        except Exception:
+                            prefix = None
+                    if not prefix:
+                        prefix = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+                    full = prefix + completion
+                    if "<|im_start|>" in prefix:
+                        full += "<|im_end|>"
+
+                    encoded = tok(
+                        full,
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=512,
+                    )
+                    prefix_ids = tok(
+                        prefix,
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=512,
+                    )["input_ids"]
+                    try:
+                        device = next(param.device for param in params)
+                    except StopIteration:
+                        raise RuntimeError("Controller LoRA lost its trainable parameters")
+                    encoded = {k: v.to(device) for k, v in encoded.items()}
+                    labels = encoded["input_ids"].clone()
+                    prompt_len = min(int(prefix_ids.shape[1]), int(labels.shape[1]))
+                    labels[:, :prompt_len] = -100
+
+                    optimizer.zero_grad(set_to_none=True)
+                    output = model(**encoded, labels=labels)
+                    loss = getattr(output, "loss", None)
+                    if loss is None or not torch.isfinite(loss):
+                        raise RuntimeError("Controller LoRA training produced a non-finite loss")
+                    loss.backward()
+                    optimizer.step()
+
+            total = 0.0
+            touched = 0
+            for name, param in model.named_parameters():
+                if not param.requires_grad or name not in before:
+                    continue
+                delta = param.detach().float().cpu() - before[name]
+                total += float((delta * delta).sum().item())
+                touched += int(param.numel())
+            drift = math.sqrt(max(total, 0.0))
+            if drift <= 0.0 or touched <= 0:
+                raise RuntimeError("Controller LoRA completed but measured zero parameter change")
+
+            if not self.adapter_path:
+                raise RuntimeError("Controller adapter persistence path is unavailable")
+            os.makedirs(os.path.dirname(self.adapter_path), exist_ok=True)
+            tmp = self.adapter_path + ".next"
+            backup = self.adapter_path + ".previous"
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(backup, ignore_errors=True)
+            model.save_pretrained(tmp, safe_serialization=True)
+            if os.path.isdir(self.adapter_path):
+                os.replace(self.adapter_path, backup)
+            os.replace(tmp, self.adapter_path)
+            shutil.rmtree(backup, ignore_errors=True)
+
+            self.adapters = {
+                "trainable_parameters_touched": touched,
+                "adapter_format": "peft-lora",
+            }
+            return dict(self.adapters), float(drift)
+        finally:
+            model.eval()
 
     @staticmethod
     def _text_from_generation(value: Any) -> str:
