@@ -164,16 +164,46 @@ class GGUFLoRATrainer:
                 return candidate
         raise RuntimeError("llama-finetune-lora built successfully but its binary was not found")
 
-    def _resolve_binary(self) -> Path:
+    def find_existing_binary(self) -> Optional[Path]:
         for candidate in self._candidate_binaries():
             if candidate.is_file():
-                # If this binary came from a llama.cpp checkout, remember it for gguf-py.
                 for parent in [candidate.parent, *candidate.parents]:
                     if (parent / "gguf-py").is_dir():
                         self._tool_root = parent
                         break
                 return candidate
+        return None
+
+    def can_prepare(self) -> bool:
+        """Whether exact-GGUF training can be attempted without fabricating support."""
+        if self.find_existing_binary() is not None:
+            return True
+        return bool(shutil.which("git") and shutil.which("cmake"))
+
+    def _resolve_binary(self) -> Path:
+        existing = self.find_existing_binary()
+        if existing is not None:
+            return existing
         return self._build_prism_trainer()
+
+    @staticmethod
+    def _require_supported_cli(binary: Path) -> None:
+        proc = subprocess.run([str(binary), "--help"], capture_output=True, text=True)
+        help_text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        required = (
+            "--output-adapter",
+            "--lora-rank",
+            "--lora-alpha",
+            "--lora-modules",
+            "--assistant-loss-only",
+            "--learning-rate",
+        )
+        missing = [flag for flag in required if flag not in help_text]
+        if missing:
+            raise RuntimeError(
+                "Installed llama-finetune-lora is too old/incompatible for Smart AI Studio "
+                "realtime GGUF learning; missing: " + ", ".join(missing)
+            )
 
     def _write_dataset(self, data: List[Dict[str, str]], steps: int) -> str:
         rows = []
@@ -266,6 +296,7 @@ class GGUFLoRATrainer:
         steps: int = 3,
     ) -> Tuple[Dict[str, Any], float, int, str]:
         binary = self._resolve_binary()
+        self._require_supported_cli(binary)
         reader_root = self._reader_root(binary)
         dataset = self._write_dataset(data, steps)
         os.makedirs(self.adapter_root, exist_ok=True)
