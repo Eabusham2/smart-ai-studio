@@ -19,11 +19,38 @@ from core.platform import get_auto_context_window_size
 from core.temperature_policy import CHAT_N1_TEMPERATURE
 
 
+def _active_trainable_backend(engine):
+    consolidator = getattr(engine, "awake_consolidator", None)
+    backend = getattr(consolidator, "engine", None) if consolidator is not None else None
+    if backend is not None and getattr(backend, "model", None) is not None:
+        return backend
+    if str(getattr(engine, "active_backend", "") or "").lower() == "gguf":
+        backend = getattr(engine, "gguf_backend", None)
+        if backend is not None:
+            return backend
+    return getattr(engine, "mlx_backend", None)
+
+
 def _model_context_limit(engine) -> Optional[int]:
-    backend = getattr(engine, "mlx_backend", None)
+    backend = _active_trainable_backend(engine)
     model = getattr(backend, "model", None)
     tokenizer = getattr(backend, "tokenizer", None)
     values = []
+
+    # llama.cpp exposes the physical context directly.
+    if backend is not None and backend is getattr(engine, "gguf_backend", None):
+        try:
+            value = int(model.n_ctx())
+            if 1024 <= value <= 10_000_000:
+                values.append(value)
+        except Exception:
+            try:
+                value = int(getattr(backend, "n_ctx"))
+                if 1024 <= value <= 10_000_000:
+                    values.append(value)
+            except Exception:
+                pass
+
     for obj in (getattr(model, "args", None), getattr(model, "config", None), tokenizer):
         if obj is None:
             continue
@@ -104,9 +131,9 @@ def install_awake_auto_learning(cls) -> None:
 
         context_budget = _selected_context_budget(self)
         consolidator = getattr(self, "awake_consolidator", None)
-        backend = getattr(self, "mlx_backend", None)
+        backend = _active_trainable_backend(self)
         tokenizer = getattr(backend, "tokenizer", None)
-        if consolidator is None or tokenizer is None:
+        if consolidator is None or backend is None or tokenizer is None:
             return history
 
         # Gemini's rolling-memory design: start learning old turns before the hard
@@ -119,7 +146,23 @@ def install_awake_auto_learning(cls) -> None:
 
         def packed_token_count(active_history) -> int:
             formatted = self._format_prompt_with_history(prompt, active_history)
-            return len(tokenizer.encode(formatted))
+
+            # Preserve the native MLX path exactly when its tokenizer exposes encode().
+            encode = getattr(tokenizer, "encode", None)
+            if callable(encode):
+                return len(encode(formatted))
+
+            # llama.cpp tokenizer facade uses tokenize(bytes), not encode(str).
+            tokenize = getattr(tokenizer, "tokenize", None)
+            if callable(tokenize):
+                return len(tokenize(formatted.encode("utf-8")))
+
+            # Final backend-neutral fallback uses the backend's own token counter.
+            count_tokens = getattr(backend, "count_tokens", None)
+            if callable(count_tokens):
+                return int(count_tokens([{"role": "user", "content": formatted}]))
+
+            raise RuntimeError("Active trainable backend exposes no token counter")
 
         try:
             current_tokens = packed_token_count(history or [])
