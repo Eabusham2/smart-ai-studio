@@ -243,10 +243,37 @@ class BitNetRebuildTrainer:
         source = self._bitnet_source()
         if source is None:
             raise RuntimeError("Microsoft BitNet conversion source is unavailable")
-        converter = source / "utils" / "convert-hf-to-gguf-bitnet.py"
+
         quantizer = self._quantizer(source)
-        if not converter.is_file() or quantizer is None:
-            raise RuntimeError("Official BitNet converter/quantizer is unavailable")
+        if quantizer is None:
+            raise RuntimeError("Official BitNet quantizer is unavailable")
+
+        low_base = self.base_model_id.lower()
+        helper = source / "utils" / "convert-helper-bitnet.py"
+
+        # Microsoft's 2B BF16 master uses a dedicated preprocess/conversion helper.
+        # It expects one model.safetensors and writes ggml-model-i2s-bitnet.gguf.
+        if low_base.startswith("microsoft/bitnet-b1.58-2b-4t") and helper.is_file():
+            proc = subprocess.run(
+                [sys.executable, str(helper), merged_dir],
+                cwd=str(source),
+                capture_output=True,
+                text=True,
+            )
+            produced = Path(merged_dir) / "ggml-model-i2s-bitnet.gguf"
+            if proc.returncode != 0 or not produced.is_file():
+                raise RuntimeError(
+                    "Official Microsoft BitNet helper failed: "
+                    + (proc.stderr or proc.stdout or "I2_S GGUF was not produced").strip()
+                )
+            shutil.copy2(str(produced), output_tmp)
+            return
+
+        # Other official/community BitNet families use the generic converter path
+        # when their architecture is registered by Microsoft's converter.
+        converter = source / "utils" / "convert-hf-to-gguf-bitnet.py"
+        if not converter.is_file():
+            raise RuntimeError("Official BitNet HF converter is unavailable")
 
         proc = subprocess.run(
             [sys.executable, str(converter), merged_dir, "--outtype", "f32"],
@@ -353,7 +380,12 @@ class BitNetRebuildTrainer:
             if not hasattr(model, "merge_and_unload"):
                 raise RuntimeError("BitNet PEFT model cannot merge its learned adapter")
             merged = model.merge_and_unload()
-            merged.save_pretrained(tmp_merged, safe_serialization=True)
+            # Microsoft convert-helper-bitnet.py expects one model.safetensors.
+            merged.save_pretrained(
+                tmp_merged,
+                safe_serialization=True,
+                max_shard_size="100GB",
+            )
             tokenizer.save_pretrained(tmp_merged)
             self._convert_merged_checkpoint(tmp_merged, tmp_deploy)
 
