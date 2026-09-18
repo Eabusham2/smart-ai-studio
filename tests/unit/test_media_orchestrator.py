@@ -116,8 +116,10 @@ def test_model_cannot_silently_train(env):
     r=c.call('media_learn',{'model_id':'image','dataset':'a.jsonl'})
     assert r['status']=='error' and 'explicit' in r['error'] and not r['weights_updated']
 
-def test_unsupported_audio_video_not_reported_trained(env):
+def test_unmatched_media_backend_is_not_reported_trained(env):
     c,a,_,_=env
+    # The fixture uses synthetic repo IDs with no registered architecture trainer.
+    # Real audio/video families may train when a matching backend is installed.
     for mid in ['audio','video']:
         r=c.call('media_learn',{'model_id':mid,'dataset':'a.jsonl'},allow_update=True)
         assert r['status']=='unsupported' and not r['weights_updated']
