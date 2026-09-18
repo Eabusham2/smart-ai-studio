@@ -5,7 +5,7 @@ import psutil
 MLX_AVAILABLE = False
 try:
     import mlx.core as mx
-    from mlx_lm.models.cache import make_prompt_cache
+    from core.turboquant_cache import make_turboquant_prompt_cache as make_prompt_cache
     MLX_AVAILABLE = True
 except ImportError:
     mx = None
@@ -26,7 +26,7 @@ def compute_auto_kv_budget(total_ram_gb: Optional[float] = None) -> int:
 
 
 class SmartKVCacheManager:
-    """Fresh full-precision MLX prompt-cache arena; it never removes prompt tokens."""
+    """Fresh TurboQuant-preferred MLX prompt-cache arena; it never removes prompt tokens."""
     def __init__(self, model: Any, max_tokens: Optional[int] = None):
         if not MLX_AVAILABLE or make_prompt_cache is None:
             raise RuntimeError("SmartKVCacheManager requires MLX/MLX-LM")
