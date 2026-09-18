@@ -79,20 +79,51 @@ class GGUFLoRATrainer:
         self.rank = int(rank)
         self.alpha = int(alpha)
 
+    @staticmethod
+    def _training_backend_available() -> bool:
+        try:
+            import torch
+            import bitsandbytes  # noqa: F401
+        except Exception:
+            return False
+
+        if torch.cuda.is_available():
+            # CUDA and ROCm both surface through torch.cuda.
+            return True
+        xpu = getattr(torch, "xpu", None)
+        if xpu is not None:
+            try:
+                if xpu.is_available():
+                    return True
+            except Exception:
+                pass
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        if mps is not None:
+            try:
+                if mps.is_available():
+                    return True
+            except Exception:
+                pass
+
+        # Current bitsandbytes also has a CPU backend. A 27B 4-bit training graph
+        # still needs substantial host RAM, so fail closed on small systems.
+        try:
+            import psutil
+            return (psutil.virtual_memory().total / (1024 ** 3)) >= 24.0
+        except Exception:
+            return False
+
     def can_prepare(self) -> bool:
         """Report training readiness only when a real QLoRA backend is available."""
         if not os.path.isfile(self.model_path) or not self.base_model_id:
             return False
         try:
-            import torch
             import transformers  # noqa: F401
             import peft  # noqa: F401
             import bitsandbytes  # noqa: F401
         except Exception:
             return False
-        if not torch.cuda.is_available():
-            # GGUF inference remains universal; 27B QLoRA training is intentionally
-            # fail-closed without an accelerator-backed 4-bit training runtime.
+        if not self._training_backend_available():
             return False
         if not shutil.which("git") and not os.getenv("LLAMA_CPP_DIR", "").strip():
             return False
@@ -103,10 +134,11 @@ class GGUFLoRATrainer:
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
-        if not torch.cuda.is_available():
+        if not self._training_backend_available():
             raise RuntimeError(
-                "The GGUF model can infer on CPU/Metal/CUDA, but real 27B QLoRA "
-                "parameter updates require an accelerator-backed 4-bit training runtime."
+                "The GGUF model can infer on this device, but this machine does not "
+                "currently have enough supported 4-bit training capability for a real "
+                "27B QLoRA parameter update."
             )
 
         try:
