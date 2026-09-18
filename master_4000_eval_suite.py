@@ -60,8 +60,8 @@ master_runtime.install(Master4000EvaluationEngine)
 # Install the live tap before Phase-4 wraps _fast_generate so baseline/Learn/RSI
 # keep the recovered fused decoder while exposing raw <think> tokens in real time.
 install_baseline_stream(master_runtime, Master4000EvaluationEngine)
-# Replace only that low-level manual argmax/.item() decoder with MLX-LM's equivalent
-# native greedy sampler; prompt/scoring/stage behavior and full-precision KV stay unchanged.
+# Replace only that low-level manual argmax/.item() decoder with MLX-LM's optimized
+# single-pass T=0.55 sampler. Prompt/scoring/stage ownership stay unchanged.
 lossless_baseline_speedup.install(master_runtime, live_generation_stream, Master4000EvaluationEngine)
 # phase4_pro_rsi imported this function by value during module import. Point its
 # local reference at the wrapped logger too so RSI/LearningFacts cannot bypass the
