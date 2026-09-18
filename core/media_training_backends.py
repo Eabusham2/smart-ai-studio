@@ -26,7 +26,7 @@ def _training_repo(info) -> str:
     explicit = str(info.get("training_repo_id") or "").strip()
     if explicit:
         return explicit
-    repo = str(info.get("repo_id") or "").strip()
+    repo = _training_repo(info) or str(info.get("repo_id") or "").strip()
     if not repo or os.path.exists(repo):
         return repo
     if repo in _TRAINING_REPO_CACHE:
@@ -229,13 +229,12 @@ def stable_audio3_factory(info, _media_engine, _audio_engine):
     }
 
 def _stable_audio_matches(info):
-    repo = str(info.get("repo_id", "") or "").lower()
-    name = str(info.get("name", "") or "").lower()
     kind = str(info.get("model_type", "") or "").lower()
     variant = str(info.get("audio_variant", "") or "")
-    blob = " ".join((repo, name))
+    blob = _arch_blob(info)
     return kind == "audio" and (
-        "stable-audio-3" in blob or variant in ("small-music", "small-sfx")
+        "stable-audio-3" in blob or "stableaudio" in blob
+        or variant in ("small-music", "small-sfx")
     )
 
 
@@ -270,7 +269,7 @@ def cogvideox_factory(info, _media_engine, _audio_engine):
     accelerate = shutil.which("accelerate")
     if script is None or accelerate is None:
         raise RuntimeError("CogVideoX LoRA trainer requires a Diffusers source checkout and accelerate")
-    repo = str(info.get("repo_id") or "zai-org/CogVideoX-2b")
+    repo = _training_repo(info) or str(info.get("repo_id") or "zai-org/CogVideoX-2b")
 
     def train(samples, output_dir: Path, cancel_event=None):
         data = output_dir / "data"
@@ -317,10 +316,8 @@ def cogvideox_factory(info, _media_engine, _audio_engine):
     }
 
 def _cogvideo_matches(info):
-    repo = str(info.get("repo_id", "") or "").lower()
-    name = str(info.get("name", "") or "").lower()
     kind = str(info.get("model_type", "") or "").lower()
-    return kind == "video" and "cogvideox" in (repo + " " + name)
+    return kind == "video" and "cogvideox" in _arch_blob(info)
 
 
 cogvideox_factory.available = _cogvideo_available
@@ -443,11 +440,8 @@ def _ai_toolkit_root():
 
 def _wan21_matches(info):
     kind = str(info.get("model_type", "") or "").lower()
-    blob = " ".join(
-        str(info.get(key, "") or "").lower()
-        for key in ("repo_id", "name", "precision")
-    )
-    return kind == "video" and any(marker in blob for marker in ("wan2.1", "wan-2.1", "wan2_1"))
+    blob = _arch_blob(info)
+    return kind == "video" and ("wan" in blob or "wanpipeline" in blob)
 
 
 def _wan21_available(_info):
