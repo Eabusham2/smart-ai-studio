@@ -50,6 +50,8 @@ class MediaGenerationEngine:
         dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
         kwargs = {"torch_dtype": dtype, "low_cpu_mem_usage": True}
         pipe = DiffusionPipeline.from_pretrained(repo_id, **kwargs)
+        from core.media_learning import apply_saved_media_adapter
+        apply_saved_media_adapter(pipe, repo_id)
 
         # CUDA can genuinely offload model components. MPS shares unified RAM, so
         # moving the pipeline to MPS is simpler and avoids duplicate CPU/GPU copies.

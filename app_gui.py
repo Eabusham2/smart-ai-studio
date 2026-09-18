@@ -26,6 +26,7 @@ from consolidation.daemon import SleepConsolidationDaemon
 from core.autonomous_learner import AutonomousLearner
 from core.audio_engine import AudioGenerationEngine
 from core.media_engine import MediaGenerationEngine
+from core.media_orchestrator import MediaController
 from core.hf_downloader import is_model_cached_locally, purge_local_model_cache, download_model_from_hf
 from core.model_policy import enforce_hf_text_ternary, enforce_local_text_ternary
 from core.memory_watchdog import SystemMemoryWatchdog
@@ -563,6 +564,7 @@ class SmartAIChatbotApp:
         self.engine = ProReasoningEngine(settings=self.settings)
         self.audio_engine = AudioGenerationEngine()
         self.media_engine = MediaGenerationEngine()
+        self.multimodal = MediaController(self)
         self.learner = AutonomousLearner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
 
         # State Variables
@@ -1547,6 +1549,9 @@ class SmartAIChatbotApp:
 
     def _remove_hf_fetched_model(self, model_id: str):
         """Delete one model added via the Hugging Face Fetch flow, including its local cache."""
+        if getattr(getattr(self, "multimodal", None), "busy", False):
+            self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
+            return
         info = self.models_config.get(model_id)
         if not info or not model_id.startswith("custom_") or info.get("source_kind") != "hf_fetch":
             return
@@ -2887,6 +2892,9 @@ class SmartAIChatbotApp:
     #  SINGLE RESET & REINSTALL
     # ─────────────────────────────────────────────────────
     def _on_reset_and_reinstall_single_confirm(self):
+        if getattr(getattr(self, "multimodal", None), "busy", False):
+            self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
+            return
         target_info = self.models_config[self.active_tab_id]
         repo_id = target_info.get("repo_id")
 
@@ -3099,6 +3107,9 @@ class SmartAIChatbotApp:
                 pass
 
     def _on_toggle_load_unload(self):
+        if getattr(getattr(self, "multimodal", None), "busy", False):
+            self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
+            return
         target_info = self.models_config[self.active_tab_id]
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
@@ -3207,6 +3218,9 @@ class SmartAIChatbotApp:
                 self.chat_stream.insert("end", "\n\n")
 
     def _on_switch_model_tab(self, target_tab_id: str):
+        if getattr(getattr(self, "multimodal", None), "busy", False):
+            self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
+            return
         if target_tab_id not in self.models_config:
             return
         self.active_tab_id = target_tab_id
@@ -3922,6 +3936,11 @@ class SmartAIChatbotApp:
     def _process_message_thread(self, full_msg: str, user_prompt: str):
         start_time = time.perf_counter()
         try:
+            media_command = self.multimodal.handle_command(full_msg)
+            if media_command is not None:
+                message = json.dumps(media_command, ensure_ascii=False, indent=2)
+                self.root.after(0, lambda text=message: self._append_ai_message(text))
+                return
             msg_lower = full_msg.lower().strip()
             response_text = None
             thinking_text = None
@@ -4228,7 +4247,7 @@ class SmartAIChatbotApp:
                             pass
                     self.root.after(0, _insert_chunk)
 
-                for chunk in self.engine.stream_solve(full_msg, history=curr_history, cancel_event=self.cancel_event):
+                for chunk in self.multimodal.stream_solve(full_msg, history=curr_history, cancel_event=self.cancel_event):
                     if self.cancel_event.is_set():
                         break
                     accumulated.append(chunk)
