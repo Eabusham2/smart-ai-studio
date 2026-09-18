@@ -42,6 +42,12 @@ def _atomic_json(path, data):
 class MediaLearningService:
     def __init__(self, directory):
         self.directory = Path(directory)
+        # Registers optional, model-specific image/video/audio trainers. Importing
+        # here avoids changing the existing text/RSI training stack.
+        try:
+            from core import media_training_backends  # noqa: F401
+        except Exception:
+            pass
 
     @staticmethod
     def _backend(info):
@@ -54,9 +60,21 @@ class MediaLearningService:
 
     def capabilities(self, info):
         backend = self._backend(info)
-        available = backend == "diffusers_sdxl" or backend in _FACTORIES
-        return {"supported":available,"backend":backend or None,
-                "reason":None if available else "No model-specific differentiable media trainer is installed; generation is not a weight update."}
+        factory = _FACTORIES.get(backend)
+        available = backend == "diffusers_sdxl" or callable(factory)
+        if callable(factory) and hasattr(factory, "available"):
+            try:
+                available = bool(factory.available(info))
+            except Exception:
+                available = False
+        return {
+            "supported": available,
+            "backend": backend or None,
+            "reason": None if available else (
+                "No installed model-specific media trainer is available for this backend; "
+                "generation remains available but is not a weight update."
+            ),
+        }
 
     def read_samples(self, manifest, workspace):
         workspace = Path(workspace).resolve()
@@ -92,10 +110,52 @@ class MediaLearningService:
             try:
                 factory = _sdxl_session if caps["backend"] == "diffusers_sdxl" else _FACTORIES[caps["backend"]]
                 session = factory(info,media_engine,audio_engine)
+                if callable(session.get("external_train")):
+                    return self._external_update(session, samples, repo, cancel_event)
                 return self._update(session,samples,repo,cancel_event)
             finally:
                 close = session.get("close") if session else None
                 if callable(close): close()
+
+    def _external_update(self, session, samples, repo, cancel_event):
+        """Run a trusted upstream trainer and publish only a verified adapter/checkpoint."""
+        import shutil
+
+        trainer = session["external_train"]
+        directory = self.directory / _key(repo) / uuid.uuid4().hex
+        directory.mkdir(parents=True, exist_ok=False)
+        try:
+            result = trainer(samples, directory, cancel_event)
+            files = [
+                p for p in directory.rglob("*")
+                if p.is_file() and p.stat().st_size > 0
+                and p.suffix in (".safetensors", ".bin", ".pt", ".ckpt", ".zip")
+            ]
+            if not files:
+                raise RuntimeError("Trainer completed without a persisted adapter/checkpoint")
+            verifier = session.get("verify_saved")
+            if callable(verifier) and not verifier(directory):
+                raise RuntimeError("Saved media adapter/checkpoint failed verification")
+            _atomic_json(
+                self.directory / _key(repo) / "current.json",
+                {
+                    "repo_id": repo,
+                    "adapter_path": str(directory.resolve()),
+                    "trainer_backend": session.get("backend"),
+                },
+            )
+            payload = dict(result or {})
+            payload.update({
+                "status": "success",
+                "weights_updated": True,
+                "adapter_path": str(directory),
+                "training_examples": len(samples),
+                "trainer_backend": session.get("backend"),
+            })
+            return payload
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
 
     def _update(self, session, samples, repo, cancel_event):
         import torch
