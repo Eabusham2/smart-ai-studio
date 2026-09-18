@@ -412,12 +412,24 @@ class Master4000EvaluationEngine:
                 sys.stdout.flush()
 
                 if global_idx % 5 == 0:
-                    gc.collect()
-                    if MLX_AVAILABLE:
-                        try:
-                            mx.metal.clear_cache()
-                        except Exception:
-                            pass
+                    # Preserve checkpoint cadence, but do not destroy warm allocator
+                    # state unless memory is genuinely tight.
+                    try:
+                        proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+                        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+                        pressure = proc_gb >= 12.5 or avail_gb <= 0.75
+                    except Exception:
+                        pressure = False
+                    if pressure:
+                        gc.collect(1)
+                        if MLX_AVAILABLE:
+                            try:
+                                if hasattr(mx, "clear_cache"):
+                                    mx.clear_cache()
+                                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                                    mx.metal.clear_cache()
+                            except Exception:
+                                pass
                     self.checkpoint_mgr.save_checkpoint(completed_cache, phase_label, start_time)
                     pass_rate = (correct / max(1, len(items))) * 100.0
                     self._stream_telemetry(
