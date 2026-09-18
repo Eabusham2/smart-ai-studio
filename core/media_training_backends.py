@@ -26,7 +26,7 @@ def _training_repo(info) -> str:
     explicit = str(info.get("training_repo_id") or "").strip()
     if explicit:
         return explicit
-    repo = _training_repo(info) or str(info.get("repo_id") or "").strip()
+    repo = str(info.get("repo_id") or "").strip()
     if not repo or os.path.exists(repo):
         return repo
     if repo in _TRAINING_REPO_CACHE:
