@@ -55,8 +55,13 @@ def install_mlx_adapter_persistence(cls) -> None:
 
             rank = _infer_rank(weights)
             self.inject_lora_adapters(r=rank, scale=2.0)
-            self.model.update(mlx.utils.tree_unflatten(list(weights.items())))
-            mx.eval(self.model.parameters())
+            training_model = (
+                self.get_training_model()
+                if callable(getattr(self, "get_training_model", None))
+                else self.model
+            )
+            training_model.update(mlx.utils.tree_unflatten(list(weights.items())))
+            mx.eval(training_model.parameters())
             self.adapters = dict(weights)
             self.last_restored_adapter_path = raw_checkpoint
             self.last_restored_adapter_rank = rank
