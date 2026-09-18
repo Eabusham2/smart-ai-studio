@@ -3674,6 +3674,21 @@ class SmartAIChatbotApp:
                         "⚠️ Load the selected audio model before generating."
                     ))
                     return
+
+                visual_id = f"audio_gen_{int(time.time() * 1000)}"
+                title = str(active_info.get("short_name") or "Audio generation")
+                self.root.after(
+                    0,
+                    lambda vid=visual_id, t=title: self._create_generation_visual(vid, "audio", t),
+                )
+
+                def _audio_progress(progress: float, message: str):
+                    self.root.after(
+                        0,
+                        lambda vid=visual_id, p=progress, m=message:
+                            self._update_generation_visual(vid, p, m),
+                    )
+
                 output_dir = self.workspace_dir or os.getcwd()
                 output_path = os.path.join(
                     output_dir, f"audio_{int(time.time())}.wav"
@@ -3682,15 +3697,28 @@ class SmartAIChatbotApp:
                     full_msg,
                     output_path=output_path,
                     duration_seconds=10.0,
+                    progress_callback=_audio_progress,
                 )
                 if audio_res.get("status") == "success":
                     path = str(audio_res.get("path") or output_path)
                     backend = str(audio_res.get("backend") or "audio")
+                    self.root.after(
+                        0,
+                        lambda vid=visual_id: self._finish_generation_visual(
+                            vid, True, "✓ Audio complete"
+                        ),
+                    )
                     self.root.after(0, lambda p=path, b=backend: self._append_ai_message(
                         f"🎵 **Audio generated** with {b}: `{p}`"
                     ))
                 else:
                     error = str(audio_res.get("error") or "Audio generation failed.")
+                    self.root.after(
+                        0,
+                        lambda vid=visual_id: self._finish_generation_visual(
+                            vid, False, "⚠ Audio generation failed"
+                        ),
+                    )
                     self.root.after(0, lambda e=error: self._append_ai_message(
                         f"⚠️ **Audio generation failed**: {e}"
                     ))
@@ -3703,12 +3731,30 @@ class SmartAIChatbotApp:
                     ))
                     return
 
+                visual_id = f"{active_type}_gen_{int(time.time() * 1000)}"
+                title = str(active_info.get("short_name") or f"{active_type.title()} generation")
+                self.root.after(
+                    0,
+                    lambda vid=visual_id, k=active_type, t=title:
+                        self._create_generation_visual(vid, k, t),
+                )
+
+                def _media_progress(progress: float, message: str):
+                    self.root.after(
+                        0,
+                        lambda vid=visual_id, p=progress, m=message:
+                            self._update_generation_visual(vid, p, m),
+                    )
+
                 if bool(active_info.get("real_media_engine", False)):
                     output_dir = self.workspace_dir or os.getcwd()
                     if active_type == "image":
                         output_path = os.path.join(output_dir, f"image_{int(time.time())}.png")
                         media_res = self.media_engine.generate_image(
-                            active_info, full_msg, output_path=output_path
+                            active_info,
+                            full_msg,
+                            output_path=output_path,
+                            progress_callback=_media_progress,
                         )
                     else:
                         output_path = os.path.join(output_dir, f"video_{int(time.time())}.mp4")
@@ -3717,21 +3763,52 @@ class SmartAIChatbotApp:
                             full_msg,
                             output_path=output_path,
                             frames=int(active_info.get("frames", 49) or 49),
+                            progress_callback=_media_progress,
                         )
                     if media_res.get("status") == "success":
                         path = str(media_res.get("path") or output_path)
+                        self.root.after(
+                            0,
+                            lambda vid=visual_id, kind=active_type:
+                                self._finish_generation_visual(
+                                    vid, True, f"✓ {kind.title()} complete"
+                                ),
+                        )
                         self.root.after(0, lambda p=path, kind=active_type: self._append_ai_message(
                             f"✓ **{kind.title()} generated**: `{p}`"
                         ))
                     else:
                         error = str(media_res.get("error") or f"{active_type.title()} generation failed.")
+                        self.root.after(
+                            0,
+                            lambda vid=visual_id, kind=active_type:
+                                self._finish_generation_visual(
+                                    vid, False, f"⚠ {kind.title()} generation failed"
+                                ),
+                        )
                         self.root.after(0, lambda e=error: self._append_ai_message(
                             f"⚠️ **Media generation failed**: {e}"
                         ))
                 else:
+                    # Legacy media backends do not expose denoising callbacks, so the
+                    # same card uses its smooth indeterminate growth animation.
+                    self.root.after(
+                        0,
+                        lambda vid=visual_id:
+                            self._update_generation_visual(vid, 0.15, "Generating…"),
+                    )
                     tool_name = "generate_image_diffusion" if active_type == "image" else "generate_video_diffusion"
                     args = {"prompt": full_msg, "model_id": active_info.get("repo_id")}
                     ok, res = self.tools.execute_tool(tool_name, args)
+                    self.root.after(
+                        0,
+                        lambda vid=visual_id, passed=ok, kind=active_type:
+                            self._finish_generation_visual(
+                                vid,
+                                passed,
+                                f"{'✓' if passed else '⚠'} {kind.title()} {'complete' if passed else 'failed'}",
+                            ),
+                    )
                     self.root.after(0, lambda tn=tool_name, r=res: self._append_tool_call(tn, "", r))
                     if not ok:
                         self.root.after(0, lambda r=res: self._append_ai_message(f"⚠️ {r}"))
