@@ -7,7 +7,7 @@ inspects local cache presence, supports cache purge, and tracks models proven lo
 import os
 import shutil
 import threading
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
 _WEIGHT_SUFFIXES = (
