@@ -26,7 +26,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.entropy_router import EntropyRouter
-from core.mlx_engine import MLXReasoningBackend, _memory_pressure
+from core.mlx_engine import MLXReasoningBackend, _adaptive_prefill_step_size, _memory_pressure
 from core.pro_engine import get_ladder_temperatures
 from eval.master_4000_runtime import (
     RAW_OUTPUT_LOG,
@@ -399,6 +399,7 @@ def _generate_branches_same_model(
             "max_tokens": max(1, int(max_tokens)),
             "verbose": False,
             "prompt_cache": make_prompt_cache(self.engine.model),
+            "prefill_step_size": _adaptive_prefill_step_size(),
         }
         if make_sampler is not None:
             try:
@@ -420,6 +421,7 @@ def _generate_branches_same_model(
         except TypeError:
             kwargs.pop("sampler", None)
             kwargs.pop("prompt_cache", None)
+            kwargs.pop("prefill_step_size", None)
             kwargs["temp"] = float(temp)
             kwargs["top_p"] = top_p
             out = mlx_lm.generate(
