@@ -12,6 +12,11 @@ import os
 from pathlib import Path
 import threading
 import uuid
+import html
+import mimetypes
+import re
+import urllib.parse
+import urllib.request
 
 _FACTORIES = {}
 _LOCKS = {}
@@ -76,31 +81,183 @@ class MediaLearningService:
             ),
         }
 
-    def read_samples(self, manifest, workspace):
-        workspace = Path(workspace).resolve()
-        path = (workspace / manifest).resolve()
-        if not path.is_relative_to(workspace) or path.suffix != ".jsonl" or not path.is_file():
-            raise ValueError("Dataset must be an existing JSONL file inside the workspace")
-        if path.stat().st_size > 1024 * 1024:
-            raise ValueError("This interactive learning path accepts at most a 1 MiB manifest")
-        samples = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip(): continue
-            row = json.loads(line)
-            media = (path.parent / str(row.get("path", ""))).resolve()
-            caption = row.get("caption")
-            if not media.is_relative_to(workspace) or not media.is_file() or not isinstance(caption,str) or not caption.strip():
-                raise ValueError("Each example needs a workspace media path and a nonempty caption")
-            samples.append({"path":str(media),"caption":caption})
-        if not 1 <= len(samples) <= 8:
-            raise ValueError("Use one to eight real media examples for an interactive adapter update")
-        return samples
+    @staticmethod
+    def _allowed_extensions(kind):
+        return {
+            "image": {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"},
+            "video": {".mp4", ".mov", ".mkv", ".webm", ".avi"},
+            "audio": {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac"},
+        }.get(str(kind or "").lower(), set())
 
-    def learn(self, info, manifest, workspace, media_engine, audio_engine, cancel_event=None):
+    @staticmethod
+    def _caption_from_name(path_or_url, fallback=None):
+        if fallback:
+            return str(fallback).strip()
+        name = Path(urllib.parse.urlparse(str(path_or_url)).path).stem
+        text = re.sub(r"[_\-]+", " ", name).strip()
+        return text or "media sample"
+
+    def _download_media_url(self, url, folder, kind, caption=None, index=0):
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(str(url), headers={"User-Agent": "SmartAI-MediaLearn/1.0"})
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            ctype = str(resp.headers.get_content_type() or "").lower()
+            detected = "image" if ctype.startswith("image/") else "audio" if ctype.startswith("audio/") else "video" if ctype.startswith("video/") else ""
+            if detected and detected != kind:
+                raise ValueError(f"Expected {kind} media but URL returned {detected}")
+            suffix = Path(urllib.parse.urlparse(str(url)).path).suffix.lower()
+            if suffix not in self._allowed_extensions(kind):
+                suffix = mimetypes.guess_extension(ctype) or next(iter(self._allowed_extensions(kind)), ".bin")
+            path = folder / f"{index:04d}{suffix}"
+            total = 0
+            with open(path, "wb") as out:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 128 * 1024 * 1024:
+                        raise ValueError("Individual training media is limited to 128 MiB")
+                    out.write(chunk)
+        return {"path": str(path.resolve()), "caption": self._caption_from_name(url, caption)}
+
+    def _extract_page_media(self, url, kind, limit=8):
+        req = urllib.request.Request(str(url), headers={"User-Agent": "SmartAI-MediaLearn/1.0"})
+        with urllib.request.urlopen(req, timeout=12.0) as resp:
+            ctype = str(resp.headers.get_content_type() or "").lower()
+            if ctype.startswith(("image/", "audio/", "video/")):
+                return [(str(url), None)]
+            raw = resp.read(2 * 1024 * 1024).decode("utf-8", errors="ignore")
+        candidates = []
+        if kind == "image":
+            pattern = r'<img\b[^>]*?src=["\']([^"\']+)["\'][^>]*?(?:alt=["\']([^"\']*)["\'])?'
+        elif kind == "video":
+            pattern = r'<(?:video|source)\b[^>]*?src=["\']([^"\']+)["\'][^>]*?(?:title=["\']([^"\']*)["\'])?'
+        else:
+            pattern = r'<(?:audio|source)\b[^>]*?src=["\']([^"\']+)["\'][^>]*?(?:title=["\']([^"\']*)["\'])?'
+        for match in re.finditer(pattern, raw, flags=re.I):
+            media_url = urllib.parse.urljoin(str(url), html.unescape(match.group(1)))
+            label = html.unescape(match.group(2) or "").strip() or None
+            if media_url.startswith(("http://", "https://")):
+                candidates.append((media_url, label))
+            if len(candidates) >= limit:
+                break
+        if len(candidates) < limit:
+            exts = "|".join(re.escape(x.lstrip(".")) for x in self._allowed_extensions(kind))
+            if exts:
+                for href in re.findall(r'href=["\']([^"\']+\.(?:' + exts + r')(?:\?[^"\']*)?)["\']', raw, flags=re.I):
+                    media_url = urllib.parse.urljoin(str(url), html.unescape(href))
+                    if media_url.startswith(("http://", "https://")) and all(media_url != u for u,_ in candidates):
+                        candidates.append((media_url, None))
+                    if len(candidates) >= limit:
+                        break
+        return candidates[:limit]
+
+    def _search_pages(self, query, limit=4):
+        url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(str(query))
+        req = urllib.request.Request(url, headers={"User-Agent": "SmartAI-MediaLearn/1.0"})
+        with urllib.request.urlopen(req, timeout=12.0) as resp:
+            raw = resp.read(2 * 1024 * 1024).decode("utf-8", errors="ignore")
+        results = []
+        for href in re.findall(r'class=["\']result__a["\'][^>]*href=["\']([^"\']+)["\']', raw, flags=re.I):
+            parsed = urllib.parse.urlparse(html.unescape(href))
+            target = urllib.parse.parse_qs(parsed.query).get("uddg", [href])[0]
+            target = urllib.parse.unquote(target)
+            if target.startswith(("http://", "https://")) and target not in results:
+                results.append(target)
+            if len(results) >= limit:
+                break
+        return results
+
+    def gather_samples(self, source, workspace, kind, caption=None, max_items=8):
+        """Gather normal files/folders/URLs/search results into a local training folder."""
+        kind = str(kind or "").lower()
+        allowed = self._allowed_extensions(kind)
+        if not allowed:
+            raise ValueError("Training kind must be image, video, or audio")
+        workspace = Path(workspace).resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
+        source_text = str(source or "").strip()
+        if not source_text:
+            raise ValueError("A media learning source is required")
+
+        gather_root = workspace / "media_learning_sources" / uuid.uuid4().hex
+        gather_root.mkdir(parents=True, exist_ok=False)
+        samples = []
+
+        def add_local(path, label=None):
+            path = Path(path).resolve()
+            if not path.is_file() or path.suffix.lower() not in allowed:
+                return
+            dst = gather_root / f"{len(samples):04d}{path.suffix.lower()}"
+            import shutil
+            shutil.copy2(path, dst)
+            samples.append({"path": str(dst.resolve()), "caption": self._caption_from_name(path, label or caption)})
+
+        local = Path(os.path.expanduser(source_text))
+        if not local.is_absolute():
+            local = workspace / local
+
+        if local.exists():
+            if local.is_file() and local.suffix.lower() == ".jsonl":
+                base = local.parent
+                for line in local.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    media = Path(str(row.get("path", "")))
+                    if not media.is_absolute():
+                        media = base / media
+                    add_local(media, row.get("caption"))
+                    if len(samples) >= max_items:
+                        break
+            elif local.is_file():
+                add_local(local)
+            else:
+                for path in sorted(local.rglob("*")):
+                    add_local(path)
+                    if len(samples) >= max_items:
+                        break
+        elif source_text.startswith(("http://", "https://")):
+            for media_url, label in self._extract_page_media(source_text, kind, max_items):
+                try:
+                    samples.append(self._download_media_url(media_url, gather_root, kind, label or caption, len(samples)))
+                except Exception:
+                    continue
+                if len(samples) >= max_items:
+                    break
+        else:
+            for page in self._search_pages(source_text, limit=4):
+                try:
+                    found = self._extract_page_media(page, kind, max_items - len(samples))
+                except Exception:
+                    continue
+                for media_url, label in found:
+                    try:
+                        samples.append(self._download_media_url(media_url, gather_root, kind, label or caption or source_text, len(samples)))
+                    except Exception:
+                        continue
+                    if len(samples) >= max_items:
+                        break
+                if len(samples) >= max_items:
+                    break
+
+        if not samples:
+            import shutil
+            shutil.rmtree(gather_root, ignore_errors=True)
+            raise ValueError("No compatible media could be gathered from that source")
+        return {"folder": gather_root, "samples": samples[:max_items]}
+
+    def read_samples(self, source, workspace, kind, caption=None):
+        gathered = self.gather_samples(source, workspace, kind=kind, caption=caption, max_items=8)
+        return gathered["samples"]
+
+    def learn(self, info, source, workspace, media_engine, audio_engine, cancel_event=None, caption=None):
         caps = self.capabilities(info)
         if not caps["supported"]:
             return {"status":"unsupported","weights_updated":False,**caps}
-        samples = self.read_samples(manifest,workspace)
+        samples = self.read_samples(source, workspace, kind=info.get("model_type"), caption=caption)
         repo = str(info.get("repo_id", ""))
         key = _key(repo)
         with _LOCKS_GUARD:
@@ -232,6 +389,8 @@ def get_saved_media_adapter(repo_id):
         return None
     saved = json.loads(pointer.read_text())
     directory = Path(saved["adapter_path"]).resolve()
+    if saved.get("repo_id") != repo_id or not directory.is_relative_to(root.resolve()):
+        raise RuntimeError("Media adapter identity/path mismatch")
     if not directory.is_dir():
         raise RuntimeError("Saved media adapter directory is missing")
     return directory
@@ -241,8 +400,6 @@ def apply_saved_media_adapter(pipeline, repo_id):
     directory = get_saved_media_adapter(repo_id)
     if directory is None:
         return
-    if saved.get("repo_id") != repo_id or not directory.is_relative_to(root.resolve()):
-        raise RuntimeError("Media adapter identity/path mismatch")
     loader = getattr(pipeline,"load_lora_weights",None)
     if not callable(loader):
         raise RuntimeError("This pipeline cannot reload the learned media adapter")
