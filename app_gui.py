@@ -1282,13 +1282,25 @@ class SmartAIChatbotApp:
         self.lbl_model_status.pack(side="left")
 
     def _refresh_model_menu(self):
-        """Rebuilds the model dropdown menu dynamically with all built-in and custom models."""
-        menu = tk.Menu(self.btn_model_menu, tearoff=0, bg=self.C["btn_bg"], fg=self.C["btn_fg"], font=_FONT_SMALL)
+        """Rebuild the model dropdown with built-ins, custom models, and HF-fetch removal actions."""
+        menu = tk.Menu(
+            self.btn_model_menu,
+            tearoff=0,
+            bg=self.C["btn_bg"],
+            fg=self.C["btn_fg"],
+            font=_FONT_SMALL,
+        )
         for tid, info in self.models_config.items():
             menu.add_command(
                 label=f"{info['tag']}  ({info['base_params']})",
-                command=lambda t=tid: self._on_switch_model_tab(t)
+                command=lambda t=tid: self._on_switch_model_tab(t),
             )
+            if tid.startswith("custom_") and info.get("source_kind") == "hf_fetch":
+                menu.add_command(
+                    label=f"   ➖ Remove {info.get('short_name', 'fetched model')}",
+                    command=lambda t=tid: self._remove_hf_fetched_model(t),
+                )
+
         menu.add_separator()
         menu.add_command(
             label="➕ Import Custom Model...",
@@ -1299,6 +1311,67 @@ class SmartAIChatbotApp:
             command=self._on_fetch_custom_hf_model_dialog
         )
         self.btn_model_menu["menu"] = menu
+
+    def _remove_hf_fetched_model(self, model_id: str):
+        """Delete one model added via the Hugging Face Fetch flow, including its local cache."""
+        info = self.models_config.get(model_id)
+        if not info or not model_id.startswith("custom_") or info.get("source_kind") != "hf_fetch":
+            return
+
+        short_name = str(info.get("short_name") or info.get("name") or "Hugging Face model")
+        repo_id = str(info.get("repo_id") or "").strip()
+
+        confirm = messagebox.askyesno(
+            "Remove Hugging Face Model",
+            f"Remove {short_name}?\n\n"
+            "This deletes it from the selector and removes its downloaded Hugging Face cache.",
+        )
+        if not confirm:
+            return
+
+        was_active = (self.active_tab_id == model_id)
+        if was_active:
+            try:
+                self.engine.unload_model()
+            except Exception:
+                pass
+            try:
+                self.audio_engine.unload_model()
+            except Exception:
+                pass
+            try:
+                self.media_engine.unload_model()
+            except Exception:
+                pass
+            self.is_model_loaded = False
+
+        if repo_id:
+            try:
+                purge_local_model_cache(repo_id)
+            except Exception:
+                pass
+
+        self.models_config.pop(model_id, None)
+        self.chat_history.pop(model_id, None)
+        self.tab_buttons.pop(model_id, None)
+        self.thinking_cache.pop(model_id, None)
+        self.thinking_expanded.pop(model_id, None)
+        self.thinking_meta.pop(model_id, None)
+
+        self._save_custom_models()
+        self._refresh_model_menu()
+
+        if was_active or self.active_tab_id not in self.models_config:
+            fallback_id = "model_1" if "model_1" in self.models_config else next(iter(self.models_config), None)
+            if fallback_id:
+                self._on_switch_model_tab(fallback_id)
+
+        self._append_ai_message(
+            f"➖ **Removed Hugging Face model**: `{short_name}`"
+            + (f" (`{repo_id}`)" if repo_id else "")
+            + ". Its saved selector entry and downloaded cache were deleted."
+        )
+
 
     def _on_fetch_custom_hf_model_dialog(self):
         """Fetch an arbitrary Hugging Face model, register it as a custom model, and select it."""
@@ -1390,6 +1463,7 @@ class SmartAIChatbotApp:
                 "repo_id": repo_id,
                 "model_path": local_dir,
                 "model_type": model_type,
+                "source_kind": "hf_fetch",
                 "ternary": bool(verified_policy_meta.get("ternary", False)) if model_type == "text" else False,
                 "precision": precision,
                 "raw_params": raw_param,
