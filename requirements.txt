@@ -10,6 +10,11 @@ psutil>=5.9.0
 huggingface_hub>=0.20.0
 Pillow>=10.0.0
 soundfile>=0.12.1
+protobuf>=4.25.0
+sentencepiece>=0.2.0
+imageio-ffmpeg>=0.5.1
+imageio>=2.35.0
+diffusers>=0.35.0
 mlx-audio>=0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
 pytest>=7.0.0
 swebench==5.0.2
