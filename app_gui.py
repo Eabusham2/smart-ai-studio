@@ -25,6 +25,7 @@ from config.settings import Settings, get_settings
 from consolidation.daemon import SleepConsolidationDaemon
 from core.autonomous_learner import AutonomousLearner
 from core.audio_engine import AudioGenerationEngine
+from core.media_engine import MediaGenerationEngine
 from core.hf_downloader import is_model_cached_locally, purge_local_model_cache, download_model_from_hf
 from core.model_policy import enforce_hf_text_ternary, enforce_local_text_ternary
 from core.memory_watchdog import SystemMemoryWatchdog
@@ -538,6 +539,7 @@ class SmartAIChatbotApp:
         self.tools = AgentToolRegistry(db_path=self.settings.database_path)
         self.engine = ProReasoningEngine(settings=self.settings)
         self.audio_engine = AudioGenerationEngine()
+        self.media_engine = MediaGenerationEngine()
         self.learner = AutonomousLearner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
 
         # State Variables
@@ -1518,7 +1520,7 @@ class SmartAIChatbotApp:
         tk.Label(body, text="Model Display Name:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
         ent_name = tk.Entry(body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_name.pack(fill="x", pady=(2, 8), ipady=4)
-        ent_name.insert(0, "Llama 3.2 3B Instruct")
+        ent_name.insert(0, "Qwen3.8 27B Ternary")
 
         # 2. Source Type (HuggingFace vs Local Path)
         source_var = tk.StringVar(value="hf")
@@ -1536,7 +1538,7 @@ class SmartAIChatbotApp:
 
         ent_path = tk.Entry(path_frame, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_path.pack(side="left", fill="x", expand=True, ipady=4)
-        ent_path.insert(0, "mlx-community/Llama-3.2-3B-Instruct-4bit")
+        ent_path.insert(0, "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit")
 
         # 4. Parameters scale & Precision
         param_frame = tk.Frame(body, bg=self.C["bg_hud"])
@@ -1545,12 +1547,12 @@ class SmartAIChatbotApp:
         tk.Label(param_frame, text="Parameters:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
         ent_param = tk.Entry(param_frame, width=8, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_param.pack(side="left", padx=(6, 16), ipady=3)
-        ent_param.insert(0, "3B")
+        ent_param.insert(0, "27.36B")
 
         tk.Label(param_frame, text="Precision:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
         ent_prec = tk.Entry(param_frame, width=14, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_prec.pack(side="left", padx=6, ipady=3)
-        ent_prec.insert(0, "4-bit MLX")
+        ent_prec.insert(0, "Native ternary 1.58-bit")
 
         def _on_folder_selected(selected_dir: str):
             if not selected_dir:
@@ -2900,6 +2902,10 @@ class SmartAIChatbotApp:
             self.audio_engine.unload_model()
         except Exception:
             pass
+        try:
+            self.media_engine.unload_model()
+        except Exception:
+            pass
 
         repo_id = str(target_info.get("repo_id") or "")
         cached = is_model_cached_locally(repo_id) if repo_id else (
@@ -3419,15 +3425,35 @@ class SmartAIChatbotApp:
                 return
 
             if active_type in ("image", "video"):
-                tool_name = "generate_image_diffusion" if active_type == "image" else "generate_video_diffusion"
-                args = {
-                    "prompt": full_msg,
-                    "model_id": active_info.get("repo_id"),
-                }
-                ok, res = self.tools.execute_tool(tool_name, args)
-                self.root.after(0, lambda tn=tool_name, r=res: self._append_tool_call(tn, "", r))
-                if not ok:
-                    self.root.after(0, lambda r=res: self._append_ai_message(f"⚠️ {r}"))
+                if not self.is_model_loaded:
+                    self.root.after(0, lambda: self._append_ai_message(
+                        "⚠️ Install and Load the selected media model before generating."
+                    ))
+                    return
+                output_dir = self.workspace_dir or os.getcwd()
+                if active_type == "image":
+                    output_path = os.path.join(output_dir, f"image_{int(time.time())}.png")
+                    media_res = self.media_engine.generate_image(
+                        active_info, full_msg, output_path=output_path
+                    )
+                else:
+                    output_path = os.path.join(output_dir, f"video_{int(time.time())}.mp4")
+                    media_res = self.media_engine.generate_video(
+                        active_info,
+                        full_msg,
+                        output_path=output_path,
+                        frames=int(active_info.get("frames", 49) or 49),
+                    )
+                if media_res.get("status") == "success":
+                    path = str(media_res.get("path") or output_path)
+                    self.root.after(0, lambda p=path, kind=active_type: self._append_ai_message(
+                        f"✓ **{kind.title()} generated**: `{p}`"
+                    ))
+                else:
+                    error = str(media_res.get("error") or f"{active_type.title()} generation failed.")
+                    self.root.after(0, lambda e=error: self._append_ai_message(
+                        f"⚠️ **Media generation failed**: {e}"
+                    ))
                 return
 
             # 1. Autonomous Learning Mode (/learn or learn <topic>)
