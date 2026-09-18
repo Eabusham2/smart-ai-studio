@@ -31,6 +31,7 @@ from typing import Any, Dict, List
 
 import psutil
 from mlx_lm.models.cache import make_prompt_cache
+from core.mlx_engine import _adaptive_prefill_step_size
 
 
 _OOM_MARKERS = (
@@ -70,24 +71,8 @@ def _clear_runtime_memory(mx: Any, *, force: bool = False) -> None:
 
 
 def _memory_policy(*, aggressive: bool = False) -> Dict[str, int]:
-    """Adaptive prefill only; model/context/sampling semantics stay unchanged."""
-    if aggressive:
-        step = 128
-    else:
-        try:
-            proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
-            avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-            if proc_gb < 9.5 and avail_gb >= 4.0:
-                step = 2048
-            elif proc_gb < 11.0 and avail_gb >= 2.0:
-                step = 1024
-            elif avail_gb >= 1.0:
-                step = 512
-            else:
-                step = 256
-        except Exception:
-            step = 256
-    return {"prefill_step_size": step}
+    """Use the exact same adaptive prefill policy as the desktop MLX backend."""
+    return {"prefill_step_size": _adaptive_prefill_step_size(aggressive=aggressive)}
 
 
 def _close_iterator(iterator: Any) -> None:
