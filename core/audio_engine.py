@@ -10,7 +10,7 @@ import glob
 import os
 import platform
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 
 class AudioGenerationEngine:
@@ -177,6 +177,7 @@ class AudioGenerationEngine:
         duration_seconds: float = 10.0,
         steps: int = 50,
         cfg_scale: float = 5.0,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> Dict[str, Any]:
         if self.model is None or not self.backend:
             return {"status": "error", "error": "No audio model is loaded."}
@@ -190,10 +191,14 @@ class AudioGenerationEngine:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
         try:
+            if progress_callback:
+                progress_callback(0.05, "Preparing audio generation")
             if self.backend == "mlx_audio":
                 from mlx_audio.tts.generate import generate_audio
                 prefix = os.path.splitext(output_path)[0]
                 before = set(glob.glob(prefix + "*"))
+                if progress_callback:
+                    progress_callback(0.18, "Synthesizing waveform")
                 try:
                     result = generate_audio(model=self.model, text=prompt, file_prefix=prefix)
                 except TypeError:
@@ -212,9 +217,13 @@ class AudioGenerationEngine:
                         "status": "error",
                         "error": "MLX audio backend returned without writing an audio file.",
                     }
+                if progress_callback:
+                    progress_callback(1.0, "Audio complete")
                 return {"status": "success", "path": final_path, "backend": self.backend}
 
             if self.backend == "stable_audio_3":
+                if progress_callback:
+                    progress_callback(0.18, "Generating music / sound")
                 audio = self.model.generate(
                     prompt=prompt,
                     duration=float(duration_seconds),
@@ -223,6 +232,8 @@ class AudioGenerationEngine:
                 )
                 sample_rate = int(getattr(self.model, "sample_rate", 44100) or 44100)
                 self._save_wave_array(audio, sample_rate, output_path)
+                if progress_callback:
+                    progress_callback(1.0, "Audio complete")
                 return {"status": "success", "path": output_path, "backend": self.backend}
 
             if self.backend == "stable_audio_tools":
@@ -236,6 +247,8 @@ class AudioGenerationEngine:
                     "seconds_start": 0,
                     "seconds_total": float(duration_seconds),
                 }]
+                if progress_callback:
+                    progress_callback(0.18, "Generating music / sound")
                 audio = generate_diffusion_cond(
                     model,
                     steps=max(1, int(steps)),
@@ -248,9 +261,13 @@ class AudioGenerationEngine:
                 peak = torch.max(torch.abs(audio)).clamp_min(1e-8)
                 audio = audio.to(torch.float32).div(peak).clamp(-1, 1)
                 self._save_wave_array(audio, sample_rate, output_path)
+                if progress_callback:
+                    progress_callback(1.0, "Audio complete")
                 return {"status": "success", "path": output_path, "backend": self.backend}
 
             if self.backend == "moss_soundeffect_v2":
+                if progress_callback:
+                    progress_callback(0.18, "Generating sound effect")
                 audio = self.model(
                     prompt=prompt,
                     seconds=float(duration_seconds),
@@ -260,15 +277,21 @@ class AudioGenerationEngine:
                 self.model.save_audio(audio, output_path)
                 if not os.path.isfile(output_path):
                     return {"status": "error", "error": "MOSS backend returned without writing audio."}
+                if progress_callback:
+                    progress_callback(1.0, "Audio complete")
                 return {"status": "success", "path": output_path, "backend": self.backend}
 
             if self.backend == "transformers_text_to_audio":
+                if progress_callback:
+                    progress_callback(0.18, "Generating audio")
                 result = self.model(prompt)
                 audio = result.get("audio") if isinstance(result, dict) else None
                 rate = int(result.get("sampling_rate", 44100)) if isinstance(result, dict) else 44100
                 if audio is None:
                     return {"status": "error", "error": "Transformers audio backend returned no waveform."}
                 self._save_wave_array(audio, rate, output_path)
+                if progress_callback:
+                    progress_callback(1.0, "Audio complete")
                 return {"status": "success", "path": output_path, "backend": self.backend}
 
             return {"status": "error", "error": f"Unsupported audio backend: {self.backend}"}
