@@ -2,7 +2,7 @@
 
 The current RSI search/reward algorithm is left untouched. This layer restores the
 strong branch-lifecycle behavior from the older MLX implementation around the current
-live-stream generator while preserving the model's full-precision KV cache.
+live-stream generator while using the default TurboQuant KV cache.
 
 Kept because it is output-preserving and still useful:
 - branches remain strictly sequential;
@@ -30,6 +30,7 @@ import time
 from typing import Any, Dict, List
 
 import psutil
+from core.turboquant_cache import make_turboquant_prompt_cache
 
 
 _OOM_MARKERS = (
@@ -69,7 +70,7 @@ def _clear_runtime_memory(mx: Any, *, force: bool = False) -> None:
 
 
 def _memory_policy(*, aggressive: bool = False) -> Dict[str, int]:
-    """Output-preserving MLX-LM controls: full KV precision, smaller prefill only."""
+    """MLX-LM controls: TurboQuant KV by default, smaller prefill only."""
     return {
         "prefill_step_size": 128 if aggressive else 256,
     }
@@ -192,7 +193,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             sampler = make_sampler(temp=float(temp), top_p=top_p)
             label = (
                 f"live branch {branch_idx}/{total_branches} | T={float(temp):.2f} | "
-                f"KV=full | prefill={policy['prefill_step_size']}"
+                f"KV=TurboQuant-K8/V3 | prefill={policy['prefill_step_size']}"
             )
             live_module._write_live_header(self, formatted_prompt, branch_label=label)
 
@@ -208,6 +209,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                     "prompt": formatted_prompt,
                     "max_tokens": max(1, int(max_tokens)),
                     "sampler": sampler,
+                    "prompt_cache": make_turboquant_prompt_cache(self.engine.model),
                     **policy,
                 }
                 with lock_context():
@@ -260,7 +262,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
                 try:
                     live_module._append_live_text(
                         "\n[RSI MEMORY RECOVERY] Metal OOM: retrying only this branch "
-                        "with smaller prefill chunks; KV precision, full context, and "
+                        "with smaller prefill chunks; TurboQuant cache policy, full context, and "
                         "token allowance are unchanged.\n"
                     )
                 except Exception:
