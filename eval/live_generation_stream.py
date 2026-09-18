@@ -14,10 +14,13 @@ from __future__ import annotations
 import gc
 import os
 import time
+
+import psutil
 from datetime import datetime
 from typing import Any, Dict, List
 
 from core.turboquant_cache import make_turboquant_prompt_cache
+from core.mlx_engine import _adaptive_prefill_step_size
 
 
 LIVE_GENERATION_LOG = os.path.join("eval_results", "live_generation.log")
@@ -120,7 +123,7 @@ def install_baseline_stream(runtime_module, cls) -> None:
     original_result_log = runtime_module._append_result_log
 
     def live_fast_generate(self, prompt, max_tokens=16384, stream=False):
-        """Same fused MLX decode path as the recovered runtime, with live raw-output taps."""
+        """Fused MLX-LM greedy decode with the recovered manual loop as fail-safe."""
         if not MLX_AVAILABLE:
             raise RuntimeError("MLX/MLX-LM unavailable: refusing to fake/offline benchmark generation")
         if self.engine.model is None or self.engine.tokenizer is None:
@@ -128,7 +131,9 @@ def install_baseline_stream(runtime_module, cls) -> None:
 
         tok = self.engine.tokenizer
         model = self.engine.model
-        cache = inp = logits = step = None
+        cache = None
+        pieces: List[str] = []
+        started = time.perf_counter()
 
         try:
             ids = tok.encode(prompt)
@@ -141,81 +146,49 @@ def install_baseline_stream(runtime_module, cls) -> None:
 
             cache = make_prompt_cache(model)
 
-            eos = set()
-            e = getattr(tok, "eos_token_id", None)
-            if e is not None:
-                eos.update(e if isinstance(e, (list, tuple, set)) else [e])
-
-            for name in ("<|im_end|>", "<end_of_turn>", "<|eot_id|>", "<|endoftext|>", "</s>", "<eos>"):
-                try:
-                    encoded = tok.encode(name, add_special_tokens=False)
-                    if len(encoded) == 1:
-                        eos.add(int(encoded[0]))
-                    if hasattr(tok, "convert_tokens_to_ids"):
-                        tid = tok.convert_tokens_to_ids(name)
-                        if isinstance(tid, int) and tid >= 0:
-                            eos.add(tid)
-                except Exception:
-                    pass
-
-            pending_live: List[int] = []
+            # MLX-LM's generation loop stays in the optimized runtime instead of
+            # synchronizing Python once per token with argmax(...).item().
+            from mlx_lm import stream_generate
             with metal_lock:
-                inp = mx.array([ids])
-                logits = model(inp, cache=cache)
-                next_arr = mx.argmax(logits[0, -1])
-                mx.eval(next_arr)
-                nxt = int(next_arr.item())
+                iterator = stream_generate(
+                    model,
+                    tok,
+                    prompt=prompt,
+                    max_tokens=max(1, int(max_tokens)),
+                    prompt_cache=cache,
+                    prefill_step_size=_adaptive_prefill_step_size(),
+                )
+                last_response = None
+                generated = 0
+                for response in iterator:
+                    last_response = response
+                    chunk = getattr(response, "text", None)
+                    if chunk is None:
+                        chunk = str(response)
+                    chunk = str(chunk)
+                    pieces.append(chunk)
+                    _append_live_text(chunk)
+                    generated += 1
+                    try:
+                        measured = float(getattr(response, "generation_tps", 0.0) or 0.0)
+                    except Exception:
+                        measured = 0.0
+                    if measured > 0.0:
+                        self.last_tok_per_sec = measured
+                    self.live_generated_tokens = generated
 
-                out: List[int] = []
-                if nxt not in eos:
-                    out.append(nxt)
-                    pending_live.append(nxt)
-
-                # Preserve the recovered timing definition: pure decode starts after prefill.
-                decode = 0
-                t0 = time.perf_counter()
-                live_update = t0
-
-                for _ in range(max(0, max_tokens - 1)):
-                    if not out or out[-1] in eos:
-                        break
-
-                    step = model(mx.array([[out[-1]]]), cache=cache)
-                    next_arr = mx.argmax(step[0, -1])
-                    mx.eval(next_arr)
-                    nxt = int(next_arr.item())
-
-                    if nxt in eos:
-                        break
-
-                    out.append(nxt)
-                    pending_live.append(nxt)
-                    decode += 1
-
-                    now = time.perf_counter()
-                    # Roughly twice per second at the current ~5 t/s. Decode only
-                    # newly generated tokens, never the whole response repeatedly.
-                    if pending_live and (now - live_update >= 0.5 or len(pending_live) >= 8):
-                        _append_live_text(_decode_piece(tok, pending_live))
-                        pending_live.clear()
-                        self.last_tok_per_sec = decode / max(0.001, now - t0)
-                        self.live_generated_tokens = len(out)
-                        live_update = now
-
-                if pending_live:
-                    _append_live_text(_decode_piece(tok, pending_live))
-                    pending_live.clear()
-
-                dt = max(0.001, time.perf_counter() - t0)
-
-            self.last_tok_per_sec = decode / dt if decode else 0.0
-            self.live_generated_tokens = len(out)
-            self.last_output_tokens = len(out)
+            text = "".join(pieces)
+            dt = max(0.001, time.perf_counter() - started)
+            if self.last_tok_per_sec <= 0.0 and generated:
+                self.last_tok_per_sec = generated / dt
+            self.live_generated_tokens = generated
+            self.last_output_tokens = generated
             self.last_generation_seconds = dt
             self.last_generation_error = None
-            return tok.decode(out)
+            return text
 
         except Exception as exc:
+            # Fail safe rather than silently changing benchmark behavior.
             self.last_tok_per_sec = 0.0
             self.last_output_tokens = 0
             self.last_generation_seconds = 0.0
@@ -224,16 +197,21 @@ def install_baseline_stream(runtime_module, cls) -> None:
             raise RuntimeError(f"Real MLX generation failed: {self.last_generation_error}") from exc
 
         finally:
-            cache = inp = logits = step = None
-            if MLX_AVAILABLE:
-                try:
+            cache = None
+            pieces.clear()
+            # Keeping MLX's warm allocator is materially faster across 4K eval items.
+            # Purge only under real memory pressure.
+            try:
+                proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+                avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+                if proc_gb >= 12.5 or avail_gb <= 0.75:
+                    gc.collect(2)
                     if hasattr(mx, "clear_cache"):
                         mx.clear_cache()
                     elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
                         mx.metal.clear_cache()
-                except Exception:
-                    pass
-            gc.collect()
+            except Exception:
+                pass
 
     def raw_log_with_live_snapshot(self, formatted_prompt: str, user_prompt: str, raw_output: str):
         original_raw_log(self, formatted_prompt, user_prompt, raw_output)
