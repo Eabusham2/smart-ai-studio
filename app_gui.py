@@ -576,6 +576,7 @@ class SmartAIChatbotApp:
         self.thinking_expanded: Dict[str, bool] = {}
         self.thinking_meta: Dict[str, Dict[str, Any]] = {}
         self.code_snippets: Dict[str, str] = {}
+        self._generation_visuals: Dict[str, Dict[str, Any]] = {}
         self._think_counter = 0
         self._code_counter = 0
         self.last_metadata: Optional[Dict[str, Any]] = None
@@ -3272,6 +3273,180 @@ class SmartAIChatbotApp:
         self.chat_stream.insert("end", f"\"{text.strip()}\" (will execute automatically after current task)", "queue_msg")
         self.chat_stream.insert("end", "\n\n")
         self.chat_stream.configure(state="disabled")
+        self._scroll_chat_to_bottom()
+
+    def _create_generation_visual(self, visual_id: str, kind: str, title: str):
+        """Small OSS-style live generation card embedded in the chat stream."""
+        if visual_id in self._generation_visuals:
+            return
+        try:
+            self.chat_stream.configure(state="normal")
+            self.chat_stream.insert(
+                "end",
+                f"\n✦ {title}  •  {datetime.now().strftime('%H:%M')}\n",
+                "ai_header",
+            )
+
+            frame = tk.Frame(
+                self.chat_stream,
+                bg=self.C["bg_card"],
+                highlightbackground=self.C["border"],
+                highlightthickness=1,
+                padx=8,
+                pady=7,
+            )
+            canvas = tk.Canvas(
+                frame,
+                width=360,
+                height=96,
+                bg=self.C["bg_chat"],
+                highlightthickness=0,
+                bd=0,
+            )
+            canvas.pack(fill="x")
+            status = tk.Label(
+                frame,
+                text="Starting…",
+                font=_FONT_TINY_BOLD,
+                bg=self.C["bg_card"],
+                fg=self.C["text_muted"],
+                anchor="w",
+            )
+            status.pack(fill="x", pady=(5, 0))
+
+            self.chat_stream.window_create("end", window=frame)
+            self.chat_stream.insert("end", "\n\n")
+            self.chat_stream.configure(state="disabled")
+            self._scroll_chat_to_bottom()
+
+            self._generation_visuals[visual_id] = {
+                "kind": str(kind or "image").lower(),
+                "frame": frame,
+                "canvas": canvas,
+                "status": status,
+                "target": 0.02,
+                "shown": 0.0,
+                "phase": 0,
+                "active": True,
+            }
+            self._redraw_generation_visual(visual_id)
+            self.root.after(120, lambda vid=visual_id: self._animate_generation_visual(vid))
+        except Exception:
+            pass
+
+    def _redraw_generation_visual(self, visual_id: str):
+        state = self._generation_visuals.get(visual_id)
+        if not state:
+            return
+        canvas = state.get("canvas")
+        try:
+            if canvas is None or not canvas.winfo_exists():
+                return
+            canvas.delete("all")
+            kind = state.get("kind", "image")
+            p = max(0.0, min(1.0, float(state.get("shown", 0.0))))
+            phase = int(state.get("phase", 0))
+            fg = self.C.get("accent_cyan", "#38bdf8")
+            muted = self.C.get("text_muted", "#94a3b8")
+            border = self.C.get("border", "#334155")
+
+            if kind == "image":
+                x0, y0, x1, y1 = 12, 10, 348, 80
+                canvas.create_rectangle(x0, y0, x1, y1, outline=border, width=2)
+                reveal = x0 + int((x1 - x0) * p)
+                if reveal > x0:
+                    canvas.create_rectangle(x0 + 2, y0 + 2, reveal, y1 - 2, fill=fg, outline="")
+                for gx in range(x0 + 56, x1, 56):
+                    canvas.create_line(gx, y0, gx, y1, fill=border)
+                for gy in range(y0 + 23, y1, 23):
+                    canvas.create_line(x0, gy, x1, gy, fill=border)
+                canvas.create_text(180, 45, text=f"IMAGE  {int(p * 100)}%", fill="#ffffff", font=_FONT_SMALL_BOLD)
+
+            elif kind == "video":
+                count = 6
+                gap = 6
+                frame_w = 50
+                filled = int(round(p * count))
+                start_x = 12
+                for idx in range(count):
+                    x0 = start_x + idx * (frame_w + gap)
+                    x1 = x0 + frame_w
+                    fill = fg if idx < filled else self.C["bg_chat"]
+                    canvas.create_rectangle(x0, 18, x1, 70, outline=border, fill=fill, width=2)
+                    canvas.create_rectangle(x0 + 5, 13, x0 + 12, 17, fill=muted, outline="")
+                    canvas.create_rectangle(x0 + 20, 13, x0 + 27, 17, fill=muted, outline="")
+                    canvas.create_rectangle(x0 + 35, 13, x0 + 42, 17, fill=muted, outline="")
+                play_x = start_x + int((count * frame_w + (count - 1) * gap) * p)
+                canvas.create_line(play_x, 8, play_x, 82, fill="#ffffff", width=2)
+                canvas.create_text(180, 89, text=f"VIDEO  {int(p * 100)}%", fill=muted, font=_FONT_TINY_BOLD)
+
+            else:
+                # Animated waveform; progress controls the illuminated portion.
+                bars = 30
+                left = 14
+                width = 332
+                step = width / bars
+                center = 47
+                lit = int(round(p * bars))
+                canvas.create_line(left, center, left + width, center, fill=border)
+                for idx in range(bars):
+                    wobble = abs(((idx * 11 + phase * 7) % 34) - 17)
+                    height = 8 + wobble
+                    x = left + idx * step + step / 2
+                    color = fg if idx < lit or state.get("active") else border
+                    canvas.create_line(x, center - height, x, center + height, fill=color, width=3)
+                canvas.create_text(180, 89, text=f"AUDIO  {int(p * 100)}%", fill=muted, font=_FONT_TINY_BOLD)
+        except Exception:
+            pass
+
+    def _animate_generation_visual(self, visual_id: str):
+        state = self._generation_visuals.get(visual_id)
+        if not state or not state.get("active"):
+            return
+        state["phase"] = int(state.get("phase", 0)) + 1
+        shown = float(state.get("shown", 0.0))
+        target = float(state.get("target", 0.0))
+
+        # Smooth OSS-style fallback when a backend has no native progress callback.
+        if target <= shown + 0.005:
+            target = min(0.92, shown + 0.006)
+        state["shown"] = min(0.98, shown + max(0.004, min(0.035, target - shown)))
+        self._redraw_generation_visual(visual_id)
+        try:
+            if self.root.winfo_exists():
+                self.root.after(120, lambda vid=visual_id: self._animate_generation_visual(vid))
+        except Exception:
+            pass
+
+    def _update_generation_visual(self, visual_id: str, progress: float, status_text: str = ""):
+        state = self._generation_visuals.get(visual_id)
+        if not state:
+            return
+        try:
+            state["target"] = max(float(state.get("target", 0.0)), max(0.0, min(1.0, float(progress))))
+            if status_text:
+                state["status"].configure(text=status_text, fg=self.C["text_muted"])
+            self._redraw_generation_visual(visual_id)
+            self._scroll_chat_to_bottom()
+        except Exception:
+            pass
+
+    def _finish_generation_visual(self, visual_id: str, success: bool, status_text: str):
+        state = self._generation_visuals.get(visual_id)
+        if not state:
+            return
+        state["active"] = False
+        if success:
+            state["target"] = 1.0
+            state["shown"] = 1.0
+        try:
+            state["status"].configure(
+                text=status_text,
+                fg=self.C["accent_green"] if success else self.C["accent_red"],
+            )
+        except Exception:
+            pass
+        self._redraw_generation_visual(visual_id)
         self._scroll_chat_to_bottom()
 
     def _append_ai_message(
