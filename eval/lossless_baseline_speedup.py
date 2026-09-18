@@ -17,6 +17,7 @@ from typing import Any, List
 import psutil
 
 from core.temperature_policy import EVAL_N1_TEMPERATURE
+from core.mlx_engine import _adaptive_prefill_step_size
 
 
 def _memory_pressure() -> bool:
@@ -60,7 +61,9 @@ def install(runtime_module, live_module, cls) -> None:
         iterator = None
         response = None
         pieces: List[str] = []
-        prompt_tokens = len(tok.encode(prompt))
+        # Tokenize the potentially huge 32K/226K prompt once and reuse the exact IDs.
+        prompt_ids = tok.encode(prompt)
+        prompt_tokens = len(prompt_ids)
         self.last_prompt_tokens = prompt_tokens
 
         requested = max(1, int(max_tokens))
@@ -84,13 +87,19 @@ def install(runtime_module, live_module, cls) -> None:
         pending: List[str] = []
         generated_responses = 0
 
+        prompt_cache = None
         try:
+            # Eval deliberately uses native/full-precision MLX KV. TurboQuant is an
+            # app-only exception. Prefill sizing is the same adaptive safe policy.
+            prompt_cache = runtime_module.make_prompt_cache(model)
             iterator = mlx_lm.stream_generate(
                 model,
                 tok,
-                prompt=prompt,
+                prompt=prompt_ids,
                 max_tokens=requested,
                 sampler=sampler,
+                prompt_cache=prompt_cache,
+                prefill_step_size=_adaptive_prefill_step_size(),
             )
             for response in iterator:
                 generated_responses += 1
@@ -157,6 +166,7 @@ def install(runtime_module, live_module, cls) -> None:
             raise RuntimeError(f"Real MLX generation failed: {self.last_generation_error}") from exc
         finally:
             response = None
+            prompt_cache = None
             try:
                 closer = getattr(iterator, "close", None)
                 if callable(closer):
