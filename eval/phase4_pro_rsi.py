@@ -376,6 +376,7 @@ def _generate_branches_same_model(
         raise RuntimeError("MLX model/tokenizer unavailable for RSI/Pro branching")
 
     branches: List[str] = []
+    prompt_ids = self.engine.tokenizer.encode(formatted_prompt)
     try:
         from mlx_lm.sample_utils import make_sampler
     except Exception:
@@ -413,7 +414,7 @@ def _generate_branches_same_model(
             out = mlx_lm.generate(
                 self.engine.model,
                 self.engine.tokenizer,
-                prompt=formatted_prompt,
+                prompt=prompt_ids,
                 **kwargs,
             )
         except TypeError:
