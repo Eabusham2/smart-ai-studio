@@ -53,14 +53,23 @@ def test_gguf_learning_is_real_sidecar_and_persistent():
     assert "lora_path=self.adapter_path if os.path.isfile(self.adapter_path) else None" in engine
 
 
-def test_bitnet_backend_is_real_and_training_fail_closed():
-    src = _src("core/engines/bitnet_engine.py")
-    assert 'BITNET_REPO = "https://github.com/microsoft/BitNet.git"' in src
+def test_bitnet_backend_is_real_and_training_rebuilds_deployment_weights():
+    src = _src("core/engines/bitnet_cpp_engine.py")
+    trainer = _src("core/bitnet_rebuild_trainer.py")
+    assert '"https://github.com/microsoft/BitNet.git"' in src
     assert '"setup_env.py"' in src
-    assert '"llama-cli"' in src
-    assert "subprocess.run(" in src
-    assert "BitLinear" not in src
-    assert "synthetic" not in src.lower()
+    assert '"llama-server"' in src
     assert "def training_ready(self) -> bool:" in src
-    assert "return False" in src
-    assert "refusing to fabricate a parameter update" in src
+    assert "BitNetRebuildTrainer" in src
+    assert "def train_mini_batch(" in src
+    assert "training_base_model_id" in src
+    assert "learned-i2_s.gguf" in src
+
+    assert "PeftModel.from_pretrained" in trainer
+    assert "get_peft_model" in trainer
+    assert "merge_and_unload" in trainer
+    assert "convert-hf-to-gguf-bitnet.py" in trainer
+    assert '"I2_S"' in trainer
+    assert "loss.backward()" in trainer
+    assert "optimizer.step()" in trainer
+    assert "zero parameter change" in trainer
