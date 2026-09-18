@@ -1306,7 +1306,7 @@ class SmartAIChatbotApp:
         ).pack(anchor="w")
         tk.Label(
             body,
-            text="Enter a Hugging Face repo ID such as mlx-community/Llama-3.2-3B-Instruct-4bit.",
+            text="Enter a Hugging Face repo ID. Text repos must explicitly prove native ternary / 1.58-bit weights.",
             font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]
         ).pack(anchor="w", pady=(3, 10))
 
@@ -1334,6 +1334,8 @@ class SmartAIChatbotApp:
                     break
             return value.strip("/")
 
+        verified_policy_meta = {}
+
         def _register_download(repo_id: str, local_dir: str):
             try:
                 info = inspect_mlx_model_folder(local_dir) or {}
@@ -1356,17 +1358,31 @@ class SmartAIChatbotApp:
             except Exception:
                 raw_param = 0
 
+            pipeline_tag = str(verified_policy_meta.get("pipeline_tag", "") or "").lower()
+            if verified_policy_meta.get("task") == "text":
+                model_type = "text"
+            elif "audio" in pipeline_tag or "speech" in pipeline_tag:
+                model_type = "audio"
+            elif "video" in pipeline_tag:
+                model_type = "video"
+            elif "image" in pipeline_tag:
+                model_type = "image"
+            else:
+                model_type = "media"
+
             custom_id = f"custom_{int(time.time() * 1000)}"
             self.models_config[custom_id] = {
                 "name": f"{short_name} (HF Custom)",
                 "short_name": short_name,
                 "repo_id": repo_id,
                 "model_path": local_dir,
+                "model_type": model_type,
+                "ternary": bool(verified_policy_meta.get("ternary", False)) if model_type == "text" else False,
                 "precision": precision,
                 "raw_params": raw_param,
                 "base_params": param_str,
                 "est_speed": "⚡ Auto",
-                "max_context": max_context,
+                "max_context": max_context if model_type == "text" else 0,
                 "vram": "Auto",
                 "tag": f"🌐 {short_name}",
                 "accent": self.C["accent_cyan"],
@@ -1390,6 +1406,13 @@ class SmartAIChatbotApp:
             if not repo_id or "/" not in repo_id:
                 messagebox.showerror("Invalid Hugging Face Repo", "Enter a repo ID like owner/model.")
                 return
+
+            allowed, policy_reason, policy_meta = enforce_hf_text_ternary(repo_id)
+            if not allowed:
+                messagebox.showerror("Text Model Rejected", policy_reason)
+                return
+            verified_policy_meta.clear()
+            verified_policy_meta.update(policy_meta)
 
             btn_fetch.configure(state="disabled", text="⏳ Fetching...")
             lbl_status.configure(text=f"Connecting to Hugging Face: {repo_id}", fg=self.C["accent_yellow"])
@@ -1593,16 +1616,38 @@ class SmartAIChatbotApp:
                 pass
 
             is_local = os.path.exists(m_path_or_id)
+            if is_local:
+                allowed, policy_reason, policy_meta = enforce_local_text_ternary(m_path_or_id)
+            else:
+                allowed, policy_reason, policy_meta = enforce_hf_text_ternary(m_path_or_id)
+            if not allowed:
+                messagebox.showerror("Text Model Rejected", policy_reason)
+                return
+
+            pipeline_tag = str(policy_meta.get("pipeline_tag", "") or "").lower()
+            if policy_meta.get("task") == "text":
+                model_type = "text"
+            elif "audio" in pipeline_tag or "speech" in pipeline_tag:
+                model_type = "audio"
+            elif "video" in pipeline_tag:
+                model_type = "video"
+            elif "image" in pipeline_tag:
+                model_type = "image"
+            else:
+                model_type = "text" if policy_meta.get("ternary") else "media"
+
             new_model = {
                 "name": f"{m_name} (Custom)",
                 "short_name": m_name,
                 "repo_id": m_path_or_id if not is_local else None,
                 "model_path": m_path_or_id if is_local else None,
+                "model_type": model_type,
+                "ternary": bool(policy_meta.get("ternary", False)) if model_type == "text" else False,
                 "precision": m_prec_str,
                 "raw_params": raw_param,
                 "base_params": m_param_str,
-                "max_context": 65_536,
-                "vram": "4.0 GB / 16 GB",
+                "max_context": 65_536 if model_type == "text" else 0,
+                "vram": "Auto",
                 "tag": f"🧩 {m_name}",
                 "accent": self.C["accent_purple"]
             }
