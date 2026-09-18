@@ -491,7 +491,7 @@ class ProReasoningEngine:
                 return
 
         # 2. GGUF Streaming
-        if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "llm", None) is not None:
+        if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "model", None) is not None:
             has_yielded = False
             for token in self.gguf_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
