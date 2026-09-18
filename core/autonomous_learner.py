@@ -339,6 +339,87 @@ class AutonomousLearner:
             "adapter_saved_to": adapter_path,
         }
 
+    def recursive_self_improve(
+        self,
+        topic: str,
+        research: Dict[str, Any],
+        learned_note: str,
+    ) -> str:
+        """Generate one answer-blind RSI revision using the already-updated active model."""
+        self._require_live_trainable_backend()
+        source = self._source_blob(research)
+        if not source or not str(learned_note or "").strip():
+            raise RuntimeError("RSI requires the completed Learn note and its source material.")
+
+        prompt = (
+            f"Recursively improve your own learned note about {topic}. "
+            "Use only the supplied source and your previous note. Find weaknesses, omissions, "
+            "or unclear reasoning yourself; do not ask for or assume a hidden answer. "
+            "Return only the improved technical note. Do not include a score, pass/fail verdict, "
+            "verification result, or commentary about this instruction.\n\n"
+            f"PREVIOUS NOTE:\n{str(learned_note)[:8000]}\n\n"
+            f"SOURCE MATERIAL:\n{source[:16000]}"
+        )
+        improved, _meta = self.engine.solve(prompt)
+        improved = str(improved or "").strip()
+        if not improved:
+            raise RuntimeError("RSI produced no improved self-generated trace.")
+        return improved
+
+    def consolidate_rsi_parameters(self, trace: str) -> Dict[str, Any]:
+        """Train a self-generated RSI trace without persisting its source question/reward."""
+        backend = self._require_live_trainable_backend()
+        adapter_path = getattr(backend, "adapter_path", None) or getattr(self.engine, "lora_adapter_path", None)
+        if not adapter_path and bool(getattr(backend, "is_mlx_available", False)):
+            adapter_path = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
+            backend.adapter_path = adapter_path
+            self.engine.lora_adapter_path = adapter_path
+
+        fisher = None
+        try:
+            fisher_fn = getattr(backend, "compute_mlx_fisher", None)
+            fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
+        except Exception:
+            fisher = None
+
+        updated_adapters, param_drift = backend.train_mini_batch(
+            adapters=getattr(backend, "adapters", {}) or {},
+            data=[{
+                "prompt": "Internalize this self-generated reasoning pattern and improve future problem solving.",
+                "completion": str(trace).strip(),
+            }],
+            fisher_matrix=fisher,
+            lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if fisher else 0.0,
+            learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
+            steps=3,
+            save_path=adapter_path,
+        )
+        drift = float(param_drift)
+        if drift <= 0.0:
+            raise RuntimeError("RSI training completed a call but measured zero parameter change.")
+
+        touched = 0
+        if isinstance(updated_adapters, dict):
+            try:
+                touched = int(updated_adapters.get("trainable_parameters_touched", 0) or 0)
+            except Exception:
+                touched = 0
+            if touched <= 0:
+                for value in updated_adapters.values():
+                    try:
+                        touched += int(value.size)
+                    except Exception:
+                        pass
+
+        return {
+            "status": "success",
+            "parameter_drift_l2": drift,
+            "trainable_parameters_touched": touched,
+            "trainable_parameters_m": touched / 1_000_000.0,
+            "ewc_active": bool(fisher),
+            "adapter_saved_to": adapter_path,
+        }
+
     def run_learning_session(
         self,
         topic: str,
@@ -347,7 +428,7 @@ class AutonomousLearner:
         max_cycles: int = 2,
         source_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run research → real synthesis → source verification → real parameter update."""
+        """Run source Learn → real update → recursive self-improvement → second real update."""
         total_params_m = 0.0
         total_drift = 0.0
         cycles_completed = 0
@@ -404,12 +485,47 @@ class AutonomousLearner:
 
             if cancel_event and cancel_event.is_set():
                 break
-            result = self.consolidate_parameters(clean_topic, synthesis, reward)
-            if result.get("status") != "success":
-                raise RuntimeError(str(result.get("reason") or "parameter consolidation failed"))
 
-            params_m = float(result.get("trainable_parameters_m", 0.0) or 0.0)
-            drift = float(result.get("parameter_drift_l2", 0.0) or 0.0)
+            # Learn and RSI stay distinct. Learn first writes the independently
+            # researched fact/note into the active adapter.
+            learn_result = self.consolidate_parameters(clean_topic, synthesis, reward)
+            if learn_result.get("status") != "success":
+                raise RuntimeError(str(learn_result.get("reason") or "parameter consolidation failed"))
+
+            learn_params_m = float(learn_result.get("trainable_parameters_m", 0.0) or 0.0)
+            learn_drift = float(learn_result.get("parameter_drift_l2", 0.0) or 0.0)
+
+            if cancel_event and cancel_event.is_set():
+                break
+            if progress_callback:
+                progress_callback(
+                    "rsi",
+                    f"🔁 **[Cycle {cycle}/{max_cycles}] Recursive self-improvement on the updated model**...",
+                    learn_params_m,
+                )
+
+            # RSI now runs on the same already-updated model. The verifier is invoked
+            # only after the revision is finished; its verdict is never fed into the
+            # model or stored beside the RSI trace.
+            rsi_trace = self.recursive_self_improve(clean_topic, research, synthesis)
+            rsi_passed, rsi_details, _rsi_reward = self.self_test_and_verify(
+                clean_topic,
+                research,
+                rsi_trace,
+            )
+            if not rsi_passed:
+                raise RuntimeError(rsi_details)
+
+            if cancel_event and cancel_event.is_set():
+                break
+            rsi_result = self.consolidate_rsi_parameters(rsi_trace)
+            if rsi_result.get("status") != "success":
+                raise RuntimeError(str(rsi_result.get("reason") or "RSI parameter consolidation failed"))
+
+            rsi_params_m = float(rsi_result.get("trainable_parameters_m", 0.0) or 0.0)
+            rsi_drift = float(rsi_result.get("parameter_drift_l2", 0.0) or 0.0)
+            params_m = learn_params_m + rsi_params_m
+            drift = learn_drift + rsi_drift
             total_params_m += params_m
             total_drift += drift
             cycles_completed += 1
@@ -417,9 +533,11 @@ class AutonomousLearner:
             if progress_callback:
                 progress_callback(
                     "consolidating",
-                    f"📈 **[Cycle {cycle}/{max_cycles}] Real parameter update complete** "
-                    f"(||ΔW||₂={drift:.6f}, touched={params_m:.3f}M trainable params, "
-                    f"EWC={'on' if result.get('ewc_active') else 'off'})\n\n{synthesis}\n\n{test_details}",
+                    f"📈 **[Cycle {cycle}/{max_cycles}] Learn + RSI parameter updates complete** "
+                    f"(Learn ||ΔW||₂={learn_drift:.6f}; RSI ||ΔW||₂={rsi_drift:.6f}; "
+                    f"touched={params_m:.3f}M trainable params)\n\n"
+                    f"**Learn note**\n{synthesis}\n\n"
+                    f"**RSI revision**\n{rsi_trace}\n\n{rsi_details}",
                     params_m,
                 )
 
