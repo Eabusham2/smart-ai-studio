@@ -128,6 +128,16 @@ class BitNetCppReasoningBackend:
         pool = preferred or files
         return str(max(pool, key=lambda p: p.stat().st_size))
 
+    def _runtime_repo_id(self) -> str:
+        """Map deployment/BF16 siblings to the canonical model family used by bitnet.cpp setup."""
+        repo = str(self.hf_repo_id or "").strip()
+        low = repo.lower()
+        if low == "microsoft/bitnet-b1.58-2b-4t-gguf" or low == "microsoft/bitnet-b1.58-2b-4t-bf16":
+            return "microsoft/BitNet-b1.58-2B-4T"
+        if low == "microsoft/bitnet-b1.58-2b-4t":
+            return "microsoft/BitNet-b1.58-2B-4T"
+        return repo
+
     def _prepare_official_runtime(self) -> Optional[Path]:
         existing = self.find_server()
         if existing is not None:
@@ -149,7 +159,9 @@ class BitNetCppReasoningBackend:
                 return None
 
         # setup_env.py owns BitNet's model-specific code generation and build.
-        repo_id = self.hf_repo_id or (self.model_path if self.model_path in _SUPPORTED_REPOS else "")
+        repo_id = self._runtime_repo_id()
+        if not repo_id and self.original_model_path in _SUPPORTED_REPOS:
+            repo_id = self.original_model_path
         if repo_id not in _SUPPORTED_REPOS:
             return None
         models_dir = root / "models"
