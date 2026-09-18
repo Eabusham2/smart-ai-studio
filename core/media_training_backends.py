@@ -331,55 +331,38 @@ register_media_training_backend(
 
 # ---- Generic mflux image LoRA (FLUX.2 / Z-Image) --------------------------
 
+def _mflux_training_key(info) -> str:
+    configured = str(info.get("mflux_training_model", "") or "").strip()
+    if configured:
+        return configured
+    blob = (_arch_blob(info) + " " + _training_repo(info)).lower()
+    if "zimage" in blob or "z-image" in blob:
+        return "z-image-turbo" if "turbo" in blob else "z-image"
+    if ("flux2" in blob or "flux.2" in blob) and "klein" in blob and "base" in blob:
+        return "flux2-klein-base-9b" if "9b" in blob else "flux2-klein-base-4b"
+    return ""
+
+
 def _mflux_image_matches(info):
-    kind = str(info.get("model_type", "") or "").lower()
-    if kind != "image":
+    if str(info.get("model_type", "") or "").lower() != "image":
         return False
-    blob = " ".join(
-        str(info.get(key, "") or "").lower()
-        for key in ("repo_id", "name", "precision", "image_backend")
-    )
-    return any(marker in blob for marker in ("flux.2", "flux2", "flux-2", "z-image", "z_image", "mflux"))
+    blob = _arch_blob(info)
+    return any(marker in blob for marker in ("flux2", "flux.2", "zimage", "z-image", "mflux"))
 
 
 def _mflux_image_available(info):
-    if shutil.which("mflux-train") is None:
-        return False
-    blob = " ".join(
-        str(info.get(key, "") or "").lower()
-        for key in ("repo_id", "name", "precision")
-    )
-    # mflux currently trains Z-Image and FLUX.2 *base* variants. Distilled
-    # FLUX.2 checkpoints can still generate but are not falsely advertised trainable.
-    return (
-        "z-image" in blob
-        or "z_image" in blob
-        or "flux2-klein-base" in blob
-        or "flux.2 klein base" in blob
-        or bool(info.get("mflux_training_model"))
-    )
+    return shutil.which("mflux-train") is not None and bool(_mflux_training_key(info))
 
 
 def mflux_image_factory(info, _media_engine, _audio_engine):
     exe = shutil.which("mflux-train")
     if exe is None:
         raise RuntimeError("mflux-train is not installed")
-
-    blob = " ".join(
-        str(info.get(key, "") or "").lower()
-        for key in ("repo_id", "name", "precision")
-    )
-    configured = str(info.get("mflux_training_model", "") or "").strip()
-    if configured:
-        model_key = configured
-    elif "z-image" in blob or "z_image" in blob:
-        model_key = "z-image-turbo" if "turbo" in blob else "z-image"
-    elif "flux2-klein-base" in blob or "flux.2 klein base" in blob:
-        model_key = "flux2-klein-base-9b" if "9b" in blob else "flux2-klein-base-4b"
-    else:
+    model_key = _mflux_training_key(info)
+    if not model_key:
         raise RuntimeError(
-            "This mflux checkpoint can generate, but its exact training base is not "
-            "known to be adapter-compatible. Set mflux_training_model only when verified."
+            "MFLUX can generate this image model, but a compatible trainable base "
+            "could not be resolved. Falling through to another architecture trainer."
         )
 
     def train(samples, output_dir: Path, cancel_event=None):
@@ -407,7 +390,6 @@ def mflux_image_factory(info, _media_engine, _audio_engine):
             },
         }
         config_path = output_dir / "mflux_train.json"
-        import json
         config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
         lines = _run_cancelable([exe, "--config", str(config_path)], cancel_event)
         return {"trainer": "mflux-train", "model": model_key, "log_tail": lines[-12:]}
