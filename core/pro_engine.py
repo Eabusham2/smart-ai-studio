@@ -202,6 +202,11 @@ class ProReasoningEngine:
                 if preset["name"] == model_name or preset["short_name"] == model_name or preset["key"] == model_name:
                     target_path = model_path or preset.get("default_repo_id", self.settings.mlx_model_path)
                     mmproj_path = preset.get("mmproj")
+                    info = {**preset, **info}
+                    if info.get("input_modalities"):
+                        self.active_input_modalities = {
+                            str(value).lower() for value in info.get("input_modalities") or ["text"]
+                        }
                     break
 
             if not target_path:
@@ -217,7 +222,14 @@ class ProReasoningEngine:
             # Specialized controller runtimes are selected explicitly by model
             # metadata.  Existing backends remain the default/fallback.
             controller_runtime = resolve_controller_runtime(info, str(target_path or ""))
-            if controller_runtime and controller_runtime not in ("auto", "mlx_lm", "gguf", "bitnet"):
+            mlx_controller_runtimes = {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
+            if (
+                controller_runtime in mlx_controller_runtimes
+                and platform.system() == "Darwin"
+                and platform.machine().lower() in ("arm64", "aarch64")
+            ):
+                target_backend = "mlx"
+            elif controller_runtime and controller_runtime not in ("auto", "mlx_lm", "gguf", "bitnet"):
                 target_backend = "controller"
             elif "mlx" in str(target_path).lower() or "mlx" in model_name.lower():
                 target_backend = "mlx"
@@ -269,7 +281,8 @@ class ProReasoningEngine:
                 if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
                     self.mlx_backend = MLXReasoningBackend(
                         model_path=target_path,
-                        adapter_path=self.lora_adapter_path
+                        adapter_path=self.lora_adapter_path,
+                        model_info=info,
                     )
                     if self.mlx_backend.load_model():
                         self.mlx_engine = self.mlx_backend
@@ -279,7 +292,10 @@ class ProReasoningEngine:
                             "status": "loaded",
                             "model": model_name,
                             "backend": "mlx",
-                            "path": target_path
+                            "runtime": controller_runtime or "mlx_lm",
+                            "path": target_path,
+                            "input_modalities": sorted(self.active_input_modalities),
+                            "trainable": callable(getattr(self.mlx_backend, "train_mini_batch", None)),
                         }
                     else:
                         return {"status": "not_downloaded", "model": model_name, "backend": "mlx", "path": target_path}
