@@ -62,6 +62,8 @@ dependencies = [
     "psutil>=5.9.0",
     "huggingface_hub>=0.20.0",
     "Pillow>=10.0.0",
+    "soundfile>=0.12.1",
+    "mlx-audio>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "swebench==5.0.2",
 ]
 
