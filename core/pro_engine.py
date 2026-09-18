@@ -34,17 +34,19 @@ from core.verifier import GroundTruthVerifier, VerificationResult, get_sandbox_p
 def get_ladder_temperatures(
     num_branches: int,
     t_min: float = 0.20,
-    t_max: float = 0.88,
+    t_max: float = 0.95,
     gamma: float = 1.35
 ) -> List[float]:
     """
-    Calibrated convex temperature ladder:
-      T(i) = T_min + (T_max - T_min) * (i / (N - 1))^gamma
-    Clusters >=50% of candidate rollouts in the 0.25 - 0.55 reasoning sweet spot,
-    preventing sub-0.20 diversity collapse while preserving high-entropy upper tiers.
+    Core fallback for the approved temperature policy:
+      chat N=1 = 0.65;
+      Pro N>1 = T_min..T_max with fixed gamma=1.35.
+
+    core.temperature_policy installs the same ladder plus the dedicated extra T=0.65
+    Pro candidate. Keeping the core defaults aligned prevents launcher-order drift.
     """
     if num_branches <= 1:
-        return [t_min]
+        return [0.65]
 
     indices = np.arange(num_branches)
     normalized_steps = indices / (num_branches - 1)
@@ -467,7 +469,7 @@ class ProReasoningEngine:
         self,
         prompt: str,
         history: Optional[List[Dict[str, str]]] = None,
-        temperature: float = 0.75,
+        temperature: float = 0.65,
         top_p: float = 0.92,
         cancel_event: Optional[Any] = None
     ):
