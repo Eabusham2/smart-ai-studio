@@ -91,6 +91,10 @@ def infer_controller_runtime(*values: Any) -> str:
         return "gguf"
     if "bitnet" in blob:
         return "bitnet"
+    if "jang" in blob and "mlx" in blob:
+        return "jang_vlm"
+    if "prism_hadamard" in blob and "mlx" in blob:
+        return "mlx_repo_vlm"
     if "mlx" in blob:
         return "mlx_vlm" if modalities - {"text"} else "mlx_lm"
     if any(marker in blob for marker in ("transformers", "safetensors", "pytorch_model")):
