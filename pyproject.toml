@@ -70,6 +70,7 @@ dependencies = [
     "protobuf>=4.25.0",
     "mlx-audio>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "mlx-vlm; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "jang[vlm]>=2.5.18; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "turboquant-mlx-full; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "mflux; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "swebench==5.0.2",
