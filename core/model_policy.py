@@ -180,10 +180,10 @@ def _pick_gguf_artifacts(file_names: Iterable[str], ternary: bool) -> Dict[str, 
         ):
             if marker in low:
                 score = max(score, points)
-        if ternary and not score:
-            # A model admitted as ternary may still use a generic filename; keep it
-            # below explicit ternary encodings but above unrelated projector files.
-            score = 30
+        # Do not invent ternary semantics from a generic GGUF filename. If the
+        # repository contains multiple GGUFs, only an explicitly identifiable
+        # ternary/BitNet artifact is eligible. A sole GGUF can be accepted later
+        # when the repository metadata itself proves ternary.
         # Avoid silently selecting ordinary quant variants when an explicit ternary
         # artifact exists in the same repository.
         for marker in ("q8_", "q6_", "q5_", "q4_", "q3_"):
@@ -191,7 +191,15 @@ def _pick_gguf_artifacts(file_names: Iterable[str], ternary: bool) -> Dict[str, 
                 score -= 25
         return (score, -len(name), name)
 
-    model_file = max(language, key=model_score) if language else ""
+    model_file = ""
+    if language:
+        ranked = sorted(language, key=model_score, reverse=True)
+        explicit_score = model_score(ranked[0])[0]
+        if explicit_score > 0:
+            model_file = ranked[0]
+        elif ternary and len(language) == 1:
+            # One unambiguous GGUF plus repo-level ternary proof is safe.
+            model_file = language[0]
     mmproj_file = ""
     if projectors:
         mmproj_file = max(
@@ -402,6 +410,13 @@ def enforce_hf_text_ternary(repo_id: str) -> Tuple[bool, str, Dict[str, Any]]:
             "A plain 2-bit, 4-bit, GGUF, MLX, AWQ, or FP8 quantization is not accepted as ternary proof.",
             meta,
         )
+    if str(meta.get("backend_family") or "") in ("gguf", "prism_gguf", "bitnet") and not meta.get("gguf_file"):
+        return (
+            False,
+            "This text repository proves ternary/1.58-bit weights, but contains multiple or ambiguous "
+            "GGUF artifacts with no uniquely identifiable ternary deployment file. Refusing to guess.",
+            meta,
+        )
     return True, "Verified ternary text model.", meta
 
 
@@ -497,6 +512,12 @@ def enforce_local_text_ternary(path: str) -> Tuple[bool, str, Dict[str, Any]]:
             False,
             "Local text/unknown model does not contain verifiable ternary / 1.58-bit metadata. "
             "Add explicit ternary metadata/config or use a verified Hugging Face ternary repo.",
+            meta,
+        )
+    if str(meta.get("backend_family") or "") in ("gguf", "prism_gguf", "bitnet") and not meta.get("gguf_file"):
+        return (
+            False,
+            "Local ternary model contains multiple or ambiguous GGUF artifacts and no unique ternary deployment file.",
             meta,
         )
     return True, "Verified ternary local text model.", meta
