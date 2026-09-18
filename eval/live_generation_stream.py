@@ -153,7 +153,7 @@ def install_baseline_stream(runtime_module, cls) -> None:
                 iterator = stream_generate(
                     model,
                     tok,
-                    prompt=prompt,
+                    prompt=ids,
                     max_tokens=max(1, int(max_tokens)),
                     prompt_cache=cache,
                     prefill_step_size=_adaptive_prefill_step_size(),
@@ -260,6 +260,7 @@ def install_phase4_stream(phase4_module) -> None:
         if make_sampler is None:
             return original(self, formatted_prompt, temperatures, max_tokens, top_p)
 
+        prompt_ids = self.engine.tokenizer.encode(formatted_prompt)
         branches: List[str] = []
         total_branches = len(temperatures)
         for branch_idx, temp in enumerate(temperatures, 1):
@@ -290,7 +291,7 @@ def install_phase4_stream(phase4_module) -> None:
                 iterator = stream_generate(
                     self.engine.model,
                     self.engine.tokenizer,
-                    prompt=formatted_prompt,
+                    prompt=prompt_ids,
                     max_tokens=max(1, int(max_tokens)),
                     sampler=sampler,
                     prompt_cache=make_turboquant_prompt_cache(self.engine.model),
