@@ -9,6 +9,8 @@ from __future__ import annotations
 import gc
 import os
 import platform
+import shutil
+import subprocess
 import time
 from typing import Any, Dict, Optional
 
@@ -91,6 +93,38 @@ class MediaGenerationEngine:
         steps = int(model_info.get("inference_steps", 4) or 4)
 
         try:
+            backend_hint = str(model_info.get("image_backend") or "diffusers").lower()
+            if backend_hint == "mflux":
+                exe = shutil.which("mflux-generate-flux2")
+                if not exe:
+                    return {
+                        "status": "error",
+                        "error": "mflux CLI is not installed. Install the macOS media dependency and retry.",
+                        "repo_id": repo_id,
+                    }
+                cmd = [
+                    exe,
+                    "--model", repo_id,
+                    "--prompt", prompt,
+                    "--steps", str(max(1, steps)),
+                    "--seed", str(int(model_info.get("seed", 42) or 42)),
+                    "--output", output_path,
+                ]
+                run = subprocess.run(cmd, capture_output=True, text=True)
+                if run.returncode != 0:
+                    return {
+                        "status": "error",
+                        "error": (run.stderr or run.stdout or "mflux generation failed").strip(),
+                        "repo_id": repo_id,
+                    }
+                if not os.path.isfile(output_path):
+                    return {
+                        "status": "error",
+                        "error": "mflux returned successfully but did not write the output image.",
+                        "repo_id": repo_id,
+                    }
+                return {"status": "success", "path": output_path, "repo_id": repo_id}
+
             pipe = self._load_pipeline(repo_id)
             result = pipe(
                 prompt=prompt,
