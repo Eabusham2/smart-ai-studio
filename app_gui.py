@@ -2805,10 +2805,9 @@ class SmartAIChatbotApp:
 
         def _do_load():
             if model_type == "text":
-                if not bool(target_info.get("ternary", False)):
-                    load_res = {"status": "error", "error": "Non-ternary text model rejected."}
-                else:
-                    load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+                # Import-time policy already decided whether custom text models may enter
+                # the catalog; runtime loading itself does not re-apply that restriction.
+                load_res = self.engine.load_model(target_info["name"], model_path=m_path)
             elif model_type == "audio":
                 load_res = self.audio_engine.load_model(target_info)
             else:
@@ -2923,28 +2922,23 @@ class SmartAIChatbotApp:
         )
 
         if model_type == "text":
-            if not bool(target_info.get("ternary", False)):
-                self.is_model_loaded = False
+            # Ternary admission is enforced only when a custom text model is imported.
+            # Built-ins and already-registered models are loaded normally here.
+            load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+            self.is_model_loaded = bool(load_res.get("status") == "loaded")
+            if self.is_model_loaded:
                 self.lbl_model_status.configure(
-                    text=f"✗ Rejected non-ternary text model ({target_info['short_name']})",
-                    fg=self.C["accent_red"],
+                    text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"]
                 )
             else:
-                load_res = self.engine.load_model(target_info["name"], model_path=m_path)
-                self.is_model_loaded = bool(load_res.get("status") == "loaded")
-                if self.is_model_loaded:
-                    self.lbl_model_status.configure(
-                        text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"]
-                    )
-                else:
-                    status_txt = (
-                        f"⚡ Ready to Load ({target_info['short_name']})"
-                        if cached else f"○ Not Downloaded ({target_info['short_name']})"
-                    )
-                    self.lbl_model_status.configure(
-                        text=status_txt,
-                        fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"],
-                    )
+                status_txt = (
+                    f"⚡ Ready to Load ({target_info['short_name']})"
+                    if cached else f"○ Not Downloaded ({target_info['short_name']})"
+                )
+                self.lbl_model_status.configure(
+                    text=status_txt,
+                    fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"],
+                )
         elif model_type == "audio":
             if cached:
                 load_res = self.audio_engine.load_model(target_info)
