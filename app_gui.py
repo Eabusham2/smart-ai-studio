@@ -318,7 +318,7 @@ class SmartAIChatbotApp:
             "model_2": {
                 "name": "Bonsai 2 27B Ternary CRACK (Abliterated/Uncensored)",
                 "short_name": "Bonsai 2 27B CRACK",
-                "repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG" if is_apple_silicon else "dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF",
+                "repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG" if is_apple_silicon else "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF",
                 "model_path": None,
                 "model_type": "text",
                 "input_modalities": ["text", "image", "video"],
@@ -329,7 +329,7 @@ class SmartAIChatbotApp:
                 "base_params": "27.36B",
                 "est_speed": "⚡ Ternary multimodal uncensored",
                 "max_context": 262_144,
-                "vram": "~8.2 GB MLX / ~7.8 GB GGUF + Q8 vision",
+                "vram": "~8.2 GB MLX / ~6.6 GB GGUF + Q8 vision",
                 "tag": "🔓 Bonsai 2 27B CRACK",
                 "accent": "#f43f5e"
             },
