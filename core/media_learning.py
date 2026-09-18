@@ -220,16 +220,46 @@ class MediaLearningService:
             local = workspace / local
 
         if local.exists():
-            if local.is_file() and local.suffix.lower() == ".jsonl":
+            if local.is_file() and local.suffix.lower() in (".jsonl", ".json", ".csv", ".tsv", ".parquet"):
                 base = local.parent
-                for line in local.read_text(encoding="utf-8").splitlines():
-                    if not line.strip():
+                rows = []
+                suffix = local.suffix.lower()
+                if suffix == ".jsonl":
+                    for line in local.read_text(encoding="utf-8", errors="replace").splitlines():
+                        if line.strip():
+                            rows.append(json.loads(line))
+                elif suffix == ".json":
+                    loaded = json.loads(local.read_text(encoding="utf-8", errors="replace"))
+                    rows = loaded if isinstance(loaded, list) else loaded.get("samples", []) if isinstance(loaded, dict) else []
+                elif suffix in (".csv", ".tsv"):
+                    import csv
+                    with open(local, "r", encoding="utf-8", errors="replace", newline="") as handle:
+                        rows = list(csv.DictReader(handle, delimiter="\t" if suffix == ".tsv" else ","))
+                else:
+                    try:
+                        import pyarrow.parquet as pq
+                    except Exception as exc:
+                        raise RuntimeError("Parquet media learning requires pyarrow") from exc
+                    rows = pq.read_table(local).slice(0, max_items).to_pylist()
+
+                for row in rows:
+                    if not isinstance(row, dict):
                         continue
-                    row = json.loads(line)
-                    media = Path(str(row.get("path", "")))
-                    if not media.is_absolute():
-                        media = base / media
-                    add_local(media, row.get("caption"))
+                    raw_path = row.get("path") or row.get("file") or row.get("media") or row.get("url")
+                    if not raw_path:
+                        continue
+                    label = row.get("caption") or row.get("text") or row.get("label")
+                    raw_path = str(raw_path)
+                    if raw_path.startswith(("http://", "https://")):
+                        try:
+                            samples.append(self._download_media_url(raw_path, gather_root, kind, label or caption, len(samples)))
+                        except Exception:
+                            continue
+                    else:
+                        media = Path(raw_path)
+                        if not media.is_absolute():
+                            media = base / media
+                        add_local(media, label)
                     if len(samples) >= max_items:
                         break
             elif local.is_file():
