@@ -64,6 +64,7 @@ class GGUFReasoningBackend:
                 n_gpu_layers=self.n_gpu_layers,
                 n_ctx=self.n_ctx,
                 chat_handler=self.chat_handler,
+                no_perf=True,
                 verbose=self.verbose
             )
             return True
