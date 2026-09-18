@@ -14,6 +14,22 @@ from typing import Any, Callable, Dict, Optional
 
 
 class AudioGenerationEngine:
+    @staticmethod
+    def _saved_lora_files(repo_id: str):
+        try:
+            from core.media_learning import get_saved_media_adapter
+            directory = get_saved_media_adapter(repo_id)
+        except Exception:
+            directory = None
+        if directory is None:
+            return []
+        files = sorted(
+            str(path)
+            for path in directory.rglob("*.safetensors")
+            if path.is_file() and path.stat().st_size > 0
+        )
+        return files
+
     def __init__(self) -> None:
         self.model = None
         self.backend = ""
@@ -60,7 +76,13 @@ class AudioGenerationEngine:
         self.repo_id = repo_id
         self.model_info = info
 
-        if self._is_apple_silicon() and backend_hint in ("mlx_audio", "mlx-audio", "moss_mlx"):
+        saved_loras = self._saved_lora_files(repo_id)
+
+        if (
+            self._is_apple_silicon()
+            and backend_hint in ("mlx_audio", "mlx-audio", "moss_mlx")
+            and not saved_loras
+        ):
             try:
                 from mlx_audio.tts.utils import load_model
                 self.model = load_model(repo_id)
@@ -75,16 +97,34 @@ class AudioGenerationEngine:
                     ),
                 }
 
-        if backend_hint in ("stable_audio_3", "stable-audio-3"):
+        if backend_hint in ("stable_audio_3", "stable-audio-3") or (
+            saved_loras and str(info.get("audio_variant") or "") in ("small-music", "small-sfx")
+        ):
             stable_audio_error = None
             try:
                 from stable_audio_3 import StableAudioModel
                 variant = str(info.get("audio_variant") or "small-music")
                 self.model = StableAudioModel.from_pretrained(variant)
+                if saved_loras:
+                    self.model.load_lora(saved_loras)
                 self.backend = "stable_audio_3"
-                return {"status": "loaded", "backend": self.backend, "repo_id": repo_id}
+                return {
+                    "status": "loaded",
+                    "backend": self.backend,
+                    "repo_id": repo_id,
+                    "learned_adapter_loaded": bool(saved_loras),
+                }
             except Exception as exc:
                 stable_audio_error = exc
+
+            if saved_loras:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"A learned Stable Audio adapter exists for {repo_id}, but the "
+                        f"LoRA-capable stable_audio_3 runtime failed to load it: {stable_audio_error}"
+                    ),
+                }
 
             try:
                 import torch
