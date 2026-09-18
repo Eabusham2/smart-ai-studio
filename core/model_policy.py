@@ -284,7 +284,20 @@ def derive_runtime_metadata(
     if projector_repo:
         result["mmproj_repo_id"] = projector_repo
     if base_model_id:
-        result["gguf_training_base_model_id"] = base_model_id
+        if is_bitnet:
+            result["bitnet_training_base_model_id"] = base_model_id
+        elif is_gguf:
+            result["gguf_training_base_model_id"] = base_model_id
+    elif is_bitnet and repo_id:
+        rid = str(repo_id).strip().strip("/")
+        low = rid.lower()
+        # Microsoft's published family separates deployment GGUF/packed weights
+        # from the BF16 training master with a stable sibling naming convention.
+        if low.startswith("microsoft/bitnet-"):
+            if low.endswith("-gguf"):
+                result["bitnet_training_base_model_id"] = rid[:-5] + "-bf16"
+            elif not low.endswith("-bf16"):
+                result["bitnet_training_base_model_id"] = rid + "-bf16"
     return result
 
 
