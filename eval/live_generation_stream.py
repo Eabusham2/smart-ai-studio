@@ -147,10 +147,6 @@ def install_baseline_stream(runtime_module, cls) -> None:
 
     original_raw_log = runtime_module._append_raw_generation_log
     original_result_log = runtime_module._append_result_log
-    # Capture the recovered manual argmax loop before replacing cls._fast_generate.
-    # This remains the correctness fallback if MLX-LM's fused stream path is unavailable
-    # or rejects a cache/model combination.
-    original_fast_generate = getattr(cls, "_fast_generate", runtime_module.fast_generate)
 
     def live_fast_generate(self, prompt, max_tokens=16384, stream=False):
         """Fused MLX-LM greedy decode with the recovered manual loop as fail-safe."""
@@ -176,40 +172,15 @@ def install_baseline_stream(runtime_module, cls) -> None:
 
             cache = make_prompt_cache(model)
 
-            # Preserve the recovered manual loop's stop-token semantics. MLX-LM
-            # already handles tokenizer-native EOS ids; this set covers only any
-            # additional single-token stop markers used by the old evaluator.
-            legacy_eos = set()
-            native_eos = set()
-            e = getattr(tok, "eos_token_id", None)
-            if e is not None:
-                vals = e if isinstance(e, (list, tuple, set)) else [e]
-                legacy_eos.update(int(v) for v in vals)
-                native_eos.update(int(v) for v in vals)
-            for name in ("<|im_end|>", "<end_of_turn>", "<|eot_id|>", "<|endoftext|>", "</s>", "<eos>"):
-                try:
-                    encoded = tok.encode(name, add_special_tokens=False)
-                    if len(encoded) == 1:
-                        legacy_eos.add(int(encoded[0]))
-                    if hasattr(tok, "convert_tokens_to_ids"):
-                        tid = tok.convert_tokens_to_ids(name)
-                        if isinstance(tid, int) and tid >= 0:
-                            legacy_eos.add(tid)
-                except Exception:
-                    pass
-            extra_stop_ids = legacy_eos - native_eos
-
             # MLX-LM's generation loop stays in the optimized runtime instead of
             # synchronizing Python once per token with argmax(...).item().
             from mlx_lm import stream_generate
-            from mlx_lm.sample_utils import greedy_sampler
             with metal_lock:
                 iterator = stream_generate(
                     model,
                     tok,
                     prompt=ids,
                     max_tokens=max(1, int(max_tokens)),
-                    sampler=greedy_sampler,
                     prompt_cache=cache,
                     prefill_step_size=_adaptive_prefill_step_size(),
                 )
@@ -217,12 +188,6 @@ def install_baseline_stream(runtime_module, cls) -> None:
                 generated = 0
                 for response in iterator:
                     last_response = response
-                    try:
-                        response_token = int(getattr(response, "token", -1))
-                    except Exception:
-                        response_token = -1
-                    if response_token in extra_stop_ids:
-                        break
                     chunk = getattr(response, "text", None)
                     if chunk is None:
                         chunk = str(response)
@@ -249,34 +214,13 @@ def install_baseline_stream(runtime_module, cls) -> None:
             return text
 
         except Exception as exc:
-            # Preserve the recovered benchmark behavior exactly: if the optimized
-            # MLX-LM path is unsupported/fails, fall back to the pre-existing manual
-            # model -> argmax -> item() loop rather than changing decoding policy.
-            fused_error = f"{type(exc).__name__}: {exc}"
-            _append_live_text(
-                f"\n\n[FUSED MLX FALLBACK] {fused_error}\n"
-                "Retrying with the recovered manual greedy loop.\n"
-            )
-            try:
-                return original_fast_generate(
-                    self,
-                    prompt,
-                    max_tokens=max_tokens,
-                    stream=stream,
-                )
-            except Exception as fallback_exc:
-                self.last_tok_per_sec = 0.0
-                self.last_output_tokens = 0
-                self.last_generation_seconds = 0.0
-                self.last_generation_error = (
-                    f"fused={fused_error}; "
-                    f"manual={type(fallback_exc).__name__}: {fallback_exc}"
-                )
-                _append_live_text(f"\n[GENERATION ERROR] {self.last_generation_error}\n")
-                raise RuntimeError(
-                    f"Real MLX generation failed in fused and manual paths: "
-                    f"{self.last_generation_error}"
-                ) from fallback_exc
+            # Fail safe rather than silently changing benchmark behavior.
+            self.last_tok_per_sec = 0.0
+            self.last_output_tokens = 0
+            self.last_generation_seconds = 0.0
+            self.last_generation_error = f"{type(exc).__name__}: {exc}"
+            _append_live_text(f"\n\n[GENERATION ERROR] {self.last_generation_error}\n")
+            raise RuntimeError(f"Real MLX generation failed: {self.last_generation_error}") from exc
 
         finally:
             cache = None
