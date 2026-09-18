@@ -90,47 +90,79 @@ def resolve_local_snapshot(identifier: str) -> str:
 
 
 def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
-    """Resolve a downloaded GGUF repository to its language file and optional projector."""
+    """Resolve exact pinned GGUF language/projector artifacts, failing closed for built-ins."""
     info = model_info or {}
     root = resolve_local_snapshot(identifier)
-    if os.path.isfile(root):
-        return root, info.get("mmproj_path")
-    if not os.path.isdir(root):
-        return identifier, info.get("mmproj_path")
-
-    ggufs = [p for p in Path(root).rglob("*.gguf") if p.is_file()]
-    if not ggufs:
-        return identifier, None
-
     explicit_model = str(info.get("gguf_file") or "").strip()
     explicit_mmproj = str(info.get("mmproj_file") or "").strip()
-    if explicit_model:
-        candidate = Path(root) / explicit_model
-        if candidate.is_file():
-            model_file = candidate
+    mmproj_repo_id = str(info.get("mmproj_repo_id") or "").strip()
+
+    if os.path.isfile(root):
+        model_file = Path(root)
+        if explicit_model and model_file.name != explicit_model:
+            raise RuntimeError(
+                f"Pinned GGUF mismatch: expected {explicit_model}, got {model_file.name}"
+            )
+    elif os.path.isdir(root):
+        ggufs = [p for p in Path(root).rglob("*.gguf") if p.is_file()]
+        if not ggufs:
+            raise RuntimeError(f"No GGUF files found in cached snapshot for {identifier}")
+
+        if explicit_model:
+            candidates = [p for p in ggufs if p.name == explicit_model]
+            if not candidates:
+                raise RuntimeError(
+                    f"Pinned ternary GGUF is missing: {explicit_model}. "
+                    "Refusing to substitute another quant."
+                )
+            model_file = candidates[0]
         else:
-            model_file = None
+            projectors = [
+                p for p in ggufs
+                if any(marker in p.name.lower() for marker in ("mmproj", "projector", "vision"))
+            ]
+            language = [p for p in ggufs if p not in projectors]
+            preference = str(info.get("gguf_preference") or "").lower().strip()
+            preferred = [p for p in language if preference and preference in p.name.lower()]
+            pool = preferred or language
+            if not pool:
+                raise RuntimeError(f"No language-model GGUF found for {identifier}")
+            model_file = max(pool, key=lambda p: p.stat().st_size)
     else:
-        model_file = None
+        raise RuntimeError(
+            f"GGUF repository is not downloaded locally: {identifier}. "
+            "Use Grab/Install before loading."
+        )
 
-    projectors = [
-        p for p in ggufs
-        if any(marker in p.name.lower() for marker in ("mmproj", "projector", "vision"))
-    ]
-    language = [p for p in ggufs if p not in projectors]
-    preference = str(info.get("gguf_preference") or "").lower().strip()
-    if model_file is None:
-        preferred = [p for p in language if preference and preference in p.name.lower()]
-        pool = preferred or language or ggufs
-        model_file = max(pool, key=lambda p: p.stat().st_size)
-
-    mmproj = None
+    mmproj: Optional[Path] = None
     if explicit_mmproj:
-        candidate = Path(root) / explicit_mmproj
-        if candidate.is_file():
-            mmproj = candidate
-    if mmproj is None and projectors:
-        mmproj = max(projectors, key=lambda p: p.stat().st_size)
+        projector_root_id = mmproj_repo_id or identifier
+        projector_root = resolve_local_snapshot(projector_root_id)
+        if os.path.isfile(projector_root):
+            candidate = Path(projector_root)
+            if candidate.name == explicit_mmproj:
+                mmproj = candidate
+        elif os.path.isdir(projector_root):
+            candidates = [
+                p for p in Path(projector_root).rglob("*.gguf")
+                if p.is_file() and p.name == explicit_mmproj
+            ]
+            if candidates:
+                mmproj = candidates[0]
+        if mmproj is None:
+            raise RuntimeError(
+                f"Pinned multimodal projector is missing: {explicit_mmproj} "
+                f"from {projector_root_id}. Refusing a mismatched projector."
+            )
+    else:
+        search_root = Path(root).parent if os.path.isfile(root) else Path(root)
+        projectors = [
+            p for p in search_root.rglob("*.gguf")
+            if p.is_file() and any(marker in p.name.lower() for marker in ("mmproj", "projector", "vision"))
+        ]
+        if projectors:
+            mmproj = max(projectors, key=lambda p: p.stat().st_size)
+
     return str(model_file), str(mmproj) if mmproj else None
 
 
