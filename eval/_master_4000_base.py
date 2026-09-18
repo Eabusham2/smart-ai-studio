@@ -494,7 +494,7 @@ class Master4000EvaluationEngine:
         md = []
         md.append("# ULTIMATE 4,000+ ITEM MASTER EVALUATION REPORT")
         md.append(f"**Execution Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ")
-        md.append(f"**Target Model:** `prism-ml/Ternary-Bonsai-27B-mlx-2bit` (Apple Silicon Metal Unified Memory)  ")
+        md.append(f"**Target Model:** `penkia/TernaryQuench-Qwen3.8-27B-MLX` (Qwen3.8-27B Ternary MLX, Apple Silicon Metal Unified Memory)  ")
         md.append(f"**Total Benchmark Items Evaluated:** {total_items * 2} (Phase 1 Baseline + Phase 4 Post-Consolidation)  ")
         md.append(f"**Total Execution Duration:** {elapsed_str} (72-Hour Budget Invariant Preserved)  ")
         md.append("\n---\n")
