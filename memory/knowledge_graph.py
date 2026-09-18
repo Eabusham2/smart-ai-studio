@@ -16,6 +16,8 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_entity);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_session ON graph_edges(temporal_session,timestamp);
 CREATE TABLE IF NOT EXISTS episodic_interactions(id INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL,prompt TEXT NOT NULL,completion TEXT NOT NULL,reward REAL NOT NULL DEFAULT 0.0,surprise_score REAL NOT NULL DEFAULT 0.0,domain TEXT NOT NULL DEFAULT 'general',consolidated INTEGER NOT NULL DEFAULT 0,timestamp REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_epi_replay ON episodic_interactions(consolidated,reward,surprise_score DESC);
+CREATE TABLE IF NOT EXISTS rsi_self_memories(id INTEGER PRIMARY KEY AUTOINCREMENT,trace TEXT NOT NULL,consolidated INTEGER NOT NULL DEFAULT 0,timestamp REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_rsi_self_pending ON rsi_self_memories(consolidated,id);
 """)
     def insert_triple(self,source,predicate,target,weight=1.0,session_id="main",source_type="concept",target_type="concept"):
         now=time.time()
@@ -58,6 +60,22 @@ CREATE INDEX IF NOT EXISTS idx_epi_replay ON episodic_interactions(consolidated,
     def fetch_unconsolidated_high_surprise(self,min_surprise,limit=32):
         with self._connect() as c:rows=c.execute("SELECT * FROM episodic_interactions WHERE consolidated=0 AND reward>=0.8 AND surprise_score>=? ORDER BY surprise_score DESC,id ASC LIMIT ?",(float(min_surprise),int(limit))).fetchall()
         return [dict(r) for r in rows]
+    def log_rsi_self_memory(self,trace):
+        text=str(trace or "").strip()
+        if not text:return None
+        with self._connect() as c:
+            cur=c.execute("INSERT INTO rsi_self_memories(trace,consolidated,timestamp) VALUES(?,0,?)",(text,time.time()))
+            return int(cur.lastrowid)
+    def fetch_unconsolidated_rsi_self_memories(self,limit=64):
+        with self._connect() as c:
+            rows=c.execute("SELECT id,trace,consolidated,timestamp FROM rsi_self_memories WHERE consolidated=0 ORDER BY id ASC LIMIT ?",(int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+    def clear_unconsolidated_rsi_self_memories(self):
+        with self._connect() as c:c.execute("DELETE FROM rsi_self_memories WHERE consolidated=0")
+    def mark_rsi_self_memories_consolidated(self,memory_ids):
+        ids=[int(x) for x in memory_ids if isinstance(x,(int,float))]
+        if ids:
+            with self._connect() as c:c.execute(f"UPDATE rsi_self_memories SET consolidated=1 WHERE id IN ({','.join('?' for _ in ids)})",ids)
     def mark_consolidated(self,interaction_ids):
         ids=[int(x) for x in interaction_ids if isinstance(x,(int,float))]
         if ids:
