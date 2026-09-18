@@ -20,7 +20,7 @@ if MLX_AVAILABLE:
     import mlx.nn as nn
     import mlx.optimizers as optim
     import mlx.utils
-    from core.turboquant_cache import make_turboquant_prompt_cache as make_prompt_cache
+    from mlx_lm.models.cache import make_prompt_cache
 
 
 # Exact low-effort reasoning prompt that was live-tested successfully:
