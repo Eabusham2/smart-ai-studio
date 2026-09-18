@@ -17,6 +17,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 
+from core.turboquant_cache import make_turboquant_prompt_cache
+
 
 LIVE_GENERATION_LOG = os.path.join("eval_results", "live_generation.log")
 
@@ -313,6 +315,7 @@ def install_phase4_stream(phase4_module) -> None:
                     prompt=formatted_prompt,
                     max_tokens=max(1, int(max_tokens)),
                     sampler=sampler,
+                    prompt_cache=make_turboquant_prompt_cache(self.engine.model),
                 )
                 for response in iterator:
                     chunk = getattr(response, "text", None)
