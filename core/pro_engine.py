@@ -275,6 +275,8 @@ class ProReasoningEngine:
                             # Keep MLX-aware routing/telemetry compatible without
                             # pretending this backend supports MLX-LM training.
                             self.mlx_engine = self.controller_backend
+                        if hasattr(self, "awake_consolidator") and self.awake_consolidator:
+                            self.awake_consolidator.engine = self.controller_backend
                         return {
                             "status": "loaded",
                             "model": model_name,
@@ -343,6 +345,8 @@ class ProReasoningEngine:
                         n_ctx=int(info.get("max_context") or 32768),
                     )
                     if self.bitnet_backend.load_model():
+                        if hasattr(self, "awake_consolidator") and self.awake_consolidator:
+                            self.awake_consolidator.engine = self.bitnet_backend
                         return {
                             "status": "loaded",
                             "model": model_name,
