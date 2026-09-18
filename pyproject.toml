@@ -69,6 +69,7 @@ dependencies = [
     "sentencepiece>=0.2.0",
     "protobuf>=4.25.0",
     "mlx-audio>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "turboquant-mlx-full; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "mflux; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "swebench==5.0.2",
 ]
