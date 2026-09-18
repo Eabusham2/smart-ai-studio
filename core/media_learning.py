@@ -56,11 +56,25 @@ class MediaLearningService:
 
     @staticmethod
     def _backend(info):
-        configured = str(info.get("training_backend", ""))
+        configured = str(info.get("training_backend", "") or "").strip()
         if configured:
             return configured
-        if info.get("repo_id") == "SG161222/RealVisXL_V5.0" and info.get("model_type") == "image":
+
+        repo = str(info.get("repo_id", "") or "").lower()
+        name = str(info.get("name", "") or "").lower()
+        kind = str(info.get("model_type", "") or "").lower()
+
+        # Keep trainer selection beside the training service instead of scattering
+        # model-specific learning logic through the GUI/catalog.
+        if kind == "image" and repo == "sg161222/realvisxl_v5.0":
             return "diffusers_sdxl"
+        if kind == "video" and ("cogvideox" in repo or "cogvideox" in name):
+            return "cogvideox_lora"
+        if kind == "audio" and (
+            "stable-audio-3" in repo
+            or str(info.get("audio_variant", "") or "") in ("small-music", "small-sfx")
+        ):
+            return "stable_audio3_lora"
         return ""
 
     def capabilities(self, info):
