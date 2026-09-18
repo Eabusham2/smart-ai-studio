@@ -8,6 +8,7 @@ training path.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import socket
@@ -56,11 +57,20 @@ class BitNetCppReasoningBackend:
         hf_repo_id: Optional[str] = None,
         n_ctx: int = 32768,
         threads: Optional[int] = None,
+        training_base_model_id: Optional[str] = None,
     ):
+        self.original_model_path = str(model_path)
         self.model_path = str(model_path)
         self.hf_repo_id = str(hf_repo_id or "").strip()
+        self.training_base_model_id = str(training_base_model_id or "").strip()
         self.n_ctx = int(n_ctx)
         self.threads = int(threads or max(1, (os.cpu_count() or 4) // 2))
+        key_src = self.hf_repo_id or self.original_model_path
+        key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:16]
+        self.training_root = Path(get_portable_data_dir()) / "bitnet_learning" / key
+        self.learned_model_path = self.training_root / "learned-i2_s.gguf"
+        self.adapter_path = str(self.learned_model_path)
+        self.adapters: Dict[str, Any] = {}
         self.model: Optional[_BitNetServerProxy] = None
         self.tokenizer: Optional[_BitNetServerProxy] = None
         self.is_loaded = False
@@ -93,7 +103,10 @@ class BitNetCppReasoningBackend:
         return None
 
     def _resolve_model_file(self) -> Optional[str]:
-        value = os.path.abspath(os.path.expanduser(self.model_path))
+        # Learned deployment state is persistent and takes precedence on reload.
+        if self.learned_model_path.is_file():
+            return str(self.learned_model_path)
+        value = os.path.abspath(os.path.expanduser(self.original_model_path))
         if os.path.isfile(value):
             return value
         if os.path.isdir(value):
@@ -312,7 +325,83 @@ class BitNetCppReasoningBackend:
         return 0.32
 
     def training_ready(self) -> bool:
-        return False
+        """True only when the declared BF16 lineage can be really rebuilt for bitnet.cpp."""
+        if not self.training_base_model_id:
+            return False
+        try:
+            from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
+            trainer = BitNetRebuildTrainer(
+                base_model_id=self.training_base_model_id,
+                runtime_root=str(self._root()),
+                deploy_root=str(self.training_root),
+            )
+            return bool(trainer.can_prepare())
+        except Exception:
+            return False
+
+    def train_mini_batch(
+        self,
+        adapters: Any,
+        data: List[Dict[str, str]],
+        fisher_matrix: Any = None,
+        lambda_ewc: float = 0.0,
+        learning_rate: float = 1e-4,
+        steps: int = 3,
+        save_path: Optional[str] = None,
+        **_kwargs,
+    ):
+        """Fine-tune the BF16 sibling, rebuild I2_S weights, then hot-reload bitnet.cpp."""
+        del adapters, fisher_matrix, lambda_ewc, save_path
+        if not self.training_base_model_id:
+            raise RuntimeError("BitNet learning requires metadata with a BF16 training-base model id")
+
+        from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
+        trainer = BitNetRebuildTrainer(
+            base_model_id=self.training_base_model_id,
+            runtime_root=str(self._root()),
+            deploy_root=str(self.training_root),
+        )
+        if not trainer.can_prepare():
+            raise RuntimeError(
+                "BitNet inference is available, but this model/device does not expose a "
+                "verified BF16→PEFT→BitNet rebuild training path."
+            )
+
+        self.training_root.mkdir(parents=True, exist_ok=True)
+        backup = str(self.learned_model_path) + ".previous"
+        had_learned = self.learned_model_path.is_file()
+        if os.path.isfile(backup):
+            os.remove(backup)
+        if had_learned:
+            shutil.copy2(str(self.learned_model_path), backup)
+
+        self.unload_model()
+        try:
+            meta, drift, _touched, learned_path = trainer.train(
+                data,
+                learning_rate=float(learning_rate),
+                steps=max(1, int(steps)),
+            )
+            self.model_path = learned_path
+            self.adapters = dict(meta or {})
+            if not self.load_model():
+                raise RuntimeError("BitNet training succeeded but bitnet.cpp failed to reload learned weights")
+            try:
+                os.remove(backup)
+            except OSError:
+                pass
+            return dict(self.adapters), float(drift)
+        except Exception:
+            if os.path.isfile(backup):
+                os.replace(backup, str(self.learned_model_path))
+            elif not had_learned:
+                try:
+                    os.remove(str(self.learned_model_path))
+                except OSError:
+                    pass
+            self.model_path = str(self.learned_model_path if self.learned_model_path.is_file() else self.original_model_path)
+            self.load_model()
+            raise
 
     def supports_media_input(self, kind: str) -> bool:
         del kind
