@@ -67,15 +67,20 @@ class AutonomousLearner:
         return not any(marker in lowered for marker in rejected_markers)
 
     def _require_live_mlx(self):
-        backend = getattr(self.engine, "mlx_backend", None)
+        """Return the real active trainable backend (MLX or GGUF). Kept under the old name for compatibility."""
+        backend = None
+        if str(getattr(self.engine, "active_backend", "") or "").lower() == "gguf":
+            backend = getattr(self.engine, "gguf_backend", None)
+        if backend is None:
+            backend = getattr(self.engine, "mlx_engine", None) or getattr(self.engine, "mlx_backend", None)
         if (
             backend is None
             or getattr(backend, "model", None) is None
             or getattr(backend, "tokenizer", None) is None
-            or not getattr(backend, "is_mlx_available", False)
+            or not callable(getattr(backend, "train_mini_batch", None))
         ):
             raise RuntimeError(
-                "/learn requires the real active MLX model to be loaded; refusing fake/offline learning."
+                "/learn requires the real active trainable MLX/GGUF model; refusing fake/offline learning."
             )
         return backend
 
@@ -229,7 +234,7 @@ class AutonomousLearner:
         completion_text: str,
         reward: float = 1.0,
     ) -> Dict[str, Any]:
-        """Update the same loaded MLX LoRA parameters and persist the measured change."""
+        """Update the active model adapter parameters and persist the measured change."""
         if reward < 1.0:
             return {"status": "skipped", "reason": "Learning trace was not source-verified.", "parameter_drift_l2": 0.0}
 
@@ -372,7 +377,7 @@ class AutonomousLearner:
             if progress_callback:
                 progress_callback(
                     "consolidating",
-                    f"📈 **[Cycle {cycle}/{max_cycles}] Real MLX LoRA update complete** "
+                    f"📈 **[Cycle {cycle}/{max_cycles}] Real parameter update complete** "
                     f"(||ΔW||₂={drift:.6f}, touched={params_m:.3f}M trainable params, "
                     f"EWC={'on' if result.get('ewc_active') else 'off'})\n\n{synthesis}\n\n{test_details}",
                     params_m,
