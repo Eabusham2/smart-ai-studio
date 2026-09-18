@@ -38,12 +38,20 @@ class AwakeOnlineConsolidator:
         self.total_param_shift = 0.0
 
     def _real_training_ready(self) -> bool:
-        return bool(
+        if not (
             self.engine is not None
             and getattr(self.engine, "model", None) is not None
             and getattr(self.engine, "tokenizer", None) is not None
             and callable(getattr(self.engine, "train_mini_batch", None))
-        )
+        ):
+            return False
+        capability = getattr(self.engine, "training_ready", None)
+        if callable(capability):
+            try:
+                return bool(capability())
+            except Exception:
+                return False
+        return True
 
     @staticmethod
     def _conversation_training_pairs(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -95,6 +103,14 @@ class AwakeOnlineConsolidator:
 
         evicted_chunk = conversation_history[:evict_count]
         retained_history = conversation_history[evict_count:]
+
+        # Keep the proven MLX behavior unchanged: its in-process adapter update can
+        # safely run asynchronously. GGUF/native trainers may reject a device or
+        # quantization at runtime, so never evict context until that update really succeeds.
+        is_native_mlx = bool(getattr(self.engine, "is_mlx_available", False))
+        if not is_native_mlx:
+            success = self.consolidate_chunk_sync(evicted_chunk)
+            return (retained_history, True) if success else (conversation_history, False)
 
         with self.lock:
             if self.is_consolidating:
