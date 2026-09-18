@@ -379,7 +379,7 @@ class ProReasoningEngine:
         if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
             return self.mlx_backend.calculate_token_entropy(prompt)
 
-        if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "llm", None) is not None:
+        if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "model", None) is not None:
             return self.gguf_backend.calculate_token_entropy(prompt)
 
         if self.bitnet_backend and getattr(self.bitnet_backend, "is_loaded", False) and getattr(self.bitnet_backend, "model", None) is not None:
