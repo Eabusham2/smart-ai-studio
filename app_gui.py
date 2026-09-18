@@ -508,19 +508,20 @@ class SmartAIChatbotApp:
                 "accent": "#f59e0b"
             },
             "model_15": {
-                "name": "MOSS SoundEffect (Local SFX)",
-                "short_name": "MOSS SoundEffect",
-                "repo_id": "mlx-community/MOSS-SoundEffect-MLX-4bit" if is_apple_silicon else "OpenMOSS-Team/MOSS-SoundEffect-v2.0",
+                "name": "Stable Audio 3 Small SFX",
+                "short_name": "Stable Audio 3 SFX",
+                "repo_id": "mlx-community/stable-audio-3-small-sfx" if is_apple_silicon else "stabilityai/stable-audio-3-small-sfx",
                 "model_path": None,
                 "model_type": "audio",
-                "audio_backend": "mlx_audio" if is_apple_silicon else "moss_soundeffect_v2",
-                "precision": "MLX 4-bit on Mac / MOSS v2 elsewhere",
-                "raw_params": 1_416_000_000,
-                "base_params": "1.4B",
+                "audio_backend": "mlx_audio" if is_apple_silicon else "stable_audio_3",
+                "audio_variant": "small-sfx",
+                "precision": "MLX on Mac / native Stable Audio 3 elsewhere",
+                "raw_params": 568_000_000,
+                "base_params": "0.57B",
                 "est_speed": "🔊 SFX",
                 "max_context": 0,
-                "vram": "~4.7 GB on Mac / <16 GB",
-                "tag": "🔊 MOSS SFX",
+                "vram": "~3.5 GB on Mac / <16 GB",
+                "tag": "🔊 Stable Audio 3 SFX",
                 "accent": "#fb7185"
             }
         }
