@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
@@ -355,6 +356,45 @@ class UniversalControllerBackend:
         )
         return self._text_from_generation(value).strip()
 
+    def _sample_video_frames(self, path: str, max_frames: int = 8) -> List[str]:
+        """Extract a small ordered frame set so any image-capable controller can inspect video."""
+        import imageio.v3 as iio
+        from PIL import Image
+
+        frames = []
+        try:
+            meta = iio.immeta(path)
+            total = int(meta.get("nframes") or meta.get("n_images") or 0)
+        except Exception:
+            total = 0
+
+        arrays = []
+        try:
+            if total > 0:
+                indices = sorted({int(round(i * max(0, total - 1) / max(1, max_frames - 1))) for i in range(max_frames)})
+                for idx in indices:
+                    try:
+                        arrays.append(iio.imread(path, index=idx))
+                    except Exception:
+                        pass
+            else:
+                for idx, frame in enumerate(iio.imiter(path)):
+                    if idx >= max_frames:
+                        break
+                    arrays.append(frame)
+        except Exception as exc:
+            raise RuntimeError(f"Could not decode video frames: {exc}") from exc
+
+        if not arrays:
+            raise RuntimeError("Video contained no decodable frames")
+
+        temp_dir = tempfile.mkdtemp(prefix="smart-ai-video-")
+        for idx, array in enumerate(arrays):
+            out = os.path.join(temp_dir, f"frame-{idx:02d}.jpg")
+            Image.fromarray(array).convert("RGB").save(out, quality=90)
+            frames.append(out)
+        return frames
+
     def _generate_transformers(
         self,
         prompt: str,
@@ -373,7 +413,24 @@ class UniversalControllerBackend:
             audio, sr = sf.read(media["audio"])
             kwargs["audio"] = audio
             kwargs["sampling_rate"] = sr
-        inputs = self.processor(**kwargs)
+        if "video" in media:
+            import imageio.v3 as iio
+            frames = []
+            for idx, frame in enumerate(iio.imiter(media["video"])):
+                if idx >= 8:
+                    break
+                frames.append(frame)
+            if not frames:
+                raise RuntimeError("Video contained no decodable frames")
+            kwargs["videos"] = [frames]
+        try:
+            inputs = self.processor(**kwargs)
+        except TypeError:
+            # Some multimodal processors expose video as a sequence of images.
+            videos = kwargs.pop("videos", None)
+            if videos:
+                kwargs["images"] = videos[0]
+            inputs = self.processor(**kwargs)
         device = getattr(self.model, "device", None)
         if device is not None and hasattr(inputs, "to"):
             inputs = inputs.to(device)
@@ -435,8 +492,8 @@ class UniversalControllerBackend:
         kind = str(kind or "").lower()
         if kind not in self.input_modalities:
             return False
-        if self.runtime.startswith("mlx"):
-            return kind == "image"
+        if self.runtime.startswith("mlx") or self.runtime in ("jang_vlm", "jang-vlm"):
+            return kind in {"image", "video"}
         if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
             return kind in {"image", "audio", "video"}
         return False
@@ -457,8 +514,28 @@ class UniversalControllerBackend:
             + "\nReturn JSON only with keys description, score, reasoning. "
               "score must be 0 to 100 and must judge only the supplied media."
         )
-        media = {kind: path}
-        text = self._generate(review, 768, 0.0, media)
+        cleanup_dir = None
+        try:
+            if kind == "video" and (self.runtime.startswith("mlx") or self.runtime in ("jang_vlm", "jang-vlm")):
+                frames = self._sample_video_frames(path)
+                cleanup_dir = os.path.dirname(frames[0]) if frames else None
+                prepared = self._mlx_prompt(review, len(frames))
+                value = self._generator(
+                    self.model,
+                    self.processor,
+                    prepared,
+                    frames,
+                    max_tokens=768,
+                    temperature=0.0,
+                )
+                text = self._text_from_generation(value).strip()
+            else:
+                media = {kind: path}
+                text = self._generate(review, 768, 0.0, media)
+        finally:
+            if cleanup_dir:
+                import shutil
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
         match = re.search(r"\{[\s\S]*\}", text)
         parsed: Dict[str, Any] = {}
         if match:
