@@ -20,15 +20,32 @@ from core.temperature_policy import CHAT_N1_TEMPERATURE
 
 
 def _active_trainable_backend(engine):
+    """Resolve the loaded backend by capability, not by one hard-coded format."""
+    active = str(getattr(engine, "active_backend", "") or "").lower()
+    named = {
+        "controller": getattr(engine, "controller_backend", None),
+        "gguf": getattr(engine, "gguf_backend", None),
+        "bitnet": getattr(engine, "bitnet_backend", None),
+        "mlx": getattr(engine, "mlx_backend", None),
+    }
+    backend = named.get(active)
+    if backend is not None and getattr(backend, "model", None) is not None:
+        return backend
+
     consolidator = getattr(engine, "awake_consolidator", None)
     backend = getattr(consolidator, "engine", None) if consolidator is not None else None
     if backend is not None and getattr(backend, "model", None) is not None:
         return backend
-    if str(getattr(engine, "active_backend", "") or "").lower() == "gguf":
-        backend = getattr(engine, "gguf_backend", None)
-        if backend is not None:
+
+    for backend in (
+        getattr(engine, "controller_backend", None),
+        getattr(engine, "gguf_backend", None),
+        getattr(engine, "bitnet_backend", None),
+        getattr(engine, "mlx_backend", None),
+    ):
+        if backend is not None and getattr(backend, "model", None) is not None:
             return backend
-    return getattr(engine, "mlx_backend", None)
+    return None
 
 
 def _model_context_limit(engine) -> Optional[int]:
