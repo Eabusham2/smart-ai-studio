@@ -81,6 +81,23 @@ def infer_input_modalities(*values: Any) -> list[str]:
     return sorted(modalities)
 
 
+
+def infer_controller_runtime(*values: Any) -> str:
+    """Infer a controller runtime family from model metadata without model-name special cases."""
+    blob = _blob(values)
+    modalities = set(infer_input_modalities(*values))
+
+    if "gguf" in blob:
+        return "gguf"
+    if "bitnet" in blob:
+        return "bitnet"
+    if "mlx" in blob:
+        return "mlx_vlm" if modalities - {"text"} else "mlx_lm"
+    if any(marker in blob for marker in ("transformers", "safetensors", "pytorch_model")):
+        return "transformers_auto"
+    return "auto"
+
+
 def _classify_pipeline(pipeline_tag: str, tags: Iterable[str]) -> str:
     blob = _blob((pipeline_tag, *list(tags)))
     if any(marker in blob for marker in MEDIA_PIPELINE_MARKERS):
@@ -108,6 +125,7 @@ def inspect_hf_model(repo_id: str) -> Dict[str, Any]:
         task = _classify_pipeline(pipeline_tag, tags)
         ternary = _has_ternary_proof((model_id, pipeline_tag, library_name, *tags))
         input_modalities = infer_input_modalities(model_id, pipeline_tag, library_name, *tags)
+        controller_runtime = infer_controller_runtime(model_id, pipeline_tag, library_name, *tags)
         return {
             "ok": True,
             "repo_id": model_id,
@@ -117,6 +135,7 @@ def inspect_hf_model(repo_id: str) -> Dict[str, Any]:
             "task": task,
             "ternary": bool(ternary),
             "input_modalities": input_modalities,
+            "controller_runtime": controller_runtime,
         }
     except Exception as exc:
         return {
@@ -198,6 +217,7 @@ def inspect_local_model(path: str) -> Dict[str, Any]:
         "task": task,
         "ternary": bool(ternary),
         "input_modalities": infer_input_modalities(*snippets),
+        "controller_runtime": infer_controller_runtime(*snippets),
     }
 
 
