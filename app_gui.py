@@ -540,11 +540,10 @@ class SmartAIChatbotApp:
         self._load_saved_custom_models()
         self.active_tab_id = "model_1"
 
-        # Remembered top-bar memory-limit control. First-run default stays enabled
-        # to preserve the app's existing safety watcher, but the monitor only runs
-        # while a model is actually loaded/ready.
+        # Remembered top-bar memory-limit control. First-run default is OFF; once
+        # the user changes it, the persisted preference remains authoritative.
         mem_prefs = self._load_memory_limit_preferences()
-        self._memory_limit_enabled = bool(mem_prefs.get("enabled", True))
+        self._memory_limit_enabled = bool(mem_prefs.get("enabled", False))
         self._memory_limit_custom = bool(mem_prefs.get("custom", False))
         default_mem_limit = self._default_memory_limit_gb(self.models_config[self.active_tab_id])
         try:
