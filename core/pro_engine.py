@@ -551,7 +551,9 @@ class ProReasoningEngine:
             return False
 
         backend = None
-        if self.active_backend == "gguf":
+        if self.active_backend == "controller":
+            backend = self.controller_backend
+        elif self.active_backend == "gguf":
             backend = self.gguf_backend
         elif self.active_backend == "mlx":
             backend = self.mlx_backend
@@ -642,7 +644,9 @@ class ProReasoningEngine:
             }
 
         backend = None
-        if self.active_backend == "gguf":
+        if self.active_backend == "controller":
+            backend = self.controller_backend
+        elif self.active_backend == "gguf":
             backend = self.gguf_backend
         elif self.active_backend == "mlx":
             backend = self.mlx_backend
