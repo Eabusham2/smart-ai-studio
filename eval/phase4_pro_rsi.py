@@ -26,7 +26,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.entropy_router import EntropyRouter
-from core.mlx_engine import MLXReasoningBackend
+from core.mlx_engine import MLXReasoningBackend, _memory_pressure
 from core.pro_engine import get_ladder_temperatures
 from core.turboquant_cache import make_turboquant_prompt_cache
 from eval.master_4000_runtime import (
@@ -382,14 +382,17 @@ def _generate_branches_same_model(
         make_sampler = None
 
     for temp in temperatures:
-        gc.collect(1)
-        try:
-            if hasattr(mx, "clear_cache"):
-                mx.clear_cache()
-            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                mx.metal.clear_cache()
-        except Exception:
-            pass
+        # Keep allocator/kernel state warm between branches. Reclaim only when the
+        # same pressure guard used by the app says memory is genuinely tight.
+        if _memory_pressure():
+            gc.collect(1)
+            try:
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                    mx.metal.clear_cache()
+            except Exception:
+                pass
 
         kwargs: Dict[str, Any] = {
             "max_tokens": max(1, int(max_tokens)),
