@@ -78,3 +78,50 @@ def test_mflux_training_resolution_is_architecture_not_repo_id_driven():
     assert 'info.get("repo_id"' not in matcher
     assert "def _mflux_training_key(info)" in src
     assert "_training_repo(info)" in src
+
+
+def test_exact_controller_modality_matrix_is_locked():
+    src = _src("core/media_orchestrator.py")
+    # image-only -> image RSI; audio-only -> audio RSI.
+    assert 'return raw.intersection({"image", "audio"})' in src
+    # video-capable OR image+audio -> image+video+audio RSI.
+    assert 'if "video" in raw or {"image", "audio"}.issubset(raw):' in src
+    assert 'return {"image", "video", "audio"}' in src
+
+
+def test_text_only_controller_can_generate_and_learn_but_not_grade_or_rsi():
+    src = _src("core/media_orchestrator.py")
+    assert "This controller is text-only for media: it may generate media and use explicit media Learn" in src
+    assert '"media_generate"' in src
+    assert '"media_learn"' in src
+    assert "cannot directly ingest" in src
+    assert "cannot grade its own generated output or perform genuine media RSI" in src
+
+
+def test_media_learn_is_independent_of_controller_perception():
+    src = _src("core/media_orchestrator.py")
+    learn_at = src.index('if name == "media_learn":')
+    rsi_gate_at = src.index('if name == "media_rsi" and not can_perceive:')
+    assert learn_at > rsi_gate_at
+    learn_block = src[learn_at:learn_at + 1800]
+    assert "_can_perceive" not in learn_block
+    assert "self.learning.learn(" in learn_block
+
+
+def test_media_learn_accepts_local_and_online_sources():
+    orchestrator = _src("core/media_orchestrator.py")
+    learning = _src("core/media_learning.py")
+    assert "file/folder/JSONL/URL/search query" in orchestrator
+    assert "gather_samples(" in orchestrator
+    assert "urllib.request" in learning
+    assert "os.path.isdir" in learning or "Path(source).is_dir" in learning
+    assert ".jsonl" in learning
+
+
+def test_imported_text_models_carry_detected_input_modalities():
+    policy = _src("core/model_policy.py")
+    app = _src("app_gui.py")
+    assert "def infer_input_modalities" in policy
+    assert '"video" in raw or {"image", "audio"}.issubset(raw)' not in policy
+    assert '"input_modalities": input_modalities' in policy
+    assert 'target_info.get("input_modalities") or ["text"]' in app
