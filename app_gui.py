@@ -658,6 +658,19 @@ class SmartAIChatbotApp:
                     saved = json.load(f)
                 if isinstance(saved, dict):
                     for mid, mdata in saved.items():
+                        if isinstance(mdata, dict) and mid.startswith("custom_"):
+                            # Backward compatibility: fetched-HF entries created before
+                            # source_kind existed stored both repo_id + cached model_path
+                            # and used the "(HF Custom)" / globe-tag convention.
+                            if not mdata.get("source_kind"):
+                                name = str(mdata.get("name") or "")
+                                tag = str(mdata.get("tag") or "")
+                                if (
+                                    mdata.get("repo_id")
+                                    and mdata.get("model_path")
+                                    and (name.endswith("(HF Custom)") or tag.startswith("🌐"))
+                                ):
+                                    mdata["source_kind"] = "hf_fetch"
                         self.models_config[mid] = mdata
             except Exception:
                 pass
@@ -1346,10 +1359,16 @@ class SmartAIChatbotApp:
             self.is_model_loaded = False
 
         if repo_id:
-            try:
-                purge_local_model_cache(repo_id)
-            except Exception:
-                pass
+            repo_still_used = any(
+                mid != model_id and str(other.get("repo_id") or "").strip() == repo_id
+                for mid, other in self.models_config.items()
+                if isinstance(other, dict)
+            )
+            if not repo_still_used:
+                try:
+                    purge_local_model_cache(repo_id)
+                except Exception:
+                    pass
 
         self.models_config.pop(model_id, None)
         self.chat_history.pop(model_id, None)
