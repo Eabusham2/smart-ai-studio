@@ -201,6 +201,7 @@ _FONT_MONO = (_FONT_MONO_FAMILY, 13)     # Clear 13pt monospace for code
 _FONT_INLINE_MONO = (_FONT_MONO_FAMILY, 12)
 
 CUSTOM_MODELS_FILE = get_custom_models_file()
+APP_PREFS_FILE = os.path.join(get_portable_data_dir(), "app_preferences.json")
 
 
 # ─────────────────────────────────────────────────────────
@@ -539,6 +540,19 @@ class SmartAIChatbotApp:
         self._load_saved_custom_models()
         self.active_tab_id = "model_1"
 
+        # Remembered top-bar memory-limit control. First-run default stays enabled
+        # to preserve the app's existing safety watcher, but the monitor only runs
+        # while a model is actually loaded/ready.
+        mem_prefs = self._load_memory_limit_preferences()
+        self._memory_limit_enabled = bool(mem_prefs.get("enabled", True))
+        self._memory_limit_custom = bool(mem_prefs.get("custom", False))
+        default_mem_limit = self._default_memory_limit_gb(self.models_config[self.active_tab_id])
+        try:
+            saved_mem_limit = float(mem_prefs.get("limit_gb", default_mem_limit))
+        except Exception:
+            saved_mem_limit = default_mem_limit
+        self._memory_limit_gb = max(0.5, saved_mem_limit if self._memory_limit_custom else default_mem_limit)
+
         # LoRA Slider Strength Parameters
         self.softer_lora_str = 1.0   # Target to improve anatomy/detail (default: 1.0)
         self.harder_lora_str = 0.8   # Softer + motion target, rank 32 (cap: 0.8)
@@ -584,16 +598,15 @@ class SmartAIChatbotApp:
         # Thread-Safe Event Queue for Background Worker & Watchdog Callbacks
         self._event_queue: queue.Queue = queue.Queue()
 
-        # System RAM Pressure Watchdog: 13 GB hard process/model ceiling,
-        # with proactive reclaim beginning at 12.5 GB inside SystemMemoryWatchdog.
+        # The watcher is armed only while a model is loaded and the remembered
+        # Memory Limit tick is enabled. It automatically restarts on the next load.
         self.watchdog = SystemMemoryWatchdog(
             check_interval_seconds=3.0,
             max_ram_usage_percent=98.5,
             min_free_ram_gb=0.15,
-            max_process_ram_gb=13.0,
+            max_process_ram_gb=self._memory_limit_gb,
             on_pressure_callback=lambda s: self._event_queue.put(("memory_pressure", s))
         )
-        self.watchdog.start_monitoring()
 
         self._init_window()
         self._build_ui()
@@ -648,6 +661,149 @@ class SmartAIChatbotApp:
             self.root.after(500, _poll)
         except Exception:
             pass
+
+    # ─────────────────────────────────────────────────────
+    #  PERSISTENT MEMORY LIMIT CONTROL
+    # ─────────────────────────────────────────────────────
+    def _load_memory_limit_preferences(self) -> Dict[str, Any]:
+        try:
+            with open(APP_PREFS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            prefs = data.get("memory_limit", {}) if isinstance(data, dict) else {}
+            return prefs if isinstance(prefs, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_memory_limit_preferences(self):
+        try:
+            data: Dict[str, Any] = {}
+            if os.path.exists(APP_PREFS_FILE):
+                try:
+                    with open(APP_PREFS_FILE, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data.update(loaded)
+                except Exception:
+                    pass
+            data["memory_limit"] = {
+                "enabled": bool(self._memory_limit_enabled),
+                "limit_gb": round(float(self._memory_limit_gb), 2),
+                "custom": bool(self._memory_limit_custom),
+            }
+            os.makedirs(os.path.dirname(APP_PREFS_FILE), exist_ok=True)
+            tmp = APP_PREFS_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, sort_keys=True)
+            os.replace(tmp, APP_PREFS_FILE)
+        except Exception:
+            pass
+
+    def _estimate_model_size_gb(self, model_info: Optional[Dict[str, Any]] = None) -> float:
+        """Best-effort local/model-card size estimate used only for the default limit."""
+        info = model_info or self.models_config.get(self.active_tab_id, {})
+        path = str(info.get("model_path") or "").strip()
+        try:
+            if path and os.path.isfile(path):
+                return os.path.getsize(path) / (1024 ** 3)
+            if path and os.path.isdir(path):
+                total = 0
+                for root, _dirs, files in os.walk(path):
+                    for name in files:
+                        if name.endswith((".safetensors", ".gguf", ".bin", ".npz", ".pt")):
+                            try:
+                                total += os.path.getsize(os.path.join(root, name))
+                            except Exception:
+                                pass
+                if total > 0:
+                    return total / (1024 ** 3)
+        except Exception:
+            pass
+
+        vram_text = str(info.get("vram") or "")
+        try:
+            if platform.system() != "Darwin" and "elsewhere" in vram_text.lower():
+                m = re.search(r"~?([0-9]+(?:\.[0-9]+)?)\s*GB\s*VRAM\s*elsewhere", vram_text, re.I)
+                if m:
+                    return float(m.group(1))
+            m = re.search(r"~?([0-9]+(?:\.[0-9]+)?)\s*GB", vram_text, re.I)
+            if m:
+                return float(m.group(1))
+        except Exception:
+            pass
+        return 0.0
+
+    def _default_memory_limit_gb(self, model_info: Optional[Dict[str, Any]] = None) -> float:
+        model_gb = self._estimate_model_size_gb(model_info)
+        return round(max(12.5, model_gb * 1.2), 1)
+
+    def _update_memory_limit_widgets(self):
+        if hasattr(self, "memory_limit_var"):
+            try:
+                self.memory_limit_var.set(bool(self._memory_limit_enabled))
+            except Exception:
+                pass
+        if hasattr(self, "memory_limit_value_var"):
+            try:
+                self.memory_limit_value_var.set(f"{float(self._memory_limit_gb):.1f}")
+            except Exception:
+                pass
+        if hasattr(self, "entry_memory_limit"):
+            try:
+                self.entry_memory_limit.configure(
+                    state="normal" if self._memory_limit_enabled else "disabled"
+                )
+            except Exception:
+                pass
+
+    def _prepare_memory_limit_for_model(self, model_info: Optional[Dict[str, Any]] = None):
+        if not self._memory_limit_custom:
+            self._memory_limit_gb = self._default_memory_limit_gb(model_info)
+            self._update_memory_limit_widgets()
+            self._save_memory_limit_preferences()
+
+    def _sync_memory_watchdog(self, model_info: Optional[Dict[str, Any]] = None, *, force_stop: bool = False):
+        watchdog = getattr(self, "watchdog", None)
+        if watchdog is None:
+            return
+        if force_stop or not self._memory_limit_enabled or not getattr(self, "is_model_loaded", False):
+            try:
+                watchdog.stop_monitoring()
+            except Exception:
+                pass
+            return
+        self._prepare_memory_limit_for_model(model_info)
+        try:
+            watchdog.set_memory_limit_gb(self._memory_limit_gb)
+            watchdog.start_monitoring()
+        except Exception:
+            pass
+
+    def _on_memory_limit_toggle(self):
+        try:
+            self._memory_limit_enabled = bool(self.memory_limit_var.get())
+        except Exception:
+            self._memory_limit_enabled = not bool(self._memory_limit_enabled)
+        self._update_memory_limit_widgets()
+        self._save_memory_limit_preferences()
+        self._sync_memory_watchdog(self.models_config.get(self.active_tab_id))
+
+    def _on_memory_limit_entry_commit(self, _event=None):
+        raw = ""
+        try:
+            raw = str(self.memory_limit_value_var.get()).strip().lower().replace("gb", "").strip()
+            value = float(raw)
+            if value < 0.5:
+                raise ValueError("memory limit too small")
+        except Exception:
+            self._update_memory_limit_widgets()
+            return "break"
+
+        self._memory_limit_gb = float(value)
+        self._memory_limit_custom = True
+        self._update_memory_limit_widgets()
+        self._save_memory_limit_preferences()
+        self._sync_memory_watchdog(self.models_config.get(self.active_tab_id))
+        return "break"
 
     # ─────────────────────────────────────────────────────
     #  PERSISTENT CUSTOM MODEL LOADER & SAVER
@@ -1150,6 +1306,53 @@ class SmartAIChatbotApp:
         self.lbl_vram.bind("<Button-1>", lambda e: self._on_show_memory_telemetry_dialog())
         self.lbl_tps = self._make_badge(right_box, "⚡ — tok/s")
 
+        # Always-visible memory-limit control. The value remains visible while disabled;
+        # ticking it arms the watcher on the next/current successful model load.
+        self.memory_limit_box = tk.Frame(right_box, bg=self.C["bg_hud"])
+        self.memory_limit_box.pack(side="left", padx=(4, 2))
+        self.memory_limit_var = tk.BooleanVar(value=bool(self._memory_limit_enabled))
+        self.chk_memory_limit = tk.Checkbutton(
+            self.memory_limit_box,
+            text="Mem Limit",
+            variable=self.memory_limit_var,
+            command=self._on_memory_limit_toggle,
+            font=_FONT_TINY_BOLD,
+            bg=self.C["bg_hud"],
+            fg=self.C["btn_fg"],
+            activebackground=self.C["bg_hud"],
+            activeforeground=self.C["btn_fg"],
+            selectcolor=self.C["btn_bg"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self.chk_memory_limit.pack(side="left")
+        self.memory_limit_value_var = tk.StringVar(value=f"{float(self._memory_limit_gb):.1f}")
+        self.entry_memory_limit = tk.Entry(
+            self.memory_limit_box,
+            textvariable=self.memory_limit_value_var,
+            width=5,
+            justify="right",
+            font=_FONT_TINY_BOLD,
+            bg=self.C["bg_input_inner"],
+            fg=self.C["btn_fg"],
+            disabledbackground=self.C["bg_input_inner"],
+            disabledforeground=self.C["btn_fg"],
+            insertbackground=self.C["btn_fg"],
+            relief="flat",
+            bd=0,
+        )
+        self.entry_memory_limit.pack(side="left", padx=(2, 1), ipady=2)
+        self.entry_memory_limit.bind("<Return>", self._on_memory_limit_entry_commit)
+        self.entry_memory_limit.bind("<FocusOut>", self._on_memory_limit_entry_commit)
+        tk.Label(
+            self.memory_limit_box,
+            text="GB",
+            font=_FONT_TINY_BOLD,
+            bg=self.C["bg_hud"],
+            fg=self.C["btn_fg"],
+        ).pack(side="left", padx=(0, 2))
+        self._update_memory_limit_widgets()
+
         # Load / Unload Model Button
         # Primary Load / Install / Unload Model Button
         self.btn_load_unload = tk.Button(
@@ -1359,6 +1562,7 @@ class SmartAIChatbotApp:
             except Exception:
                 pass
             self.is_model_loaded = False
+            self._sync_memory_watchdog(force_stop=True)
 
         if repo_id:
             repo_still_used = any(
@@ -2880,6 +3084,7 @@ class SmartAIChatbotApp:
             elif model_type == "audio":
                 self.audio_engine.unload_model()
             self.is_model_loaded = False
+            self._sync_memory_watchdog(force_stop=True)
             self.lbl_model_status.configure(
                 text=f"○ Unloaded ({target_info['short_name']})", fg=self.C["accent_yellow"]
             )
@@ -2918,6 +3123,7 @@ class SmartAIChatbotApp:
 
                 if load_res.get("status") == "loaded":
                     self.is_model_loaded = True
+                    self._sync_memory_watchdog(target_info)
                     label = "Audio Loaded" if model_type == "audio" else "Media Ready" if model_type != "text" else "Loaded"
                     self.lbl_model_status.configure(
                         text=f"● {label}: {target_info['short_name']}", fg=self.C["accent_green"]
@@ -2927,6 +3133,7 @@ class SmartAIChatbotApp:
                     )
                 else:
                     self.is_model_loaded = False
+                    self._sync_memory_watchdog(force_stop=True)
                     error = str(load_res.get("error") or "Model could not be loaded.")
                     self.lbl_model_status.configure(
                         text=f"⚠ Load Failed ({target_info['short_name']})", fg=self.C["accent_red"]
@@ -2998,6 +3205,8 @@ class SmartAIChatbotApp:
         self._scroll_chat_to_bottom()
 
         # Strict single active generation model. Media never enters the Pro text engine.
+        # Disarm the old model's watcher before any unload/switch work.
+        self._sync_memory_watchdog(force_stop=True)
         try:
             self.engine.unload_model()
         except Exception:
@@ -3064,6 +3273,7 @@ class SmartAIChatbotApp:
                 fg=self.C["accent_green"] if cached else self.C["accent_yellow"],
             )
 
+        self._sync_memory_watchdog(target_info)
         self._update_memory_hud_badge()
         self._update_model_action_buttons()
         total_p = target_info.get("raw_params", 0) + (
@@ -3102,6 +3312,7 @@ class SmartAIChatbotApp:
         if used_pct >= 99.0 and free_gb < 0.10 and not getattr(self, "is_generating", False) and getattr(self, "is_model_loaded", False):
             self.engine.unload_model()
             self.is_model_loaded = False
+            self._sync_memory_watchdog(force_stop=True)
             self.lbl_model_status.configure(text="⚠️ Standby (Memory Pressure)", fg=self.C["accent_yellow"])
             self._update_memory_hud_badge()
             self._update_model_action_buttons()
