@@ -20,7 +20,7 @@ try:
     import mlx.optimizers as optim
     import mlx.utils
     from mlx_lm import load
-    from core.turboquant_cache import make_turboquant_prompt_cache as make_prompt_cache
+    from mlx_lm.models.cache import make_prompt_cache
     from mlx_lm.tuner.lora import LoRALinear
     MLX_AVAILABLE=True
 except ImportError:
