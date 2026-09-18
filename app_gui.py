@@ -298,24 +298,6 @@ class SmartAIChatbotApp:
         # Text presets are strictly verified true-ternary. A plain low-bit quant is not enough.
         self.models_config = {
             "model_1": {
-                "name": "Bonsai 2 27B Ternary Multimodal",
-                "short_name": "Bonsai 2 27B Ternary",
-                "repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
-                "model_path": None,
-                "model_type": "text",
-                "input_modalities": ["text", "image", "video"],
-                "ternary": True,
-                "precision": "True ternary g128 (~1.72 bpw representation) + retained vision tower",
-                "runtime_family": "bonsai2_hadamard",
-                "raw_params": 27_360_000_000,
-                "base_params": "27.36B",
-                "est_speed": "⚡ Native ternary multimodal",
-                "max_context": 262_144,
-                "vram": "~8.6 GB MLX / ~6.6-7.9 GB GGUF + vision",
-                "tag": "👁️ Bonsai 2 27B Ternary",
-                "accent": self.C["accent_cyan"]
-            },
-            "model_2": {
                 "name": "Bonsai 2 27B Ternary CRACK (Abliterated/Uncensored)",
                 "short_name": "Bonsai 2 27B CRACK",
                 "repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG" if is_apple_silicon else "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF",
@@ -325,6 +307,7 @@ class SmartAIChatbotApp:
                 "ternary": True,
                 "precision": "Ternary Bonsai 2 + weight-level CRACK abliteration; vision/video preserved",
                 "runtime_family": "bonsai2_hadamard",
+                "training_base_model_id": "Qwen/Qwen3.8-27B",
                 "raw_params": 27_360_000_000,
                 "base_params": "27.36B",
                 "est_speed": "⚡ Ternary multimodal uncensored",
@@ -332,6 +315,25 @@ class SmartAIChatbotApp:
                 "vram": "~8.2 GB MLX / ~6.6 GB GGUF + Q8 vision",
                 "tag": "🔓 Bonsai 2 27B CRACK",
                 "accent": "#f43f5e"
+            },
+            "model_2": {
+                "name": "Bonsai 2 27B Ternary Multimodal",
+                "short_name": "Bonsai 2 27B Ternary",
+                "repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
+                "model_path": None,
+                "model_type": "text",
+                "input_modalities": ["text", "image", "video"],
+                "ternary": True,
+                "precision": "True ternary g128 (~1.72 bpw representation) + retained vision tower",
+                "runtime_family": "bonsai2_hadamard",
+                "training_base_model_id": "Qwen/Qwen3.8-27B",
+                "raw_params": 27_360_000_000,
+                "base_params": "27.36B",
+                "est_speed": "⚡ Native ternary multimodal",
+                "max_context": 262_144,
+                "vram": "~8.6 GB MLX / ~6.6-7.9 GB GGUF + vision",
+                "tag": "👁️ Bonsai 2 27B Ternary",
+                "accent": self.C["accent_cyan"]
             },
             "model_3": {
                 "name": "RealVisXL V5.0 (High-Res Photoreal Uncensored)",
