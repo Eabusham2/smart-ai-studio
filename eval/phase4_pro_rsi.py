@@ -4,8 +4,9 @@ Design invariants:
 - Phase 1 is the unchanged greedy baseline.
 - "Learn" and RSI are distinct:
   * Learn = externally supplied/verified examples are stored for consolidation.
-  * RSI = the model generates its own improved answers, self-critiques, and only its
-    own verified successful revisions become training targets.
+  * RSI = the model generates its own improved answers and self-critiques. Eligibility
+    is decided transiently, but persistent RSI memory stores only the model's own trace:
+    no benchmark question, split label, expected answer, correctness, or reward field.
 - Phase 3 updates the already-loaded model in-place and persists its trainable adapter.
 - Phase 4 retests only Phase-1 misses using the same RSI-updated in-memory model.
 - Phase-4 Pro branch selection never sees benchmark expected answers. Deterministic
@@ -487,7 +488,13 @@ def _seed_supervised_learn(self) -> int:
 
 def _run_rsi_self_improvement(self, splits, cache) -> int:
     """Recursive self-improvement: self-generate -> self-critique -> verify -> train."""
+    # Remove any legacy RSI rows that persisted benchmark prompts/rewards, then
+    # start this run with a clean question-free self-memory inbox.
     _delete_unconsumed_session_rows(self, RSI_SESSION_ID)
+    try:
+        self.engine.kg.clear_unconsolidated_rsi_self_memories()
+    except Exception:
+        pass
     model_identity = id(self.engine.model)
     seeded = 0
     attempted = 0
@@ -562,14 +569,10 @@ def _run_rsi_self_improvement(self, splits, cache) -> int:
 
             if passed:
                 try:
-                    self.engine.kg.log_interaction(
-                        RSI_SESSION_ID,
-                        str(item.get("prompt", "")),
-                        candidate,
-                        1.0,
-                        1.0,
-                        domain=f"RSI::{split_name}",
-                    )
+                    # Persist ONLY the model's self-generated trace. The hidden verifier
+                    # gate is ephemeral: no question, split, reward, PASS/FAIL, or expected
+                    # answer is written to persistent RSI memory.
+                    self.engine.kg.log_rsi_self_memory(candidate)
                     seeded += 1
                     success = True
                 except Exception:
@@ -588,10 +591,12 @@ def _run_rsi_self_improvement(self, splits, cache) -> int:
 
 
 def _fetch_benchmark_training_memories(self) -> List[Dict[str, Any]]:
+    """Fetch Learn QA rows plus question-free/reward-free RSI self traces."""
     db_path = getattr(getattr(self.engine, "kg", None), "db_path", None)
     if not db_path:
         return []
-    limit = max(
+
+    total_limit = max(
         20,
         min(
             256,
@@ -600,25 +605,61 @@ def _fetch_benchmark_training_memories(self) -> List[Dict[str, Any]]:
             + 8,
         ),
     )
+    learn_limit = max(1, total_limit)
+    rsi_limit = max(1, total_limit)
+
+    memories: List[Dict[str, Any]] = []
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
+
+            # Learn remains explicitly supervised QA and keeps its reward metadata.
+            learn_rows = conn.execute(
                 """
-                SELECT *
+                SELECT id,prompt,completion
                 FROM episodic_interactions
                 WHERE consolidated=0
                   AND reward>=0.8
                   AND surprise_score>=0.80
-                  AND session_id IN (?, ?)
-                ORDER BY surprise_score DESC, id ASC
+                  AND session_id=?
+                ORDER BY surprise_score DESC,id ASC
                 LIMIT ?
                 """,
-                (RSI_SESSION_ID, LEARN_SESSION_ID, limit),
+                (LEARN_SESSION_ID, learn_limit),
             ).fetchall()
-            return [dict(r) for r in rows]
+            memories.extend(
+                {
+                    "memory_kind": "learn",
+                    "id": int(row["id"]),
+                    "prompt": str(row["prompt"]),
+                    "completion": str(row["completion"]),
+                }
+                for row in learn_rows
+            )
+
+            # RSI table has no prompt/question and no reward/correctness columns.
+            rsi_rows = conn.execute(
+                """
+                SELECT id,trace
+                FROM rsi_self_memories
+                WHERE consolidated=0
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (rsi_limit,),
+            ).fetchall()
+            memories.extend(
+                {
+                    "memory_kind": "rsi_self",
+                    "id": int(row["id"]),
+                    "trace": str(row["trace"]),
+                }
+                for row in rsi_rows
+            )
     except Exception:
         return []
+
+    return memories[:total_limit]
 
 
 def _save_rsi_adapter(self) -> bool:
@@ -671,13 +712,23 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
     opt = optim.AdamW(learning_rate=1e-4)
     updated = 0
     fallback_updates = 0
-    consolidated_ids: List[int] = []
+    learn_consolidated_ids: List[int] = []
+    rsi_consolidated_ids: List[int] = []
 
     for memory in memories:
-        text = (
-            f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
-            f"<|im_start|>assistant\n{memory['completion']}<|im_end|>"
-        )
+        if memory.get("memory_kind") == "rsi_self":
+            # Generic wrapper only. No benchmark wording is reconstructed here.
+            text = (
+                "<|im_start|>user\n"
+                "Internalize this self-generated reasoning pattern and improve future problem solving."
+                "<|im_end|>\n"
+                f"<|im_start|>assistant\n{memory['trace']}<|im_end|>"
+            )
+        else:
+            text = (
+                f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
+                f"<|im_start|>assistant\n{memory['completion']}<|im_end|>"
+            )
         ids = self.engine.tokenizer.encode(text)
         if len(ids) <= 1:
             continue
@@ -721,7 +772,10 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
                 mx.eval(self.engine.model.parameters(), opt.state)
                 updated += 1
                 if memory.get("id") is not None:
-                    consolidated_ids.append(int(memory["id"]))
+                    if memory.get("memory_kind") == "rsi_self":
+                        rsi_consolidated_ids.append(int(memory["id"]))
+                    else:
+                        learn_consolidated_ids.append(int(memory["id"]))
 
     _assert_same_model(self, model_identity, "Phase 3 consolidation")
 
@@ -741,9 +795,14 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
         self.engine.moe_manager.swap_buffers_atomic()
         _assert_same_model(self, model_identity, "Phase 3 buffer swap")
 
-    if consolidated_ids:
+    if learn_consolidated_ids:
         try:
-            self.engine.kg.mark_consolidated(consolidated_ids)
+            self.engine.kg.mark_consolidated(learn_consolidated_ids)
+        except Exception:
+            pass
+    if rsi_consolidated_ids:
+        try:
+            self.engine.kg.mark_rsi_self_memories_consolidated(rsi_consolidated_ids)
         except Exception:
             pass
 
