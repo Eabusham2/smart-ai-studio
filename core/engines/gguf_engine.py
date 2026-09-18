@@ -23,13 +23,24 @@ class GGUFReasoningBackend:
         mmproj_path: Optional[str] = None,
         n_gpu_layers: int = -1,
         n_ctx: int = 32768,
-        verbose: bool = False
+        verbose: bool = False,
+        training_base_model_id: Optional[str] = None,
+        adapter_root: Optional[str] = None,
     ):
         self.model_path = model_path
         self.mmproj_path = mmproj_path
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
         self.verbose = verbose
+        self.training_base_model_id = str(training_base_model_id or "").strip() or "Qwen/Qwen3.8-27B"
+        if adapter_root:
+            self.adapter_root = os.path.abspath(adapter_root)
+        else:
+            from config.paths import get_portable_data_dir
+            stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.basename(self.model_path) or "gguf")
+            self.adapter_root = os.path.join(get_portable_data_dir(), "gguf_lora", stem)
+        self.adapter_path = os.path.join(self.adapter_root, "adapter.gguf")
+        self.adapters: Dict[str, Any] = {}
 
         self.model = None
         self.chat_handler = None
@@ -68,6 +79,7 @@ class GGUFReasoningBackend:
                 n_gpu_layers=self.n_gpu_layers,
                 n_ctx=self.n_ctx,
                 chat_handler=self.chat_handler,
+                lora_path=self.adapter_path if os.path.isfile(self.adapter_path) else None,
                 no_perf=True,
                 verbose=self.verbose
             )
@@ -75,6 +87,58 @@ class GGUFReasoningBackend:
         except Exception:
             self.model = None
             return False
+
+    @property
+    def tokenizer(self):
+        """Compatibility tokenizer facade for the shared Learn/awake trainer contract."""
+        return self.model
+
+    def count_tokens(self, messages: List[Dict[str, str]]) -> int:
+        if self.model is None:
+            return max(1, sum(len(str(m.get("content", ""))) for m in messages or []) // 4)
+        text = "\n".join(str(m.get("content", "")) for m in messages or [])
+        try:
+            return len(self.model.tokenize(text.encode("utf-8")))
+        except Exception:
+            return max(1, len(text) // 4)
+
+    def train_mini_batch(
+        self,
+        adapters: Any,
+        data: List[Dict[str, str]],
+        fisher_matrix: Any = None,
+        lambda_ewc: float = 0.0,
+        learning_rate: float = 1e-4,
+        steps: int = 3,
+        save_path: Optional[str] = None,
+        **_kwargs,
+    ):
+        """Train a real PEFT LoRA sidecar, convert to GGUF-LoRA, then hot-reload llama.cpp."""
+        del adapters, fisher_matrix, lambda_ewc, save_path
+        from core.gguf_lora_trainer import GGUFLoRATrainer
+
+        # Free inference weights before loading the 27B QLoRA training graph.
+        self.unload_model()
+        trainer = GGUFLoRATrainer(
+            base_model_id=self.training_base_model_id,
+            adapter_root=self.adapter_root,
+        )
+        try:
+            meta, drift, _touched, adapter_path = trainer.train(
+                data,
+                learning_rate=float(learning_rate),
+                steps=max(1, int(steps)),
+            )
+            self.adapter_path = adapter_path
+            self.adapters = dict(meta or {})
+        except Exception:
+            # Keep inference available even if the training toolchain is unavailable.
+            self.load_model()
+            raise
+
+        if not self.load_model():
+            raise RuntimeError("GGUF LoRA trained successfully but llama.cpp failed to reload it")
+        return dict(self.adapters), float(drift)
 
     def supports_media_input(self, kind: str) -> bool:
         """Current llama.cpp integration has a real local image handler only when mmproj loaded."""
