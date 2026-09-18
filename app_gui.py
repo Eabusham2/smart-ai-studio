@@ -541,29 +541,6 @@ class SmartAIChatbotApp:
                 "vram": "~3.5 GB on Mac / <16 GB",
                 "tag": "🔊 Stable Audio 3 SFX",
                 "accent": "#fb7185"
-            },
-            "model_16": {
-                "name": "Ternary Bonsai 2 27B Vision",
-                "short_name": "Bonsai 2 27B Vision",
-                "repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
-                "model_path": None,
-                "model_type": "text",
-                "input_modalities": ["text", "image"],
-                "controller_runtime": "mlx_repo_vlm" if is_apple_silicon else "gguf",
-                "runtime_dir": "runtime",
-                "runtime_module": "vision_artifact",
-                "runtime_loader": "load_vl_model",
-                "runtime_chat_config": "chat_config",
-                "gguf_preference": "ptq1_0",
-                "ternary": True,
-                "precision": "True ternary language weights + full vision tower",
-                "raw_params": 27_360_000_000,
-                "base_params": "27.36B",
-                "est_speed": "👁️ Ternary multimodal",
-                "max_context": 262_144,
-                "vram": "~8.6 GB MLX / ~6-8 GB GGUF + vision",
-                "tag": "👁️ Bonsai 2 27B Ternary Vision",
-                "accent": "#22d3ee"
             }
         }
         self._load_saved_custom_models()
