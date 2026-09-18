@@ -19,7 +19,7 @@ import numpy as np
 
 from config.settings import Settings, get_settings, MODEL_PRESETS
 from core.downloader import ensure_model_available, is_model_available_locally
-from core.engines.bitnet_engine import BitNetReasoningBackend
+from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
 from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
 from core.entropy_router import EntropyRouter
@@ -327,19 +327,30 @@ class ProReasoningEngine:
                             "trainable": bool(self.gguf_backend.training_ready()),
                         }
 
-                # 3. BitNet 1.58-Bit Pure Ternary Integer Engine
+                # 3. Microsoft bitnet.cpp — real 1.58-bit inference runtime.
+                # Fail closed if the official runtime/model cannot be prepared; never
+                # fall back to the old synthetic BitLinear placeholder.
                 if target_backend == "bitnet":
-                    self.bitnet_backend = BitNetReasoningBackend(
+                    self.bitnet_backend = BitNetCppReasoningBackend(
                         model_path=target_path,
-                        device="cpu"
+                        hf_repo_id=str(info.get("repo_id") or target_path),
+                        n_ctx=int(info.get("max_context") or 32768),
                     )
                     if self.bitnet_backend.load_model():
                         return {
                             "status": "loaded",
                             "model": model_name,
                             "backend": "bitnet",
-                            "path": target_path
+                            "path": self.bitnet_backend.model_path,
+                            "trainable": False,
                         }
+                    return {
+                        "status": "error",
+                        "model": model_name,
+                        "backend": "bitnet",
+                        "path": target_path,
+                        "error": "Official bitnet.cpp runtime/model could not be prepared for this BitNet checkpoint.",
+                    }
 
                 # 4. PyTorch CUDA / MPS / CPU
                 if target_backend in ("torch", "cuda") and self.device == "cuda":
