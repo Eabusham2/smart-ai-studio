@@ -317,7 +317,7 @@ class ProReasoningEngine:
                             "model": model_name,
                             "backend": "gguf",
                             "path": target_path,
-                            "trainable": callable(getattr(self.gguf_backend, "train_mini_batch", None)),
+                            "trainable": bool(self.gguf_backend.training_ready()),
                         }
 
                 # 3. BitNet 1.58-Bit Pure Ternary Integer Engine
