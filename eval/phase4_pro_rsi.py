@@ -28,7 +28,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from core.entropy_router import EntropyRouter
 from core.mlx_engine import MLXReasoningBackend, _memory_pressure
 from core.pro_engine import get_ladder_temperatures
-from core.turboquant_cache import make_turboquant_prompt_cache
 from eval.master_4000_runtime import (
     RAW_OUTPUT_LOG,
     SYSTEM_PROMPT,
@@ -52,6 +51,7 @@ if MLX_AVAILABLE:
     import mlx.optimizers as optim
     import mlx.utils
     import mlx_lm
+    from mlx_lm.models.cache import make_prompt_cache
 
 
 RSI_SESSION_ID = "phase1_rsi_self_generated_verified_v2"
@@ -398,7 +398,7 @@ def _generate_branches_same_model(
         kwargs: Dict[str, Any] = {
             "max_tokens": max(1, int(max_tokens)),
             "verbose": False,
-            "prompt_cache": make_turboquant_prompt_cache(self.engine.model),
+            "prompt_cache": make_prompt_cache(self.engine.model),
         }
         if make_sampler is not None:
             try:
