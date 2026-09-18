@@ -24,7 +24,6 @@ class GGUFReasoningBackend:
         n_gpu_layers: int = -1,
         n_ctx: int = 32768,
         verbose: bool = False,
-        training_base_model_id: Optional[str] = None,
         adapter_root: Optional[str] = None,
     ):
         self.model_path = model_path
@@ -32,7 +31,6 @@ class GGUFReasoningBackend:
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
         self.verbose = verbose
-        self.training_base_model_id = str(training_base_model_id or "").strip() or "Qwen/Qwen3.8-27B"
         if adapter_root:
             self.adapter_root = os.path.abspath(adapter_root)
         else:
@@ -120,7 +118,7 @@ class GGUFReasoningBackend:
         # Free inference weights before loading the 27B QLoRA training graph.
         self.unload_model()
         trainer = GGUFLoRATrainer(
-            base_model_id=self.training_base_model_id,
+            model_path=self.model_path,
             adapter_root=self.adapter_root,
         )
         try:
