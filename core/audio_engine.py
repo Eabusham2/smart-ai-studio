@@ -76,6 +76,7 @@ class AudioGenerationEngine:
                 }
 
         if backend_hint in ("stable_audio_3", "stable-audio-3"):
+            stable_audio_error = None
             try:
                 from stable_audio_3 import StableAudioModel
                 variant = str(info.get("audio_variant") or "small-music")
@@ -83,11 +84,24 @@ class AudioGenerationEngine:
                 self.backend = "stable_audio_3"
                 return {"status": "loaded", "backend": self.backend, "repo_id": repo_id}
             except Exception as exc:
+                stable_audio_error = exc
+
+            try:
+                import torch
+                from stable_audio_tools import get_pretrained_model
+                model, model_config = get_pretrained_model(repo_id)
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                model = model.to(device)
+                self.model = (model, model_config, device)
+                self.backend = "stable_audio_tools"
+                return {"status": "loaded", "backend": self.backend, "repo_id": repo_id}
+            except Exception as exc:
                 return {
                     "status": "error",
                     "error": (
-                        f"Stable Audio 3 runtime could not load {repo_id}: {exc}. "
-                        "Install the Stability AI stable-audio-3 runtime."
+                        f"Stable Audio 3 runtime could not load {repo_id}. "
+                        f"stable-audio-3 error: {stable_audio_error}; "
+                        f"stable-audio-tools error: {exc}."
                     ),
                 }
 
@@ -208,6 +222,31 @@ class AudioGenerationEngine:
                     cfg_scale=float(cfg_scale),
                 )
                 sample_rate = int(getattr(self.model, "sample_rate", 44100) or 44100)
+                self._save_wave_array(audio, sample_rate, output_path)
+                return {"status": "success", "path": output_path, "backend": self.backend}
+
+            if self.backend == "stable_audio_tools":
+                import torch
+                from stable_audio_tools.inference.generation import generate_diffusion_cond
+                model, model_config, device = self.model
+                sample_rate = int(model_config.get("sample_rate", 44100) or 44100)
+                sample_size = max(1, int(float(duration_seconds) * sample_rate))
+                conditioning = [{
+                    "prompt": prompt,
+                    "seconds_start": 0,
+                    "seconds_total": float(duration_seconds),
+                }]
+                audio = generate_diffusion_cond(
+                    model,
+                    steps=max(1, int(steps)),
+                    cfg_scale=float(cfg_scale),
+                    conditioning=conditioning,
+                    sample_size=sample_size,
+                    sample_rate=sample_rate,
+                    device=device,
+                )
+                peak = torch.max(torch.abs(audio)).clamp_min(1e-8)
+                audio = audio.to(torch.float32).div(peak).clamp(-1, 1)
                 self._save_wave_array(audio, sample_rate, output_path)
                 return {"status": "success", "path": output_path, "backend": self.backend}
 
