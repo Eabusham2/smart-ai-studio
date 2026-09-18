@@ -1,194 +1,262 @@
-"""Real GGUF learning bridge.
+"""Exact-GGUF LoRA training bridge for Smart AI Studio.
 
-GGUF base weights are inference-only/quantized.  Learning therefore updates a
-persistent PEFT LoRA sidecar against the matching Hugging Face base architecture,
-converts that adapter with llama.cpp's official convert_lora_to_gguf.py, and then
-llama.cpp loads the learned adapter on top of the original GGUF.
-
-No parameter drift is fabricated: success requires a measurable LoRA update,
-successful GGUF-LoRA conversion, and successful llama.cpp reload.
+The base GGUF stays frozen. Learning is performed by llama.cpp's real
+llama-finetune-lora tool directly against the exact currently selected GGUF, so
+custom quantization/rotation semantics remain owned by the matching llama.cpp
+runtime. The resulting GGUF LoRA adapter is then hot-loaded by llama-cpp-python.
 """
 from __future__ import annotations
 
-import gc
+import json
 import math
 import os
+import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-def _safe_name(value: str) -> str:
-    out = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(value or "model"))
-    return out.strip("_") or "model"
-
-
-def _find_or_clone_llama_cpp(tool_root: str) -> Path:
-    explicit = os.getenv("LLAMA_CPP_DIR", "").strip()
-    candidates = [
-        Path(explicit) if explicit else None,
-        Path(tool_root) / "llama.cpp",
-        Path.cwd() / "llama.cpp",
-        Path.cwd().parent / "llama.cpp",
-    ]
-    for candidate in candidates:
-        if candidate and (candidate / "convert_lora_to_gguf.py").is_file():
-            return candidate
-
-    target = Path(tool_root) / "llama.cpp"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    git = shutil.which("git")
-    if not git:
-        raise RuntimeError(
-            "GGUF LoRA training needs llama.cpp's official converter. "
-            "Install git or set LLAMA_CPP_DIR to a llama.cpp checkout."
-        )
-    proc = subprocess.run(
-        [git, "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", str(target)],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0 or not (target / "convert_lora_to_gguf.py").is_file():
-        raise RuntimeError(
-            "Could not obtain llama.cpp LoRA converter: "
-            + (proc.stderr or proc.stdout or "git clone failed").strip()
-        )
-    return target
+def _exe_name(name: str) -> str:
+    return name + (".exe" if os.name == "nt" else "")
 
 
 class GGUFLoRATrainer:
     def __init__(
         self,
         *,
-        base_model_id: str,
+        model_path: str,
         adapter_root: str,
-        rank: int = 32,
-        alpha: int = 64,
+        rank: int = 8,
+        alpha: int = 16,
     ):
-        self.base_model_id = str(base_model_id or "").strip()
-        if not self.base_model_id:
-            raise ValueError("GGUF LoRA trainer requires a matching base_model_id")
-        self.adapter_root = os.path.abspath(adapter_root)
-        self.peft_dir = os.path.join(self.adapter_root, "peft")
-        self.gguf_adapter_path = os.path.join(self.adapter_root, "adapter.gguf")
+        self.model_path = os.path.abspath(str(model_path))
+        self.adapter_root = os.path.abspath(str(adapter_root))
+        self.adapter_path = os.path.join(self.adapter_root, "adapter.gguf")
         self.rank = int(rank)
         self.alpha = int(alpha)
+        self._tool_root: Optional[Path] = None
 
-    def _load_trainable_model(self):
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        from peft import LoraConfig, PeftModel, get_peft_model
+    def _candidate_binaries(self) -> List[Path]:
+        name = _exe_name("llama-finetune-lora")
+        out: List[Path] = []
 
-        if not torch.cuda.is_available():
+        for env_name in ("SMARTAI_GGUF_FINETUNE_BIN", "LLAMA_FINETUNE_LORA"):
+            value = os.getenv(env_name, "").strip()
+            if value:
+                out.append(Path(value))
+
+        found = shutil.which("llama-finetune-lora")
+        if found:
+            out.append(Path(found))
+
+        roots = [
+            Path.cwd(),
+            Path.cwd().parent,
+            Path(self.adapter_root).parent,
+            Path(__file__).resolve().parents[2],
+        ]
+        explicit = os.getenv("PRISM_LLAMA_CPP_DIR", "").strip()
+        if explicit:
+            roots.insert(0, Path(explicit))
+
+        relative = [
+            Path("llama.cpp/build/bin") / name,
+            Path("llama.cpp/build/bin/Release") / name,
+            Path("build/bin") / name,
+            Path("build/bin/Release") / name,
+            Path("bin/cuda") / name,
+            Path("bin/vulkan") / name,
+            Path("bin/rocm") / name,
+            Path("bin/hip") / name,
+            Path("bin/cpu") / name,
+            Path("bin/mac") / name,
+            Path("Bonsai-demo/bin/cuda") / name,
+            Path("Bonsai-demo/bin/vulkan") / name,
+            Path("Bonsai-demo/bin/rocm") / name,
+            Path("Bonsai-demo/bin/hip") / name,
+            Path("Bonsai-demo/bin/cpu") / name,
+            Path("Bonsai-demo/bin/mac") / name,
+        ]
+        for root in roots:
+            for rel in relative:
+                out.append(root / rel)
+
+        dedup: List[Path] = []
+        seen = set()
+        for candidate in out:
+            try:
+                key = str(candidate.resolve())
+            except Exception:
+                key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(candidate)
+        return dedup
+
+    def _build_prism_trainer(self) -> Path:
+        git = shutil.which("git")
+        cmake = shutil.which("cmake")
+        if not git or not cmake:
             raise RuntimeError(
-                "GGUF inference works on CPU/CUDA, but 27B GGUF parameter learning "
-                "requires a CUDA QLoRA training runtime. No fake CPU update was performed."
+                "GGUF parameter learning needs llama-finetune-lora. "
+                "Install the Prism Bonsai llama.cpp tools, or install git + cmake "
+                "so Smart AI Studio can build the training target."
             )
 
-        try:
-            from transformers import BitsAndBytesConfig
-            import bitsandbytes  # noqa: F401
-        except Exception as exc:
-            raise RuntimeError(
-                "GGUF parameter learning requires bitsandbytes for 4-bit QLoRA. "
-                "Install the gguf training dependencies."
-            ) from exc
+        tool_root = Path(self.adapter_root).parent / "gguf_train_tools"
+        source = tool_root / "llama.cpp"
+        build = source / "build-smartai-train"
+        tool_root.mkdir(parents=True, exist_ok=True)
 
-        quant = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
-        tokenizer = AutoTokenizer.from_pretrained(
-            self.base_model_id,
-            trust_remote_code=True,
-        )
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        base = AutoModelForCausalLM.from_pretrained(
-            self.base_model_id,
-            quantization_config=quant,
-            device_map="auto",
-            low_cpu_mem_usage=True,
-            trust_remote_code=True,
-        )
-
-        from peft import prepare_model_for_kbit_training
-        base = prepare_model_for_kbit_training(base)
-
-        if os.path.isfile(os.path.join(self.peft_dir, "adapter_config.json")):
-            model = PeftModel.from_pretrained(base, self.peft_dir, is_trainable=True)
-        else:
-            cfg = LoraConfig(
-                r=self.rank,
-                lora_alpha=self.alpha,
-                target_modules=[
-                    "q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj",
+        if not (source / ".git").exists():
+            proc = subprocess.run(
+                [
+                    git, "clone", "--depth", "1", "-b", "prism",
+                    "https://github.com/PrismML-Eng/llama.cpp.git",
+                    str(source),
                 ],
-                lora_dropout=0.0,
-                bias="none",
-                task_type="CAUSAL_LM",
+                capture_output=True,
+                text=True,
             )
-            model = get_peft_model(base, cfg)
-        model.train()
-        return model, tokenizer
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "Could not clone the Prism llama.cpp training runtime: "
+                    + (proc.stderr or proc.stdout or "git clone failed").strip()
+                )
+
+        configure = [cmake, "-S", str(source), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release"]
+        # Prefer a GPU training backend when its toolchain is already installed.
+        if shutil.which("nvcc"):
+            configure.append("-DGGML_CUDA=ON")
+        elif shutil.which("hipcc") and platform.system() != "Darwin":
+            configure.append("-DGGML_HIP=ON")
+        elif platform.system() == "Darwin":
+            configure.append("-DGGML_METAL=ON")
+
+        proc = subprocess.run(configure, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Could not configure the Prism llama.cpp trainer: "
+                + (proc.stderr or proc.stdout or "cmake configure failed").strip()
+            )
+
+        command = [cmake, "--build", str(build), "--target", "llama-finetune-lora", "--parallel"]
+        if os.name == "nt":
+            command += ["--config", "Release"]
+        proc = subprocess.run(command, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Could not build llama-finetune-lora: "
+                + (proc.stderr or proc.stdout or "cmake build failed").strip()
+            )
+
+        candidates = [
+            build / "bin" / _exe_name("llama-finetune-lora"),
+            build / "bin" / "Release" / _exe_name("llama-finetune-lora"),
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                self._tool_root = source
+                return candidate
+        raise RuntimeError("llama-finetune-lora built successfully but its binary was not found")
+
+    def _resolve_binary(self) -> Path:
+        for candidate in self._candidate_binaries():
+            if candidate.is_file():
+                # If this binary came from a llama.cpp checkout, remember it for gguf-py.
+                for parent in [candidate.parent, *candidate.parents]:
+                    if (parent / "gguf-py").is_dir():
+                        self._tool_root = parent
+                        break
+                return candidate
+        return self._build_prism_trainer()
+
+    def _write_dataset(self, data: List[Dict[str, str]], steps: int) -> str:
+        rows = []
+        for item in data or []:
+            prompt = str(item.get("prompt") or "").strip()
+            completion = str(item.get("completion") or "").strip()
+            if not prompt or not completion:
+                continue
+            rows.append(
+                {
+                    "messages": [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": completion},
+                    ]
+                }
+            )
+        if not rows:
+            raise RuntimeError("GGUF LoRA trainer received no prompt/completion pairs")
+
+        # Repeat the tiny online-learning batch so the native trainer always has enough
+        # tokens to form several training windows; this is the GGUF equivalent of the
+        # existing MLX trainer's small multi-step update.
+        repeated = rows * max(1, int(steps))
+        while sum(len(json.dumps(row, ensure_ascii=False)) for row in repeated) < 8192:
+            repeated += rows
+
+        fd, path = tempfile.mkstemp(prefix="smartai-gguf-learn-", suffix=".jsonl")
+        os.close(fd)
+        with open(path, "w", encoding="utf-8") as handle:
+            for row in repeated:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return path
+
+    def _reader_root(self, binary: Path) -> Optional[Path]:
+        if self._tool_root and (self._tool_root / "gguf-py").is_dir():
+            return self._tool_root
+        for parent in [binary.parent, *binary.parents]:
+            if (parent / "gguf-py").is_dir():
+                return parent
+        return None
 
     @staticmethod
-    def _snapshot_trainable(model) -> Dict[str, Any]:
-        snap = {}
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                snap[name] = param.detach().float().cpu().clone()
-        return snap
+    def _tensor_map(path: str, reader_root: Optional[Path]) -> Dict[str, Any]:
+        if not path or not os.path.isfile(path) or reader_root is None:
+            return {}
+        gguf_py = str(reader_root / "gguf-py")
+        inserted = False
+        if gguf_py not in sys.path:
+            sys.path.insert(0, gguf_py)
+            inserted = True
+        try:
+            import numpy as np
+            from gguf.gguf_reader import GGUFReader
+            reader = GGUFReader(path)
+            result = {}
+            for tensor in reader.tensors:
+                arr = tensor.data
+                if getattr(arr.dtype, "kind", "") not in ("f", "i", "u"):
+                    continue
+                # LoRA adapters are normally float tensors. Keep only manageable data.
+                result[tensor.name] = np.asarray(arr, dtype=np.float32).copy()
+            return result
+        finally:
+            if inserted:
+                try:
+                    sys.path.remove(gguf_py)
+                except ValueError:
+                    pass
 
     @staticmethod
-    def _drift_l2(before: Dict[str, Any], model) -> Tuple[float, int]:
+    def _drift_l2(before: Dict[str, Any], after: Dict[str, Any]) -> Tuple[float, int]:
+        import numpy as np
         total = 0.0
         touched = 0
-        for name, param in model.named_parameters():
-            if not param.requires_grad or name not in before:
-                continue
-            delta = param.detach().float().cpu() - before[name]
-            total += float((delta * delta).sum().item())
-            touched += int(param.numel())
+        for name, new in after.items():
+            old = before.get(name)
+            if old is not None and getattr(old, "shape", None) == getattr(new, "shape", None):
+                delta = new.astype(np.float64) - old.astype(np.float64)
+            else:
+                delta = new.astype(np.float64)
+            total += float(np.sum(delta * delta))
+            touched += int(new.size)
         return math.sqrt(max(total, 0.0)), touched
-
-    def _convert_to_gguf(self) -> str:
-        llama_root = _find_or_clone_llama_cpp(os.path.dirname(self.adapter_root))
-        converter = llama_root / "convert_lora_to_gguf.py"
-        tmp_out = self.gguf_adapter_path + ".tmp"
-        os.makedirs(self.adapter_root, exist_ok=True)
-        if os.path.exists(tmp_out):
-            os.remove(tmp_out)
-
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(converter),
-                "--base-model-id",
-                self.base_model_id,
-                "--outtype",
-                "f16",
-                "--outfile",
-                tmp_out,
-                self.peft_dir,
-            ],
-            cwd=str(llama_root),
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0 or not os.path.isfile(tmp_out):
-            raise RuntimeError(
-                "llama.cpp LoRA conversion failed: "
-                + (proc.stderr or proc.stdout or "no adapter output").strip()
-            )
-        os.replace(tmp_out, self.gguf_adapter_path)
-        return self.gguf_adapter_path
 
     def train(
         self,
@@ -196,71 +264,65 @@ class GGUFLoRATrainer:
         *,
         learning_rate: float = 1e-4,
         steps: int = 3,
-        max_length: int = 512,
     ) -> Tuple[Dict[str, Any], float, int, str]:
-        import torch
+        binary = self._resolve_binary()
+        reader_root = self._reader_root(binary)
+        dataset = self._write_dataset(data, steps)
+        os.makedirs(self.adapter_root, exist_ok=True)
 
-        model, tokenizer = self._load_trainable_model()
-        before = self._snapshot_trainable(model)
-        optimizer = torch.optim.AdamW(
-            (p for p in model.parameters() if p.requires_grad),
-            lr=float(learning_rate),
-        )
+        before = self._tensor_map(self.adapter_path, reader_root)
+        tmp_adapter = self.adapter_path + ".tmp.gguf"
+        if os.path.exists(tmp_adapter):
+            os.remove(tmp_adapter)
 
-        rows = [
-            item for item in (data or [])
-            if str(item.get("prompt") or "").strip() and str(item.get("completion") or "").strip()
+        n_gpu_layers = os.getenv("SMARTAI_GGUF_TRAIN_NGL", "999")
+        command = [
+            str(binary),
+            "-m", self.model_path,
+            "-f", dataset,
+            "--output-adapter", tmp_adapter,
+            "--assistant-loss-only",
+            "-ngl", str(n_gpu_layers),
+            "-c", "256",
+            "-b", "32",
+            "-ub", "32",
+            "-fa", "off",
+            "--lora-rank", str(self.rank),
+            "--lora-alpha", str(self.alpha),
+            "--lora-modules", "attn_q,attn_k,attn_v,attn_o",
+            "--learning-rate", str(float(learning_rate)),
+            "--lora-seed", "1",
         ]
-        if not rows:
-            raise RuntimeError("GGUF LoRA trainer received no prompt/completion pairs")
+        if os.path.isfile(self.adapter_path):
+            command += ["--lora", self.adapter_path]
 
         try:
-            for _ in range(max(1, int(steps))):
-                for item in rows:
-                    prompt = str(item["prompt"]).strip()
-                    completion = str(item["completion"]).strip()
-                    prefix = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-                    text = prefix + completion + "<|im_end|>"
-                    encoded = tokenizer(
-                        text,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=max(32, int(max_length)),
-                    )
-                    prompt_ids = tokenizer(
-                        prefix,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=max(32, int(max_length)),
-                    )["input_ids"]
-                    device = next((p.device for p in model.parameters() if p.requires_grad), None)
-                    if device is not None:
-                        encoded = {k: v.to(device) for k, v in encoded.items()}
-                    labels = encoded["input_ids"].clone()
-                    prompt_len = min(int(prompt_ids.shape[1]), int(labels.shape[1]))
-                    labels[:, :prompt_len] = -100
-
-                    optimizer.zero_grad(set_to_none=True)
-                    out = model(**encoded, labels=labels)
-                    loss = out.loss
-                    if loss is None or not torch.isfinite(loss):
-                        raise RuntimeError("GGUF QLoRA training produced a non-finite loss")
-                    loss.backward()
-                    optimizer.step()
-
-            drift, touched = self._drift_l2(before, model)
-            if drift <= 0.0 or touched <= 0:
-                raise RuntimeError("GGUF QLoRA completed but measured zero parameter change")
-
-            os.makedirs(self.peft_dir, exist_ok=True)
-            model.save_pretrained(self.peft_dir)
-            tokenizer.save_pretrained(self.peft_dir)
-            adapter_path = self._convert_to_gguf()
-            return {"trainable_parameters_touched": touched}, float(drift), touched, adapter_path
+            proc = subprocess.run(command, capture_output=True, text=True)
         finally:
-            del model
-            gc.collect()
             try:
-                torch.cuda.empty_cache()
-            except Exception:
+                os.remove(dataset)
+            except OSError:
                 pass
+
+        if proc.returncode != 0 or not os.path.isfile(tmp_adapter):
+            try:
+                os.remove(tmp_adapter)
+            except OSError:
+                pass
+            raise RuntimeError(
+                "Exact-GGUF LoRA training failed. The current Prism llama.cpp backend "
+                "may not expose backward kernels for this Bonsai packing on this device. "
+                + (proc.stderr or proc.stdout or "trainer returned no adapter").strip()
+            )
+
+        after = self._tensor_map(tmp_adapter, reader_root)
+        drift, touched = self._drift_l2(before, after)
+        if drift <= 0.0 or touched <= 0:
+            try:
+                os.remove(tmp_adapter)
+            except OSError:
+                pass
+            raise RuntimeError("GGUF LoRA trainer completed but no real adapter parameter change was measured")
+
+        os.replace(tmp_adapter, self.adapter_path)
+        return {"trainable_parameters_touched": touched}, float(drift), touched, self.adapter_path
