@@ -175,6 +175,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             make_sampler = None
 
         use_stream = callable(stream_generate) and make_sampler is not None
+        prompt_ids = self.engine.tokenizer.encode(formatted_prompt)
         branches: List[str] = []
         total_branches = len(temperatures)
         lock = getattr(phase4_module, "METAL_STREAM_LOCK", None)
@@ -220,7 +221,7 @@ def install(phase4_module, live_module, legacy_generate) -> None:
             _clear_runtime_memory(mx)
             try:
                 kwargs: Dict[str, Any] = {
-                    "prompt": formatted_prompt,
+                    "prompt": prompt_ids,
                     "max_tokens": max(1, int(max_tokens)),
                     "sampler": sampler,
                     "prompt_cache": make_turboquant_prompt_cache(self.engine.model),
