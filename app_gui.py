@@ -3282,6 +3282,10 @@ class SmartAIChatbotApp:
 
                 if load_res.get("status") == "loaded":
                     self.is_model_loaded = True
+                    if model_type == "text":
+                        self.engine.active_input_modalities = set(
+                            target_info.get("input_modalities") or ["text"]
+                        )
                     self._sync_memory_watchdog(target_info)
                     label = "Audio Loaded" if model_type == "audio" else "Media Ready" if model_type != "text" else "Loaded"
                     self.lbl_model_status.configure(
@@ -3396,6 +3400,9 @@ class SmartAIChatbotApp:
                 load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
             self.is_model_loaded = bool(load_res.get("status") == "loaded")
             if self.is_model_loaded:
+                self.engine.active_input_modalities = set(
+                    target_info.get("input_modalities") or ["text"]
+                )
                 self.lbl_model_status.configure(
                     text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"]
                 )
