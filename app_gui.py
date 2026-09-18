@@ -295,9 +295,9 @@ class SmartAIChatbotApp:
         # Text presets are strictly verified true-ternary. A plain low-bit quant is not enough.
         self.models_config = {
             "model_1": {
-                "name": "Qwen3.8-27B Ternary Bonsai 2",
+                "name": "Qwen3.8-27B TernaryQuench",
                 "short_name": "Qwen3.8 27B Ternary",
-                "repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
+                "repo_id": "penkia/TernaryQuench-Qwen3.8-27B-MLX" if is_apple_silicon else "penkia/TernaryQuench-Qwen3.8-27B-GGUF",
                 "model_path": None,
                 "model_type": "text",
                 "ternary": True,
@@ -1544,7 +1544,7 @@ class SmartAIChatbotApp:
 
         ent_path = tk.Entry(path_frame, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_path.pack(side="left", fill="x", expand=True, ipady=4)
-        ent_path.insert(0, "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit")
+        ent_path.insert(0, "penkia/TernaryQuench-Qwen3.8-27B-MLX")
 
         # 4. Parameters scale & Precision
         param_frame = tk.Frame(body, bg=self.C["bg_hud"])
