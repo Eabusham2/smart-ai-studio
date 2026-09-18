@@ -465,6 +465,49 @@ class ProReasoningEngine:
         context_str += f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
         return context_str
 
+    def supports_media_input(self, kind: str) -> bool:
+        """True only when the currently loaded text backend can really ingest this media kind."""
+        kind = str(kind or "").lower()
+        backend = None
+        if self.active_backend == "gguf":
+            backend = self.gguf_backend
+        elif self.active_backend == "mlx":
+            backend = self.mlx_backend
+        elif self.active_backend in ("torch", "cuda"):
+            backend = self.model
+        if backend is None:
+            return False
+        checker = getattr(backend, "supports_media_input", None)
+        if callable(checker):
+            try:
+                return bool(checker(kind))
+            except Exception:
+                return False
+        return callable(getattr(backend, "review_media_input", None))
+
+    def review_media_input(self, path: str, kind: str, prompt: str = "") -> Dict[str, Any]:
+        """Delegate media perception to the loaded text model backend; never use proxy reviewers."""
+        kind = str(kind or "").lower()
+        backend = None
+        if self.active_backend == "gguf":
+            backend = self.gguf_backend
+        elif self.active_backend == "mlx":
+            backend = self.mlx_backend
+        elif self.active_backend in ("torch", "cuda"):
+            backend = self.model
+        if backend is None or not self.supports_media_input(kind):
+            return {
+                "perception_available": False,
+                "reason": f"Loaded text backend does not support {kind} input.",
+            }
+        hook = getattr(backend, "review_media_input", None)
+        if not callable(hook):
+            return {
+                "perception_available": False,
+                "reason": f"Loaded text backend has no {kind} review handler.",
+            }
+        return hook(path=path, kind=kind, prompt=prompt)
+
     def stream_solve(
         self,
         prompt: str,
