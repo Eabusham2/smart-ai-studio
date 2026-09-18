@@ -30,6 +30,7 @@ from core.media_orchestrator import MediaController
 from core.hf_downloader import is_model_cached_locally, purge_local_model_cache, download_model_from_hf
 from core.model_policy import enforce_hf_text_ternary, enforce_local_text_ternary
 from core.memory_watchdog import SystemMemoryWatchdog
+from core.learning_sources import inspect_learning_source
 from core.platform import get_auto_context_window_size
 from core.pro_engine import ProReasoningEngine, parse_reasoning_and_response
 from core.tools import AgentToolRegistry
@@ -2524,7 +2525,7 @@ class SmartAIChatbotApp:
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
             highlightthickness=0,
-            command=self._on_upload_file
+            command=self._show_attach_menu
         )
         self.btn_attach.pack(side="left", padx=(0, 10), anchor="center")
 
@@ -2867,17 +2868,126 @@ class SmartAIChatbotApp:
         self.prompt_queue.clear()
         self._update_queue_ui()
 
+    def _show_attach_menu(self):
+        menu = tk.Menu(
+            self.btn_attach,
+            tearoff=0,
+            bg=self.C["btn_bg"],
+            fg=self.C["btn_fg"],
+            font=_FONT_SMALL,
+        )
+        menu.add_command(label="📄 Attach File", command=self._on_upload_file)
+        menu.add_command(label="📁 Attach Folder", command=self._on_upload_folder)
+        try:
+            menu.tk_popup(
+                self.btn_attach.winfo_rootx(),
+                self.btn_attach.winfo_rooty() + self.btn_attach.winfo_height(),
+            )
+        finally:
+            menu.grab_release()
+
+    def _set_attachment_path(self, path: str):
+        if not path or not os.path.exists(path):
+            return
+        self.attached_file_path = os.path.abspath(path)
+        name = os.path.basename(self.attached_file_path.rstrip(os.sep)) or self.attached_file_path
+        kind = "Folder" if os.path.isdir(self.attached_file_path) else "File"
+        self.lbl_attached_file.configure(text=f"📎 Attached {kind}: {name}")
+        self.attachment_bar.pack(fill="x", side="bottom", padx=20, pady=(0, 4), before=self.input_container)
+        self._append_ai_message(
+            f"📎 **{kind} attached**: `{name}`. "
+            "Use /learn to train from supported text/structured content; media files can be routed to a generator Learn target."
+        )
+
     def _on_upload_file(self):
         file_path = filedialog.askopenfilename(
             initialdir=self.workspace_dir,
-            title="Select File to Attach & Inject into AI Context"
+            title="Select File to Attach"
         )
-        if file_path:
-            self.attached_file_path = file_path
-            fname = os.path.basename(file_path)
-            self.lbl_attached_file.configure(text=f"📎 Attached File: {fname}")
-            self.attachment_bar.pack(fill="x", side="bottom", padx=20, pady=(0, 4), before=self.input_container)
-            self._append_ai_message(f"📎 **File attached**: `{fname}` ({os.path.getsize(file_path):,} bytes). Your next prompt will include this file content.")
+        self._set_attachment_path(file_path)
+
+    def _on_upload_folder(self):
+        folder = filedialog.askdirectory(
+            initialdir=self.workspace_dir,
+            title="Select Folder to Attach"
+        )
+        self._set_attachment_path(folder)
+
+    def _media_learn_candidates(self, media_kinds):
+        kinds = {str(kind).lower() for kind in media_kinds}
+        rows = []
+        for mid, info in self.models_config.items():
+            kind = str(info.get("model_type", "")).lower()
+            if kind not in kinds:
+                continue
+            rows.append((mid, info))
+        return rows
+
+    def _resolve_media_learn_target_from_prompt(self, prompt: str, media_kinds):
+        text = str(prompt or "").casefold()
+        if re.search(r"\b(?:no|none|skip)\s+(?:media|image|video|audio)\s+(?:train|training|learn)", text):
+            return ""
+        candidates = self._media_learn_candidates(media_kinds)
+        for mid, info in candidates:
+            names = [
+                mid,
+                str(info.get("name") or ""),
+                str(info.get("short_name") or ""),
+            ]
+            if any(name and name.casefold() in text for name in names):
+                return mid
+        mentioned = [
+            kind for kind in media_kinds
+            if re.search(rf"\b(?:train|learn|fine[- ]?tune)\b[\s\S]{{0,40}}\b{re.escape(kind)}\b|\b{re.escape(kind)}\b[\s\S]{{0,40}}\b(?:train|learn|fine[- ]?tune)\b", text)
+        ]
+        if len(mentioned) == 1:
+            same_kind = [(mid, info) for mid, info in candidates if info.get("model_type") == mentioned[0]]
+            if len(same_kind) == 1:
+                return same_kind[0][0]
+        return None
+
+    def _ask_media_learn_target(self, media_kinds):
+        candidates = self._media_learn_candidates(media_kinds)
+        if not candidates:
+            return ""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Train media generator?")
+        dialog.configure(bg=self.C["bg_card"])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        tk.Label(
+            dialog,
+            text="This /learn source contains media. Train which generator?\nChoose None to learn only the text/structured contents.",
+            font=_FONT_SMALL,
+            bg=self.C["bg_card"],
+            fg=self.C["text_main"],
+            justify="left",
+            padx=16,
+            pady=12,
+        ).pack(fill="x")
+        labels = ["None"] + [
+            f"{mid} — {info.get('short_name', info.get('name', mid))} [{info.get('model_type')}]"
+            for mid, info in candidates
+        ]
+        lookup = {"None": ""}
+        for label, (mid, _info) in zip(labels[1:], candidates):
+            lookup[label] = mid
+        value = tk.StringVar(value="None")
+        ttk.Combobox(dialog, textvariable=value, values=labels, state="readonly", width=58).pack(padx=16, pady=(0, 12))
+        result = {"value": ""}
+        def accept():
+            result["value"] = lookup.get(value.get(), "")
+            dialog.destroy()
+        def cancel():
+            result["value"] = ""
+            dialog.destroy()
+        row = tk.Frame(dialog, bg=self.C["bg_card"])
+        row.pack(fill="x", padx=16, pady=(0, 14))
+        tk.Button(row, text="Continue", command=accept).pack(side="right")
+        tk.Button(row, text="None", command=cancel).pack(side="right", padx=(0, 8))
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        self.root.wait_window(dialog)
+        return result["value"]
 
     def _on_remove_attachment(self):
         self.attached_file_path = None
