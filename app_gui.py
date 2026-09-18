@@ -587,7 +587,7 @@ class SmartAIChatbotApp:
         self.chat_history: Dict[str, List[Dict[str, str]]] = {tid: [] for tid in self.models_config.keys()}
 
         # Prompt Task Queue
-        self.prompt_queue: List[Tuple[str, str]] = []
+        self.prompt_queue: List[Tuple[str, str, Optional[str], Optional[str]]] = []
 
         # Thinking & Code Snippet Caches
         self.thinking_cache: Dict[str, str] = {}
@@ -4018,18 +4018,55 @@ class SmartAIChatbotApp:
             return
 
         user_msg = raw_text
-        if self.attached_file_path and os.path.exists(self.attached_file_path):
+        learn_source_path: Optional[str] = None
+        learn_media_target: Optional[str] = None
+        attached = (
+            os.path.abspath(self.attached_file_path)
+            if self.attached_file_path and os.path.exists(self.attached_file_path)
+            else None
+        )
+        low = raw_text.casefold().strip()
+        is_learn = low.startswith("/learn") or low.startswith("learn ")
+        explicit_media_learn = low.startswith("/learn media ") or low.startswith("learn media ")
+
+        if attached and is_learn and not explicit_media_learn:
+            # Do not flatten Learn attachments into prompt text. Pass the real file/folder
+            # path to the existing source readers so PDF/DOCX/Parquet/media remain typed.
             try:
-                with open(self.attached_file_path, "r", encoding="utf-8", errors="replace") as f:
-                    fcontent = f.read()
-                fname = os.path.basename(self.attached_file_path)
-                user_msg = f"[Context File: {fname}]\n```\n{fcontent}\n```\n\n{raw_text}"
+                inspection = inspect_learning_source(attached)
+                media_kinds = list(inspection.get("media_kinds") or [])
+                learn_source_path = attached
+                if media_kinds:
+                    learn_media_target = self._resolve_media_learn_target_from_prompt(
+                        raw_text, media_kinds
+                    )
+                    if learn_media_target is None:
+                        learn_media_target = self._ask_media_learn_target(media_kinds)
+                else:
+                    learn_media_target = ""
                 self._on_remove_attachment()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._append_ai_message(
+                    f"⚠️ Could not inspect the attached Learn source: {type(exc).__name__}: {exc}"
+                )
+                return
+        elif attached:
+            # Preserve the old ordinary-chat attachment behavior for normal text files.
+            # Folders/binary documents are left attached rather than being mis-decoded.
+            if os.path.isfile(attached):
+                try:
+                    with open(attached, "r", encoding="utf-8", errors="replace") as f:
+                        fcontent = f.read()
+                    fname = os.path.basename(attached)
+                    user_msg = f"[Context File: {fname}]\n```\n{fcontent}\n```\n\n{raw_text}"
+                    self._on_remove_attachment()
+                except Exception:
+                    pass
 
         if self.is_generating:
-            self.prompt_queue.append((user_msg, raw_text))
+            self.prompt_queue.append(
+                (user_msg, raw_text, learn_source_path, learn_media_target)
+            )
             self._update_queue_ui()
             self._append_queued_message(raw_text, len(self.prompt_queue))
             self.txt_input.delete("1.0", "end")
@@ -4045,9 +4082,19 @@ class SmartAIChatbotApp:
         self._update_telemetry()
 
         self._set_generating_state(True)
-        threading.Thread(target=self._process_message_thread, args=(user_msg, raw_text), daemon=True).start()
+        threading.Thread(
+            target=self._process_message_thread,
+            args=(user_msg, raw_text, learn_source_path, learn_media_target),
+            daemon=True,
+        ).start()
 
-    def _process_message_thread(self, full_msg: str, user_prompt: str):
+    def _process_message_thread(
+        self,
+        full_msg: str,
+        user_prompt: str,
+        learn_source_path: Optional[str] = None,
+        learn_media_target: Optional[str] = None,
+    ):
         start_time = time.perf_counter()
         try:
             media_command = self.multimodal.handle_command(full_msg)
@@ -4211,7 +4258,10 @@ class SmartAIChatbotApp:
 
             # 1. Autonomous Learning Mode (/learn or learn <topic>)
             if msg_lower.startswith("/learn") or msg_lower.startswith("learn "):
-                topic = full_msg.replace("/learn", "").replace("learn", "").strip() or "Autonomous Reasoning & System Architecture"
+                topic = (
+                    user_prompt.replace("/learn", "", 1).replace("learn", "", 1).strip()
+                    or "Autonomous Reasoning & System Architecture"
+                )
 
                 def _learn_callback(stage: str, message: str, syn_delta: float):
                     if syn_delta > 0:
@@ -4220,12 +4270,53 @@ class SmartAIChatbotApp:
                         self.root.after(0, self._update_telemetry)
                     self.root.after(0, lambda m=message: self._append_ai_message(m))
 
-                learn_res = self.learner.run_learning_session(
-                    topic=topic,
-                    cancel_event=self.cancel_event,
-                    progress_callback=_learn_callback,
-                    max_cycles=2
+                inspection = None
+                if learn_source_path:
+                    inspection = inspect_learning_source(learn_source_path)
+
+                # Media Learn is independent of the controller's perception capability:
+                # every text controller may teach a selected generator from real media.
+                media_result = None
+                if learn_source_path and learn_media_target:
+                    media_result = self.multimodal.call(
+                        "media_learn",
+                        {
+                            "model_id": learn_media_target,
+                            "source": learn_source_path,
+                        },
+                        allow_update=True,
+                    )
+                    self.root.after(
+                        0,
+                        lambda r=media_result: self._append_ai_message(
+                            "### Media Learn\n```json\n"
+                            + json.dumps(r, ensure_ascii=False, indent=2)
+                            + "\n```"
+                        ),
+                    )
+
+                # Text/structured files continue through the existing real text
+                # parameter-update pipeline. Mixed folders can therefore teach both.
+                has_text = bool(
+                    inspection is None or (inspection.get("text_files") or [])
                 )
+                if has_text:
+                    self.learner.run_learning_session(
+                        topic=topic,
+                        cancel_event=self.cancel_event,
+                        progress_callback=_learn_callback,
+                        max_cycles=2,
+                        source_path=learn_source_path,
+                    )
+                elif not learn_media_target:
+                    self.root.after(
+                        0,
+                        lambda: self._append_ai_message(
+                            "⚠️ The attached Learn source contains no extractable text, "
+                            "and no media generator was selected for training."
+                        ),
+                    )
+
                 self.root.after(0, lambda: self._set_generating_state(False))
                 self._check_and_run_next_queue()
                 return
@@ -4500,13 +4591,29 @@ class SmartAIChatbotApp:
 
     def _check_and_run_next_queue(self):
         if self.prompt_queue:
-            next_user_msg, next_raw = self.prompt_queue.pop(0)
+            item = self.prompt_queue.pop(0)
+            if len(item) == 2:
+                next_user_msg, next_raw = item
+                learn_source_path = None
+                learn_media_target = None
+            else:
+                next_user_msg, next_raw, learn_source_path, learn_media_target = item
             self._update_queue_ui()
-            self.root.after(120, lambda m=next_user_msg, r=next_raw: self._run_queued_task(m, r))
+            self.root.after(
+                120,
+                lambda m=next_user_msg, r=next_raw, sp=learn_source_path, mt=learn_media_target:
+                    self._run_queued_task(m, r, sp, mt),
+            )
         else:
             self._update_queue_ui()
 
-    def _run_queued_task(self, user_msg: str, raw_text: str):
+    def _run_queued_task(
+        self,
+        user_msg: str,
+        raw_text: str,
+        learn_source_path: Optional[str] = None,
+        learn_media_target: Optional[str] = None,
+    ):
         if self.is_generating:
             return
         self._append_user_message(raw_text)
@@ -4515,7 +4622,11 @@ class SmartAIChatbotApp:
         self._update_telemetry()
 
         self._set_generating_state(True)
-        threading.Thread(target=self._process_message_thread, args=(user_msg, raw_text), daemon=True).start()
+        threading.Thread(
+            target=self._process_message_thread,
+            args=(user_msg, raw_text, learn_source_path, learn_media_target),
+            daemon=True,
+        ).start()
 
     def _on_stop_generation(self):
         self.cancel_event.set()
