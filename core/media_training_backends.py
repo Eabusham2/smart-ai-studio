@@ -196,6 +196,7 @@ def stable_audio3_factory(info, _media_engine, _audio_engine):
     variant = str(info.get("audio_variant") or "small-music")
     if variant not in ("small-music", "small-sfx"):
         raise RuntimeError(f"Unsupported Stable Audio 3 training variant: {variant}")
+    training_variant = variant + "-base"
 
     def train(samples, output_dir: Path, cancel_event=None):
         data = output_dir / "data"
@@ -203,7 +204,7 @@ def stable_audio3_factory(info, _media_engine, _audio_engine):
         command = [
             sys.executable,
             str(script),
-            "--model", variant,
+            "--model", training_variant,
             "--data_dir", str(data),
             "--rank", "8",
             "--adapter_type", "lora-xs",
@@ -219,7 +220,7 @@ def stable_audio3_factory(info, _media_engine, _audio_engine):
             "--lr", "0.0001",
         ]
         lines = _run_cancelable(command, cancel_event, cwd=script.parent.parent)
-        return {"trainer": "stable-audio-3", "log_tail": lines[-12:]}
+        return {"trainer": "stable-audio-3", "training_model": training_variant, "log_tail": lines[-12:]}
 
     return {
         "backend": "stable_audio3_lora",
