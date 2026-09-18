@@ -69,18 +69,30 @@ class MediaLearningService:
             return configured
 
         # Resolve by trainer-declared capability, never by catalog slot/model ID.
-        # A new/imported model automatically becomes trainable when an installed
-        # backend says it can handle that architecture/runtime.
+        # Prefer the first *available* compatible trainer, but keep the first match
+        # as a useful unsupported reason if no installed runtime can train it.
+        first_match = ""
         for name, factory in list(_FACTORIES.items()):
             matcher = getattr(factory, "matches", None)
             if not callable(matcher):
                 continue
             try:
-                if bool(matcher(info)):
-                    return name
+                if not bool(matcher(info)):
+                    continue
             except Exception:
                 continue
-        return ""
+            if not first_match:
+                first_match = name
+            available = True
+            checker = getattr(factory, "available", None)
+            if callable(checker):
+                try:
+                    available = bool(checker(info))
+                except Exception:
+                    available = False
+            if available:
+                return name
+        return first_match
 
     def capabilities(self, info):
         backend = self._backend(info)
