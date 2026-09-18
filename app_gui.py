@@ -24,7 +24,9 @@ from config.paths import get_custom_models_file, get_portable_data_dir, inspect_
 from config.settings import Settings, get_settings
 from consolidation.daemon import SleepConsolidationDaemon
 from core.autonomous_learner import AutonomousLearner
+from core.audio_engine import AudioGenerationEngine
 from core.hf_downloader import is_model_cached_locally, purge_local_model_cache, download_model_from_hf
+from core.model_policy import enforce_hf_text_ternary, enforce_local_text_ternary
 from core.memory_watchdog import SystemMemoryWatchdog
 from core.platform import get_auto_context_window_size
 from core.pro_engine import ProReasoningEngine, parse_reasoning_and_response
@@ -288,33 +290,39 @@ class SmartAIChatbotApp:
         _COLORS.update(self.C)
 
         # Built-in Default Models Configuration (Expanded Multi-Modal & Uncensored Presets)
+        is_apple_silicon = platform.system() == "Darwin" and platform.machine().lower() in ("arm64", "aarch64")
+        # Text presets are strictly verified true-ternary. A plain low-bit quant is not enough.
         self.models_config = {
             "model_1": {
-                "name": "Qwen3.8-27B Uncensored (MLX 2-Bit)",
-                "short_name": "Qwen 27B Uncensored (MLX)",
-                "repo_id": "orcarouter/Qwen3.8-27B-Uncensored-MLX",
+                "name": "Qwen3.8-27B Ternary Bonsai 2",
+                "short_name": "Qwen3.8 27B Ternary",
+                "repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
                 "model_path": None,
-                "precision": "2-Bit Uncensored MLX",
-                "raw_params": 27_400_000_000,
-                "base_params": "27.4B",
-                "est_speed": "⚡ ~28 t/s",
-                "max_context": 131_072,
-                "vram": "14.5 GB / 16 GB",
-                "tag": "🔥 Qwen 27B Uncensored",
+                "model_type": "text",
+                "ternary": True,
+                "precision": "Native ternary {-1,0,+1} g128",
+                "raw_params": 27_360_000_000,
+                "base_params": "27.36B",
+                "est_speed": "⚡ Native ternary",
+                "max_context": 262_144,
+                "vram": "~7.2 GB / 16 GB",
+                "tag": "🧠 Qwen3.8 27B Ternary",
                 "accent": self.C["accent_cyan"]
             },
             "model_2": {
-                "name": "Qwen3.8-27B Abliterated (Lowest Quant GGUF)",
-                "short_name": "Qwen 27B Abliterated (GGUF)",
-                "repo_id": "douyamv/Qwen3.8-27B-abliterated-GGUF",
+                "name": "Bonsai-27B Ternary CRACK (Uncensored)",
+                "short_name": "27B Ternary CRACK Uncensored",
+                "repo_id": "dealignai/Bonsai-27b-Ternary-JANG-CRACK" if is_apple_silicon else "dealignai/Bonsai-27b-Ternary-CRACK-GGUF",
                 "model_path": None,
-                "precision": "Q2_K / Q3_K_M Lowest Quant GGUF",
-                "raw_params": 27_400_000_000,
-                "base_params": "27.4B",
-                "est_speed": "⚡ ~22 t/s",
-                "max_context": 131_072,
-                "vram": "14.2 GB / 16 GB",
-                "tag": "🔓 Qwen 27B Abliterated",
+                "model_type": "text",
+                "ternary": True,
+                "precision": "Native ternary {-1,0,+1} + CRACK abliteration",
+                "raw_params": 27_300_000_000,
+                "base_params": "27.3B",
+                "est_speed": "⚡ Native ternary",
+                "max_context": 262_144,
+                "vram": "~7.2 GB / 16 GB",
+                "tag": "🔓 27B Ternary Uncensored",
                 "accent": "#f43f5e"
             },
             "model_3": {
@@ -322,6 +330,7 @@ class SmartAIChatbotApp:
                 "short_name": "RealVisXL V5.0 (SDXL)",
                 "repo_id": "SG161222/RealVisXL_V5.0",
                 "model_path": None,
+                "model_type": "image",
                 "precision": "FP16 / SafeTensors (16GB RAM Optimized)",
                 "raw_params": 6_600_000_000,
                 "base_params": "6.6B",
@@ -336,6 +345,7 @@ class SmartAIChatbotApp:
                 "short_name": "Z-Image Turbo NSFW v2",
                 "repo_id": "lesliemore/z-image-turbo-nsfw-v2-GGUF",
                 "model_path": None,
+                "model_type": "image",
                 "precision": "Q8_0 GGUF Quantized",
                 "raw_params": 4_000_000_000,
                 "base_params": "4.0B",
@@ -350,6 +360,7 @@ class SmartAIChatbotApp:
                 "short_name": "Qwen Image Edit AIO",
                 "repo_id": "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF",
                 "model_path": None,
+                "model_type": "image",
                 "precision": "Rapid AIO GGUF (Text & Image In)",
                 "raw_params": 7_000_000_000,
                 "base_params": "7.0B",
@@ -364,6 +375,7 @@ class SmartAIChatbotApp:
                 "short_name": "Ideogram Instant (16GB)",
                 "repo_id": "SG161222/RealVisXL_V5.0",
                 "model_path": None,
+                "model_type": "image",
                 "precision": "4-Step Instant Diffusion",
                 "raw_params": 3_500_000_000,
                 "base_params": "3.5B",
@@ -378,6 +390,7 @@ class SmartAIChatbotApp:
                 "short_name": "LTX-Video 2.5 (MLX)",
                 "repo_id": "dgrauet/ltx-2.5-mlx-q4",
                 "model_path": None,
+                "model_type": "video",
                 "precision": "Q4 Apple Silicon MLX Native",
                 "raw_params": 5_000_000_000,
                 "base_params": "5.0B",
@@ -392,6 +405,7 @@ class SmartAIChatbotApp:
                 "short_name": "Wan 2.2 Remix (GGUF)",
                 "repo_id": "freeguyfroverrrr/Wan-2.2-Remix-GGUF",
                 "model_path": None,
+                "model_type": "video",
                 "precision": "Q4 GGUF Quantized",
                 "raw_params": 5_000_000_000,
                 "base_params": "5.0B",
@@ -406,6 +420,7 @@ class SmartAIChatbotApp:
                 "short_name": "MiniMax-H3 AfterMidnight",
                 "repo_id": "pipenetwork/MiniMax-H3-MLX-4bit",
                 "model_path": None,
+                "model_type": "video",
                 "precision": "4-bit MLX + Rank 32 LoRA",
                 "raw_params": 4_000_000_000,
                 "base_params": "4.0B",
@@ -414,6 +429,99 @@ class SmartAIChatbotApp:
                 "vram": "5.7 GB / 16 GB",
                 "tag": "🌙 MiniMax-H3 AfterMidnight",
                 "accent": "#8b5cf6"
+            },
+            "model_10": {
+                "name": "Bonsai Image Ternary 4B (HQ Clean)",
+                "short_name": "Bonsai Image Ternary 4B",
+                "repo_id": "prism-ml/bonsai-image-ternary-4B-mlx-2bit" if is_apple_silicon else "biali/bonsai-image-ternary-4B-FLUX2-klein-GGUF",
+                "model_path": None,
+                "model_type": "image",
+                "precision": "Ternary 1.58-bit image transformer",
+                "raw_params": 4_000_000_000,
+                "base_params": "4.0B",
+                "est_speed": "🎨 HQ 4-step",
+                "max_context": 4_096,
+                "vram": "~4 GB / 16 GB",
+                "tag": "🌲 Bonsai Image Ternary",
+                "accent": "#22c55e"
+            },
+            "model_11": {
+                "name": "FLUX.2 Klein Base 4B (HQ Clean Detail)",
+                "short_name": "FLUX.2 Klein Base 4B",
+                "repo_id": "mlx-community/FLUX.2-klein-base-4B-bf16" if is_apple_silicon else "black-forest-labs/FLUX.2-klein-base-4B",
+                "model_path": None,
+                "model_type": "image",
+                "precision": "4B quality-tier diffusion; int4 runtime on Mac",
+                "raw_params": 4_000_000_000,
+                "base_params": "4.0B",
+                "est_speed": "🎨 HQ 28-step",
+                "max_context": 4_096,
+                "vram": "<16 GB (quantized runtime)",
+                "tag": "✨ FLUX.2 Klein HQ",
+                "accent": "#14b8a6"
+            },
+            "model_12": {
+                "name": "Wan2.2 TI2V 5B Ternary (HQ Video)",
+                "short_name": "Wan2.2 5B Ternary",
+                "repo_id": "AsadIsmail/Wan2.2-TI2V-5B-ternary",
+                "model_path": None,
+                "model_type": "video",
+                "precision": "Ternary tritplane3 video DiT",
+                "raw_params": 5_000_000_000,
+                "base_params": "5.0B",
+                "est_speed": "🎥 HQ video",
+                "max_context": 8_192,
+                "vram": "<16 GB with packed/offload runtime",
+                "tag": "🎥 Wan2.2 Ternary",
+                "accent": "#0ea5e9"
+            },
+            "model_13": {
+                "name": "CogVideoX 5B Ternary (HQ Video)",
+                "short_name": "CogVideoX 5B Ternary",
+                "repo_id": "AsadIsmail/CogVideoX-5b-ternary",
+                "model_path": None,
+                "model_type": "video",
+                "precision": "Ternary video DiT",
+                "raw_params": 5_570_000_000,
+                "base_params": "5.6B",
+                "est_speed": "🎬 HQ video",
+                "max_context": 8_192,
+                "vram": "<16 GB with packed/offload runtime",
+                "tag": "🎬 CogVideoX Ternary",
+                "accent": "#3b82f6"
+            },
+            "model_14": {
+                "name": "Stable Audio 3 Small Music",
+                "short_name": "Stable Audio 3 Music",
+                "repo_id": "mlx-community/stable-audio-3-small-music" if is_apple_silicon else "stabilityai/stable-audio-3-small-music",
+                "model_path": None,
+                "model_type": "audio",
+                "audio_backend": "mlx_audio" if is_apple_silicon else "stable_audio_3",
+                "audio_variant": "small-music",
+                "precision": "MLX on Mac / native Stable Audio 3 elsewhere",
+                "raw_params": 568_000_000,
+                "base_params": "0.57B",
+                "est_speed": "🎵 Music",
+                "max_context": 0,
+                "vram": "~3.5 GB on Mac / <16 GB",
+                "tag": "🎵 Stable Audio 3 Music",
+                "accent": "#f59e0b"
+            },
+            "model_15": {
+                "name": "MOSS SoundEffect (Local SFX)",
+                "short_name": "MOSS SoundEffect",
+                "repo_id": "mlx-community/MOSS-SoundEffect-MLX-4bit" if is_apple_silicon else "OpenMOSS-Team/MOSS-SoundEffect-v2.0",
+                "model_path": None,
+                "model_type": "audio",
+                "audio_backend": "mlx_audio" if is_apple_silicon else "moss_soundeffect_v2",
+                "precision": "MLX 4-bit on Mac / MOSS v2 elsewhere",
+                "raw_params": 1_416_000_000,
+                "base_params": "1.4B",
+                "est_speed": "🔊 SFX",
+                "max_context": 0,
+                "vram": "~4.7 GB on Mac / <16 GB",
+                "tag": "🔊 MOSS SFX",
+                "accent": "#fb7185"
             }
         }
         self._load_saved_custom_models()
@@ -428,6 +536,7 @@ class SmartAIChatbotApp:
         self.db = EpisodicMemoryDB(db_path=self.settings.database_path)
         self.tools = AgentToolRegistry(db_path=self.settings.database_path)
         self.engine = ProReasoningEngine(settings=self.settings)
+        self.audio_engine = AudioGenerationEngine()
         self.learner = AutonomousLearner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
 
         # State Variables
