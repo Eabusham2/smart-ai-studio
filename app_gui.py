@@ -437,6 +437,7 @@ class SmartAIChatbotApp:
                 "repo_id": "prism-ml/bonsai-image-ternary-4B-mlx-2bit" if is_apple_silicon else "prism-ml/bonsai-image-ternary-4B-unpacked",
                 "model_path": None,
                 "model_type": "image",
+                "real_media_engine": True,
                 "precision": "Ternary 1.58-bit image transformer",
                 "raw_params": 4_000_000_000,
                 "base_params": "4.0B",
@@ -452,6 +453,7 @@ class SmartAIChatbotApp:
                 "repo_id": "mlx-community/flux2-klein-4b-4bit" if is_apple_silicon else "black-forest-labs/FLUX.2-klein-4B",
                 "model_path": None,
                 "model_type": "image",
+                "real_media_engine": True,
                 "image_backend": "mflux" if is_apple_silicon else "diffusers",
                 "precision": "4-bit MLX/mflux on Mac; Diffusers elsewhere",
                 "raw_params": 4_000_000_000,
@@ -469,6 +471,7 @@ class SmartAIChatbotApp:
                 "repo_id": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
                 "model_path": None,
                 "model_type": "video",
+                "real_media_engine": True,
                 "precision": "Diffusers FP16/BF16 with low-memory slicing",
                 "raw_params": 1_300_000_000,
                 "base_params": "1.3B",
@@ -486,6 +489,7 @@ class SmartAIChatbotApp:
                 "repo_id": "zai-org/CogVideoX-2b",
                 "model_path": None,
                 "model_type": "video",
+                "real_media_engine": True,
                 "precision": "Diffusers FP16 low-memory runtime",
                 "raw_params": 2_000_000_000,
                 "base_params": "2.0B",
@@ -3436,30 +3440,39 @@ class SmartAIChatbotApp:
                         "⚠️ Install and Load the selected media model before generating."
                     ))
                     return
-                output_dir = self.workspace_dir or os.getcwd()
-                if active_type == "image":
-                    output_path = os.path.join(output_dir, f"image_{int(time.time())}.png")
-                    media_res = self.media_engine.generate_image(
-                        active_info, full_msg, output_path=output_path
-                    )
+
+                if bool(active_info.get("real_media_engine", False)):
+                    output_dir = self.workspace_dir or os.getcwd()
+                    if active_type == "image":
+                        output_path = os.path.join(output_dir, f"image_{int(time.time())}.png")
+                        media_res = self.media_engine.generate_image(
+                            active_info, full_msg, output_path=output_path
+                        )
+                    else:
+                        output_path = os.path.join(output_dir, f"video_{int(time.time())}.mp4")
+                        media_res = self.media_engine.generate_video(
+                            active_info,
+                            full_msg,
+                            output_path=output_path,
+                            frames=int(active_info.get("frames", 49) or 49),
+                        )
+                    if media_res.get("status") == "success":
+                        path = str(media_res.get("path") or output_path)
+                        self.root.after(0, lambda p=path, kind=active_type: self._append_ai_message(
+                            f"✓ **{kind.title()} generated**: `{p}`"
+                        ))
+                    else:
+                        error = str(media_res.get("error") or f"{active_type.title()} generation failed.")
+                        self.root.after(0, lambda e=error: self._append_ai_message(
+                            f"⚠️ **Media generation failed**: {e}"
+                        ))
                 else:
-                    output_path = os.path.join(output_dir, f"video_{int(time.time())}.mp4")
-                    media_res = self.media_engine.generate_video(
-                        active_info,
-                        full_msg,
-                        output_path=output_path,
-                        frames=int(active_info.get("frames", 49) or 49),
-                    )
-                if media_res.get("status") == "success":
-                    path = str(media_res.get("path") or output_path)
-                    self.root.after(0, lambda p=path, kind=active_type: self._append_ai_message(
-                        f"✓ **{kind.title()} generated**: `{p}`"
-                    ))
-                else:
-                    error = str(media_res.get("error") or f"{active_type.title()} generation failed.")
-                    self.root.after(0, lambda e=error: self._append_ai_message(
-                        f"⚠️ **Media generation failed**: {e}"
-                    ))
+                    tool_name = "generate_image_diffusion" if active_type == "image" else "generate_video_diffusion"
+                    args = {"prompt": full_msg, "model_id": active_info.get("repo_id")}
+                    ok, res = self.tools.execute_tool(tool_name, args)
+                    self.root.after(0, lambda tn=tool_name, r=res: self._append_tool_call(tn, "", r))
+                    if not ok:
+                        self.root.after(0, lambda r=res: self._append_ai_message(f"⚠️ {r}"))
                 return
 
             # 1. Autonomous Learning Mode (/learn or learn <topic>)
