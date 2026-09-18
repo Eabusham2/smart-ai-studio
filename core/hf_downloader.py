@@ -206,7 +206,9 @@ def purge_local_model_cache(repo_id: str) -> bool:
 def download_model_from_hf(
     repo_id: str,
     progress_callback: Optional[Callable[[str, float], None]] = None,
-    cancel_event: Optional[threading.Event] = None
+    cancel_event: Optional[threading.Event] = None,
+    allow_patterns: Optional[List[str]] = None,
+    required_files: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Downloads model weights from HuggingFace Hub with real-time status updates."""
     if not repo_id:
@@ -224,7 +226,21 @@ def download_model_from_hf(
         local_dir = snapshot_download(
             repo_id=repo_id,
             max_workers=4,
+            allow_patterns=list(allow_patterns) if allow_patterns else None,
         )
+
+        if required_files:
+            missing = [
+                name for name in required_files
+                if not os.path.isfile(os.path.join(local_dir, name))
+            ]
+            if missing:
+                return {
+                    "status": "error",
+                    "repo_id": repo_id,
+                    "local_dir": local_dir,
+                    "error": "Pinned Hugging Face artifact(s) missing: " + ", ".join(missing),
+                }
 
         if not _snapshot_looks_installed(local_dir):
             return {
