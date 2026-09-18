@@ -328,3 +328,214 @@ register_media_training_backend(
     cogvideox_factory,
     matcher=_cogvideo_matches,
 )
+
+
+
+# ---- Generic mflux image LoRA (FLUX.2 / Z-Image) --------------------------
+
+def _mflux_image_matches(info):
+    kind = str(info.get("model_type", "") or "").lower()
+    if kind != "image":
+        return False
+    blob = " ".join(
+        str(info.get(key, "") or "").lower()
+        for key in ("repo_id", "name", "precision", "image_backend")
+    )
+    return any(marker in blob for marker in ("flux.2", "flux2", "flux-2", "z-image", "z_image", "mflux"))
+
+
+def _mflux_image_available(info):
+    if shutil.which("mflux-train") is None:
+        return False
+    blob = " ".join(
+        str(info.get(key, "") or "").lower()
+        for key in ("repo_id", "name", "precision")
+    )
+    # mflux currently trains Z-Image and FLUX.2 *base* variants. Distilled
+    # FLUX.2 checkpoints can still generate but are not falsely advertised trainable.
+    return (
+        "z-image" in blob
+        or "z_image" in blob
+        or "flux2-klein-base" in blob
+        or "flux.2 klein base" in blob
+        or bool(info.get("mflux_training_model"))
+    )
+
+
+def mflux_image_factory(info, _media_engine, _audio_engine):
+    exe = shutil.which("mflux-train")
+    if exe is None:
+        raise RuntimeError("mflux-train is not installed")
+
+    blob = " ".join(
+        str(info.get(key, "") or "").lower()
+        for key in ("repo_id", "name", "precision")
+    )
+    configured = str(info.get("mflux_training_model", "") or "").strip()
+    if configured:
+        model_key = configured
+    elif "z-image" in blob or "z_image" in blob:
+        model_key = "z-image-turbo" if "turbo" in blob else "z-image"
+    elif "flux2-klein-base" in blob or "flux.2 klein base" in blob:
+        model_key = "flux2-klein-base-9b" if "9b" in blob else "flux2-klein-base-4b"
+    else:
+        raise RuntimeError(
+            "This mflux checkpoint can generate, but its exact training base is not "
+            "known to be adapter-compatible. Set mflux_training_model only when verified."
+        )
+
+    def train(samples, output_dir: Path, cancel_event=None):
+        data = output_dir / "data"
+        _copy_pairs(samples, data, "image")
+        train_out = output_dir / "training"
+        config = {
+            "model": model_key,
+            "data": str(data),
+            "seed": 42,
+            "steps": 9 if "z-image" in model_key else 40,
+            "guidance": 0.0 if "z-image" in model_key else 1.0,
+            "quantize": None,
+            "low_ram": True,
+            "gradient_checkpointing": True,
+            "max_resolution": 768,
+            "training_loop": {
+                "num_epochs": max(1, min(8, len(samples) * 2)),
+                "batch_size": 1,
+            },
+            "optimizer": {"name": "AdamW", "learning_rate": 1e-4},
+            "checkpoint": {
+                "output_path": str(train_out),
+                "save_frequency": 1,
+            },
+        }
+        config_path = output_dir / "mflux_train.json"
+        import json
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        lines = _run_cancelable([exe, "--config", str(config_path)], cancel_event)
+        return {"trainer": "mflux-train", "model": model_key, "log_tail": lines[-12:]}
+
+    return {
+        "backend": "mflux_image_lora",
+        "external_train": train,
+        "verify_saved": _verify_safetensors,
+    }
+
+
+mflux_image_factory.available = _mflux_image_available
+register_media_training_backend(
+    "mflux_image_lora",
+    mflux_image_factory,
+    matcher=_mflux_image_matches,
+)
+
+
+# ---- Generic Wan2.1 LoRA through AI Toolkit -------------------------------
+
+def _ai_toolkit_root():
+    env = os.environ.get("AI_TOOLKIT_ROOT")
+    if env:
+        root = Path(env).expanduser().resolve()
+        if (root / "run.py").is_file():
+            return root
+    return None
+
+
+def _wan21_matches(info):
+    kind = str(info.get("model_type", "") or "").lower()
+    blob = " ".join(
+        str(info.get(key, "") or "").lower()
+        for key in ("repo_id", "name", "precision")
+    )
+    return kind == "video" and any(marker in blob for marker in ("wan2.1", "wan-2.1", "wan2_1"))
+
+
+def _wan21_available(_info):
+    root = _ai_toolkit_root()
+    if root is None:
+        return False
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def wan21_factory(info, _media_engine, _audio_engine):
+    root = _ai_toolkit_root()
+    if root is None:
+        raise RuntimeError("Wan2.1 LoRA training requires AI_TOOLKIT_ROOT pointing to an ai-toolkit checkout")
+    repo = str(info.get("repo_id") or "").strip()
+    if not repo:
+        raise RuntimeError("Wan trainer requires a model repository/path")
+
+    def train(samples, output_dir: Path, cancel_event=None):
+        data = output_dir / "data"
+        _copy_pairs(samples, data, "video")
+        steps = max(8, len(samples) * 4)
+        name = "smart_ai_wan21"
+        config = {
+            "job": "extension",
+            "config": {
+                "name": name,
+                "process": [{
+                    "type": "sd_trainer",
+                    "training_folder": str(output_dir),
+                    "device": "cuda:0",
+                    "network": {"type": "lora", "linear": 8, "linear_alpha": 8},
+                    "save": {
+                        "dtype": "float16",
+                        "save_every": steps,
+                        "max_step_saves_to_keep": 1,
+                    },
+                    "datasets": [{
+                        "folder_path": str(data),
+                        "caption_ext": "txt",
+                        "caption_dropout_rate": 0.0,
+                        "cache_latents_to_disk": True,
+                    }],
+                    "train": {
+                        "batch_size": 1,
+                        "steps": steps,
+                        "gradient_accumulation": 1,
+                        "train_unet": True,
+                        "train_text_encoder": False,
+                        "gradient_checkpointing": True,
+                        "noise_scheduler": "flowmatch",
+                        "timestep_type": "sigmoid",
+                        "optimizer": "adamw8bit",
+                        "lr": 1e-4,
+                        "disable_sampling": True,
+                        "dtype": "bf16",
+                    },
+                    "model": {
+                        "name_or_path": repo,
+                        "arch": "wan21",
+                        "quantize_te": True,
+                    },
+                }],
+            },
+        }
+        import json
+        config_path = output_dir / "wan21_train.yaml"
+        # JSON is valid YAML and avoids adding a YAML dependency.
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        lines = _run_cancelable(
+            [sys.executable, str(root / "run.py"), str(config_path)],
+            cancel_event,
+            cwd=root,
+        )
+        return {"trainer": "ai-toolkit-wan21", "log_tail": lines[-12:]}
+
+    return {
+        "backend": "wan21_lora",
+        "external_train": train,
+        "verify_saved": _verify_safetensors,
+    }
+
+
+wan21_factory.available = _wan21_available
+register_media_training_backend(
+    "wan21_lora",
+    wan21_factory,
+    matcher=_wan21_matches,
+)
