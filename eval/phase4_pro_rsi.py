@@ -652,7 +652,10 @@ def _fetch_benchmark_training_memories(self) -> List[Dict[str, Any]]:
                 {
                     "memory_kind": "rsi_self",
                     "id": int(row["id"]),
-                    "trace": str(row["trace"]),
+                    # Fixed generic training cue only: never reconstruct the benchmark
+                    # prompt/question from which this self-generated trace originated.
+                    "prompt": "Internalize this self-generated reasoning pattern and improve future problem solving.",
+                    "completion": str(row["trace"]),
                 }
                 for row in rsi_rows
             )
@@ -716,19 +719,13 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
     rsi_consolidated_ids: List[int] = []
 
     for memory in memories:
-        if memory.get("memory_kind") == "rsi_self":
-            # Generic wrapper only. No benchmark wording is reconstructed here.
-            text = (
-                "<|im_start|>user\n"
-                "Internalize this self-generated reasoning pattern and improve future problem solving."
-                "<|im_end|>\n"
-                f"<|im_start|>assistant\n{memory['trace']}<|im_end|>"
-            )
-        else:
-            text = (
-                f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
-                f"<|im_start|>assistant\n{memory['completion']}<|im_end|>"
-            )
+        # Preserve the original Phase-3 weight-update contract. RSI memories are
+        # normalized by the fetcher into the same prompt+completion shape, using only
+        # a fixed generic cue plus the model's own self-generated trace.
+        text = (
+            f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
+            f"<|im_start|>assistant\n{memory['completion']}<|im_end|>"
+        )
         ids = self.engine.tokenizer.encode(text)
         if len(ids) <= 1:
             continue
