@@ -147,6 +147,10 @@ def install_baseline_stream(runtime_module, cls) -> None:
 
     original_raw_log = runtime_module._append_raw_generation_log
     original_result_log = runtime_module._append_result_log
+    # Capture the recovered manual argmax loop before replacing cls._fast_generate.
+    # This remains the correctness fallback if MLX-LM's fused stream path is unavailable
+    # or rejects a cache/model combination.
+    original_fast_generate = getattr(cls, "_fast_generate", runtime_module.fast_generate)
 
     def live_fast_generate(self, prompt, max_tokens=16384, stream=False):
         """Fused MLX-LM greedy decode with the recovered manual loop as fail-safe."""
@@ -214,13 +218,34 @@ def install_baseline_stream(runtime_module, cls) -> None:
             return text
 
         except Exception as exc:
-            # Fail safe rather than silently changing benchmark behavior.
-            self.last_tok_per_sec = 0.0
-            self.last_output_tokens = 0
-            self.last_generation_seconds = 0.0
-            self.last_generation_error = f"{type(exc).__name__}: {exc}"
-            _append_live_text(f"\n\n[GENERATION ERROR] {self.last_generation_error}\n")
-            raise RuntimeError(f"Real MLX generation failed: {self.last_generation_error}") from exc
+            # Preserve the recovered benchmark behavior exactly: if the optimized
+            # MLX-LM path is unsupported/fails, fall back to the pre-existing manual
+            # model -> argmax -> item() loop rather than changing decoding policy.
+            fused_error = f"{type(exc).__name__}: {exc}"
+            _append_live_text(
+                f"\n\n[FUSED MLX FALLBACK] {fused_error}\n"
+                "Retrying with the recovered manual greedy loop.\n"
+            )
+            try:
+                return original_fast_generate(
+                    self,
+                    prompt,
+                    max_tokens=max_tokens,
+                    stream=stream,
+                )
+            except Exception as fallback_exc:
+                self.last_tok_per_sec = 0.0
+                self.last_output_tokens = 0
+                self.last_generation_seconds = 0.0
+                self.last_generation_error = (
+                    f"fused={fused_error}; "
+                    f"manual={type(fallback_exc).__name__}: {fallback_exc}"
+                )
+                _append_live_text(f"\n[GENERATION ERROR] {self.last_generation_error}\n")
+                raise RuntimeError(
+                    f"Real MLX generation failed in fused and manual paths: "
+                    f"{self.last_generation_error}"
+                ) from fallback_exc
 
         finally:
             cache = None
