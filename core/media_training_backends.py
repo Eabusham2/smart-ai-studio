@@ -6,6 +6,7 @@ loops. They are only advertised when the corresponding trusted trainer script ex
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -14,6 +15,79 @@ import sys
 import time
 
 from core.media_learning import register_media_training_backend
+
+
+_TRAINING_REPO_CACHE: dict[str, str] = {}
+_PIPELINE_CLASS_CACHE: dict[str, str] = {}
+
+
+def _training_repo(info) -> str:
+    """Resolve a differentiable base checkpoint for quantized/MLX/GGUF derivatives."""
+    explicit = str(info.get("training_repo_id") or "").strip()
+    if explicit:
+        return explicit
+    repo = str(info.get("repo_id") or "").strip()
+    if not repo or os.path.exists(repo):
+        return repo
+    if repo in _TRAINING_REPO_CACHE:
+        return _TRAINING_REPO_CACHE[repo]
+    resolved = repo
+    try:
+        from huggingface_hub import HfApi
+        meta = HfApi().model_info(repo)
+        card = getattr(meta, "card_data", None)
+        if hasattr(card, "to_dict"):
+            card = card.to_dict()
+        if not isinstance(card, dict):
+            card = {}
+        base = card.get("base_model")
+        if isinstance(base, (list, tuple)):
+            base = next((x for x in base if isinstance(x, str) and x.strip()), None)
+        if not base:
+            for tag in list(getattr(meta, "tags", None) or []):
+                if str(tag).startswith("base_model:"):
+                    base = str(tag).split(":", 1)[1].strip()
+                    break
+        if isinstance(base, str) and "/" in base:
+            resolved = base
+    except Exception:
+        pass
+    _TRAINING_REPO_CACHE[repo] = resolved
+    return resolved
+
+
+def _pipeline_class(info) -> str:
+    explicit = str(info.get("pipeline_class") or "").strip()
+    if explicit:
+        return explicit
+    repo = _training_repo(info)
+    if not repo:
+        return ""
+    if repo in _PIPELINE_CLASS_CACHE:
+        return _PIPELINE_CLASS_CACHE[repo]
+    name = ""
+    try:
+        path = Path(repo).expanduser()
+        if path.is_dir() and (path / "model_index.json").is_file():
+            config = json.loads((path / "model_index.json").read_text(encoding="utf-8"))
+        else:
+            from huggingface_hub import hf_hub_download
+            cfg = hf_hub_download(repo_id=repo, filename="model_index.json")
+            config = json.loads(Path(cfg).read_text(encoding="utf-8"))
+        name = str(config.get("_class_name") or "")
+    except Exception:
+        pass
+    _PIPELINE_CLASS_CACHE[repo] = name
+    return name
+
+
+def _arch_blob(info) -> str:
+    return " ".join((
+        str(info.get("name") or ""),
+        str(info.get("precision") or ""),
+        str(info.get("training_family") or ""),
+        _pipeline_class(info),
+    )).lower()
 
 
 def _find_script(env_var: str, package: str, relatives: list[str]) -> Path | None:
