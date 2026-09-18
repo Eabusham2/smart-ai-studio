@@ -326,6 +326,9 @@ class ProReasoningEngine:
                 if hasattr(self.mlx_backend, "tokenizer") and self.mlx_backend.tokenizer is not None:
                     del self.mlx_backend.tokenizer
                     self.mlx_backend.tokenizer = None
+                if hasattr(self.mlx_backend, "processor") and self.mlx_backend.processor is not None:
+                    del self.mlx_backend.processor
+                    self.mlx_backend.processor = None
                 self.mlx_backend.is_mlx_available = False
             except Exception:
                 pass
