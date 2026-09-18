@@ -5,6 +5,10 @@ with multimodal vision projector support (nanoLLaVA / CLIP).
 """
 
 import math
+import base64
+import json
+import mimetypes
+import re
 import os
 import platform
 import sys
@@ -71,6 +75,69 @@ class GGUFReasoningBackend:
         except Exception:
             self.model = None
             return False
+
+    def supports_media_input(self, kind: str) -> bool:
+        """Current llama.cpp integration has a real local image handler only when mmproj loaded."""
+        return (
+            str(kind or "").lower() == "image"
+            and self.model is not None
+            and self.chat_handler is not None
+        )
+
+    def review_media_input(self, path: str, kind: str, prompt: str = "") -> Dict[str, Any]:
+        if not self.supports_media_input(kind):
+            return {
+                "perception_available": False,
+                "reason": f"GGUF backend cannot ingest {kind} input with the currently loaded projector.",
+            }
+        if not os.path.isfile(path):
+            raise ValueError("Media input file is missing")
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        if len(raw) > 64 * 1024 * 1024:
+            raise ValueError("Image review input is limited to 64 MiB")
+        mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+        data_url = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
+        task = str(prompt or "").strip() or "Describe what is actually visible in this image."
+        review_prompt = (
+            task
+            + "\nReturn JSON only with keys description, score, reasoning. "
+              "score must be a number from 0 to 100 representing how well the visible image satisfies the request. "
+              "Do not infer unseen content."
+        )
+        result = self.model.create_chat_completion(
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": review_prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }],
+            temperature=0.0,
+            max_tokens=768,
+        )
+        text = str(result.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        match = re.search(r"\{[\s\S]*\}", text)
+        parsed = {}
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+            except Exception:
+                parsed = {}
+        score = parsed.get("score")
+        if not isinstance(score, (int, float)):
+            return {
+                "perception_available": True,
+                "description": parsed.get("description") or text,
+                "analysis": parsed.get("reasoning") or text,
+                "reason": "Model inspected the image but did not return a numeric self-grade.",
+            }
+        return {
+            "perception_available": True,
+            "description": str(parsed.get("description") or ""),
+            "analysis": str(parsed.get("reasoning") or ""),
+            "score": max(0.0, min(100.0, float(score))),
+        }
 
     def generate_branches(
         self,
