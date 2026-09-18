@@ -115,6 +115,24 @@ class MediaGenerationEngine:
                     "--seed", str(int(model_info.get("seed", 42) or 42)),
                     "--output", output_path,
                 ]
+                try:
+                    from core.media_learning import get_saved_media_adapter
+                    adapter_dir = get_saved_media_adapter(repo_id)
+                except Exception:
+                    adapter_dir = None
+                if adapter_dir is not None:
+                    lora_files = sorted(
+                        str(path)
+                        for path in adapter_dir.rglob("*.safetensors")
+                        if path.is_file() and path.stat().st_size > 0
+                    )
+                    if not lora_files:
+                        return {
+                            "status": "error",
+                            "error": "A learned mflux adapter exists but no reloadable .safetensors LoRA was found.",
+                            "repo_id": repo_id,
+                        }
+                    cmd.extend(["--lora-paths", lora_files[-1], "--lora-scales", "1.0"])
                 if progress_callback:
                     progress_callback(0.12, "Rendering image")
                 run = subprocess.run(cmd, capture_output=True, text=True)
