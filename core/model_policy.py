@@ -31,13 +31,18 @@ MEDIA_PIPELINE_MARKERS = (
     "text-to-audio",
     "audio-generation",
     "text-to-speech",
-    "automatic-speech-recognition",
 )
 
 TEXT_PIPELINE_MARKERS = (
     "text-generation",
     "text2text-generation",
     "image-text-to-text",
+    "image-to-text",
+    "video-text-to-text",
+    "video-to-text",
+    "audio-text-to-text",
+    "audio-to-text",
+    "automatic-speech-recognition",
     "conversational",
 )
 
