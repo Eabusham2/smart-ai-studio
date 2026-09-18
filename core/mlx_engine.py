@@ -6,10 +6,11 @@ import os
 import platform
 import psutil
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 import core._mlx_engine_base as _base
 from core._mlx_engine_base import *
 from core.kv_cache_manager import SmartKVCacheManager, compute_auto_kv_budget
+from core.controller_runtime import UniversalControllerBackend, resolve_controller_runtime
 
 # Older implementation logged through a module global without defining it.
 _base.logger = logging.getLogger(__name__)
@@ -105,8 +106,14 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
     runtimes. The model's native low-bit/ternary weight format is untouched.
     """
 
-    def __init__(self, model_path="orcarouter/Qwen3.8-27B-Uncensored-MLX", adapter_path=None):
+    def __init__(
+        self,
+        model_path="orcarouter/Qwen3.8-27B-Uncensored-MLX",
+        adapter_path=None,
+        model_info: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(model_path=model_path, adapter_path=adapter_path)
+        self.model_info = dict(model_info or {})
         self.kv_cache_manager = None
         self.max_stateful_kv_tokens = compute_auto_kv_budget()
         self.last_generation_cap_reason = ""
@@ -117,6 +124,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_generation_seconds = 0.0
         self.processor = None
         self._vlm_runtime = None
+        self._vlm_loader = None
 
         # The GUI class is already defined when its ProReasoningEngine is constructed.
         # Install the optional top-row generation-cap control without rewriting app_gui.py.
@@ -178,48 +186,25 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.is_mlx_available = False
             return False
 
-        model_id = str(self.model_path or "")
-        bonsai2 = "bonsai-2-27b" in model_id.casefold() or "ternary-bonsai-2-27b" in model_id.casefold()
-        jang_pack = bonsai2 and "jang" in model_id.casefold()
+        runtime = resolve_controller_runtime(self.model_info, str(self.model_path or ""))
+        specialized_vlm = runtime in {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
 
         try:
             from core.memory_watchdog import SystemMemoryWatchdog
             SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
 
-            if jang_pack:
-                from jang_tools.loader import load_jang_vlm_model
-                try:
-                    self.model, self.processor = load_jang_vlm_model(
-                        self.model_path,
-                        adapter_path=(
-                            self.adapter_path
-                            if self.adapter_path and os.path.exists(self.adapter_path)
-                            else None
-                        ),
-                    )
-                except TypeError:
-                    if self.adapter_path and os.path.exists(self.adapter_path):
-                        raise RuntimeError("This JANG VLM runtime cannot reload the active adapter safely")
-                    self.model, self.processor = load_jang_vlm_model(self.model_path)
-                self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
-                self._vlm_runtime = "jang_vlm"
-            elif bonsai2:
-                from mlx_vlm import load as load_vlm
-                try:
-                    self.model, self.processor = load_vlm(
-                        self.model_path,
-                        adapter_path=(
-                            self.adapter_path
-                            if self.adapter_path and os.path.exists(self.adapter_path)
-                            else None
-                        ),
-                    )
-                except TypeError:
-                    if self.adapter_path and os.path.exists(self.adapter_path):
-                        raise RuntimeError("MLX-VLM cannot reload the active adapter safely")
-                    self.model, self.processor = load_vlm(self.model_path)
-                self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
-                self._vlm_runtime = "mlx_vlm"
+            if specialized_vlm:
+                loader = UniversalControllerBackend(
+                    model_path=self.model_path,
+                    model_info={**self.model_info, "controller_runtime": runtime},
+                )
+                if not loader.load_model():
+                    raise RuntimeError(f"{runtime} loader did not produce a usable model")
+                self._vlm_loader = loader
+                self.model = loader.model
+                self.processor = loader.processor
+                self.tokenizer = loader.tokenizer
+                self._vlm_runtime = runtime
             else:
                 import mlx_lm
                 self.model, self.tokenizer = mlx_lm.load(
@@ -232,6 +217,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 )
                 self.processor = None
                 self._vlm_runtime = None
+                self._vlm_loader = None
 
             self.is_mlx_available = self.model is not None and self.tokenizer is not None
         except Exception as exc:
@@ -247,6 +233,55 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         else:
             self.kv_cache_manager = None
         return bool(self.is_mlx_available)
+
+    def get_training_model(self):
+        """Return the real causal language module used for text Learn/RSI updates."""
+        if self._vlm_runtime is not None:
+            language_model = getattr(self.model, "language_model", None)
+            if language_model is not None:
+                return language_model
+        return self.model
+
+    def _run_training_method(self, method_name: str, *args, **kwargs):
+        target = self.get_training_model()
+        if target is None or target is self.model:
+            return getattr(super(), method_name)(*args, **kwargs)
+        wrapper = self.model
+        self.model = target
+        try:
+            return getattr(super(), method_name)(*args, **kwargs)
+        finally:
+            self.model = wrapper
+
+    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0):
+        return self._run_training_method("inject_lora_adapters", r=r, scale=scale)
+
+    def compute_mlx_fisher(self, anchor_texts):
+        return self._run_training_method("compute_mlx_fisher", anchor_texts)
+
+    def train_mini_batch(self, adapters, data, **kwargs):
+        return self._run_training_method("train_mini_batch", adapters, data, **kwargs)
+
+    def _prepare_vlm_prompt(self, prompt: str, num_images: int = 0) -> str:
+        if self._vlm_loader is not None:
+            try:
+                return self._vlm_loader._mlx_prompt(prompt, num_images)
+            except Exception:
+                pass
+        return prompt
+
+    def supports_media_input(self, kind: str) -> bool:
+        if self._vlm_loader is None:
+            return False
+        return bool(self._vlm_loader.supports_media_input(kind))
+
+    def review_media_input(self, path: str, kind: str, prompt: str = ""):
+        if self._vlm_loader is None:
+            return {
+                "perception_available": False,
+                "reason": f"Loaded MLX controller has no {kind} perception runtime.",
+            }
+        return self._vlm_loader.review_media_input(path=path, kind=kind, prompt=prompt)
 
     def calculate_token_entropy(self, prompt: str) -> float:
         if self._vlm_runtime is None:
@@ -306,7 +341,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 for response in vlm_stream_generate(
                     self.model,
                     self.processor,
-                    prompt=prompt,
+                    prompt=self._prepare_vlm_prompt(prompt, 0),
                     image=[],
                     max_tokens=effective_max,
                     temperature=temp_value,
@@ -432,7 +467,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 for response in vlm_stream_generate(
                     self.model,
                     self.processor,
-                    prompt=prompt,
+                    prompt=self._prepare_vlm_prompt(prompt, 0),
                     image=[],
                     max_tokens=effective_max,
                     temperature=temperature,
