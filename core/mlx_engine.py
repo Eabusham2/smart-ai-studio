@@ -78,9 +78,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
     owns the hardware-scaled budget and a fresh prompt-cache arena per packed request;
     conversation state itself is preserved by the app's history packer.
 
-    KV caches intentionally remain at MLX-LM's native/full precision. The model's
-    native low-bit/ternary weight format is untouched; only lossy KV quantization is
-    forbidden so inference does not trade attention-state precision for RAM/speed.
+    KV caches default to TurboQuant mixed K8/V3 on supported Apple-Silicon MLX
+    runtimes. The model's native low-bit/ternary weight format is untouched.
     """
 
     def __init__(self, model_path="orcarouter/Qwen3.8-27B-Uncensored-MLX", adapter_path=None):
@@ -138,7 +137,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return int(effective)
 
     def load_model(self) -> bool:
-        """Load native model weights without forcing any lossy KV-cache quantization."""
+        """Load native model weights; TurboQuant is applied only to runtime KV caches."""
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             self.is_mlx_available = False
             return False
@@ -199,11 +198,19 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         def _one(temp_value: float, prefill_step_size: int) -> str:
             sampler = make_sampler(temp=float(temp_value), top_p=top_p)
+            if self.kv_cache_manager is None:
+                self.kv_cache_manager = SmartKVCacheManager(
+                    self.model,
+                    max_tokens=self.max_stateful_kv_tokens,
+                )
+            else:
+                self.kv_cache_manager.reset(purge_allocator=False)
             kwargs = {
                 "prompt": prompt,
                 "max_tokens": effective_max,
                 "sampler": sampler,
                 "prefill_step_size": int(prefill_step_size),
+                "prompt_cache": self.kv_cache_manager.get_cache(),
             }
             pieces = []
             response = None
@@ -213,6 +220,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
             except TypeError:
                 kwargs.pop("prefill_step_size", None)
+                kwargs.pop("prompt_cache", None)
                 iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
             for response in iterator:
                 generated += 1
@@ -268,7 +276,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         effective_max = self._effective_generation_cap(prompt, max_tokens)
 
         # The app passes the full history-packed prompt each time. Reset only the
-        # logical full-precision KV state. Do not purge Metal's allocator on every
+        # logical TurboQuant-preferred KV state. Do not purge Metal's allocator on every
         # request; the complete packed prompt is recomputed into the fresh cache.
         if self.kv_cache_manager is None:
             self.kv_cache_manager = SmartKVCacheManager(
@@ -291,7 +299,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_tok_per_sec = 0.0
 
         def _run_stream(prefill_step_size: int):
-            # Same prompt, sampler, token allowance and native/full-precision KV for
+            # Same prompt, sampler, token allowance and TurboQuant-preferred KV for
             # normal execution and OOM retry. Only prefill chunk size may change.
             kwargs = {
                 "max_tokens": effective_max,
@@ -343,7 +351,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 if not _is_metal_oom(exc) or generated:
                     raise
                 # Retry only before any token has been emitted. Rebuild a fresh cache
-                # and reduce transient prefill memory without changing KV precision,
+                # and reduce transient prefill memory without changing cache policy,
                 # context, sampler or requested generation length.
                 self.kv_cache_manager.reset(purge_allocator=False)
                 _reclaim_if_needed(mx, force=True)
