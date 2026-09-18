@@ -115,6 +115,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_tok_per_sec = 0.0
         self.last_generation_tokens = 0
         self.last_generation_seconds = 0.0
+        self.processor = None
+        self._vlm_runtime = None
 
         # The GUI class is already defined when its ProReasoningEngine is constructed.
         # Install the optional top-row generation-cap control without rewriting app_gui.py.
@@ -168,7 +170,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return int(effective)
 
     def load_model(self) -> bool:
-        """Load native model weights; TurboQuant is applied only to runtime KV caches."""
+        """Load native model weights with the model's required Apple-Silicon runtime."""
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             self.is_mlx_available = False
             return False
@@ -176,31 +178,96 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.is_mlx_available = False
             return False
 
-        try:
-            import mlx_lm
-            from core.memory_watchdog import SystemMemoryWatchdog
+        model_id = str(self.model_path or "")
+        bonsai2 = "bonsai-2-27b" in model_id.casefold() or "ternary-bonsai-2-27b" in model_id.casefold()
+        jang_pack = bonsai2 and "jang" in model_id.casefold()
 
+        try:
+            from core.memory_watchdog import SystemMemoryWatchdog
             SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
-            self.model, self.tokenizer = mlx_lm.load(
-                self.model_path,
-                adapter_path=(
-                    self.adapter_path
-                    if self.adapter_path and os.path.exists(self.adapter_path)
-                    else None
-                ),
-            )
+
+            if jang_pack:
+                from jang_tools.loader import load_jang_vlm_model
+                try:
+                    self.model, self.processor = load_jang_vlm_model(
+                        self.model_path,
+                        adapter_path=(
+                            self.adapter_path
+                            if self.adapter_path and os.path.exists(self.adapter_path)
+                            else None
+                        ),
+                    )
+                except TypeError:
+                    if self.adapter_path and os.path.exists(self.adapter_path):
+                        raise RuntimeError("This JANG VLM runtime cannot reload the active adapter safely")
+                    self.model, self.processor = load_jang_vlm_model(self.model_path)
+                self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
+                self._vlm_runtime = "jang_vlm"
+            elif bonsai2:
+                from mlx_vlm import load as load_vlm
+                try:
+                    self.model, self.processor = load_vlm(
+                        self.model_path,
+                        adapter_path=(
+                            self.adapter_path
+                            if self.adapter_path and os.path.exists(self.adapter_path)
+                            else None
+                        ),
+                    )
+                except TypeError:
+                    if self.adapter_path and os.path.exists(self.adapter_path):
+                        raise RuntimeError("MLX-VLM cannot reload the active adapter safely")
+                    self.model, self.processor = load_vlm(self.model_path)
+                self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
+                self._vlm_runtime = "mlx_vlm"
+            else:
+                import mlx_lm
+                self.model, self.tokenizer = mlx_lm.load(
+                    self.model_path,
+                    adapter_path=(
+                        self.adapter_path
+                        if self.adapter_path and os.path.exists(self.adapter_path)
+                        else None
+                    ),
+                )
+                self.processor = None
+                self._vlm_runtime = None
+
             self.is_mlx_available = self.model is not None and self.tokenizer is not None
         except Exception as exc:
-            _base.logger.error("MLX full-precision load failed: %s", exc)
+            _base.logger.error("MLX model load failed: %s", exc)
             self.is_mlx_available = False
             return False
 
-        if self.is_mlx_available:
+        if self.is_mlx_available and self._vlm_runtime is None:
             self.kv_cache_manager = SmartKVCacheManager(
                 self.model,
                 max_tokens=self.max_stateful_kv_tokens,
             )
+        else:
+            self.kv_cache_manager = None
         return bool(self.is_mlx_available)
+
+    def calculate_token_entropy(self, prompt: str) -> float:
+        if self._vlm_runtime is None:
+            return super().calculate_token_entropy(prompt)
+        try:
+            import math
+            import mlx.core as mx
+            tokens = self.tokenizer.encode(prompt)
+            if not tokens:
+                return 0.45
+            lm = getattr(self.model, "language_model", self.model)
+            logits = lm(mx.array([tokens]))
+            logits = getattr(logits, "logits", logits)
+            last_logits = logits[:, -1, :]
+            probs = mx.softmax(last_logits, axis=-1)
+            entropy_val = -mx.sum(probs * mx.log(probs + 1e-12), axis=-1).item()
+            if math.isnan(entropy_val) or math.isinf(entropy_val):
+                return 0.45
+            return float(entropy_val)
+        except Exception:
+            return 0.45
 
     def generate_branches(
         self,
@@ -215,8 +282,49 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return []
 
         import mlx.core as mx
-        import mlx_lm
 
+        if self._vlm_runtime is not None:
+            from mlx_vlm.generate import stream_generate as vlm_stream_generate
+            count = max(1, min(int(branch_count), 16))
+            temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
+            try:
+                prompt_ids = self.tokenizer.encode(prompt)
+            except Exception:
+                prompt_ids = []
+            effective_max = self._effective_generation_cap(
+                prompt,
+                max_tokens,
+                prompt_token_count=len(prompt_ids),
+            )
+            branches = []
+            for idx in range(count):
+                temp_value = float(temps[idx % len(temps)])
+                pieces = []
+                started = time.perf_counter()
+                generated = 0
+                last = None
+                for response in vlm_stream_generate(
+                    self.model,
+                    self.processor,
+                    prompt=prompt,
+                    image=[],
+                    max_tokens=effective_max,
+                    temperature=temp_value,
+                    top_p=top_p,
+                ):
+                    last = response
+                    generated += 1
+                    pieces.append(str(getattr(response, "text", response)))
+                elapsed = max(0.001, time.perf_counter() - started)
+                measured = float(getattr(last, "generation_tps", 0.0) or 0.0) if last is not None else 0.0
+                self.last_tok_per_sec = measured if measured > 0.0 else (generated / elapsed if generated else 0.0)
+                self.last_generation_tokens = generated
+                self.last_generation_seconds = elapsed
+                branches.append("".join(pieces))
+                _reclaim_if_needed(mx)
+            return branches
+
+        import mlx_lm
         try:
             from mlx_lm.sample_utils import make_sampler
         except Exception as exc:
@@ -301,7 +409,6 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return
 
         import mlx.core as mx
-        import mlx_lm
 
         try:
             prompt_ids = self.tokenizer.encode(prompt)
@@ -314,6 +421,42 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             max_tokens,
             prompt_token_count=prompt_len,
         )
+
+        if self._vlm_runtime is not None:
+            from mlx_vlm.generate import stream_generate as vlm_stream_generate
+            generated = 0
+            started = time.perf_counter()
+            last = None
+            self.last_tok_per_sec = 0.0
+            try:
+                for response in vlm_stream_generate(
+                    self.model,
+                    self.processor,
+                    prompt=prompt,
+                    image=[],
+                    max_tokens=effective_max,
+                    temperature=temperature,
+                    top_p=top_p,
+                ):
+                    last = response
+                    generated += 1
+                    chunk = getattr(response, "text", None)
+                    yield str(chunk if chunk is not None else response)
+            finally:
+                elapsed = max(0.001, time.perf_counter() - started)
+                measured = float(getattr(last, "generation_tps", 0.0) or 0.0) if last is not None else 0.0
+                self.last_tok_per_sec = measured if measured > 0.0 else (generated / elapsed if generated else 0.0)
+                self.last_generation_tokens = generated
+                self.last_generation_seconds = elapsed
+                _reclaim_if_needed(mx)
+            return
+
+        import mlx_lm
+
+        try:
+            prompt_ids = self.tokenizer.encode(prompt)
+        except Exception:
+            prompt_ids = []
 
         # The app passes the full history-packed prompt each time. Reset only the
         # logical TurboQuant-preferred KV state. Do not purge Metal's allocator on every
