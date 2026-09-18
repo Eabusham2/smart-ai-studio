@@ -320,7 +320,7 @@ class ProReasoningEngine:
                     self.gguf_backend = gguf_cls(
                         model_path=target_path,
                         mmproj_path=mmproj_path,
-                        training_base_model_id=info.get("gguf_training_base_model_id") or "Qwen/Qwen3.8-27B",
+                        training_base_model_id=info.get("gguf_training_base_model_id"),
                     )
                     if self.gguf_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
