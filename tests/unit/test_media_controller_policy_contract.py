@@ -114,7 +114,7 @@ def test_media_learn_accepts_local_and_online_sources():
     assert "file/folder/JSONL/URL/search query" in orchestrator
     assert "gather_samples(" in orchestrator
     assert "urllib.request" in learning
-    assert "os.path.isdir" in learning or "Path(source).is_dir" in learning
+    assert "local.exists()" in learning and "local.is_file()" in learning and "local.rglob(" in learning
     assert ".jsonl" in learning
 
 
