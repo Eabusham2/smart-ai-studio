@@ -343,6 +343,7 @@ class ProReasoningEngine:
                         model_path=target_path,
                         hf_repo_id=str(info.get("repo_id") or target_path),
                         n_ctx=int(info.get("max_context") or 32768),
+                        training_base_model_id=info.get("bitnet_training_base_model_id"),
                     )
                     if self.bitnet_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -352,7 +353,7 @@ class ProReasoningEngine:
                             "model": model_name,
                             "backend": "bitnet",
                             "path": self.bitnet_backend.model_path,
-                            "trainable": False,
+                            "trainable": bool(self.bitnet_backend.training_ready()),
                         }
                     return {
                         "status": "error",
