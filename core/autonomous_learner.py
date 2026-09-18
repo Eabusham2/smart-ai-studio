@@ -4,7 +4,7 @@
 1. Gather genuinely retrieved external/source facts.
 2. Ask the already-loaded model to synthesize only from those sources.
 3. Require a model-produced claim plus a verbatim source-evidence span.
-4. Train the same active MLX model's LoRA parameters on the verified synthesis.
+4. Train the same active backend's real adapter parameters on the verified synthesis.
 5. Measure real parameter drift and persist the adapter.
 
 No hard-coded `return True` self-test, fake search dossier, fake synapse counter,
@@ -66,23 +66,56 @@ class AutonomousLearner:
         )
         return not any(marker in lowered for marker in rejected_markers)
 
+    def _require_live_trainable_backend(self):
+        """Return the real active backend only when it can perform a genuine update."""
+        active = str(getattr(self.engine, "active_backend", "") or "").lower()
+        candidates = []
+        if active == "gguf":
+            candidates.append(getattr(self.engine, "gguf_backend", None))
+        elif active == "bitnet":
+            candidates.append(getattr(self.engine, "bitnet_backend", None))
+        elif active == "controller":
+            candidates.append(getattr(self.engine, "controller_backend", None))
+        elif active == "mlx":
+            candidates.extend([
+                getattr(self.engine, "mlx_engine", None),
+                getattr(self.engine, "mlx_backend", None),
+            ])
+        else:
+            candidates.extend([
+                getattr(self.engine, "controller_backend", None),
+                getattr(self.engine, "gguf_backend", None),
+                getattr(self.engine, "bitnet_backend", None),
+                getattr(self.engine, "mlx_engine", None),
+                getattr(self.engine, "mlx_backend", None),
+            ])
+
+        seen = set()
+        for backend in candidates:
+            if backend is None or id(backend) in seen:
+                continue
+            seen.add(id(backend))
+            if getattr(backend, "model", None) is None:
+                continue
+            if not callable(getattr(backend, "train_mini_batch", None)):
+                continue
+            capability = getattr(backend, "training_ready", None)
+            if callable(capability):
+                try:
+                    if not bool(capability()):
+                        continue
+                except Exception:
+                    continue
+            return backend
+
+        raise RuntimeError(
+            "/learn requires the currently loaded backend to expose a verified real "
+            "parameter-update path; refusing fake/offline learning."
+        )
+
+    # Compatibility alias for older callers/tests; no MLX-only semantics remain here.
     def _require_live_mlx(self):
-        """Return the real active trainable backend (MLX or GGUF). Kept under the old name for compatibility."""
-        backend = None
-        if str(getattr(self.engine, "active_backend", "") or "").lower() == "gguf":
-            backend = getattr(self.engine, "gguf_backend", None)
-        if backend is None:
-            backend = getattr(self.engine, "mlx_engine", None) or getattr(self.engine, "mlx_backend", None)
-        if (
-            backend is None
-            or getattr(backend, "model", None) is None
-            or getattr(backend, "tokenizer", None) is None
-            or not callable(getattr(backend, "train_mini_batch", None))
-        ):
-            raise RuntimeError(
-                "/learn requires the real active trainable MLX/GGUF model; refusing fake/offline learning."
-            )
-        return backend
+        return self._require_live_trainable_backend()
 
     @staticmethod
     def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -161,7 +194,7 @@ class AutonomousLearner:
 
     def synthesize_knowledge(self, topic: str, research: Dict[str, Any]) -> str:
         """Use the real active model to synthesize source-grounded knowledge."""
-        self._require_live_mlx()
+        self._require_live_trainable_backend()
         source = self._source_blob(research)
         if not source:
             raise RuntimeError("/learn research returned no usable source material; refusing to fabricate a lesson.")
@@ -240,7 +273,7 @@ class AutonomousLearner:
 
         backend = self._require_live_mlx()
         adapter_path = getattr(backend, "adapter_path", None) or getattr(self.engine, "lora_adapter_path", None)
-        if not adapter_path:
+        if not adapter_path and bool(getattr(backend, "is_mlx_available", False)):
             adapter_path = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
             backend.adapter_path = adapter_path
             self.engine.lora_adapter_path = adapter_path
@@ -259,7 +292,8 @@ class AutonomousLearner:
 
         fisher = None
         try:
-            fisher = backend.compute_mlx_fisher(get_anchor_texts()[:4])
+            fisher_fn = getattr(backend, "compute_mlx_fisher", None)
+            fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
         except Exception:
             fisher = None
 
@@ -283,11 +317,17 @@ class AutonomousLearner:
 
         self.db.mark_consolidated([memory_id])
         touched = 0
-        for value in (updated_adapters or {}).values():
+        if isinstance(updated_adapters, dict):
             try:
-                touched += int(value.size)
+                touched = int(updated_adapters.get("trainable_parameters_touched", 0) or 0)
             except Exception:
-                pass
+                touched = 0
+            if touched <= 0:
+                for value in updated_adapters.values():
+                    try:
+                        touched += int(value.size)
+                    except Exception:
+                        pass
 
         return {
             "status": "success",
