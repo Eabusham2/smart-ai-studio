@@ -61,3 +61,20 @@ def test_original_text_phase3_weight_update_path_is_untouched():
     assert "nn.value_and_grad" in src
     assert "project_gradient" in src
     assert "opt.update" in src
+
+
+def test_multimodal_capabilities_survive_memory_pause_resume():
+    src = _src("core/media_orchestrator.py")
+    assert "original_input_modalities = set(" in src
+    assert "engine.active_input_modalities = set(original_input_modalities)" in src
+
+
+def test_mflux_training_resolution_is_architecture_not_repo_id_driven():
+    src = _src("core/media_training_backends.py")
+    start = src.index("def _mflux_image_matches(info):")
+    end = src.index("def _mflux_image_available", start)
+    matcher = src[start:end]
+    assert "_arch_blob(info)" in matcher
+    assert 'info.get("repo_id"' not in matcher
+    assert "def _mflux_training_key(info)" in src
+    assert "_training_repo(info)" in src
