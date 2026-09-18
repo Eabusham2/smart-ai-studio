@@ -242,6 +242,9 @@ class MediaController:
         checkpoint = None
         restore_error = None
         original_adapter = getattr(engine, "lora_adapter_path", None)
+        original_input_modalities = set(
+            getattr(engine, "active_input_modalities", {"text"}) or {"text"}
+        )
         backend = None
         model_name = getattr(engine, "active_model_name", None)
         model_path = None
@@ -299,6 +302,7 @@ class MediaController:
                         if result.get("status") != "loaded":
                             raise RuntimeError(str(result.get("error") or result))
                         self.app.is_model_loaded = True
+                        engine.active_input_modalities = set(original_input_modalities)
                         resumed = getattr(engine, "mlx_backend", None)
                         if checkpoint:
                             import mlx.core as mx
