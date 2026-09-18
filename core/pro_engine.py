@@ -22,6 +22,7 @@ from core.downloader import ensure_model_available, is_model_available_locally
 from core.engines.bitnet_engine import BitNetReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
 from core.entropy_router import EntropyRouter
+from core.controller_runtime import UniversalControllerBackend, resolve_gguf_artifacts
 from core.hardware import resolve_optimal_backend, detect_system_hardware
 from core.hf_downloader import is_model_cached_locally
 from core.mlx_engine import MLXReasoningBackend
@@ -112,6 +113,7 @@ class ProReasoningEngine:
         self.mlx_engine = self.mlx_backend
         self.gguf_backend = None
         self.bitnet_backend = None
+        self.controller_backend = None
         self.model = None
         self.base_model = None
         self.tokenizer = None
@@ -145,11 +147,19 @@ class ProReasoningEngine:
             return True
         if self.bitnet_backend and getattr(self.bitnet_backend, "is_loaded", False) and self.bitnet_backend.model is not None:
             return True
+        if self.controller_backend and getattr(self.controller_backend, "is_loaded", False) and getattr(self.controller_backend, "model", None) is not None:
+            return True
         if hasattr(self, "model") and self.model is not None:
             return True
         return False
 
-    def load_model(self, model_name: str, model_path: Optional[str] = None, backend: Optional[str] = None) -> Dict[str, Any]:
+    def load_model(
+        self,
+        model_name: str,
+        model_path: Optional[str] = None,
+        backend: Optional[str] = None,
+        model_info: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Enforces strict single-model mutual exclusion with zero memory leak:
         Completely purges any loaded model from VRAM and RAM before loading the new model.
@@ -158,6 +168,11 @@ class ProReasoningEngine:
         with self._model_lock:
             self.unload_model()  # Strictly unload previous model first
             self.active_model_name = model_name
+            info = dict(model_info or {})
+            if info.get("input_modalities"):
+                self.active_input_modalities = {
+                    str(value).lower() for value in info.get("input_modalities") or ["text"]
+                }
 
             if getattr(self.settings, "use_mock", False):
                 return {
@@ -167,15 +182,19 @@ class ProReasoningEngine:
                     "path": model_path or "mock"
                 }
 
-            # Determine target model type and optimal backend
-            model_type = "ternary"
-            if "vision" in model_name.lower() or "dolphin" in model_name.lower():
+            # Determine controller capability class from metadata first; names are only
+            # a backwards-compatible fallback for old presets.
+            declared_modalities = {
+                str(value).lower() for value in info.get("input_modalities") or ["text"]
+            }
+            model_type = "multimodal_vision" if "image" in declared_modalities else "ternary"
+            if model_type == "ternary" and ("vision" in model_name.lower() or "dolphin" in model_name.lower()):
                 model_type = "multimodal_vision"
             elif "coder" in model_name.lower() or "coding" in model_name.lower():
                 model_type = "coding"
 
-            # Resolve target artifact path
-            target_path = model_path
+            # Resolve target artifact path.
+            target_path = model_path or info.get("model_path") or info.get("repo_id")
             mmproj_path = None
 
             # Preset artifact mapping
@@ -195,8 +214,12 @@ class ProReasoningEngine:
                 else:
                     target_path = self.settings.mlx_model_path
 
-            # Determine target backend from artifact path and format
-            if "mlx" in str(target_path).lower() or "mlx" in model_name.lower():
+            # Specialized controller runtimes are selected explicitly by model
+            # metadata.  Existing backends remain the default/fallback.
+            controller_runtime = str(info.get("controller_runtime") or "").lower().strip()
+            if controller_runtime and controller_runtime not in ("auto", "mlx_lm", "gguf", "bitnet"):
+                target_backend = "controller"
+            elif "mlx" in str(target_path).lower() or "mlx" in model_name.lower():
                 target_backend = "mlx"
             elif "gguf" in str(target_path).lower() or "gguf" in model_name.lower():
                 target_backend = "gguf"
@@ -222,6 +245,26 @@ class ProReasoningEngine:
                     }
 
             try:
+                # 0. Architecture-specific controller adapter (VLM/audio-language/etc.)
+                if target_backend == "controller":
+                    self.controller_backend = UniversalControllerBackend(
+                        model_path=target_path,
+                        model_info=info,
+                    )
+                    if self.controller_backend.load_model():
+                        if getattr(self.controller_backend, "is_mlx_available", False):
+                            # Keep MLX-aware routing/telemetry compatible without
+                            # pretending this backend supports MLX-LM training.
+                            self.mlx_engine = self.controller_backend
+                        return {
+                            "status": "loaded",
+                            "model": model_name,
+                            "backend": controller_runtime,
+                            "path": target_path,
+                            "input_modalities": sorted(self.active_input_modalities),
+                            "trainable": bool(getattr(self.controller_backend, "can_train", False)),
+                        }
+
                 # 1. Native Apple Silicon MLX
                 if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
                     self.mlx_backend = MLXReasoningBackend(
@@ -243,6 +286,9 @@ class ProReasoningEngine:
 
                 # 2. GGUF / Llama.cpp Cross-Platform
                 if target_backend == "gguf":
+                    target_path, resolved_mmproj = resolve_gguf_artifacts(target_path, info)
+                    mmproj_path = resolved_mmproj or mmproj_path
+                    self.active_model_path = target_path
                     self.gguf_backend = GGUFReasoningBackend(
                         model_path=target_path,
                         mmproj_path=mmproj_path
@@ -334,6 +380,13 @@ class ProReasoningEngine:
                 pass
             self.mlx_backend = None
 
+        if hasattr(self, "controller_backend") and self.controller_backend is not None:
+            try:
+                self.controller_backend.unload_model()
+            except Exception:
+                pass
+            self.controller_backend = None
+
         if hasattr(self, "gguf_backend") and self.gguf_backend is not None:
             try:
                 self.gguf_backend.unload_model()
@@ -386,6 +439,12 @@ class ProReasoningEngine:
 
     def calculate_token_entropy(self, prompt: str) -> float:
         """Evaluates model next-token Shannon entropy across supported backends."""
+        if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
+            try:
+                return self.controller_backend.calculate_token_entropy(prompt)
+            except Exception:
+                return self.router.estimate_prompt_entropy_heuristic(prompt)
+
         if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
             return self.mlx_backend.calculate_token_entropy(prompt)
 
@@ -436,7 +495,11 @@ class ProReasoningEngine:
         history_token_budget = max(512, max_context_tokens - reserved_gen_tokens - prompt_est_tokens)
         history_char_budget = history_token_budget * 4
 
-        tok = getattr(self.mlx_backend, "tokenizer", None) or getattr(self, "tokenizer", None)
+        tok = (
+            getattr(self.controller_backend, "tokenizer", None)
+            or getattr(self.mlx_backend, "tokenizer", None)
+            or getattr(self, "tokenizer", None)
+        )
         if tok and hasattr(tok, "apply_chat_template"):
             try:
                 msgs = []
@@ -614,6 +677,22 @@ class ProReasoningEngine:
         """Yields live tokens in real time from the active MLX / GGUF / BitNet model."""
         formatted_prompt = self._format_prompt_with_history(prompt, history)
 
+        # 0. Specialized controller streaming
+        if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
+            has_yielded = False
+            for token in self.controller_backend.stream_generate_tokens(
+                prompt=formatted_prompt,
+                max_tokens=self.settings.max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            ):
+                if cancel_event and cancel_event.is_set():
+                    break
+                has_yielded = True
+                yield token
+            if has_yielded:
+                return
+
         # 1. MLX Streaming
         if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
             has_yielded = False
@@ -682,6 +761,18 @@ class ProReasoningEngine:
         """Samples candidate reasoning rollouts using calibrated temperature laddering and auto-scaled context window."""
         formatted_prompt = self._format_prompt_with_history(prompt, history)
         ladder = temperatures if temperatures is not None else get_ladder_temperatures(branch_count)
+
+        # 0. Architecture-specific controller inference
+        if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
+            branches = self.controller_backend.generate_branches(
+                prompt=formatted_prompt,
+                branch_count=branch_count,
+                max_tokens=self.settings.max_new_tokens,
+                temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
+                top_p=self.settings.search_top_p,
+            )
+            if branches:
+                return branches
 
         # 1. Apple Silicon Native MLX Inference
         if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
