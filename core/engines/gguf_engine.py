@@ -6,11 +6,13 @@ with multimodal vision projector support (nanoLLaVA / CLIP).
 
 import math
 import base64
+import io
 import json
 import mimetypes
 import re
 import os
 import platform
+import shutil
 import sys
 import time
 from typing import Any, Dict, Generator, List, Optional, Tuple
@@ -25,12 +27,14 @@ class GGUFReasoningBackend:
         n_ctx: int = 32768,
         verbose: bool = False,
         adapter_root: Optional[str] = None,
+        training_base_model_id: Optional[str] = None,
     ):
         self.model_path = model_path
         self.mmproj_path = mmproj_path
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
         self.verbose = verbose
+        self.training_base_model_id = str(training_base_model_id or "Qwen/Qwen3.8-27B").strip()
         if adapter_root:
             self.adapter_root = os.path.abspath(adapter_root)
         else:
@@ -64,13 +68,32 @@ class GGUFReasoningBackend:
         try:
             from llama_cpp import Llama
 
-            # Vision / Multimodal projector initialization
+            # Vision / multimodal projector initialization. Prefer MTMD because
+            # Bonsai-2 carries an embedded Qwen-family multimodal chat template.
             if self.mmproj_path and os.path.exists(self.mmproj_path):
+                self.chat_handler = None
                 try:
-                    from llama_cpp.llama_chat_format import NanoLlavaChatHandler, Llava15ChatHandler
-                    self.chat_handler = Llava15ChatHandler(clip_model_path=self.mmproj_path)
+                    from llama_cpp.llama_chat_format import MTMDChatHandler
+                    self.chat_handler = MTMDChatHandler(
+                        clip_model_path=self.mmproj_path,
+                        verbose=self.verbose,
+                    )
                 except Exception:
-                    self.chat_handler = None
+                    try:
+                        from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+                        self.chat_handler = Qwen25VLChatHandler(
+                            clip_model_path=self.mmproj_path,
+                            verbose=self.verbose,
+                        )
+                    except Exception:
+                        try:
+                            from llama_cpp.llama_chat_format import Llava15ChatHandler
+                            self.chat_handler = Llava15ChatHandler(
+                                clip_model_path=self.mmproj_path,
+                                verbose=self.verbose,
+                            )
+                        except Exception:
+                            self.chat_handler = None
 
             self.model = Llama(
                 model_path=self.model_path,
@@ -92,7 +115,11 @@ class GGUFReasoningBackend:
             return False
         try:
             from core.gguf_lora_trainer import GGUFLoRATrainer
-            trainer = GGUFLoRATrainer(model_path=self.model_path, adapter_root=self.adapter_root)
+            trainer = GGUFLoRATrainer(
+                model_path=self.model_path,
+                base_model_id=self.training_base_model_id,
+                adapter_root=self.adapter_root,
+            )
             return bool(trainer.can_prepare())
         except Exception:
             return False
@@ -136,6 +163,7 @@ class GGUFReasoningBackend:
         self.unload_model()
         trainer = GGUFLoRATrainer(
             model_path=self.model_path,
+            base_model_id=self.training_base_model_id,
             adapter_root=self.adapter_root,
         )
         try:
@@ -167,14 +195,59 @@ class GGUFReasoningBackend:
             raise
 
     def supports_media_input(self, kind: str) -> bool:
-        """Current llama.cpp integration has a real local image handler only when mmproj loaded."""
+        """Bonsai GGUF accepts images and sampled-video frames when its projector is loaded."""
         return (
-            str(kind or "").lower() == "image"
+            str(kind or "").lower() in {"image", "video"}
             and self.model is not None
             and self.chat_handler is not None
         )
 
+    @staticmethod
+    def _image_data_url_from_bytes(raw: bytes, mime: str = "image/jpeg") -> str:
+        return "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
+
+    def _video_frame_data_urls(self, path: str, max_frames: int = 8) -> List[str]:
+        import imageio.v3 as iio
+        from PIL import Image
+
+        arrays = []
+        try:
+            meta = iio.immeta(path)
+            total = int(meta.get("nframes") or meta.get("n_images") or 0)
+        except Exception:
+            total = 0
+
+        if total > 0:
+            indices = sorted({
+                int(round(i * max(0, total - 1) / max(1, max_frames - 1)))
+                for i in range(max_frames)
+            })
+            for idx in indices:
+                try:
+                    arrays.append(iio.imread(path, index=idx))
+                except Exception:
+                    pass
+        else:
+            try:
+                for idx, frame in enumerate(iio.imiter(path)):
+                    if idx >= max_frames:
+                        break
+                    arrays.append(frame)
+            except Exception:
+                pass
+
+        if not arrays:
+            raise RuntimeError("Video contained no decodable frames")
+
+        urls: List[str] = []
+        for array in arrays:
+            buf = io.BytesIO()
+            Image.fromarray(array).convert("RGB").save(buf, format="JPEG", quality=90)
+            urls.append(self._image_data_url_from_bytes(buf.getvalue(), "image/jpeg"))
+        return urls
+
     def review_media_input(self, path: str, kind: str, prompt: str = "") -> Dict[str, Any]:
+        kind = str(kind or "").lower()
         if not self.supports_media_input(kind):
             return {
                 "perception_available": False,
@@ -182,52 +255,58 @@ class GGUFReasoningBackend:
             }
         if not os.path.isfile(path):
             raise ValueError("Media input file is missing")
-        with open(path, "rb") as handle:
-            raw = handle.read()
-        if len(raw) > 64 * 1024 * 1024:
-            raise ValueError("Image review input is limited to 64 MiB")
-        mime = mimetypes.guess_type(path)[0] or "image/jpeg"
-        data_url = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
-        task = str(prompt or "").strip() or "Describe what is actually visible in this image."
+
+        task = str(prompt or "").strip() or f"Describe what is actually visible in this {kind}."
         review_prompt = (
             task
             + "\nReturn JSON only with keys description, score, reasoning. "
-              "score must be a number from 0 to 100 representing how well the visible image satisfies the request. "
+              "score must be a number from 0 to 100 representing how well the supplied media satisfies the request. "
               "Do not infer unseen content."
         )
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": review_prompt}]
+        if kind == "image":
+            if os.path.getsize(path) > 64 * 1024 * 1024:
+                raise ValueError("Image review input is limited to 64 MiB")
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": self._image_data_url_from_bytes(raw, mime)},
+            })
+        else:
+            for frame_url in self._video_frame_data_urls(path):
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": frame_url},
+                })
+
         result = self.model.create_chat_completion(
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": review_prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }],
+            messages=[{"role": "user", "content": content}],
             temperature=0.0,
             max_tokens=768,
         )
         text = str(result.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
         match = re.search(r"\{[\s\S]*\}", text)
-        parsed = {}
+        parsed: Dict[str, Any] = {}
         if match:
             try:
                 parsed = json.loads(match.group(0))
             except Exception:
                 parsed = {}
         score = parsed.get("score")
-        if not isinstance(score, (int, float)):
-            return {
-                "perception_available": True,
-                "description": parsed.get("description") or text,
-                "analysis": parsed.get("reasoning") or text,
-                "reason": "Model inspected the image but did not return a numeric self-grade.",
-            }
-        return {
+        response = {
             "perception_available": True,
-            "description": str(parsed.get("description") or ""),
-            "analysis": str(parsed.get("reasoning") or ""),
-            "score": max(0.0, min(100.0, float(score))),
+            "description": str(parsed.get("description") or text),
+            "analysis": str(parsed.get("reasoning") or text),
         }
+        if isinstance(score, (int, float)):
+            response["score"] = max(0.0, min(100.0, float(score)))
+        else:
+            response["reason"] = "Model inspected the media but did not return a numeric self-grade."
+        return response
+
 
     def generate_branches(
         self,
