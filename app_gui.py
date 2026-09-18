@@ -584,12 +584,13 @@ class SmartAIChatbotApp:
         # Thread-Safe Event Queue for Background Worker & Watchdog Callbacks
         self._event_queue: queue.Queue = queue.Queue()
 
-        # System RAM Pressure Watchdog with Proactive Reclaim (98.5% limit, up to 15.8GB)
+        # System RAM Pressure Watchdog: 13 GB hard process/model ceiling,
+        # with proactive reclaim beginning at 12.5 GB inside SystemMemoryWatchdog.
         self.watchdog = SystemMemoryWatchdog(
             check_interval_seconds=3.0,
             max_ram_usage_percent=98.5,
             min_free_ram_gb=0.15,
-            max_process_ram_gb=15.8,
+            max_process_ram_gb=13.0,
             on_pressure_callback=lambda s: self._event_queue.put(("memory_pressure", s))
         )
         self.watchdog.start_monitoring()
