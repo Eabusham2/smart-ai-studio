@@ -16,6 +16,7 @@ imageio-ffmpeg>=0.5.1
 imageio>=2.35.0
 diffusers>=0.35.0
 mlx-audio>=0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
+turboquant-mlx-full; sys_platform == "darwin" and platform_machine == "arm64"
 mflux; sys_platform == "darwin" and platform_machine == "arm64"
 pytest>=7.0.0
 swebench==5.0.2
