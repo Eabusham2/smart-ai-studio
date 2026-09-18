@@ -2759,55 +2759,85 @@ class SmartAIChatbotApp:
 
     def _on_toggle_load_unload(self):
         target_info = self.models_config[self.active_tab_id]
+        model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
+        repo_id = str(target_info.get("repo_id") or "")
+        cached = is_model_cached_locally(repo_id) if repo_id else (
+            os.path.exists(m_path or "") if m_path else False
+        )
 
         if self.is_model_loaded:
-            self.engine.unload_model()
+            if model_type == "text":
+                self.engine.unload_model()
+            elif model_type == "audio":
+                self.audio_engine.unload_model()
             self.is_model_loaded = False
-            self.lbl_model_status.configure(text=f"○ Unloaded ({target_info['short_name']})", fg=self.C["accent_yellow"])
+            self.lbl_model_status.configure(
+                text=f"○ Unloaded ({target_info['short_name']})", fg=self.C["accent_yellow"]
+            )
             self._update_memory_hud_badge()
             self._update_model_action_buttons()
             self._update_resource_view_metrics()
             self._update_input_lock_state()
-            self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}` purged from unified memory.")
-        else:
-            popup, update_cb = self._show_model_loading_popup(target_info["name"], target_info.get("vram", "14.5 GB / 16 GB"))
+            self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}`.")
+            return
 
-            def _do_load():
-                load_res = self.engine.load_model(target_info["name"], model_path=m_path)
-                def _done():
-                    if popup:
-                        try:
-                            popup.destroy()
-                        except Exception:
-                            pass
+        if not cached and repo_id:
+            self._on_download_hf_model()
+            return
 
-                    if load_res.get("status") == "loaded":
-                        self.is_model_loaded = True
-                        self.lbl_model_status.configure(text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"])
-                        self._update_memory_hud_badge()
-                        self._update_model_action_buttons()
-                        self._update_resource_view_metrics()
-                        self._update_input_lock_state()
-                        self._append_ai_message(f"⚡ **Model Loaded**: `{target_info['name']}` is active in Apple Silicon unified memory.")
-                    else:
-                        self.is_model_loaded = False
-                        self.lbl_model_status.configure(text=f"○ Not Downloaded ({target_info['short_name']})", fg=self.C["accent_yellow"])
-                        self._update_memory_hud_badge()
-                        self._update_model_action_buttons()
-                        self._update_input_lock_state()
-                        self._append_ai_message(
-                            f"⚠️ Model weights for `{target_info['name']}` are not yet loaded or downloaded.\n\n"
-                            f"• Click **'⬇️ Install'** or **'📥 Grab'** in the top bar to retrieve the weights."
-                        )
+        popup, _update_cb = self._show_model_loading_popup(
+            target_info["name"], target_info.get("vram", "Auto")
+        )
 
-                if self.root.winfo_exists():
-                    self.root.after(0, _done)
-
-            if self.root.winfo_viewable():
-                threading.Thread(target=_do_load, daemon=True).start()
+        def _do_load():
+            if model_type == "text":
+                if not bool(target_info.get("ternary", False)):
+                    load_res = {"status": "error", "error": "Non-ternary text model rejected."}
+                else:
+                    load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+            elif model_type == "audio":
+                load_res = self.audio_engine.load_model(target_info)
             else:
-                _do_load()
+                # Image/video pipelines are lazy-loaded by their generation backend.
+                load_res = {"status": "loaded", "backend": f"{model_type}-lazy"}
+
+            def _done():
+                if popup:
+                    try:
+                        popup.destroy()
+                    except Exception:
+                        pass
+
+                if load_res.get("status") == "loaded":
+                    self.is_model_loaded = True
+                    label = "Audio Loaded" if model_type == "audio" else "Media Ready" if model_type != "text" else "Loaded"
+                    self.lbl_model_status.configure(
+                        text=f"● {label}: {target_info['short_name']}", fg=self.C["accent_green"]
+                    )
+                    self._append_ai_message(
+                        f"⚡ **{label}**: `{target_info['name']}` is ready."
+                    )
+                else:
+                    self.is_model_loaded = False
+                    error = str(load_res.get("error") or "Model could not be loaded.")
+                    self.lbl_model_status.configure(
+                        text=f"⚠ Load Failed ({target_info['short_name']})", fg=self.C["accent_red"]
+                    )
+                    self._append_ai_message(f"⚠️ **Load failed**: {error}")
+
+                self._update_memory_hud_badge()
+                self._update_model_action_buttons()
+                self._update_resource_view_metrics()
+                self._update_input_lock_state()
+
+            if self.root.winfo_exists():
+                self.root.after(0, _done)
+
+        if self.root.winfo_viewable():
+            threading.Thread(target=_do_load, daemon=True).start()
+        else:
+            _do_load()
 
     def _append_rendered_user_turn(self, text: str):
         self.chat_stream.insert("end", f"\n👤 You\n", "user_header")
@@ -2833,12 +2863,12 @@ class SmartAIChatbotApp:
             return
         self.active_tab_id = target_tab_id
         target_info = self.models_config[target_tab_id]
+        model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
 
         if hasattr(self, "model_var"):
             self.model_var.set(target_info["short_name"])
 
-        # Switch chat stream content to this model's distinct conversation
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
 
@@ -2860,28 +2890,84 @@ class SmartAIChatbotApp:
         self.chat_stream.configure(state="disabled")
         self._scroll_chat_to_bottom()
 
-        # Handle model loading
-        self.engine.unload_model()
-        load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+        # Strict single active generation model. Media never enters the Pro text engine.
+        try:
+            self.engine.unload_model()
+        except Exception:
+            pass
+        try:
+            self.audio_engine.unload_model()
+        except Exception:
+            pass
 
-        if load_res.get("status") == "loaded":
-            self.is_model_loaded = True
-            self.lbl_model_status.configure(text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"])
-            self._update_memory_hud_badge()
+        repo_id = str(target_info.get("repo_id") or "")
+        cached = is_model_cached_locally(repo_id) if repo_id else (
+            os.path.exists(m_path or "") if m_path else False
+        )
+
+        if model_type == "text":
+            if not bool(target_info.get("ternary", False)):
+                self.is_model_loaded = False
+                self.lbl_model_status.configure(
+                    text=f"✗ Rejected non-ternary text model ({target_info['short_name']})",
+                    fg=self.C["accent_red"],
+                )
+            else:
+                load_res = self.engine.load_model(target_info["name"], model_path=m_path)
+                self.is_model_loaded = bool(load_res.get("status") == "loaded")
+                if self.is_model_loaded:
+                    self.lbl_model_status.configure(
+                        text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"]
+                    )
+                else:
+                    status_txt = (
+                        f"⚡ Ready to Load ({target_info['short_name']})"
+                        if cached else f"○ Not Downloaded ({target_info['short_name']})"
+                    )
+                    self.lbl_model_status.configure(
+                        text=status_txt,
+                        fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"],
+                    )
+        elif model_type == "audio":
+            if cached:
+                load_res = self.audio_engine.load_model(target_info)
+                self.is_model_loaded = bool(load_res.get("status") == "loaded")
+                if self.is_model_loaded:
+                    self.lbl_model_status.configure(
+                        text=f"● Audio Loaded: {target_info['short_name']}", fg=self.C["accent_green"]
+                    )
+                else:
+                    self.lbl_model_status.configure(
+                        text=f"⚠ Audio runtime needed ({target_info['short_name']})",
+                        fg=self.C["accent_yellow"],
+                    )
+            else:
+                self.is_model_loaded = False
+                self.lbl_model_status.configure(
+                    text=f"○ Not Downloaded ({target_info['short_name']})", fg=self.C["accent_yellow"]
+                )
         else:
-            self.is_model_loaded = False
-            cached = is_model_cached_locally(target_info["repo_id"]) if target_info.get("repo_id") else (os.path.exists(m_path or "") if m_path else False)
-            status_txt = f"⚡ Ready to Load ({target_info['short_name']})" if cached else f"○ Not Downloaded ({target_info['short_name']})"
-            self.lbl_model_status.configure(text=status_txt, fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"])
-            self._update_memory_hud_badge()
+            # Image/video runtimes load lazily at generation time. Cached means ready,
+            # never "loaded into Pro".
+            self.is_model_loaded = bool(cached)
+            self.lbl_model_status.configure(
+                text=(
+                    f"● Media Ready: {target_info['short_name']}"
+                    if cached else f"○ Not Downloaded ({target_info['short_name']})"
+                ),
+                fg=self.C["accent_green"] if cached else self.C["accent_yellow"],
+            )
 
+        self._update_memory_hud_badge()
         self._update_model_action_buttons()
-        total_p = target_info.get("raw_params", 27_400_000_000) + self.synapses_learned_count
-        param_str = format_parameter_count(total_p)
+        total_p = target_info.get("raw_params", 0) + (
+            self.synapses_learned_count if model_type == "text" else 0
+        )
+        param_str = format_parameter_count(total_p) if total_p else target_info.get("base_params", "—")
         self.lbl_params.configure(text=f"🧠 {param_str} Total Params")
         if hasattr(self, "lbl_model_speed_params"):
             self.lbl_model_speed_params.configure(
-                text=f"{target_info.get('est_speed', '⚡ ~28 t/s')} • {target_info.get('base_params', '27.4B')}"
+                text=f"{target_info.get('est_speed', '⚡ Auto')} • {target_info.get('base_params', '—')}"
             )
         self._update_resource_view_metrics()
         self._update_input_lock_state()
@@ -3299,6 +3385,49 @@ class SmartAIChatbotApp:
             response_text = None
             thinking_text = None
             matched = False
+
+            active_info = self.models_config.get(self.active_tab_id, {})
+            active_type = str(active_info.get("model_type", "text") or "text").lower()
+
+            if active_type == "audio":
+                if not self.is_model_loaded:
+                    self.root.after(0, lambda: self._append_ai_message(
+                        "⚠️ Load the selected audio model before generating."
+                    ))
+                    return
+                output_dir = self.workspace_dir or os.getcwd()
+                output_path = os.path.join(
+                    output_dir, f"audio_{int(time.time())}.wav"
+                )
+                audio_res = self.audio_engine.generate(
+                    full_msg,
+                    output_path=output_path,
+                    duration_seconds=10.0,
+                )
+                if audio_res.get("status") == "success":
+                    path = str(audio_res.get("path") or output_path)
+                    backend = str(audio_res.get("backend") or "audio")
+                    self.root.after(0, lambda p=path, b=backend: self._append_ai_message(
+                        f"🎵 **Audio generated** with {b}: `{p}`"
+                    ))
+                else:
+                    error = str(audio_res.get("error") or "Audio generation failed.")
+                    self.root.after(0, lambda e=error: self._append_ai_message(
+                        f"⚠️ **Audio generation failed**: {e}"
+                    ))
+                return
+
+            if active_type in ("image", "video"):
+                tool_name = "generate_image_diffusion" if active_type == "image" else "generate_video_diffusion"
+                args = {
+                    "prompt": full_msg,
+                    "model_id": active_info.get("repo_id"),
+                }
+                ok, res = self.tools.execute_tool(tool_name, args)
+                self.root.after(0, lambda tn=tool_name, r=res: self._append_tool_call(tn, "", r))
+                if not ok:
+                    self.root.after(0, lambda r=res: self._append_ai_message(f"⚠️ {r}"))
+                return
 
             # 1. Autonomous Learning Mode (/learn or learn <topic>)
             if msg_lower.startswith("/learn") or msg_lower.startswith("learn "):
