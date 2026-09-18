@@ -207,11 +207,11 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "precision": "Ternary Bonsai 2 + weight-level CRACK abliteration; vision/video preserved",
         "runtime_family": "bonsai2_hadamard",
         "max_context": 262_144,
-        "vram": "~8.2 GB MLX / ~7.8 GB GGUF + Q8 vision",
+        "vram": "~8.2 GB MLX / ~6.6 GB GGUF + Q8 vision",
         "accent": "#f43f5e",
         "artifacts": {
             "mlx": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG",
-            "gguf": "dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF"
+            "gguf": "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF"
         },
         "default_repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG"
     },
