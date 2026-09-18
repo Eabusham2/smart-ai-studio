@@ -32,6 +32,7 @@ class SystemMemoryWatchdog:
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._stop_event: Optional[threading.Event] = None
         self.last_check_status: Dict[str, Any] = {}
 
     @staticmethod
@@ -190,8 +191,9 @@ class SystemMemoryWatchdog:
         # Dynamically scale Metal cache headroom based on available memory
         self.adjust_dynamic_metal_headroom()
 
-        # Reclaim before the 13 GB hard process/model ceiling.
-        if status.get("process_rss_gb", 0) >= 12.5:
+        # Reclaim slightly before the user-selected hard process/model ceiling.
+        proactive_limit = max(0.5, float(self.max_process_ram_gb) - 0.5)
+        if status.get("process_rss_gb", 0) >= proactive_limit:
             self.reclaim_process_memory()
 
         is_under_pressure = (
@@ -202,24 +204,39 @@ class SystemMemoryWatchdog:
 
         return is_under_pressure, status
 
+    def set_memory_limit_gb(self, limit_gb: float):
+        """Updates the live hard ceiling without restarting the monitor."""
+        self.max_process_ram_gb = max(0.5, float(limit_gb))
+
     def start_monitoring(self):
-        """Launches continuous watchdog background thread."""
-        if self._running:
+        """Launches one continuous watchdog background thread."""
+        if self._running and self._thread is not None and self._thread.is_alive():
             return
         self._running = True
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        stop_event = threading.Event()
+        self._stop_event = stop_event
+        self._thread = threading.Thread(
+            target=self._monitor_loop,
+            args=(stop_event,),
+            daemon=True,
+        )
         self._thread.start()
 
     def stop_monitoring(self):
-        """Stops background watchdog."""
+        """Stops the current watchdog run without affecting a later restart."""
         self._running = False
+        stop_event = self._stop_event
+        if stop_event is not None:
+            stop_event.set()
+        self._stop_event = None
+        self._thread = None
 
-    def _monitor_loop(self):
-        while self._running:
+    def _monitor_loop(self, stop_event: threading.Event):
+        while not stop_event.is_set():
             try:
                 pressure, status = self.check_memory_pressure()
                 if pressure and self.on_pressure_callback:
                     self.on_pressure_callback(status)
             except Exception:
                 pass
-            time.sleep(self.check_interval_seconds)
+            stop_event.wait(self.check_interval_seconds)
