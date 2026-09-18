@@ -86,6 +86,17 @@ class GGUFReasoningBackend:
             self.model = None
             return False
 
+    def training_ready(self) -> bool:
+        """Return True only when the exact-GGUF LoRA trainer can be prepared."""
+        if not self.is_gguf_available or not os.path.isfile(self.model_path):
+            return False
+        try:
+            from core.gguf_lora_trainer import GGUFLoRATrainer
+            trainer = GGUFLoRATrainer(model_path=self.model_path, adapter_root=self.adapter_root)
+            return bool(trainer.can_prepare())
+        except Exception:
+            return False
+
     @property
     def tokenizer(self):
         """Compatibility tokenizer facade for the shared Learn/awake trainer contract."""
@@ -111,11 +122,11 @@ class GGUFReasoningBackend:
         save_path: Optional[str] = None,
         **_kwargs,
     ):
-        """Train a real PEFT LoRA sidecar, convert to GGUF-LoRA, then hot-reload llama.cpp."""
+        """Train a real LoRA directly on this exact GGUF, then hot-reload llama.cpp."""
         del adapters, fisher_matrix, lambda_ewc, save_path
         from core.gguf_lora_trainer import GGUFLoRATrainer
 
-        # Free inference weights before loading the 27B QLoRA training graph.
+        # Free inference weights before the native exact-GGUF training pass.
         self.unload_model()
         trainer = GGUFLoRATrainer(
             model_path=self.model_path,
