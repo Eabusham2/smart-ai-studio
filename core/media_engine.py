@@ -12,7 +12,7 @@ import platform
 import shutil
 import subprocess
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 
 class MediaGenerationEngine:
@@ -78,6 +78,7 @@ class MediaGenerationEngine:
         model_info: Dict[str, Any],
         prompt: str,
         output_path: Optional[str] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> Dict[str, Any]:
         repo_id = str(model_info.get("repo_id") or "").strip()
         if not repo_id:
@@ -93,6 +94,8 @@ class MediaGenerationEngine:
         steps = int(model_info.get("inference_steps", 4) or 4)
 
         try:
+            if progress_callback:
+                progress_callback(0.03, "Preparing image pipeline")
             backend_hint = str(model_info.get("image_backend") or "diffusers").lower()
             if backend_hint == "mflux":
                 exe = shutil.which("mflux-generate-flux2")
@@ -110,6 +113,8 @@ class MediaGenerationEngine:
                     "--seed", str(int(model_info.get("seed", 42) or 42)),
                     "--output", output_path,
                 ]
+                if progress_callback:
+                    progress_callback(0.12, "Rendering image")
                 run = subprocess.run(cmd, capture_output=True, text=True)
                 if run.returncode != 0:
                     return {
@@ -123,19 +128,39 @@ class MediaGenerationEngine:
                         "error": "mflux returned successfully but did not write the output image.",
                         "repo_id": repo_id,
                     }
+                if progress_callback:
+                    progress_callback(1.0, "Image complete")
                 return {"status": "success", "path": output_path, "repo_id": repo_id}
 
             pipe = self._load_pipeline(repo_id)
-            result = pipe(
-                prompt=prompt,
-                num_inference_steps=max(1, steps),
-            )
+            if progress_callback:
+                progress_callback(0.12, "Model ready")
+
+            def _step_callback(_pipe, step, _timestep, callback_kwargs):
+                if progress_callback:
+                    frac = min(0.95, 0.12 + 0.80 * ((int(step) + 1) / max(1, steps)))
+                    progress_callback(frac, f"Denoising {int(step) + 1}/{max(1, steps)}")
+                return callback_kwargs
+
+            call_kwargs = {
+                "prompt": prompt,
+                "num_inference_steps": max(1, steps),
+            }
+            try:
+                result = pipe(
+                    **call_kwargs,
+                    callback_on_step_end=_step_callback,
+                )
+            except TypeError:
+                result = pipe(**call_kwargs)
             images = getattr(result, "images", None)
             if not images:
                 return {"status": "error", "error": "Image pipeline returned no image."}
             images[0].save(output_path)
             if not os.path.isfile(output_path):
                 return {"status": "error", "error": "Image pipeline did not write the output file."}
+            if progress_callback:
+                progress_callback(1.0, "Image complete")
             return {"status": "success", "path": output_path, "repo_id": repo_id}
         except Exception as exc:
             return {"status": "error", "error": str(exc), "repo_id": repo_id}
@@ -148,6 +173,7 @@ class MediaGenerationEngine:
         prompt: str,
         output_path: Optional[str] = None,
         frames: int = 49,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> Dict[str, Any]:
         repo_id = str(model_info.get("repo_id") or "").strip()
         if not repo_id:
@@ -163,20 +189,42 @@ class MediaGenerationEngine:
         steps = int(model_info.get("inference_steps", 30) or 30)
 
         try:
+            if progress_callback:
+                progress_callback(0.03, "Preparing video pipeline")
             from diffusers.utils import export_to_video
             pipe = self._load_pipeline(repo_id)
-            result = pipe(
-                prompt=prompt,
-                num_frames=max(1, int(frames)),
-                num_inference_steps=max(1, steps),
-            )
+            if progress_callback:
+                progress_callback(0.12, "Model ready")
+
+            def _step_callback(_pipe, step, _timestep, callback_kwargs):
+                if progress_callback:
+                    frac = min(0.92, 0.12 + 0.75 * ((int(step) + 1) / max(1, steps)))
+                    progress_callback(frac, f"Generating video {int(step) + 1}/{max(1, steps)}")
+                return callback_kwargs
+
+            call_kwargs = {
+                "prompt": prompt,
+                "num_frames": max(1, int(frames)),
+                "num_inference_steps": max(1, steps),
+            }
+            try:
+                result = pipe(
+                    **call_kwargs,
+                    callback_on_step_end=_step_callback,
+                )
+            except TypeError:
+                result = pipe(**call_kwargs)
             frame_sets = getattr(result, "frames", None)
             if not frame_sets:
                 return {"status": "error", "error": "Video pipeline returned no frames."}
             frames_out = frame_sets[0] if isinstance(frame_sets, (list, tuple)) and frame_sets else frame_sets
+            if progress_callback:
+                progress_callback(0.95, "Encoding video")
             export_to_video(frames_out, output_path, fps=16)
             if not os.path.isfile(output_path):
                 return {"status": "error", "error": "Video pipeline did not write the output file."}
+            if progress_callback:
+                progress_callback(1.0, "Video complete")
             return {"status": "success", "path": output_path, "repo_id": repo_id}
         except Exception as exc:
             return {"status": "error", "error": str(exc), "repo_id": repo_id}
