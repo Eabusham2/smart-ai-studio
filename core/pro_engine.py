@@ -307,14 +307,18 @@ class ProReasoningEngine:
                     self.active_model_path = target_path
                     self.gguf_backend = GGUFReasoningBackend(
                         model_path=target_path,
-                        mmproj_path=mmproj_path
+                        mmproj_path=mmproj_path,
+                        training_base_model_id=str(info.get("training_base_model_id") or "Qwen/Qwen3.8-27B"),
                     )
                     if self.gguf_backend.load_model():
+                        if hasattr(self, "awake_consolidator") and self.awake_consolidator:
+                            self.awake_consolidator.engine = self.gguf_backend
                         return {
                             "status": "loaded",
                             "model": model_name,
                             "backend": "gguf",
-                            "path": target_path
+                            "path": target_path,
+                            "trainable": callable(getattr(self.gguf_backend, "train_mini_batch", None)),
                         }
 
                 # 3. BitNet 1.58-Bit Pure Ternary Integer Engine
