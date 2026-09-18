@@ -249,24 +249,81 @@ class BitNetRebuildTrainer:
             raise RuntimeError("Official BitNet quantizer is unavailable")
 
         low_base = self.base_model_id.lower()
-        helper = source / "utils" / "convert-helper-bitnet.py"
+        # Microsoft's 2B BF16 master needs the official preprocessing step before
+        # conversion. Run the helper's exact underlying scripts ourselves so Windows
+        # can use build/bin/Release/llama-quantize.exe via _quantizer().
+        if low_base.startswith("microsoft/bitnet-b1.58-2b-4t"):
+            preprocess = source / "utils" / "preprocess-huggingface-bitnet.py"
+            converter_ms = source / "utils" / "convert-ms-to-gguf-bitnet.py"
+            model_file = Path(merged_dir) / "model.safetensors"
+            backup_file = Path(merged_dir) / "model.safetensors.pre-bitnet"
+            processed_file = Path(merged_dir) / "model.safetensors.processed"
+            f32 = Path(merged_dir) / "ggml-model-f32-bitnet.gguf"
 
-        # Microsoft's 2B BF16 master uses a dedicated preprocess/conversion helper.
-        # It expects one model.safetensors and writes ggml-model-i2s-bitnet.gguf.
-        if low_base.startswith("microsoft/bitnet-b1.58-2b-4t") and helper.is_file():
+            if not preprocess.is_file() or not converter_ms.is_file() or not model_file.is_file():
+                raise RuntimeError(
+                    "Official Microsoft BitNet preprocess/converter inputs are unavailable"
+                )
+
             proc = subprocess.run(
-                [sys.executable, str(helper), merged_dir],
+                [
+                    sys.executable,
+                    str(preprocess),
+                    "--input", str(model_file),
+                    "--output", str(processed_file),
+                ],
                 cwd=str(source),
                 capture_output=True,
                 text=True,
             )
-            produced = Path(merged_dir) / "ggml-model-i2s-bitnet.gguf"
-            if proc.returncode != 0 or not produced.is_file():
+            if proc.returncode != 0 or not processed_file.is_file():
                 raise RuntimeError(
-                    "Official Microsoft BitNet helper failed: "
-                    + (proc.stderr or proc.stdout or "I2_S GGUF was not produced").strip()
+                    "Microsoft BitNet preprocessing failed: "
+                    + (proc.stderr or proc.stdout or "preprocessed weights were not produced").strip()
                 )
-            shutil.copy2(str(produced), output_tmp)
+
+            os.replace(str(model_file), str(backup_file))
+            os.replace(str(processed_file), str(model_file))
+            try:
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(converter_ms),
+                        merged_dir,
+                        "--vocab-type", "bpe",
+                        "--outtype", "f32",
+                        "--concurrency", "1",
+                        "--outfile", str(f32),
+                    ],
+                    cwd=str(source),
+                    capture_output=True,
+                    text=True,
+                )
+                if proc.returncode != 0 or not f32.is_file():
+                    raise RuntimeError(
+                        "Microsoft BitNet BF16→GGUF conversion failed: "
+                        + (proc.stderr or proc.stdout or "f32 GGUF was not produced").strip()
+                    )
+            finally:
+                try:
+                    if model_file.is_file():
+                        model_file.unlink()
+                    if backup_file.is_file():
+                        os.replace(str(backup_file), str(model_file))
+                except OSError:
+                    pass
+
+            proc = subprocess.run(
+                [str(quantizer), str(f32), output_tmp, "I2_S", "1"],
+                cwd=str(source),
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0 or not os.path.isfile(output_tmp):
+                raise RuntimeError(
+                    "Microsoft BitNet I2_S quantization failed: "
+                    + (proc.stderr or proc.stdout or "learned I2_S GGUF was not produced").strip()
+                )
             return
 
         # Other official/community BitNet families use the generic converter path
