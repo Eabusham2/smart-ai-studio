@@ -62,16 +62,27 @@ class MediaLearningService:
 
         repo = str(info.get("repo_id", "") or "").lower()
         name = str(info.get("name", "") or "").lower()
+        precision = str(info.get("precision", "") or "").lower()
         kind = str(info.get("model_type", "") or "").lower()
+        blob = " ".join((repo, name, precision))
 
-        # Keep trainer selection beside the training service instead of scattering
-        # model-specific learning logic through the GUI/catalog.
-        if kind == "image" and repo == "sg161222/realvisxl_v5.0":
-            return "diffusers_sdxl"
-        if kind == "video" and ("cogvideox" in repo or "cogvideox" in name):
-            return "cogvideox_lora"
+        # Family-based selection makes the same Learn path work for built-ins and
+        # added/imported media models. Each backend still verifies actual runtime
+        # support before advertising itself as trainable.
+        if kind == "image":
+            if any(marker in blob for marker in ("sdxl", "stable-diffusion-xl", "realvisxl")):
+                return "diffusers_sdxl"
+            if "flux.2" in blob or "flux2" in blob or "flux-2" in blob:
+                return "flux2_lora"
+            if "z-image" in blob or "z_image" in blob:
+                return "mflux_image_lora"
+        if kind == "video":
+            if "cogvideox" in blob:
+                return "cogvideox_lora"
+            if any(marker in blob for marker in ("wan2.1", "wan-2.1", "wan2_1")):
+                return "wan21_lora"
         if kind == "audio" and (
-            "stable-audio-3" in repo
+            "stable-audio-3" in blob
             or str(info.get("audio_variant", "") or "") in ("small-music", "small-sfx")
         ):
             return "stable_audio3_lora"
