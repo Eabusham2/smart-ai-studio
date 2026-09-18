@@ -104,8 +104,10 @@ class TestHardwareAndMultiEngine(unittest.TestCase):
             self.assertIn("name", preset)
             self.assertIn("precision", preset)
         # Check specific flagship and diffusion presets
-        self.assertIn("Qwen", MODEL_PRESETS["model_1"]["name"])
+        self.assertIn("Bonsai 2", MODEL_PRESETS["model_1"]["name"])
+        self.assertIn("Multimodal", MODEL_PRESETS["model_1"]["name"])
         self.assertIn("Abliterated", MODEL_PRESETS["model_2"]["name"])
+        self.assertIn("CRACK", MODEL_PRESETS["model_2"]["name"])
         self.assertIn("RealVisXL", MODEL_PRESETS["model_3"]["name"])
         self.assertIn("Z-Image Turbo", MODEL_PRESETS["model_4"]["name"])
         self.assertIn("LTX-Video", MODEL_PRESETS["model_7"]["name"])
