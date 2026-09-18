@@ -23,10 +23,18 @@ _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
 
 
-def register_media_training_backend(name, factory):
-    """Trusted Python extension: returns module/loss/save hooks, not model-generated code."""
-    if not isinstance(name,str) or not name or not callable(factory):
+def register_media_training_backend(name, factory, matcher=None):
+    """Register a trusted trainer plus an optional capability matcher.
+
+    Matchers make media learning architecture/runtime driven rather than tied to
+    specific catalog IDs. Imported models receive the same resolution path.
+    """
+    if not isinstance(name, str) or not name or not callable(factory):
         raise ValueError("A named callable training adapter is required")
+    if matcher is not None and not callable(matcher):
+        raise ValueError("Media trainer matcher must be callable")
+    if matcher is not None:
+        factory.matches = matcher
     _FACTORIES[name] = factory
 
 
@@ -60,38 +68,24 @@ class MediaLearningService:
         if configured:
             return configured
 
-        repo = str(info.get("repo_id", "") or "").lower()
-        name = str(info.get("name", "") or "").lower()
-        precision = str(info.get("precision", "") or "").lower()
-        kind = str(info.get("model_type", "") or "").lower()
-        blob = " ".join((repo, name, precision))
-
-        # Family-based selection makes the same Learn path work for built-ins and
-        # added/imported media models. Each backend still verifies actual runtime
-        # support before advertising itself as trainable.
-        if kind == "image":
-            if any(marker in blob for marker in ("sdxl", "stable-diffusion-xl", "realvisxl")):
-                return "diffusers_sdxl"
-            if "flux.2" in blob or "flux2" in blob or "flux-2" in blob:
-                return "flux2_lora"
-            if "z-image" in blob or "z_image" in blob:
-                return "mflux_image_lora"
-        if kind == "video":
-            if "cogvideox" in blob:
-                return "cogvideox_lora"
-            if any(marker in blob for marker in ("wan2.1", "wan-2.1", "wan2_1")):
-                return "wan21_lora"
-        if kind == "audio" and (
-            "stable-audio-3" in blob
-            or str(info.get("audio_variant", "") or "") in ("small-music", "small-sfx")
-        ):
-            return "stable_audio3_lora"
+        # Resolve by trainer-declared capability, never by catalog slot/model ID.
+        # A new/imported model automatically becomes trainable when an installed
+        # backend says it can handle that architecture/runtime.
+        for name, factory in list(_FACTORIES.items()):
+            matcher = getattr(factory, "matches", None)
+            if not callable(matcher):
+                continue
+            try:
+                if bool(matcher(info)):
+                    return name
+            except Exception:
+                continue
         return ""
 
     def capabilities(self, info):
         backend = self._backend(info)
         factory = _FACTORIES.get(backend)
-        available = backend == "diffusers_sdxl" or callable(factory)
+        available = callable(factory)
         if callable(factory) and hasattr(factory, "available"):
             try:
                 available = bool(factory.available(info))
@@ -340,7 +334,7 @@ class MediaLearningService:
         with lock:
             session = None
             try:
-                factory = _sdxl_session if caps["backend"] == "diffusers_sdxl" else _FACTORIES[caps["backend"]]
+                factory = _FACTORIES[caps["backend"]]
                 session = factory(info,media_engine,audio_engine)
                 if callable(session.get("external_train")):
                     return self._external_update(session, samples, repo, cancel_event)
@@ -547,3 +541,17 @@ def _sdxl_session(info,media_engine,_audio_engine):
     except Exception:
         media_engine.unload_model()
         raise
+
+
+def _sdxl_matches(info):
+    repo = str(info.get("repo_id", "") or "").lower()
+    name = str(info.get("name", "") or "").lower()
+    precision = str(info.get("precision", "") or "").lower()
+    kind = str(info.get("model_type", "") or "").lower()
+    blob = " ".join((repo, name, precision))
+    return kind == "image" and any(
+        marker in blob for marker in ("sdxl", "stable-diffusion-xl", "realvisxl")
+    )
+
+
+register_media_training_backend("diffusers_sdxl", _sdxl_session, matcher=_sdxl_matches)
