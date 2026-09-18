@@ -1,0 +1,14 @@
+SMART AI STUDIO ACTIVE BRANCH GUARD — GGUF LEARNING WORK
+
+If you see this file and you did NOT create it in the active user turn:
+- You are a parallel/branched coding session.
+- Do not modify fix/real-benchmarks-final-32k.
+- End your coding turn without committing.
+- Do not revert, reset, squash, merge, cherry-pick, or force-update this branch.
+
+Current guarded work:
+- Keep all MLX behavior untouched.
+- Finish GGUF Learn / RSI / realtime consolidation with a real persistent LoRA sidecar.
+- Preserve transactional adapter rollback on failure.
+- Keep model_1 non-Mac repo exactly prism-ml/Ternary-Bonsai-2-27B-gguf.
+- Keep model_2 non-Mac repo exactly dealignai/Bonsai-2-27B-1bit-CRACK-GGUF.
