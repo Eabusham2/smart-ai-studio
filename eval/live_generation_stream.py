@@ -19,7 +19,7 @@ import psutil
 from datetime import datetime
 from typing import Any, Dict, List
 
-from core.turboquant_cache import make_turboquant_prompt_cache
+from mlx_lm.models.cache import make_prompt_cache
 from core.mlx_engine import _adaptive_prefill_step_size
 
 
@@ -290,14 +290,23 @@ def install_phase4_stream(phase4_module) -> None:
         branches: List[str] = []
         total_branches = len(temperatures)
         for branch_idx, temp in enumerate(temperatures, 1):
-            gc.collect(1)
+            # Keep allocator/kernel state warm between branches. Reclaim only if
+            # memory is genuinely tight; this does not change model outputs.
             try:
-                if hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                    mx.metal.clear_cache()
+                proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+                avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+                pressure = proc_gb >= 12.5 or avail_gb <= 0.75
             except Exception:
-                pass
+                pressure = False
+            if pressure:
+                gc.collect(1)
+                try:
+                    if hasattr(mx, "clear_cache"):
+                        mx.clear_cache()
+                    elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                        mx.metal.clear_cache()
+                except Exception:
+                    pass
 
             try:
                 sampler = make_sampler(temp=float(temp), top_p=top_p)
@@ -320,7 +329,7 @@ def install_phase4_stream(phase4_module) -> None:
                     prompt=prompt_ids,
                     max_tokens=max(1, int(max_tokens)),
                     sampler=sampler,
-                    prompt_cache=make_turboquant_prompt_cache(self.engine.model),
+                    prompt_cache=make_prompt_cache(self.engine.model),
                 )
                 for response in iterator:
                     chunk = getattr(response, "text", None)
