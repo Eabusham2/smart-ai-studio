@@ -126,7 +126,13 @@ class GGUFReasoningBackend:
         del adapters, fisher_matrix, lambda_ewc, save_path
         from core.gguf_lora_trainer import GGUFLoRATrainer
 
-        # Free inference weights before the native exact-GGUF training pass.
+        # Preserve the currently working learned state until the new update has
+        # both trained and reloaded successfully.
+        backup_path = self.adapter_path + ".previous"
+        had_adapter = os.path.isfile(self.adapter_path)
+        if had_adapter:
+            shutil.copy2(self.adapter_path, backup_path)
+
         self.unload_model()
         trainer = GGUFLoRATrainer(
             model_path=self.model_path,
@@ -140,14 +146,25 @@ class GGUFReasoningBackend:
             )
             self.adapter_path = adapter_path
             self.adapters = dict(meta or {})
+            if not self.load_model():
+                raise RuntimeError("GGUF LoRA trained successfully but llama.cpp failed to reload it")
+            try:
+                os.remove(backup_path)
+            except OSError:
+                pass
+            return dict(self.adapters), float(drift)
         except Exception:
-            # Keep inference available even if the training toolchain is unavailable.
+            # Roll back the adapter atomically and restore inference. Never leave a
+            # failed consolidation as the live parameter state.
+            if os.path.isfile(backup_path):
+                os.replace(backup_path, self.adapter_path)
+            elif not had_adapter:
+                try:
+                    os.remove(self.adapter_path)
+                except OSError:
+                    pass
             self.load_model()
             raise
-
-        if not self.load_model():
-            raise RuntimeError("GGUF LoRA trained successfully but llama.cpp failed to reload it")
-        return dict(self.adapters), float(drift)
 
     def supports_media_input(self, kind: str) -> bool:
         """Current llama.cpp integration has a real local image handler only when mmproj loaded."""
