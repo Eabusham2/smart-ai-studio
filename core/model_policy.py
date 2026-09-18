@@ -51,6 +51,36 @@ def _has_ternary_proof(values: Iterable[Any]) -> bool:
     return any(marker.lower() in text for marker in TERNARY_MARKERS)
 
 
+def infer_input_modalities(*values: Any) -> list[str]:
+    """Conservative input-capability inference for imported text controllers."""
+    blob = _blob(values)
+    modalities = {"text"}
+
+    image_markers = (
+        "image-text-to-text", "image-to-text", "visual-question-answering",
+        "vision-language", "vision_language", "vlm", "qwen-vl", "qwen2-vl",
+        "qwen2.5-vl", "qwen3-vl", "llava", "idefics", "pixtral",
+        "image_input", "pixel_values",
+    )
+    audio_markers = (
+        "audio-text-to-text", "audio-to-text", "audio-language",
+        "audio_language", "speech-language", "speech_language",
+        "input_audio", "audio_values", "qwen-audio",
+    )
+    video_markers = (
+        "video-text-to-text", "video-language", "video_language",
+        "video_input", "video_values", "video-llava",
+    )
+
+    if any(marker in blob for marker in image_markers):
+        modalities.add("image")
+    if any(marker in blob for marker in audio_markers):
+        modalities.add("audio")
+    if any(marker in blob for marker in video_markers):
+        modalities.add("video")
+    return sorted(modalities)
+
+
 def _classify_pipeline(pipeline_tag: str, tags: Iterable[str]) -> str:
     blob = _blob((pipeline_tag, *list(tags)))
     if any(marker in blob for marker in MEDIA_PIPELINE_MARKERS):
@@ -77,6 +107,7 @@ def inspect_hf_model(repo_id: str) -> Dict[str, Any]:
         model_id = str(getattr(info, "id", repo_id) or repo_id)
         task = _classify_pipeline(pipeline_tag, tags)
         ternary = _has_ternary_proof((model_id, pipeline_tag, library_name, *tags))
+        input_modalities = infer_input_modalities(model_id, pipeline_tag, library_name, *tags)
         return {
             "ok": True,
             "repo_id": model_id,
@@ -85,6 +116,7 @@ def inspect_hf_model(repo_id: str) -> Dict[str, Any]:
             "tags": tags,
             "task": task,
             "ternary": bool(ternary),
+            "input_modalities": input_modalities,
         }
     except Exception as exc:
         return {
@@ -160,7 +192,13 @@ def inspect_local_model(path: str) -> Dict[str, Any]:
     )
     task = "media" if media and not text else "text" if text else "unknown"
     ternary = _has_ternary_proof(snippets)
-    return {"ok": True, "path": expanded, "task": task, "ternary": bool(ternary)}
+    return {
+        "ok": True,
+        "path": expanded,
+        "task": task,
+        "ternary": bool(ternary),
+        "input_modalities": infer_input_modalities(*snippets),
+    }
 
 
 def enforce_local_text_ternary(path: str) -> Tuple[bool, str, Dict[str, Any]]:
