@@ -540,3 +540,239 @@ register_media_training_backend(
     wan21_factory,
     matcher=_wan21_matches,
 )
+
+
+# ---- Generic Diffusers DreamBooth LoRA families ---------------------------
+
+def _diffusers_script(*names: str):
+    relatives = []
+    for name in names:
+        relatives.extend([
+            f"examples/dreambooth/{name}",
+            f"../examples/dreambooth/{name}",
+            f"../../examples/dreambooth/{name}",
+        ])
+    return _find_script("DIFFUSERS_SOURCE_ROOT", "diffusers", relatives)
+
+
+def _copy_images_for_dreambooth(samples, target: Path):
+    target.mkdir(parents=True, exist_ok=True)
+    for index, sample in enumerate(samples):
+        src = Path(sample["path"]).resolve()
+        dst = target / f"{index:04d}{src.suffix.lower()}"
+        shutil.copy2(src, dst)
+    return str(samples[0]["caption"])
+
+
+def _dreambooth_factory(info, backend_name: str, script_names: tuple[str, ...], extra_args=None):
+    script = _diffusers_script(*script_names)
+    accelerate = shutil.which("accelerate")
+    if script is None or accelerate is None:
+        raise RuntimeError(f"{backend_name} requires a current Diffusers source checkout and accelerate")
+    repo = _training_repo(info)
+    if not repo:
+        raise RuntimeError("No differentiable training checkpoint could be resolved")
+
+    def train(samples, output_dir: Path, cancel_event=None):
+        data = output_dir / "data"
+        instance_prompt = _copy_images_for_dreambooth(samples, data)
+        steps = max(8, len(samples) * 4)
+        command = [
+            accelerate, "launch", str(script),
+            "--pretrained_model_name_or_path", repo,
+            "--instance_data_dir", str(data),
+            "--instance_prompt", instance_prompt,
+            "--output_dir", str(output_dir),
+            "--resolution", "512",
+            "--train_batch_size", "1",
+            "--gradient_accumulation_steps", "1",
+            "--gradient_checkpointing",
+            "--learning_rate", "0.0001",
+            "--max_train_steps", str(steps),
+            "--rank", "8",
+            "--seed", "42",
+        ]
+        if extra_args:
+            command.extend(list(extra_args))
+        lines = _run_cancelable(command, cancel_event, cwd=script.parent)
+        return {
+            "trainer": backend_name,
+            "training_repo_id": repo,
+            "log_tail": lines[-12:],
+        }
+
+    return {
+        "backend": backend_name,
+        "external_train": train,
+        "verify_saved": _verify_safetensors,
+    }
+
+
+def _flux2_script_for(info):
+    blob = _arch_blob(info)
+    if "klein" in blob:
+        return ("train_dreambooth_lora_flux2_klein.py",)
+    return ("train_dreambooth_lora_flux2.py",)
+
+
+def _flux2_available(info):
+    return _diffusers_script(*_flux2_script_for(info)) is not None and shutil.which("accelerate") is not None
+
+
+def flux2_factory(info, _media_engine, _audio_engine):
+    return _dreambooth_factory(
+        info,
+        "flux2_lora",
+        _flux2_script_for(info),
+        extra_args=("--mixed_precision", "bf16", "--cache_latents"),
+    )
+
+
+def _flux2_matches(info):
+    if str(info.get("model_type") or "").lower() != "image":
+        return False
+    blob = _arch_blob(info)
+    return "flux2" in blob or "flux.2" in blob or "flux2pipeline" in blob
+
+
+flux2_factory.available = _flux2_available
+register_media_training_backend("flux2_lora", flux2_factory, matcher=_flux2_matches)
+
+
+def _zimage_available(info):
+    return _diffusers_script("train_dreambooth_lora_z_image.py") is not None and shutil.which("accelerate") is not None
+
+
+def zimage_factory(info, _media_engine, _audio_engine):
+    return _dreambooth_factory(
+        info,
+        "zimage_lora",
+        ("train_dreambooth_lora_z_image.py",),
+        extra_args=("--mixed_precision", "bf16", "--cache_latents"),
+    )
+
+
+def _zimage_matches(info):
+    if str(info.get("model_type") or "").lower() != "image":
+        return False
+    blob = _arch_blob(info)
+    return "zimage" in blob or "z-image" in blob or "zimagepipeline" in blob
+
+
+zimage_factory.available = _zimage_available
+register_media_training_backend("zimage_lora", zimage_factory, matcher=_zimage_matches)
+
+
+# ---- Generic Finetrainers architecture fallback ---------------------------
+
+_FINETRAINERS_MODEL_CACHE: dict[str, str] = {}
+
+
+def _finetrainers_root() -> Path | None:
+    env = os.environ.get("FINETRAINERS_ROOT")
+    if env:
+        root = Path(env).expanduser().resolve()
+        if (root / "train.py").is_file():
+            return root
+    try:
+        spec = importlib.util.find_spec("finetrainers")
+        if spec and spec.origin:
+            pkg = Path(spec.origin).resolve().parent
+            for root in (pkg.parent, pkg.parent.parent):
+                if (root / "train.py").is_file():
+                    return root
+    except Exception:
+        pass
+    return None
+
+
+def _finetrainers_model_name(info) -> str:
+    cls = _pipeline_class(info).lower()
+    blob = _arch_blob(info)
+    if "wan" in cls or "wanpipeline" in blob:
+        return "wan"
+    if "ltx" in cls or "ltxvideo" in blob or "ltx-video" in blob:
+        return "ltx_video"
+    if "hunyuanvideo" in cls or "hunyuanvideo" in blob:
+        return "hunyuan_video"
+    if "cogview4" in cls or "cogview4" in blob:
+        return "cogview4"
+    if cls == "fluxpipeline" or "flux.1" in blob or "flux1" in blob:
+        return "flux"
+    return ""
+
+
+def _finetrainers_available(info):
+    return _finetrainers_root() is not None and bool(_finetrainers_model_name(info))
+
+
+def finetrainers_factory(info, _media_engine, _audio_engine):
+    root = _finetrainers_root()
+    model_name = _finetrainers_model_name(info)
+    if root is None or not model_name:
+        raise RuntimeError("No compatible Finetrainers architecture is installed")
+    repo = _training_repo(info)
+    kind = str(info.get("model_type") or "").lower()
+    if kind not in ("image", "video"):
+        raise RuntimeError("Finetrainers fallback supports image/video diffusion models")
+
+    def train(samples, output_dir: Path, cancel_event=None):
+        data = output_dir / "data"
+        _copy_pairs(samples, data, kind)
+        config = {
+            "datasets": [{
+                "data_root": str(data),
+                "dataset_type": kind,
+                "id_token": "SMART_AI_MEDIA",
+                **(
+                    {"video_resolution_buckets": [[17, 256, 384]]}
+                    if kind == "video"
+                    else {"image_resolution_buckets": [[512, 512]]}
+                ),
+                "reshape_mode": "bicubic",
+            }]
+        }
+        dataset_config = output_dir / "dataset_config.json"
+        dataset_config.write_text(json.dumps(config), encoding="utf-8")
+        steps = max(8, len(samples) * 4)
+        command = [
+            sys.executable, str(root / "train.py"),
+            "--model_name", model_name,
+            "--pretrained_model_name_or_path", repo,
+            "--dataset_config", str(dataset_config),
+            "--training_type", "lora",
+            "--seed", "42",
+            "--batch_size", "1",
+            "--train_steps", str(steps),
+            "--rank", "8",
+            "--lora_alpha", "8",
+            "--gradient_accumulation_steps", "1",
+            "--gradient_checkpointing",
+            "--optimizer", "adamw",
+            "--lr", "0.0001",
+            "--output_dir", str(output_dir),
+        ]
+        lines = _run_cancelable(command, cancel_event, cwd=root)
+        return {
+            "trainer": f"finetrainers-{model_name}",
+            "training_repo_id": repo,
+            "log_tail": lines[-12:],
+        }
+
+    return {
+        "backend": "finetrainers_lora",
+        "external_train": train,
+        "verify_saved": _verify_safetensors,
+    }
+
+
+def _finetrainers_matches(info):
+    return str(info.get("model_type") or "").lower() in ("image", "video") and bool(_finetrainers_model_name(info))
+
+
+finetrainers_factory.available = _finetrainers_available
+register_media_training_backend(
+    "finetrainers_lora",
+    finetrainers_factory,
+    matcher=_finetrainers_matches,
+)
