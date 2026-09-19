@@ -73,27 +73,20 @@ def _db_path(self) -> str:
     return str(getattr(getattr(self.engine, "kg", None), "db_path", "") or "")
 
 
-def _existing_rsi_rows(self, session_id: str) -> Dict[Tuple[str, str], Dict[str, Any]]:
+def _existing_rsi_traces(self) -> set[str]:
+    """Return only question-free/reward-free RSI self traces eligible for Phase 3."""
     path = _db_path(self)
     if not path:
-        return {}
+        return set()
     try:
         with sqlite3.connect(path) as conn:
-            conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT * FROM episodic_interactions WHERE session_id=? AND consolidated=0 ORDER BY id ASC",
-                (session_id,),
+                "SELECT trace FROM rsi_self_memories "
+                "WHERE consolidated=0 ORDER BY id ASC"
             ).fetchall()
     except Exception:
-        return {}
-
-    found: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for row in rows:
-        record = dict(row)
-        domain = str(record.get("domain", ""))
-        if domain.startswith("RSI::"):
-            found[(domain[len("RSI::"):], str(record.get("prompt", "")))] = record
-    return found
+        return set()
+    return {str(row[0]) for row in rows if str(row[0] or "").strip()}
 
 
 def _interrupted_telemetry() -> Tuple[Dict[str, Dict[str, Any]], float]:
@@ -201,7 +194,7 @@ def install(p4) -> None:
             prior_elapsed = float(progress.get("elapsed_seconds", 0.0) or 0.0)
 
         completed: Dict[str, Dict[str, Any]] = dict(progress.get("completed", {}))
-        existing_rows = _existing_rsi_rows(self, p4.RSI_SESSION_ID)
+        existing_traces = _existing_rsi_traces(self)
         raw_candidates = _raw_verified_candidates()
 
         # A successful recovered item may be skipped only if its exact training
@@ -214,23 +207,18 @@ def install(p4) -> None:
             if not bool(status.get("passed", False)):
                 continue
             split, item = by_key[key]
-            prompt = str(item.get("prompt", ""))
-            if (split, prompt) in existing_rows:
-                continue
             candidate = raw_candidates.get((split, str(item.get("id", ""))))
             if not candidate:
                 completed.pop(key, None)
                 continue
+            if candidate in existing_traces:
+                continue
             try:
-                self.engine.kg.log_interaction(
-                    p4.RSI_SESSION_ID,
-                    prompt,
-                    candidate,
-                    1.0,
-                    1.0,
-                    domain=f"RSI::{split}",
-                )
-                existing_rows[(split, prompt)] = {"completion": candidate}
+                # Resume restores only the self-generated candidate trace. Benchmark
+                # question, split, reward, PASS/FAIL and verifier metadata remain
+                # checkpoint/log metadata and never become the persistent training row.
+                self.engine.kg.log_rsi_self_memory(candidate)
+                existing_traces.add(candidate)
             except Exception:
                 completed.pop(key, None)
 
@@ -264,14 +252,23 @@ def install(p4) -> None:
             _, item = by_key[key]
             filtered_cache[f"Phase 1: Baseline_{item['id']}"] = "RSI_RESUMED_DONE"
 
-        original_delete = p4._delete_unconsumed_session_rows
         original_log = p4._append_rsi_log
         original_task_prompt = p4._task_user_prompt
+        kg = getattr(self.engine, "kg", None)
+        original_clear_self = getattr(kg, "clear_unconsolidated_rsi_self_memories", None)
+        has_resumed_passes = any(
+            bool(status.get("passed", False))
+            for status in completed.values()
+        )
 
-        def guarded_delete(owner, session_id):
-            if session_id == p4.RSI_SESSION_ID and completed:
+        def guarded_clear_self():
+            # Base RSI normally starts from a clean inbox. During resume, preserve
+            # exact verified traces reconstructed above so Phase 3 can consume them.
+            if has_resumed_passes:
                 return None
-            return original_delete(owner, session_id)
+            if callable(original_clear_self):
+                return original_clear_self()
+            return None
 
         def tracking_task_prompt(split_name, item):
             state_now = getattr(self, "_rsi_progress_telemetry", None)
@@ -307,15 +304,17 @@ def install(p4) -> None:
             progress["complete"] = len(progress["completed"]) >= len(eligible)
             _atomic_save(progress)
 
-        p4._delete_unconsumed_session_rows = guarded_delete
         p4._append_rsi_log = checkpointing_log
         p4._task_user_prompt = tracking_task_prompt
+        if kg is not None and callable(original_clear_self):
+            kg.clear_unconsolidated_rsi_self_memories = guarded_clear_self
         try:
             base_rsi(self, splits, filtered_cache)
         finally:
-            p4._delete_unconsumed_session_rows = original_delete
             p4._append_rsi_log = original_log
             p4._task_user_prompt = original_task_prompt
+            if kg is not None and callable(original_clear_self):
+                kg.clear_unconsolidated_rsi_self_memories = original_clear_self
 
         final_progress = _load_progress(fingerprint) or progress
         final_completed = dict(final_progress.get("completed", {}))
