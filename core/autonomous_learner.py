@@ -21,6 +21,7 @@ from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
 from core.learning_sources import extract_learning_text
+from core.training_memory import backend_label, process_rss_mb, release_training_memory
 from memory.anchor_dataset import get_anchor_texts
 from memory.db import EpisodicMemoryDB
 
@@ -291,26 +292,38 @@ class AutonomousLearner:
         )
 
         fisher = None
+        updated_adapters = None
+        param_drift = 0.0
+        backend_name = backend_label(backend)
+        ram_before_mb = process_rss_mb()
+        cleanup_stats = {"after_mb": ram_before_mb, "released_mb": 0.0}
         try:
+            # Fisher exists only on the real MLX path. Other backends intentionally
+            # skip it rather than allocating a fake/duplicate model for EWC.
             fisher_fn = getattr(backend, "compute_mlx_fisher", None)
-            fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
-        except Exception:
-            fisher = None
+            try:
+                fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
+            except Exception:
+                fisher = None
 
-        updated_adapters, param_drift = backend.train_mini_batch(
-            adapters=getattr(backend, "adapters", {}) or {},
-            data=[
-                {
-                    "prompt": f"What should be remembered about {topic}?",
-                    "completion": completion_text,
-                }
-            ],
-            fisher_matrix=fisher,
-            lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if fisher else 0.0,
-            learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
-            steps=3,
-            save_path=adapter_path,
-        )
+            updated_adapters, param_drift = backend.train_mini_batch(
+                adapters=getattr(backend, "adapters", {}) or {},
+                data=[
+                    {
+                        "prompt": f"What should be remembered about {topic}?",
+                        "completion": completion_text,
+                    }
+                ],
+                fisher_matrix=fisher,
+                lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if fisher else 0.0,
+                learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
+                steps=3,
+                save_path=adapter_path,
+            )
+        finally:
+            fisher = None
+            cleanup_stats = release_training_memory(backend)
+
         drift = float(param_drift)
         if drift <= 0.0:
             raise RuntimeError("/learn completed a training call but measured zero parameter change.")
@@ -335,8 +348,12 @@ class AutonomousLearner:
             "parameter_drift_l2": drift,
             "trainable_parameters_touched": touched,
             "trainable_parameters_m": touched / 1_000_000.0,
-            "ewc_active": bool(fisher),
+            "ewc_active": bool(getattr(backend, "compute_mlx_fisher", None)),
             "adapter_saved_to": adapter_path,
+            "backend": backend_name,
+            "ram_before_mb": round(float(ram_before_mb), 1),
+            "ram_after_cleanup_mb": round(float(cleanup_stats["after_mb"]), 1),
+            "ram_released_mb": round(float(cleanup_stats["released_mb"]), 1),
         }
 
     def recursive_self_improve(
@@ -376,24 +393,34 @@ class AutonomousLearner:
             self.engine.lora_adapter_path = adapter_path
 
         fisher = None
+        updated_adapters = None
+        param_drift = 0.0
+        backend_name = backend_label(backend)
+        ram_before_mb = process_rss_mb()
+        cleanup_stats = {"after_mb": ram_before_mb, "released_mb": 0.0}
         try:
             fisher_fn = getattr(backend, "compute_mlx_fisher", None)
-            fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
-        except Exception:
-            fisher = None
+            try:
+                fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
+            except Exception:
+                fisher = None
 
-        updated_adapters, param_drift = backend.train_mini_batch(
-            adapters=getattr(backend, "adapters", {}) or {},
-            data=[{
-                "prompt": "Internalize this self-generated reasoning pattern and improve future problem solving.",
-                "completion": str(trace).strip(),
-            }],
-            fisher_matrix=fisher,
-            lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if fisher else 0.0,
-            learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
-            steps=3,
-            save_path=adapter_path,
-        )
+            updated_adapters, param_drift = backend.train_mini_batch(
+                adapters=getattr(backend, "adapters", {}) or {},
+                data=[{
+                    "prompt": "Internalize this self-generated reasoning pattern and improve future problem solving.",
+                    "completion": str(trace).strip(),
+                }],
+                fisher_matrix=fisher,
+                lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if fisher else 0.0,
+                learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
+                steps=3,
+                save_path=adapter_path,
+            )
+        finally:
+            fisher = None
+            cleanup_stats = release_training_memory(backend)
+
         drift = float(param_drift)
         if drift <= 0.0:
             raise RuntimeError("RSI training completed a call but measured zero parameter change.")
@@ -416,8 +443,12 @@ class AutonomousLearner:
             "parameter_drift_l2": drift,
             "trainable_parameters_touched": touched,
             "trainable_parameters_m": touched / 1_000_000.0,
-            "ewc_active": bool(fisher),
+            "ewc_active": bool(getattr(backend, "compute_mlx_fisher", None)),
             "adapter_saved_to": adapter_path,
+            "backend": backend_name,
+            "ram_before_mb": round(float(ram_before_mb), 1),
+            "ram_after_cleanup_mb": round(float(cleanup_stats["after_mb"]), 1),
+            "ram_released_mb": round(float(cleanup_stats["released_mb"]), 1),
         }
 
     def run_learning_session(
