@@ -384,9 +384,15 @@ class GGUFLoRATrainer:
             except Exception:
                 pass
             before.clear()
+            encoded = None
+            prefix_ids = None
+            labels = None
+            out = None
+            loss = None
             del optimizer
             del model
             model = None
+            tokenizer = None
             release_training_memory()
 
             self._convert_to_gguf(tmp_peft, tmp_gguf)
