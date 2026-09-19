@@ -28,6 +28,7 @@ from run_studio_complete import (
     EngineSettings,
     FastMCPDispatcher,
     GramSchmidtOGPProjector,
+    NeuromorphicLIFController,
     POSIXHardenedSandbox,
     SymbolicMCTSSearchEngine,
 )
@@ -146,6 +147,7 @@ class AppEvalEngineAdapter:
         )
         self.mcp = FastMCPDispatcher(self.sandbox, self.kg)
         self.mcts = SymbolicMCTSSearchEngine(self.sandbox)
+        self.lif = NeuromorphicLIFController()
         self.ogp_projector = GramSchmidtOGPProjector(
             tolerance=eval_settings.ogp_ortho_tolerance
         )
