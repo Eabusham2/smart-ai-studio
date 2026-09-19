@@ -92,7 +92,13 @@ def main() -> int:
     os.environ["SMARTAI_APP_EVAL_CONFIG"] = str(config_path)
     os.environ["SMARTAI_APP_EVAL_PAUSE_FILE"] = str(pause_file)
     os.environ["SMARTAI_APP_EVAL_CANCEL_FILE"] = str(cancel_file)
-    os.environ["SMARTAI_DATA_DIR"] = str(run_dir / "app_eval_data")
+
+    # Keep native runtimes/HF cache shared with the standalone app, while all
+    # mutable learned state is isolated to this eval run.
+    backend_state = run_dir / "backend_state"
+    os.environ["SMARTAI_GGUF_ADAPTER_ROOT"] = str(backend_state / "gguf")
+    os.environ["SMARTAI_BITNET_TRAINING_ROOT"] = str(backend_state / "bitnet")
+    os.environ["SMARTAI_CONTROLLER_ADAPTER_ROOT"] = str(backend_state / "controller")
 
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
