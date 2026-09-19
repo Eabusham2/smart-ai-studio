@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 10
     env:
       BASE_SHA: 06390e5357a07f80a8089ac28fc16c75461a48a6
-      AUDIT_OUTPUT: .audit-evidence
+      AUDIT_OUTPUT: audit-evidence
       HF_HUB_OFFLINE: '1'
       TRANSFORMERS_OFFLINE: '1'
       OFFLINE: '1'
