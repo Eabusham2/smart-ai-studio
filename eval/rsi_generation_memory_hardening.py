@@ -30,7 +30,14 @@ import time
 from typing import Any, Dict, List
 
 import psutil
-from mlx_lm.models.cache import make_prompt_cache
+
+try:
+    from mlx_lm.models.cache import make_prompt_cache
+except Exception:
+    # Canonical suite imports this module on every platform. The app bridge
+    # replaces this MLX-only branch path for non-MLX backends after import.
+    make_prompt_cache = None
+
 from core.mlx_engine import _adaptive_prefill_step_size
 
 
@@ -152,10 +159,11 @@ def install(phase4_module, live_module, legacy_generate) -> None:
     ) -> List[str]:
         if (
             not phase4_module.MLX_AVAILABLE
+            or make_prompt_cache is None
             or self.engine.model is None
             or self.engine.tokenizer is None
         ):
-            raise RuntimeError("MLX model/tokenizer unavailable for RSI/Pro branching")
+            raise RuntimeError("MLX model/tokenizer/cache unavailable for RSI/Pro branching")
 
         mlx_lm = phase4_module.mlx_lm
         mx = phase4_module.mx
