@@ -68,7 +68,7 @@ def install_gui_eval_panel() -> None:
         parent = self.btn_load_unload.master
         self.btn_eval = tk.Button(
             parent,
-            text="🧪 Eval",
+            text="Eval",
             font=getattr(mod, "_FONT_TINY_BOLD"),
             bg=self.C["btn_bg"],
             fg=self.C["btn_fg"],
