@@ -16,20 +16,19 @@ import json
 import os
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from config.paths import get_portable_data_dir
 from config.settings import get_settings
 from core.pro_engine import ProReasoningEngine
 from core.temperature_policy import EVAL_N1_TEMPERATURE
 from core.training_memory import process_rss_mb, release_training_memory
+from eval._master_4000_base import BenchmarkDatasetProvider, EvaluationCheckpointManager
+from memory.knowledge_graph import RelationalKnowledgeGraph
 from run_studio_complete import (
     EngineSettings,
     FastMCPDispatcher,
     GramSchmidtOGPProjector,
     POSIXHardenedSandbox,
-    RelationalKnowledgeGraph,
     SymbolicMCTSSearchEngine,
 )
 
@@ -218,8 +217,8 @@ def install(runtime_module, phase4_module, cls) -> None:
         # Do not call the legacy constructor: it eagerly owns an MLX-only engine.
         self.max_duration_seconds = float(max_duration_hours) * 3600.0
         self.engine = AppEvalEngineAdapter(config, run_dir)
-        self.provider = runtime_module.BenchmarkDatasetProvider()
-        self.checkpoint_mgr = runtime_module.EvaluationCheckpointManager(
+        self.provider = BenchmarkDatasetProvider()
+        self.checkpoint_mgr = EvaluationCheckpointManager(
             os.path.join(run_dir, "eval_checkpoint_4000.json")
         )
         self.telemetry_file = os.path.join(run_dir, "telemetry_stream.jsonl")
