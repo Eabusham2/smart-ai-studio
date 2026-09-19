@@ -712,8 +712,10 @@ def _restore_rsi_adapter(self) -> bool:
 
 
 def _phase3_fmt_eta(seconds: Optional[float]) -> str:
-    if seconds is None or seconds <= 0:
+    if seconds is None or seconds < 0:
         return "calculating"
+    if seconds <= 0:
+        return "0s"
     seconds = int(seconds)
     hours, rem = divmod(seconds, 3600)
     minutes, secs = divmod(rem, 60)
@@ -1066,10 +1068,13 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
             if completion_targets <= 0:
                 continue
 
-            prepared_memories.append(
-                (memory, ids, completion_loss_start, completion_targets)
-            )
+            # Keep only the row reference + scalar count from the pre-scan.
+            # Retaining every full token-id list here can consume substantial Python
+            # heap for long RSI traces and defeats the bounded-memory design.
+            prepared_memories.append((memory, completion_targets))
             phase3_total_targets += completion_targets
+            ids = None
+            prefix_ids = None
 
         if phase3_total_targets <= 0:
             raise RuntimeError("Phase 3 found no trainable completion targets")
@@ -1077,9 +1082,18 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
         phase3_started = time.monotonic()
         phase3_completed_targets = 0
 
-        for memory_index, (memory, ids, completion_loss_start, _row_targets) in enumerate(
-            prepared_memories, 1
-        ):
+        for memory_index, (memory, _row_targets) in enumerate(prepared_memories, 1):
+            prefix = (
+                f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
+            text = prefix + str(memory["completion"]) + "<|im_end|>"
+            ids = self.engine.tokenizer.encode(text)
+            prefix_ids = self.engine.tokenizer.encode(prefix)
+            if len(ids) <= 1:
+                raise RuntimeError("Phase 3 prepared row became untrainable during execution")
+            completion_loss_start = max(0, len(prefix_ids) - 1)
+
             with METAL_STREAM_LOCK:
                 loss, grads, row_trained_targets = _phase3_bounded_gradients(
                     self,
@@ -1122,6 +1136,8 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
                 flat = None
                 projected = None
                 tree = None
+                ids = None
+                prefix_ids = None
                 gc.collect(1)
                 try:
                     mx.clear_cache()
