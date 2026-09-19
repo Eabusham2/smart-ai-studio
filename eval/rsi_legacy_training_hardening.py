@@ -203,7 +203,13 @@ def install(p4: Any) -> None:
     base_phase3 = p4._run_phase3_consolidation
 
     def transactional_completion_only_phase3(self):
-        if not getattr(p4, "MLX_AVAILABLE", False) or self.engine.model is None:
+        # Non-MLX app evals use the production backend's own transactional trainer.
+        # Never run MLX tensor snapshot/EWC monkeypatches against GGUF/BitNet/Torch.
+        if (
+            str(getattr(self.engine, "backend_key", "mlx") or "mlx").lower() != "mlx"
+            or not getattr(p4, "MLX_AVAILABLE", False)
+            or self.engine.model is None
+        ):
             return base_phase3(self)
 
         model_identity = id(self.engine.model)
