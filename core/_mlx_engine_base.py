@@ -252,7 +252,7 @@ class MLXReasoningBackend:
                 # MLP down_proj
                 if hasattr(layer, "mlp") and hasattr(layer.mlp, "down_proj"):
                     layer.mlp.down_proj = LoRALinear.from_base(layer.mlp.down_proj, r=r, scale=scale)
-                    layer.mlp.down_proj.unfreeze()
+                    layer.mlp.down_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                     lora_count += 1
                 # Attention projections
                 if hasattr(layer, "self_attn"):
@@ -266,7 +266,7 @@ class MLXReasoningBackend:
                         lora_count += 1
                 elif hasattr(layer, "linear_attn") and hasattr(layer.linear_attn, "out_proj"):
                     layer.linear_attn.out_proj = LoRALinear.from_base(layer.linear_attn.out_proj, r=r, scale=scale)
-                    layer.linear_attn.out_proj.unfreeze()
+                    layer.linear_attn.out_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                     lora_count += 1
 
         trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
@@ -274,17 +274,11 @@ class MLXReasoningBackend:
         return trainable_params
 
     def compute_mlx_fisher(self, anchor_texts: List[str]) -> Dict[str, Any]:
-        """
-        Computes diagonal Fisher Information matrix on Apple Silicon unified memory
-        using MLX automatic differentiation (mx.grad).
-        """
+        """Compute diagonal Fisher while releasing each anchor's autograd state immediately."""
         if not self.is_mlx_available or self.model is None or self.tokenizer is None:
-            try:
-                import mlx.core as mx
-                return {"mlx_layer_0.weight": mx.zeros((8, 8))}
-            except Exception:
-                return {"mlx_layer_0.weight": [0.01 for _ in range(10)]}
+            return {}
 
+        import gc
         import mlx.core as mx
         import mlx.nn as nn
         import mlx.utils
@@ -293,8 +287,11 @@ class MLXReasoningBackend:
         if not trainable_params:
             self.inject_lora_adapters(r=8)
             trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
+        if not trainable_params:
+            return {}
 
         fisher_matrix = {k: mx.zeros_like(v) for k, v in trainable_params.items()}
+        mx.eval(*fisher_matrix.values())
 
         def loss_fn(model, inputs, targets):
             logits = model(inputs)
@@ -303,25 +300,59 @@ class MLXReasoningBackend:
             return mx.mean(nn.losses.cross_entropy(logits, targets))
 
         grad_fn = mx.grad(loss_fn)
-
         valid_anchors = 0
-        for text in anchor_texts:
-            tokens = self.tokenizer.encode(text)
-            if len(tokens) < 2:
-                continue
-            inputs = mx.array([tokens])
-            grads = grad_fn(self.model, inputs, inputs)
-            flat_grads = dict(mlx.utils.tree_flatten(grads))
-            for k, g in flat_grads.items():
-                if k in fisher_matrix:
-                    fisher_matrix[k] = fisher_matrix[k] + (g ** 2)
-            valid_anchors += 1
+        was_training = bool(getattr(self.model, "training", False))
 
-        if valid_anchors > 0:
-            for k in fisher_matrix:
-                fisher_matrix[k] = fisher_matrix[k] / valid_anchors
+        try:
+            self.model.train()
+            for text in anchor_texts:
+                tokens = self.tokenizer.encode(text)
+                if len(tokens) < 2:
+                    continue
 
-        return fisher_matrix
+                inputs = mx.array([tokens])
+                grads = grad_fn(self.model, inputs, inputs)
+                flat_grads = dict(mlx.utils.tree_flatten(grads))
+                if flat_grads:
+                    mx.eval(*flat_grads.values())
+
+                for key, grad in flat_grads.items():
+                    if key not in fisher_matrix:
+                        continue
+                    grad = mx.stop_gradient(grad)
+                    value = fisher_matrix[key] + (grad * grad)
+                    mx.eval(value)
+                    fisher_matrix[key] = mx.stop_gradient(value)
+
+                valid_anchors += 1
+                grads = None
+                flat_grads = None
+                inputs = None
+                gc.collect(2)
+                try:
+                    mx.clear_cache()
+                except Exception:
+                    pass
+
+            if valid_anchors > 0:
+                inv = 1.0 / float(valid_anchors)
+                for key in list(fisher_matrix):
+                    value = fisher_matrix[key] * inv
+                    mx.eval(value)
+                    fisher_matrix[key] = mx.stop_gradient(value)
+            return fisher_matrix
+        finally:
+            if not was_training:
+                try:
+                    self.model.eval()
+                except Exception:
+                    pass
+            gc.collect(2)
+            try:
+                mx.clear_cache()
+            except Exception:
+                pass
+
 
     def count_tokens(self, messages: List[Dict[str, str]]) -> int:
         """Calculates total token length of conversation turns."""
@@ -352,13 +383,11 @@ class MLXReasoningBackend:
         steps: int = 3,
         save_path: Optional[str] = None
     ) -> Tuple[Dict[str, Any], float]:
-        """
-        Executes genuine MLX backpropagation training loop with AdamW and EWC quadratic regularizer.
-        Returns (updated_adapters, frobenius_param_drift).
-        """
+        """Run a real MLX AdamW/EWC adapter update with bounded transient graph lifetime."""
         if not self.is_mlx_available or self.model is None or self.tokenizer is None:
-            return adapters if adapters else {}, 0.002
+            raise RuntimeError("MLX training requires the currently loaded real model and tokenizer")
 
+        import gc
         import mlx.core as mx
         import mlx.nn as nn
         import mlx.optimizers as optim
@@ -368,12 +397,16 @@ class MLXReasoningBackend:
         if not trainable_params:
             self.inject_lora_adapters(r=8)
             trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
+        if not trainable_params:
+            raise RuntimeError("MLX training exposes no trainable adapter parameters")
 
-        # Initial reference weights for Frobenius shift calculation
         w_initial_flat = mx.concat([mx.reshape(p, (-1,)) for p in trainable_params.values()])
+        mx.eval(w_initial_flat)
 
         if reference_weights is None:
             reference_weights = {k: mx.array(v) for k, v in trainable_params.items()}
+            if reference_weights:
+                mx.eval(*reference_weights.values())
 
         optimizer = optim.AdamW(learning_rate=learning_rate)
 
@@ -383,37 +416,61 @@ class MLXReasoningBackend:
             targets = targets[:, 1:]
             ce_loss = mx.mean(nn.losses.cross_entropy(logits, targets))
 
-            ewc_penalty = mx.array(0.0)
             if fisher_matrix and reference_weights and lambda_ewc > 0:
+                penalty = mx.array(0.0)
                 current_params = dict(mlx.utils.tree_flatten(model.trainable_parameters()))
-                for k, w in current_params.items():
-                    if k in fisher_matrix and k in reference_weights:
-                        f_k = fisher_matrix[k]
-                        w_star = reference_weights[k]
-                        diff = w - w_star
-                        ewc_penalty = ewc_penalty + mx.sum(f_k * (diff ** 2))
-                ce_loss = ce_loss + (lambda_ewc / 2.0) * ewc_penalty
-
+                for key, weight in current_params.items():
+                    if key in fisher_matrix and key in reference_weights:
+                        diff = weight - reference_weights[key]
+                        penalty = penalty + mx.sum(fisher_matrix[key] * (diff ** 2))
+                ce_loss = ce_loss + (lambda_ewc / 2.0) * penalty
             return ce_loss
 
         loss_and_grad_fn = nn.value_and_grad(self.model, ewc_loss_fn)
+        was_training = bool(getattr(self.model, "training", False))
 
-        for step in range(steps):
-            for item in data:
-                prompt_text = item.get("prompt", "")
-                completion_text = item.get("completion", "")
-                full_text = f"<|im_start|>user\n{prompt_text}<|im_end|>\n<|im_start|>assistant\n{completion_text}<|im_end|>"
-                tokens = self.tokenizer.encode(full_text)
-                if len(tokens) < 2:
-                    continue
+        try:
+            self.model.train()
+            for _step in range(max(1, int(steps))):
+                for item in data:
+                    prompt_text = item.get("prompt", "")
+                    completion_text = item.get("completion", "")
+                    full_text = (
+                        f"<|im_start|>user\n{prompt_text}<|im_end|>\n"
+                        f"<|im_start|>assistant\n{completion_text}<|im_end|>"
+                    )
+                    tokens = self.tokenizer.encode(full_text)
+                    if len(tokens) < 2:
+                        continue
 
-                inputs = mx.array([tokens])
-                loss, grads = loss_and_grad_fn(self.model, inputs, inputs)
-                optimizer.update(self.model, grads)
-                mx.eval(self.model.parameters(), optimizer.state)
+                    inputs = mx.array([tokens])
+                    loss, grads = loss_and_grad_fn(self.model, inputs, inputs)
+                    optimizer.update(self.model, grads)
+                    mx.eval(self.model.parameters(), optimizer.state)
+
+                    loss = None
+                    grads = None
+                    inputs = None
+                    gc.collect(1)
+                    try:
+                        mx.clear_cache()
+                    except Exception:
+                        pass
+        finally:
+            if not was_training:
+                try:
+                    self.model.eval()
+                except Exception:
+                    pass
+            gc.collect(2)
+            try:
+                mx.clear_cache()
+            except Exception:
+                pass
 
         updated_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
         w_final_flat = mx.concat([mx.reshape(p, (-1,)) for p in updated_params.values()])
+        mx.eval(w_final_flat)
         param_drift = float(mx.linalg.norm(w_final_flat - w_initial_flat).item())
 
         if save_path:
@@ -422,3 +479,4 @@ class MLXReasoningBackend:
 
         self.adapters = updated_params
         return updated_params, param_drift
+
