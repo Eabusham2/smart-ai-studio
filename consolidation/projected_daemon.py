@@ -97,6 +97,24 @@ class ProjectedSleepConsolidationDaemon(threading.Thread):
         self.last_loss = 0.0
         self.last_ortho_overlap = 0.0
         self.queue_length = 0
+        self.last_error: Optional[str] = None
+        self.last_update_time: Optional[float] = None
+
+    def stop(self):
+        """Request daemon shutdown without touching the active model."""
+        self.running = False
+
+    def status(self) -> Dict[str, Any]:
+        """Lightweight lifecycle/telemetry view recovered from the older daemon."""
+        return {
+            "running": bool(self.running),
+            "queue_length": int(self.queue_length),
+            "total_consolidations": int(self.total_consolidations),
+            "last_loss": float(self.last_loss),
+            "orthogonal_overlap": float(self.last_ortho_overlap),
+            "last_error": self.last_error,
+            "last_update_time": self.last_update_time,
+        }
 
     def run(self):
         while self.running:
@@ -109,8 +127,8 @@ class ProjectedSleepConsolidationDaemon(threading.Thread):
                 self.queue_length = len(items)
                 if self.queue_length >= self.settings.min_batch_queue_size:
                     self._consolidate_batch(items[:self.settings.min_batch_queue_size])
-            except Exception:
-                pass
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
 
     def _consolidate_batch(self, items: List[Dict[str, Any]]):
         if not MLX_AVAILABLE or self.moe_manager.model is None or not items:
@@ -199,6 +217,8 @@ class ProjectedSleepConsolidationDaemon(threading.Thread):
             )
             self.moe_manager.swap_buffers_atomic()
             self.kg.mark_consolidated(processed_ids)
+            self.last_update_time = time.time()
+            self.last_error = None
         finally:
             if not was_training:
                 try:
