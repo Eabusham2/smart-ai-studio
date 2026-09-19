@@ -98,6 +98,16 @@ def install_gui_eval_panel() -> None:
         _sync_eval_button(self)
 
     def switch_with_eval(self, target_tab_id: str):
+        if _eval_alive(self):
+            try:
+                messagebox.showinfo(
+                    "Evaluation Running",
+                    "Finish or cancel the current evaluation before switching the app model.",
+                    parent=getattr(self, "_eval_modal", None),
+                )
+            except Exception:
+                pass
+            return None
         result = original_switch(self, target_tab_id)
         try:
             _sync_eval_button(self)
@@ -352,6 +362,16 @@ def install_gui_eval_panel() -> None:
                     self._eval_mem_entry.configure(state="normal")
                 if getattr(self, "_eval_deepswe_check", None) is not None:
                     self._eval_deepswe_check.configure(state="normal")
+                if getattr(self, "btn_model_menu", None) is not None:
+                    self.btn_model_menu.configure(state="normal")
+                if getattr(self, "btn_reset_reinstall", None) is not None:
+                    self.btn_reset_reinstall.configure(state="normal")
+                if getattr(self, "btn_load_unload", None) is not None:
+                    self.btn_load_unload.configure(state="normal")
+                try:
+                    self._update_model_action_buttons()
+                except Exception:
+                    pass
             except Exception:
                 pass
             self._eval_proc = None
@@ -464,6 +484,11 @@ def install_gui_eval_panel() -> None:
             self._eval_mem_check.configure(state="disabled")
             self._eval_mem_entry.configure(state="disabled")
             self._eval_deepswe_check.configure(state="disabled")
+            # Keep the eval process exclusive: do not allow another heavyweight
+            # chat model to be loaded/switched/reset behind it.
+            self.btn_load_unload.configure(state="disabled")
+            self.btn_model_menu.configure(state="disabled")
+            self.btn_reset_reinstall.configure(state="disabled")
         except Exception:
             pass
 
