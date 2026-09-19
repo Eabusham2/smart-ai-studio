@@ -392,6 +392,7 @@ class BitNetCppReasoningBackend:
         if had_learned:
             shutil.copy2(str(self.learned_model_path), backup)
 
+        success = False
         self.unload_model()
         try:
             meta, drift, _touched, learned_path = trainer.train(
@@ -403,12 +404,11 @@ class BitNetCppReasoningBackend:
             self.adapters = dict(meta or {})
             if not self.load_model():
                 raise RuntimeError("BitNet training succeeded but bitnet.cpp failed to reload learned weights")
-            try:
-                os.remove(backup)
-            except OSError:
-                pass
-            return dict(self.adapters), float(drift)
+            result = (dict(self.adapters), float(drift))
+            success = True
+            return result
         except BaseException:
+            success = False
             if os.path.isfile(backup):
                 os.replace(backup, str(self.learned_model_path))
             elif not had_learned:
@@ -416,9 +416,19 @@ class BitNetCppReasoningBackend:
                     os.remove(str(self.learned_model_path))
                 except OSError:
                     pass
-            self.model_path = str(self.learned_model_path if self.learned_model_path.is_file() else self.original_model_path)
+            self.model_path = str(
+                self.learned_model_path
+                if self.learned_model_path.is_file()
+                else self.original_model_path
+            )
             self.load_model()
             raise
+        finally:
+            if success:
+                try:
+                    os.remove(backup)
+                except OSError:
+                    pass
 
     def supports_media_input(self, kind: str) -> bool:
         del kind
