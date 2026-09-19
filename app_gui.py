@@ -5310,6 +5310,15 @@ assert glyph_res["invariants_passed"] == True
 
 
 
+# Additive text-model evaluation window. Installed only after the GUI class exists,
+# so it can wrap top-bar/theme/switch methods without rewriting the main app class.
+try:
+    from core.gui_eval_panel import install_gui_eval_panel
+    install_gui_eval_panel()
+except Exception:
+    pass
+
+
 # Aliases for backward compatibility
 ChatbotAppGUI = SmartAIChatbotApp
 AutonomousReasoningApp = SmartAIChatbotApp
