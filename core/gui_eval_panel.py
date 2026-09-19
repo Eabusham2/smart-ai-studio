@@ -16,6 +16,8 @@ import threading
 import time
 from pathlib import Path
 
+from core.training_memory import process_memory_bytes
+
 
 def install_gui_eval_panel() -> None:
     mod = sys.modules.get("app_gui")
@@ -157,7 +159,7 @@ def install_gui_eval_panel() -> None:
             cpu = 0.0
             for item in procs:
                 try:
-                    rss += int(item.memory_info().rss)
+                    rss += int(process_memory_bytes(item.pid))
                     cpu += float(item.cpu_percent(interval=None))
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
