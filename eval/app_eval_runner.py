@@ -9,6 +9,8 @@ import sys
 import threading
 from pathlib import Path
 
+from core.training_memory import process_memory_bytes
+
 
 def _start_memory_guard(config, run_dir: Path):
     if not bool(config.get("memory_limit_enabled", False)):
@@ -33,7 +35,7 @@ def _start_memory_guard(config, run_dir: Path):
                 procs = [root]
             for proc in procs:
                 try:
-                    total += int(proc.memory_info().rss)
+                    total += int(process_memory_bytes(proc.pid))
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             used_gb = total / (1024.0 ** 3)
