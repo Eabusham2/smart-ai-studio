@@ -652,6 +652,12 @@ def install_gui_eval_panel() -> None:
     def close_with_eval_cleanup(self):
         if _eval_alive(self):
             _signal_eval_cancel(self, "app-close")
+            proc = getattr(self, "_eval_proc", None)
+            if proc is not None:
+                try:
+                    proc.wait(timeout=2.0)
+                except Exception:
+                    _kill_eval_tree(self)
         return original_close(self)
 
     cls._build_single_top_bar = build_with_eval
