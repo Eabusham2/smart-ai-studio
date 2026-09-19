@@ -1,7 +1,7 @@
 """RSI self-training, learning retention test, and Phase-4 Pro missed-item retest.
 
 Design invariants:
-- Phase 1 is the unchanged greedy baseline.
+- Phase 1 uses the current single-pass T=0.55 sampling policy; the older greedy baseline is historical.
 - "Learn" and RSI are distinct:
   * Learn = externally supplied/verified examples are stored for consolidation.
   * RSI = the model generates its own improved answers and self-critiques. Eligibility
