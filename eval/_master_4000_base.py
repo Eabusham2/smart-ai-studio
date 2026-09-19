@@ -494,7 +494,14 @@ class Master4000EvaluationEngine:
         md = []
         md.append("# ULTIMATE 4,000+ ITEM MASTER EVALUATION REPORT")
         md.append(f"**Execution Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ")
-        target_label = str(getattr(self, "_eval_target_model_label", "Bonsai 2 27B Ternary Multimodal"))\n        md.append(f"**Target Model:** `{target_label}`  ")
+        target_label = str(
+            getattr(
+                self,
+                "_eval_target_model_label",
+                "Bonsai 2 27B Ternary Multimodal",
+            )
+        )
+        md.append(f"**Target Model:** `{target_label}`  ")
         md.append(f"**Total Benchmark Items Evaluated:** {total_items * 2} (Phase 1 Baseline + Phase 4 Post-Consolidation)  ")
         md.append(f"**Total Execution Duration:** {elapsed_str} (72-Hour Budget Invariant Preserved)  ")
         md.append("\n---\n")
