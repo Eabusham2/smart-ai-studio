@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from core.training_memory import release_training_memory
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -408,9 +409,24 @@ class GGUFLoRATrainer:
                     os.remove(tmp_gguf)
             except OSError:
                 pass
-            del model
-            gc.collect()
             try:
-                torch.cuda.empty_cache()
+                optimizer.zero_grad(set_to_none=True)
             except Exception:
                 pass
+            try:
+                before.clear()
+            except Exception:
+                pass
+            try:
+                del optimizer
+            except Exception:
+                pass
+            try:
+                del tokenizer
+            except Exception:
+                pass
+            try:
+                del model
+            except Exception:
+                pass
+            release_training_memory()
