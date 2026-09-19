@@ -20,7 +20,6 @@ import gc
 import json
 import math
 import os
-import psutil
 import re
 import sqlite3
 import time
@@ -29,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from core.entropy_router import EntropyRouter
 from core.mlx_engine import MLXReasoningBackend, _adaptive_prefill_step_size, _memory_pressure
 from core.pro_engine import get_ladder_temperatures
+from core.training_memory import process_memory_bytes
 from eval.master_4000_runtime import (
     RAW_OUTPUT_LOG,
     SYSTEM_PROMPT,
@@ -1088,7 +1088,7 @@ def _phase3_bounded_gradients(
         total_eta = remaining_estimate / speed if speed > 0 else None
 
         try:
-            ram_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+            ram_mb = process_memory_bytes() / (1024 ** 2)
         except Exception:
             ram_mb = 0.0
 
