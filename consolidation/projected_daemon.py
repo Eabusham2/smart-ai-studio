@@ -115,6 +115,9 @@ class ProjectedSleepConsolidationDaemon(threading.Thread):
     def _consolidate_batch(self, items: List[Dict[str, Any]]):
         if not MLX_AVAILABLE or self.moe_manager.model is None or not items:
             return
+
+        import gc
+
         model = self.moe_manager.model
 
         def loss_fn(m, tokens):
@@ -122,33 +125,89 @@ class ProjectedSleepConsolidationDaemon(threading.Thread):
             targets = tokens[:, 1:]
             return mx.mean(nn.losses.cross_entropy(logits, targets))
 
-        loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
+        was_training = bool(getattr(model, "training", False))
         processed_ids = []
 
-        for item in items:
-            text = f"<|im_start|>user\n{item['prompt']}<|im_end|>\n<|im_start|>assistant\n{item['completion']}<|im_end|>"
-            toks = self.tokenizer.encode(text)
-            if len(toks) > 1:
+        try:
+            model.train()
+            loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
+
+            for item in items:
+                text = (
+                    f"<|im_start|>user\n{item['prompt']}<|im_end|>\n"
+                    f"<|im_start|>assistant\n{item['completion']}<|im_end|>"
+                )
+                toks = self.tokenizer.encode(text)
+                if len(toks) <= 1:
+                    continue
+
                 inp = mx.array([toks[:min(len(toks), 64)]])
+                loss_val = None
+                raw_grads = None
+                flat_grads = None
+                proj_flat = None
+                proj_tree = None
+
                 with self.stream_lock:
                     loss_val, raw_grads = loss_and_grad_fn(model, inp)
-                    flat_grads, shapes = self.ogp_projector.flatten_gradients(dict(mlx.utils.tree_flatten(raw_grads)))
-                    
-                    # Gradient-Variance Adaptive Learning Rate Scheduling
-                    # eta_t = eta_0 / sqrt(1 + Var(grad))
-                    grad_var = float(mx.var(flat_grads).item()) if flat_grads is not None else 0.0
-                    adaptive_lr = self.settings.base_learning_rate / math.sqrt(1.0 + grad_var)
+                    flat_grads, shapes = self.ogp_projector.flatten_gradients(
+                        dict(mlx.utils.tree_flatten(raw_grads))
+                    )
+
+                    grad_var = (
+                        float(mx.var(flat_grads).item())
+                        if flat_grads is not None
+                        else 0.0
+                    )
+                    adaptive_lr = (
+                        self.settings.base_learning_rate
+                        / math.sqrt(1.0 + grad_var)
+                    )
                     optimizer = optim.AdamW(learning_rate=adaptive_lr)
 
                     proj_flat = self.ogp_projector.project_gradient(flat_grads)
-                    self.last_ortho_overlap = self.ogp_projector.verify_orthogonality(proj_flat)
-                    proj_tree = self.ogp_projector.unflatten_gradients(proj_flat, shapes)
-                    optimizer.update(model, mlx.utils.tree_unflatten(list(proj_tree.items())))
+                    self.last_ortho_overlap = (
+                        self.ogp_projector.verify_orthogonality(proj_flat)
+                    )
+                    proj_tree = self.ogp_projector.unflatten_gradients(
+                        proj_flat, shapes
+                    )
+                    optimizer.update(
+                        model,
+                        mlx.utils.tree_unflatten(list(proj_tree.items())),
+                    )
                     mx.eval(model.parameters(), optimizer.state)
+
                 self.last_loss = float(loss_val.item())
                 processed_ids.append(item["id"])
                 self.total_consolidations += 1
 
-        self.moe_manager.adapters_buffer_b = dict(mlx.utils.tree_flatten(model.trainable_parameters()))
-        self.moe_manager.swap_buffers_atomic()
-        self.kg.mark_consolidated(processed_ids)
+                inp = None
+                loss_val = None
+                raw_grads = None
+                flat_grads = None
+                proj_flat = None
+                proj_tree = None
+                gc.collect(1)
+                try:
+                    mx.clear_cache()
+                except Exception:
+                    pass
+
+            self.moe_manager.adapters_buffer_b = dict(
+                mlx.utils.tree_flatten(model.trainable_parameters())
+            )
+            self.moe_manager.swap_buffers_atomic()
+            self.kg.mark_consolidated(processed_ids)
+        finally:
+            if not was_training:
+                try:
+                    model.eval()
+                except Exception:
+                    pass
+            gc.collect(2)
+            try:
+                mx.clear_cache()
+            except Exception:
+                pass
+
