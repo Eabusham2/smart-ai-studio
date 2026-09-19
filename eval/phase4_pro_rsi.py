@@ -1182,6 +1182,17 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
             + ", ".join(bad[:6])
         )
 
+    # Real trainable-delta proof for the integrity layer. Snapshot only LoRA
+    # trainables, never the frozen foundation weights.
+    initial_trainable = {}
+    for key, value in trainable.items():
+        try:
+            initial_trainable[key] = mx.copy(value)
+        except Exception:
+            initial_trainable[key] = value + mx.zeros_like(value)
+    if initial_trainable:
+        mx.eval(*initial_trainable.values())
+
     model_identity = id(self.engine.model)
     opt = optim.AdamW(learning_rate=1e-4)
     updated = 0
@@ -1310,6 +1321,29 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
             self.engine.moe_manager.swap_buffers_atomic()
             _assert_same_model(self, model_identity, "Phase 3 buffer swap")
 
+        current_trainable = dict(
+            mlx.utils.tree_flatten(
+                self.engine.model.trainable_parameters()
+            )
+        )
+        drift_sq = mx.array(0.0)
+        matched = 0
+        for key, before_value in initial_trainable.items():
+            after_value = current_trainable.get(key)
+            if after_value is None:
+                continue
+            diff = after_value - before_value
+            drift_sq = drift_sq + mx.sum(
+                diff.astype(mx.float32) * diff.astype(mx.float32)
+            )
+            matched += 1
+        if matched <= 0:
+            raise RuntimeError("Phase 3 could not match post-update LoRA trainables")
+        mx.eval(drift_sq)
+        real_delta_l2 = float(mx.sqrt(drift_sq).item())
+        if real_delta_l2 <= 1e-12:
+            raise RuntimeError("Phase 3 completed but measured zero real LoRA parameter delta")
+
         if learn_consolidated_ids:
             try:
                 self.engine.kg.mark_consolidated(learn_consolidated_ids)
@@ -1326,7 +1360,8 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
         persisted = _save_rsi_adapter(self)
         print(
             f"[✓] Phase 3 trained {updated} Learn/RSI memories in-place "
-            f"(raw-gradient fallback updates: {fallback_updates}; persisted={persisted}).",
+            f"(||ΔW||₂={real_delta_l2:.8f}; raw-gradient fallback updates: "
+            f"{fallback_updates}; persisted={persisted}).",
             flush=True,
         )
         return {
@@ -1334,8 +1369,13 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
             "memories": updated,
             "fallback_updates": fallback_updates,
             "persisted": persisted,
+            "real_trainable_delta_l2": real_delta_l2,
         }
     finally:
+        try:
+            initial_trainable.clear()
+        except Exception:
+            pass
         if not was_training:
             try:
                 self.engine.model.eval()
