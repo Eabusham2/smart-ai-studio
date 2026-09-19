@@ -85,7 +85,10 @@ def install(p4, cls) -> None:
         backend = p4._pro_backend(self)
         backend.model = self.engine.model
         backend.tokenizer = self.engine.tokenizer
-        backend.is_mlx_available = True
+        # Normal CLI eval is MLX. App-launched eval may use GGUF/Prism,
+        # BitNet, or controller PEFT; never relabel those runtimes as MLX.
+        if str(getattr(self.engine, "backend_key", "mlx") or "mlx").lower() == "mlx":
+            backend.is_mlx_available = True
         backend.adapter_path = p4.RSI_ADAPTER_PATH
 
         consolidator = AwakeOnlineConsolidator(
