@@ -568,6 +568,15 @@ class UniversalControllerBackend:
                 params.clear()
             except Exception:
                 pass
+            encoded = None
+            prefix_ids = None
+            labels = None
+            output = None
+            loss = None
+            try:
+                del optimizer
+            except Exception:
+                pass
             model.eval()
             release_training_memory(self)
 
