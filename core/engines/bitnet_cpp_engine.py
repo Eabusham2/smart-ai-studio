@@ -408,7 +408,7 @@ class BitNetCppReasoningBackend:
             except OSError:
                 pass
             return dict(self.adapters), float(drift)
-        except Exception:
+        except BaseException:
             if os.path.isfile(backup):
                 os.replace(backup, str(self.learned_model_path))
             elif not had_learned:
