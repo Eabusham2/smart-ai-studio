@@ -484,7 +484,7 @@ class BitNetRebuildTrainer:
                 "base_model_id": self.base_model_id,
                 "adapter_format": "peft-merged-bitnet-i2_s",
             }, float(drift), int(touched), str(self.learned_model_path)
-        except Exception:
+        except BaseException:
             if os.path.isdir(peft_backup) and not self.peft_dir.is_dir():
                 os.replace(peft_backup, str(self.peft_dir))
             raise
