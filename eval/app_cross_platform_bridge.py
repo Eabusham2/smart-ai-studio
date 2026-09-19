@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -632,20 +633,25 @@ def install(runtime_module, phase4_module, cls) -> None:
             else:
                 learn_ids.append(int(row["id"]))
 
-        if learn_ids:
-            self.engine.kg.mark_consolidated(learn_ids)
-        if rsi_ids:
-            marker = getattr(
-                self.engine.kg,
-                "mark_rsi_self_memories_consolidated",
-                None,
-            )
-            if not callable(marker):
-                raise RuntimeError(
-                    "RSI self-memory table cannot be marked consolidated; "
-                    "refusing partial Phase-3 commit"
+        # Learn + RSI consolidation markers are one DB transaction. If either
+        # table update fails, neither side is committed.
+        db_path = str(getattr(self.engine.kg, "db_path", "") or "")
+        if not db_path:
+            raise RuntimeError("Phase 3 knowledge-graph DB path is unavailable")
+
+        with sqlite3.connect(db_path) as conn:
+            if learn_ids:
+                conn.execute(
+                    f"UPDATE episodic_interactions SET consolidated=1 "
+                    f"WHERE id IN ({','.join('?' for _ in learn_ids)})",
+                    learn_ids,
                 )
-            marker(rsi_ids)
+            if rsi_ids:
+                conn.execute(
+                    f"UPDATE rsi_self_memories SET consolidated=1 "
+                    f"WHERE id IN ({','.join('?' for _ in rsi_ids)})",
+                    rsi_ids,
+                )
         print(
             f"[APP EVAL] Phase 3 complete: {len(data)}/{len(data)} memories | "
             f"||ΔW||2={drift:.8f} | {elapsed:.1f}s | RAM={process_rss_mb():.0f} MB",
