@@ -111,3 +111,36 @@ def test_report_target_model_source_is_valid_python_not_literal_escape():
     src = _src("eval/_master_4000_base.py")
     assert '_eval_target_model_label' in src
     assert '))\\n        md.append' not in src
+
+
+def test_cross_platform_eval_uses_native_token_counting_before_fallback():
+    bridge = _src("eval/app_cross_platform_bridge.py")
+    assert 'tokenize = getattr(tokenizer, "tokenize", None)' in bridge
+    assert 'counter = getattr(backend, "count_tokens", None)' in bridge
+    assert 'backend=getattr(self.engine, "backend", None)' in bridge
+
+
+def test_non_mlx_phase3_marks_learn_and_rsi_atomically():
+    bridge = _src("eval/app_cross_platform_bridge.py")
+    persisted = bridge.index("persisted = bool(adapter_path")
+    transaction = bridge.index("with sqlite3.connect(db_path) as conn:")
+    learn_update = bridge.index("UPDATE episodic_interactions SET consolidated=1")
+    rsi_update = bridge.index("UPDATE rsi_self_memories SET consolidated=1")
+    assert persisted < transaction < learn_update < rsi_update
+
+
+def test_rollback_backups_survive_until_successful_return():
+    controller = _src("core/controller_runtime.py")
+    gguf = _src("core/engines/gguf_engine.py")
+    bitnet = _src("core/engines/bitnet_cpp_engine.py")
+    for source in (controller, gguf, bitnet):
+        assert "success = False" in source
+        assert "success = True" in source
+        assert "except BaseException:" in source
+        assert "finally:" in source
+
+
+def test_eval_memory_guard_interrupts_main_thread_portably():
+    runner = _src("eval/app_eval_runner.py")
+    assert "import _thread" in runner
+    assert "_thread.interrupt_main()" in runner
