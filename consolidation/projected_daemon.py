@@ -122,6 +122,8 @@ class ProjectedSleepConsolidationDaemon(threading.Thread):
             targets = tokens[:, 1:]
             return mx.mean(nn.losses.cross_entropy(logits, targets))
 
+        was_training = bool(getattr(model, "training", False))
+        model.train()
         loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
         processed_ids = []
 
@@ -145,9 +147,23 @@ class ProjectedSleepConsolidationDaemon(threading.Thread):
                     proj_tree = self.ogp_projector.unflatten_gradients(proj_flat, shapes)
                     optimizer.update(model, mlx.utils.tree_unflatten(list(proj_tree.items())))
                     mx.eval(model.parameters(), optimizer.state)
+                    raw_grads = None
+                    flat_grads = None
+                    proj_flat = None
+                    proj_tree = None
+                    try:
+                        mx.clear_cache()
+                    except Exception:
+                        pass
                 self.last_loss = float(loss_val.item())
                 processed_ids.append(item["id"])
                 self.total_consolidations += 1
+
+        if not was_training:
+            try:
+                model.eval()
+            except Exception:
+                pass
 
         self.moe_manager.adapters_buffer_b = dict(mlx.utils.tree_flatten(model.trainable_parameters()))
         self.moe_manager.swap_buffers_atomic()
