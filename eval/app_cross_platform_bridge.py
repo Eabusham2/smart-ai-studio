@@ -340,6 +340,24 @@ def install(runtime_module, phase4_module, cls) -> None:
         finally:
             print("", flush=True)
         output = "".join(pieces)
+        if not output and str(self.engine.backend_key or "").lower() == "gguf":
+            # Generic llama.cpp historically swallowed stream exceptions. Probe the
+            # same backend once non-streaming so eval can distinguish empty EOS from
+            # an actual runtime failure without fabricating an answer.
+            fallback = backend.generate_branches(
+                prompt,
+                branch_count=1,
+                max_tokens=safe_max_tokens,
+                temperature=float(EVAL_N1_TEMPERATURE),
+                top_p=0.92,
+            )
+            value = str(fallback[0] if fallback else "")
+            if value.startswith("⚠️ GGUF generation error:"):
+                raise RuntimeError(value)
+            if value:
+                output = value
+                print(value, flush=True)
+
         elapsed = max(0.001, time.perf_counter() - started)
         generated = _token_count(self.engine.tokenizer, output) if output else 0
         self.last_output_tokens = generated
@@ -431,7 +449,10 @@ def install(runtime_module, phase4_module, cls) -> None:
             )
             if not one:
                 raise RuntimeError("App eval backend returned no branch")
-            values.append(str(one[0] or ""))
+            value = str(one[0] or "")
+            if value.startswith("⚠️ GGUF generation error:"):
+                raise RuntimeError(value)
+            values.append(value)
         elapsed = max(0.001, time.perf_counter() - started)
         total_tokens = sum(_token_count(self.engine.tokenizer, value) for value in values)
         self.last_tok_per_sec = total_tokens / elapsed if total_tokens else 0.0
