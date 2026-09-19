@@ -560,6 +560,16 @@ def install(runtime_module, phase4_module, cls) -> None:
         if drift <= 0.0:
             raise RuntimeError("Phase 3 backend training returned zero parameter drift")
 
+        adapter_path = str(getattr(backend, "adapter_path", "") or "")
+        phase4_module.RSI_ADAPTER_PATH = adapter_path or phase4_module.RSI_ADAPTER_PATH
+        persisted = bool(adapter_path and os.path.exists(adapter_path))
+        if not persisted:
+            raise RuntimeError(
+                f"Phase 3 updated {key} weights but no persisted adapter/model artifact was found"
+            )
+
+        # Consolidation flags are the final commit of the Phase-3 transaction.
+        # Never mark a row learned before the real backend artifact exists.
         learn_ids = []
         rsi_ids = []
         for row in memories:
@@ -569,20 +579,21 @@ def install(runtime_module, phase4_module, cls) -> None:
                 rsi_ids.append(int(row["id"]))
             else:
                 learn_ids.append(int(row["id"]))
+
         if learn_ids:
             self.engine.kg.mark_consolidated(learn_ids)
         if rsi_ids:
-            marker = getattr(self.engine.kg, "mark_rsi_self_memories_consolidated", None)
-            if callable(marker):
-                marker(rsi_ids)
-
-        adapter_path = str(getattr(backend, "adapter_path", "") or "")
-        phase4_module.RSI_ADAPTER_PATH = adapter_path or phase4_module.RSI_ADAPTER_PATH
-        persisted = bool(adapter_path and os.path.exists(adapter_path))
-        if not persisted:
-            raise RuntimeError(
-                f"Phase 3 updated {key} weights but no persisted adapter/model artifact was found"
+            marker = getattr(
+                self.engine.kg,
+                "mark_rsi_self_memories_consolidated",
+                None,
             )
+            if not callable(marker):
+                raise RuntimeError(
+                    "RSI self-memory table cannot be marked consolidated; "
+                    "refusing partial Phase-3 commit"
+                )
+            marker(rsi_ids)
         print(
             f"[APP EVAL] Phase 3 complete: {len(data)}/{len(data)} memories | "
             f"||ΔW||2={drift:.8f} | {elapsed:.1f}s | RAM={process_rss_mb():.0f} MB",
