@@ -19,6 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
+from core.training_memory import release_training_memory
 
 
 _RUNTIME_FAMILY_RESOLVERS: Dict[str, Any] = {}
@@ -555,7 +556,20 @@ class UniversalControllerBackend:
             }
             return dict(self.adapters), float(drift)
         finally:
+            try:
+                optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            try:
+                before.clear()
+            except Exception:
+                pass
+            try:
+                params.clear()
+            except Exception:
+                pass
             model.eval()
+            release_training_memory(self)
 
     @staticmethod
     def _text_from_generation(value: Any) -> str:
