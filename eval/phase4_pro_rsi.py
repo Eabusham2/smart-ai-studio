@@ -867,6 +867,9 @@ def _phase3_bounded_gradients(
     completion_loss_start: int,
     memory_index: int,
     memory_total: int,
+    global_target_offset: int,
+    global_total_targets: int,
+    global_started: float,
 ):
     """Train the completion through 64-token windows without retaining a full-model graph."""
     max_row_tokens = 16_384
@@ -890,8 +893,6 @@ def _phase3_bounded_gradients(
     trained_targets = 0
     target_global = first_target
     completion_targets = total_targets - first_target
-    started = time.monotonic()
-
     while target_global < total_targets:
         target_end = min(total_targets, target_global + targets_per_window)
         window_end = target_end + 1
@@ -926,13 +927,11 @@ def _phase3_bounded_gradients(
         trained_targets += count
         target_global = target_end
 
-        elapsed = max(0.001, time.monotonic() - started)
-        speed = trained_targets / elapsed
-        pct = 100.0 * trained_targets / max(1, completion_targets)
-        remaining_estimate = (
-            (completion_targets - trained_targets)
-            + max(0, memory_total - memory_index) * completion_targets
-        )
+        global_trained = int(global_target_offset) + int(trained_targets)
+        elapsed = max(0.001, time.monotonic() - float(global_started))
+        speed = global_trained / elapsed
+        pct = 100.0 * global_trained / max(1, int(global_total_targets))
+        remaining_estimate = max(0, int(global_total_targets) - global_trained)
         total_eta = remaining_estimate / speed if speed > 0 else None
 
         try:
@@ -941,7 +940,7 @@ def _phase3_bounded_gradients(
             ram_mb = 0.0
 
         print(
-            f"Phase 3: {trained_targets}/{completion_targets}"
+            f"Phase 3: {global_trained}/{global_total_targets}"
             f" | {pct:.1f}%"
             f" | {speed:.2f} tgt/s"
             f" | Total ETA {_phase3_fmt_eta(total_eta)}"
@@ -988,7 +987,11 @@ def _phase3_bounded_gradients(
             aggregate[key] = mx.stop_gradient(value)
 
     grads = mlx.utils.tree_unflatten(list(aggregate.items()))
-    return mx.array(weighted_loss * inv, dtype=mx.float32), grads
+    return (
+        mx.array(weighted_loss * inv, dtype=mx.float32),
+        grads,
+        int(trained_targets),
+    )
 
 
 def _run_phase3_consolidation(self) -> Dict[str, Any]:
@@ -1037,7 +1040,13 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
     try:
         self.engine.model.train()
 
-        for memory_index, memory in enumerate(memories, 1):
+        # Precompute the exact completion-target count for the whole Phase-3 queue.
+        # Telemetry then stays cumulative across memory rows instead of resetting at
+        # 0/N every time a new Learn/RSI trace begins.
+        prepared_memories = []
+        phase3_total_targets = 0
+        max_row_tokens = 16_384
+        for memory in memories:
             prefix = (
                 f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
                 f"<|im_start|>assistant\n"
@@ -1049,14 +1058,38 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
                 continue
 
             completion_loss_start = max(0, len(prefix_ids) - 1)
+            selected_start = max(0, len(ids) - max_row_tokens)
+            total_targets = min(len(ids), max_row_tokens) - 1
+            first_target = max(0, completion_loss_start - selected_start)
+            first_target = min(first_target, total_targets)
+            completion_targets = max(0, total_targets - first_target)
+            if completion_targets <= 0:
+                continue
 
+            prepared_memories.append(
+                (memory, ids, completion_loss_start, completion_targets)
+            )
+            phase3_total_targets += completion_targets
+
+        if phase3_total_targets <= 0:
+            raise RuntimeError("Phase 3 found no trainable completion targets")
+
+        phase3_started = time.monotonic()
+        phase3_completed_targets = 0
+
+        for memory_index, (memory, ids, completion_loss_start, _row_targets) in enumerate(
+            prepared_memories, 1
+        ):
             with METAL_STREAM_LOCK:
-                loss, grads = _phase3_bounded_gradients(
+                loss, grads, row_trained_targets = _phase3_bounded_gradients(
                     self,
                     ids,
                     completion_loss_start,
                     memory_index,
-                    len(memories),
+                    len(prepared_memories),
+                    phase3_completed_targets,
+                    phase3_total_targets,
+                    phase3_started,
                 )
 
                 try:
@@ -1077,6 +1110,7 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
 
                 mx.eval(self.engine.model.parameters(), opt.state)
                 updated += 1
+                phase3_completed_targets += int(row_trained_targets)
                 if memory.get("id") is not None:
                     if memory.get("memory_kind") == "rsi_self":
                         rsi_consolidated_ids.append(int(memory["id"]))
