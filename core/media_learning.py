@@ -471,6 +471,7 @@ class MediaLearningService:
         optimizer = torch.optim.AdamW([p for _,p in named],lr=1e-4,weight_decay=0.0)
         ewc = EWCLossCalculator(lambda_ewc=400.0,device=str(named[0][1].device))
         losses = []
+        directory = None
         try:
             module.train()
             for sample in samples:
@@ -513,10 +514,13 @@ class MediaLearningService:
             return {"status":"success","weights_updated":True,"parameter_delta_l2":math.sqrt(delta_sq),
                     "trained_parameters":count,"training_examples":len(samples),"losses":losses,
                     "adapter_path":str(directory),"quality_improvement_verified":False}
-        except Exception:
+        except BaseException:
             with torch.no_grad():
                 for name,param in named:
                     param.copy_(before[name])
+            if directory is not None:
+                import shutil
+                shutil.rmtree(directory, ignore_errors=True)
             raise
         finally:
             optimizer.zero_grad(set_to_none=True)
