@@ -35,8 +35,11 @@ class GGUFReasoningBackend:
         self.n_ctx = n_ctx
         self.verbose = verbose
         self.training_base_model_id = str(training_base_model_id or "").strip()
+        eval_adapter_root = str(os.getenv("SMARTAI_GGUF_ADAPTER_ROOT", "") or "").strip()
         if adapter_root:
             self.adapter_root = os.path.abspath(adapter_root)
+        elif eval_adapter_root:
+            self.adapter_root = os.path.abspath(eval_adapter_root)
         else:
             from config.paths import get_portable_data_dir
             stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.basename(self.model_path) or "gguf")
