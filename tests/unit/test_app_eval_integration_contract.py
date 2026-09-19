@@ -10,6 +10,7 @@ def _src(path: str) -> str:
 
 def test_eval_button_is_text_only_and_cancel_is_confirmed():
     src = _src("core/gui_eval_panel.py")
+    assert 'text="Eval"' in src
     assert 'model_type", "text"' in src
     assert "btn.pack_forget()" in src
     assert 'messagebox.askyesno(' in src
@@ -82,3 +83,14 @@ def test_bonsai2_is_the_default_eval_model_and_current_model_is_reported():
     assert 'mlx_model_path: str="prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"' in runtime
     assert "_eval_target_model_label" in report
     assert "Bonsai 2 27B Ternary Multimodal" in report
+
+
+def test_top_app_controls_explicitly_include_context_limit_and_memory_watcher():
+    app = _src("app_gui.py")
+    context = _src("core/gui_generation_cap.py")
+    assert "install_gui_generation_cap()" in app
+    assert 'text="Context Limit"' in context
+    assert 'text="Mem Limit"' in app
+    assert "self.memory_limit_var = tk.BooleanVar" in app
+    assert "self.entry_memory_limit.pack(" in app
+    assert 'text="GB"' in app
