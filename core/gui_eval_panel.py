@@ -5,6 +5,7 @@ watchdog are not replaced. Eval runs in a separate process using the canonical s
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import queue
@@ -252,15 +253,28 @@ def install_gui_eval_panel() -> None:
                 pass
 
     def _reader(self, proc, logfile: Path):
+        """Read raw pipe chunks so token-stream output appears before newline/EOS."""
         try:
             with logfile.open("a", encoding="utf-8") as handle:
                 stream = proc.stdout
                 if stream is None:
                     return
-                for line in stream:
-                    handle.write(line)
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                fd = stream.fileno()
+                while True:
+                    raw = os.read(fd, 4096)
+                    if not raw:
+                        break
+                    text = decoder.decode(raw)
+                    if text:
+                        handle.write(text)
+                        handle.flush()
+                        self._eval_output_queue.put(text)
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    handle.write(tail)
                     handle.flush()
-                    self._eval_output_queue.put(line)
+                    self._eval_output_queue.put(tail)
         except Exception as exc:
             self._eval_output_queue.put(f"\n[UI reader error] {type(exc).__name__}: {exc}\n")
 
@@ -418,10 +432,8 @@ def install_gui_eval_panel() -> None:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
+                text=False,
+                bufsize=0,
                 creationflags=creationflags,
             )
         except Exception as exc:
