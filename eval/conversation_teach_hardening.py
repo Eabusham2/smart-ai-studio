@@ -83,8 +83,16 @@ def install(p4, cls) -> None:
         p4._assert_same_model(self, model_identity, "before conversational teach")
 
         backend = p4._pro_backend(self)
-        backend.model = self.engine.model
-        backend.tokenizer = self.engine.tokenizer
+
+        # The production MLX compatibility backend historically needed explicit
+        # reference binding. App-launched GGUF/Prism exposes tokenizer as a
+        # read-only facade over its live llama.cpp model, so assigning it would
+        # raise even though it is already the exact same tokenizer/model object.
+        if getattr(backend, "model", None) is not self.engine.model:
+            backend.model = self.engine.model
+        if getattr(backend, "tokenizer", None) is not self.engine.tokenizer:
+            backend.tokenizer = self.engine.tokenizer
+
         # Normal CLI eval is MLX. App-launched eval may use GGUF/Prism,
         # BitNet, or controller PEFT; never relabel those runtimes as MLX.
         if str(getattr(self.engine, "backend_key", "mlx") or "mlx").lower() == "mlx":
