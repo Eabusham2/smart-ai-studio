@@ -1393,8 +1393,15 @@ def install(cls):
         return _full_post_scores_from_missed_retest(self, splits, cache)
 
     def run_full_rsi(self):
-        if not MLX_AVAILABLE or self.engine.model is None or self.engine.tokenizer is None:
-            raise RuntimeError("Real 27B MLX model is not loaded; benchmark will not start offline")
+        app_backend = str(getattr(self.engine, "backend_key", "") or "").strip().lower()
+        if (
+            (not MLX_AVAILABLE and not app_backend)
+            or self.engine.model is None
+            or self.engine.tokenizer is None
+        ):
+            raise RuntimeError(
+                "A real supported text model/backend must be loaded; benchmark will not start offline"
+            )
 
         self.benchmark_max_tokens = _benchmark_ceiling(self)
         model_identity = id(self.engine.model)
