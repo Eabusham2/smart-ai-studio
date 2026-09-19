@@ -1,0 +1,1861 @@
+# FULL MASTER → FEATURE LINE-BY-LINE ANNOTATION — PART 2/4
+
+**Frozen compare:** `06390e5357a07f80a8089ac28fc16c75461a48a6` → `3c17c359fd8d0a72e9ea2cdb3d79630a9e93324b`  
+**Purpose:** every raw added/deleted line from the frozen implementation diff receives an individual explanation.  
+**Note:** these files intentionally freeze the implementation before the annotation documents themselves were added, avoiding recursive self-diff.
+
+
+## `core/gui_eval_panel.py` — added, +720/-0
+
+**Shared rationale:** add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity.
+
+
+### `@@ -0,0 +1,720 @@`
+
+- **ADD** `"""Desktop Eval button/window integration.` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `Additive GUI patch: the existing chat UI, model selector, inference flow, and memory` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `watchdog are not replaced. Eval runs in a separate process using the canonical suite.` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"""` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `from __future__ import annotations` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import codecs` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import json` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import os` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import queue` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import signal` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import subprocess` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import sys` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import threading` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import time` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `from pathlib import Path` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `from core.training_memory import process_memory_bytes` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def install_gui_eval_panel() -> None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `mod = sys.modules.get("app_gui")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls = getattr(mod, "SmartAIChatbotApp", None) if mod is not None else None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if cls is None or getattr(cls, "_eval_panel_installed", False):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `tk = getattr(mod, "tk", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `messagebox = getattr(mod, "messagebox", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if tk is None or messagebox is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `original_build = cls._build_single_top_bar` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `original_switch = cls._on_switch_model_tab` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `original_theme = cls._apply_theme_colors` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `original_close = cls._on_close_app` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _active_text_info(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `info = dict(self.models_config.get(self.active_tab_id, {}) or {})` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if str(info.get("model_type", "text") or "text").lower() != "text":` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return info` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _eval_alive(self) -> bool:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc = getattr(self, "_eval_proc", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return proc is not None and proc.poll() is None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _sync_eval_button(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn = getattr(self, "btn_eval", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if btn is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `is_text = _active_text_info(self) is not None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `mapped = bool(btn.winfo_ismapped())` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `mapped = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if is_text and not mapped:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn.pack(side="left", padx=2, before=self.btn_load_unload)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn.pack(side="left", padx=2)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `elif not is_text and mapped:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn.pack_forget()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def build_with_eval(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `original_build(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if hasattr(self, "btn_eval"):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_sync_eval_button(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `parent = self.btn_load_unload.master` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.btn_eval = tk.Button(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `parent,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="Eval",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["btn_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `highlightbackground=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activebackground=self.C["btn_hover"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activeforeground=self.C["btn_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `relief="flat",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bd=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `padx=8,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pady=4,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cursor="hand2",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `highlightthickness=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `command=lambda: _open_eval_window(self),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_proc = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_output_queue = queue.Queue()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_run_dir = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_peak_gb = 0.0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_paused = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_memory_tripped = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_modal = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_log_widget = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_state_label = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_ram_label = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_elapsed_label = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_start_time = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_sync_eval_button(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def switch_with_eval(self, target_tab_id: str):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if _eval_alive(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `messagebox.showinfo(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"Evaluation Running",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"Finish or cancel the current evaluation before switching the app model.",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `parent=getattr(self, "_eval_modal", None),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `result = original_switch(self, target_tab_id)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_sync_eval_button(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return result` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def theme_with_eval(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `result = original_theme(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn = getattr(self, "btn_eval", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if btn is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn.configure(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["btn_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activebackground=self.C["btn_hover"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activeforeground=self.C["btn_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `highlightbackground=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return result` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _append_eval_log(self, text: str):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `widget = getattr(self, "_eval_log_widget", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if widget is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if not widget.winfo_exists():` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `widget.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `widget.insert("end", str(text))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `widget.see("end")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `widget.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _process_tree_metrics(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc = getattr(self, "_eval_proc", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if proc is None or proc.poll() is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return 0.0, 0.0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import psutil` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `root = psutil.Process(proc.pid)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `procs = [root] + root.children(recursive=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `rss = 0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cpu = 0.0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `for item in procs:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `rss += int(process_memory_bytes(item.pid))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cpu += float(item.cpu_percent(interval=None))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except (psutil.NoSuchProcess, psutil.AccessDenied):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return rss / (1024.0 ** 3), cpu` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return 0.0, 0.0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _kill_eval_tree(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc = getattr(self, "_eval_proc", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if proc is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `import psutil` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `root = psutil.Process(proc.pid)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `children = root.children(recursive=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `for child in reversed(children):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `child.kill()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `root.kill()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc.kill()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _signal_eval_cancel(self, reason: str = "user"):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc = getattr(self, "_eval_proc", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if proc is None or proc.poll() is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `run_dir = getattr(self, "_eval_run_dir", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if run_dir:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `Path(run_dir, "cancel.flag").write_text(reason, encoding="utf-8")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(self, f"\n[UI] Cancel requested ({reason}); saving/rolling back at the current safe handler…\n")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc.send_signal(signal.CTRL_BREAK_EVENT)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `else:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc.send_signal(signal.SIGINT)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc.terminate()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _force_if_needed():` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `p = getattr(self, "_eval_proc", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if p is not None and p.poll() is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(self, "[UI] Graceful cancel timed out; terminating eval process tree.\n")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_kill_eval_tree(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.root.after(8000, _force_if_needed)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _cancel_button(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if not _eval_alive(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `confirmed = messagebox.askyesno(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"Cancel Evaluation",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"Cancel the running evaluation?\n\n"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"The runner will save the current checkpoint where supported and roll back "` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"an in-flight transactional consolidation before exiting.",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `parent=getattr(self, "_eval_modal", None),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if confirmed:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_signal_eval_cancel(self, "user")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _toggle_pause(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if not _eval_alive(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `run_dir = getattr(self, "_eval_run_dir", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if not run_dir:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `flag = Path(run_dir) / "pause.flag"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if not getattr(self, "_eval_paused", False):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `flag.write_text("pause", encoding="utf-8")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_paused = True` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(self, "\n[UI] Pause requested; it will stop at the next safe eval boundary.\n")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `else:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `flag.unlink(missing_ok=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_paused = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(self, "\n[UI] Resume requested.\n")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn = getattr(self, "_eval_pause_button", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if btn is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `btn.configure(text="▶ Resume" if self._eval_paused else "⏸ Pause")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _reader(self, proc, logfile: Path):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"""Read raw pipe chunks so token-stream output appears before newline/EOS."""` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `with logfile.open("a", encoding="utf-8") as handle:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `stream = proc.stdout` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if stream is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `decoder = codecs.getincrementaldecoder("utf-8")("replace")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fd = stream.fileno()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `while True:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `raw = os.read(fd, 4096)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if not raw:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `break` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text = decoder.decode(raw)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if text:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `handle.write(text)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `handle.flush()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_output_queue.put(text)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `tail = decoder.decode(b"", final=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if tail:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `handle.write(tail)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `handle.flush()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_output_queue.put(tail)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception as exc:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_output_queue.put(f"\n[UI reader error] {type(exc).__name__}: {exc}\n")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _poll_eval(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal = getattr(self, "_eval_modal", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc = getattr(self, "_eval_proc", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `while True:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `line = self._eval_output_queue.get_nowait()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(self, line)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except queue.Empty:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `alive = proc is not None and proc.poll() is None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if alive:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `ram_gb, cpu = _process_tree_metrics(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_peak_gb = max(float(getattr(self, "_eval_peak_gb", 0.0)), ram_gb)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `elapsed = max(0.0, time.time() - float(self._eval_start_time or time.time()))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if self._eval_ram_label is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_ram_label.configure(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text=f"RAM tree: {ram_gb:.2f} GB • peak {self._eval_peak_gb:.2f} GB • CPU {cpu:.0f}%"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if self._eval_elapsed_label is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_elapsed_label.configure(text=f"Elapsed: {int(elapsed)}s")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if self._eval_state_label is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `state = "Paused / waiting for safe boundary" if self._eval_paused else "Running"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_state_label.configure(text=state)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `enabled = bool(self._eval_mem_enabled_var.get())` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `limit = float(str(self._eval_mem_gb_var.get()).strip())` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `enabled, limit = False, 0.0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if enabled and limit > 0 and ram_gb >= limit and not self._eval_memory_tripped:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_memory_tripped = True` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `f"\n[MEM WATCH] Process tree reached {ram_gb:.2f} GB >= {limit:.2f} GB; "` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"requesting graceful cancellation.\n",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_signal_eval_cancel(self, "memory-limit")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.root.after(350, lambda: _poll_eval(self))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if proc is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `code = proc.poll()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if self._eval_state_label is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if code == 0:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `label = "Completed"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `elif code == 130:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `label = "Cancelled"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `else:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `label = f"Stopped (exit {code})"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_state_label.configure(text=label)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "_eval_start_button", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_start_button.configure(state="normal", text="▶ Start Eval")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "_eval_pause_button", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_pause_button.configure(state="disabled", text="⏸ Pause")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "_eval_cancel_button", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_cancel_button.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "_eval_mem_check", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_check.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "_eval_mem_entry", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_entry.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "_eval_deepswe_check", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_deepswe_check.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "btn_model_menu", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.btn_model_menu.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "btn_reset_reinstall", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.btn_reset_reinstall.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "btn_load_unload", None) is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.btn_load_unload.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._update_model_action_buttons()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_proc = None` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_paused = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if modal is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if modal.winfo_exists():` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.root.after(700, lambda: _poll_eval(self))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _start_eval(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if _eval_alive(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `info = _active_text_info(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if info is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `messagebox.showinfo("Text Models Only", "The evaluation suite is available only for text models.")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `memory_enabled = bool(self._eval_mem_enabled_var.get())` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `memory_gb = float(str(self._eval_mem_gb_var.get()).strip())` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if memory_enabled and memory_gb < 1.0:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `raise ValueError` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `messagebox.showerror("Invalid Memory Limit", "Enter a memory limit of at least 1.0 GB.")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `# Preserve the exact resolved runtime artifact before unloading chat. This` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `# prevents a second copy of a 27B model from being resident during eval.` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `eval_info = dict(info)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `active_path = str(getattr(getattr(self, "engine", None), "active_model_path", "") or "")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if active_path and os.path.exists(active_path):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `eval_info["model_path"] = active_path` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if getattr(self, "is_model_loaded", False):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.engine.unload_model()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.is_model_loaded = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._sync_memory_watchdog(force_stop=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._update_model_action_buttons()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._update_input_lock_state()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.lbl_model_status.configure(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="○ Chat model unloaded for exclusive Eval",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["accent_yellow"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `base = Path(getattr(mod, "get_portable_data_dir")()) / "eval_runs"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `stamp = time.strftime("%Y%m%d-%H%M%S")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `run_dir = base / f"{stamp}-{os.getpid()}"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `run_dir.mkdir(parents=True, exist_ok=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `config_path = run_dir / "launcher.json"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `config = {` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"run_dir": str(run_dir),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"model_info": eval_info,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"memory_limit_enabled": memory_enabled,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"memory_limit_gb": memory_gb,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"deepswe": bool(self._eval_deepswe_var.get()),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"max_duration_hours": 72.0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `}` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `for flag in ("pause.flag", "cancel.flag"):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `(run_dir / flag).unlink(missing_ok=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `repo_root = Path(mod.__file__).resolve().parent` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cmd = [sys.executable, "-u", "-m", "eval.app_eval_runner", "--config", str(config_path)]` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `creationflags = 0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if os.name == "nt":` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc = subprocess.Popen(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cmd,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cwd=str(repo_root),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `stdout=subprocess.PIPE,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `stderr=subprocess.STDOUT,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `stdin=subprocess.DEVNULL,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text=False,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bufsize=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `creationflags=creationflags,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception as exc:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `messagebox.showerror("Eval Launch Failed", f"{type(exc).__name__}: {exc}")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_proc = proc` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_run_dir = str(run_dir)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_peak_gb = 0.0` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_memory_tripped = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_paused = False` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_start_time = time.time()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `f"[UI] Started PID {proc.pid}\n[UI] Run folder: {run_dir}\n"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `f"[UI] Model: {eval_info.get('name') or eval_info.get('short_name')}\n",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_start_button.configure(state="disabled", text="Running…")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_pause_button.configure(state="normal", text="⏸ Pause")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_cancel_button.configure(state="normal")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_check.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_entry.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_deepswe_check.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `# Keep the eval process exclusive: do not allow another heavyweight` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `# chat model to be loaded/switched/reset behind it.` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.btn_load_unload.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.btn_model_menu.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self.btn_reset_reinstall.configure(state="disabled")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `threading.Thread(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `target=_reader,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `args=(self, proc, run_dir / "live_console.log"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `daemon=True,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `name="SmartAI-EvalOutput",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `).start()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_poll_eval(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def _open_eval_window(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `info = _active_text_info(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if info is None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `messagebox.showinfo("Text Models Only", "Select a text model to use the evaluation suite.")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal = getattr(self, "_eval_modal", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if modal is not None and modal.winfo_exists():` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.deiconify()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.lift()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.focus_force()` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pass` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal = tk.Toplevel(self.root)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_modal = modal` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.title("Smart AI • 4,014 Evaluation")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.geometry("1000x720")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.minsize(760, 560)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.configure(bg=self.C["bg_hud"])` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `modal.transient(self.root)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `header = tk.Frame(modal, bg=self.C["bg_hud"])` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `header.pack(fill="x", padx=16, pady=(14, 6))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `tk.Label(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `header,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="🧪 4,014 Benchmark Evaluation",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_H2"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_hud"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["accent_cyan"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `).pack(anchor="w")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `tk.Label(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `header,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text=(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `f"Text model: {info.get('name') or info.get('short_name')} • "` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"same suite, isolated eval state • Bonsai 2 is the default main model"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_SMALL"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_hud"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["text_muted"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `).pack(anchor="w", pady=(2, 0))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls = tk.Frame(modal, bg=self.C["bg_card"])` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls.pack(fill="x", padx=16, pady=6)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `current_mem_on = bool(getattr(self, "_memory_limit_enabled", True))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `current_mem_gb = float(getattr(self, "_memory_limit_gb", 12.5) or 12.5)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_enabled_var = tk.BooleanVar(value=current_mem_on)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_gb_var = tk.StringVar(value=f"{current_mem_gb:.1f}")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_deepswe_var = tk.BooleanVar(value=False)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_check = tk.Checkbutton(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="Memory watcher",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `variable=self._eval_mem_enabled_var,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_card"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["text_main"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activebackground=self.C["bg_card"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activeforeground=self.C["text_main"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `selectcolor=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `highlightthickness=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_check.pack(side="left", padx=(10, 4), pady=8)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_entry = tk.Entry(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `textvariable=self._eval_mem_gb_var,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `width=6,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `justify="right",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_input_inner"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["text_main"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `insertbackground=self.C["text_main"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `relief="flat",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bd=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_mem_entry.pack(side="left", ipady=3)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `tk.Label(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="GB process-tree limit",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_card"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["text_muted"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `).pack(side="left", padx=(3, 12))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_deepswe_check = tk.Checkbutton(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="DeepSWE flagship (113, very slow)",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `variable=self._eval_deepswe_var,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_card"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["text_main"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activebackground=self.C["bg_card"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `activeforeground=self.C["text_main"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `selectcolor=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `highlightthickness=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_deepswe_check.pack(side="left", padx=6)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_start_button = tk.Button(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="▶ Start Eval",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["btn_primary_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["btn_primary_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `relief="flat",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bd=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `padx=10,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pady=4,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `command=lambda: _start_eval(self),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_start_button.pack(side="right", padx=(4, 10))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_pause_button = tk.Button(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="⏸ Pause",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["btn_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `relief="flat",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bd=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `padx=10,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pady=4,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `state="normal" if _eval_alive(self) else "disabled",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `command=lambda: _toggle_pause(self),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_pause_button.pack(side="right", padx=4)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_cancel_button = tk.Button(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `controls,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="⏹ Cancel",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["btn_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["btn_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `relief="flat",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bd=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `padx=10,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pady=4,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `state="normal" if _eval_alive(self) else "disabled",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `command=lambda: _cancel_button(self),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_cancel_button.pack(side="right", padx=4)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `telemetry = tk.Frame(modal, bg=self.C["bg_hud"])` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `telemetry.pack(fill="x", padx=16, pady=(4, 6))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_state_label = tk.Label(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `telemetry,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="Running" if _eval_alive(self) else "Ready",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY_BOLD"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_hud"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["accent_green"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_state_label.pack(side="left", padx=(0, 14))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_ram_label = tk.Label(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `telemetry,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text=f"RAM tree: 0.00 GB • peak {float(getattr(self, '_eval_peak_gb', 0.0)):.2f} GB • CPU 0%",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_hud"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["text_main"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_ram_label.pack(side="left")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_elapsed_label = tk.Label(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `telemetry,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `text="Elapsed: 0s",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_TINY"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["bg_hud"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["text_muted"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_elapsed_label.pack(side="right")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `output_frame = tk.Frame(modal, bg=self.C["code_bg"])` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `output_frame.pack(fill="both", expand=True, padx=16, pady=(0, 16))` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `scroll = tk.Scrollbar(output_frame, orient="vertical")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `scroll.pack(side="right", fill="y")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_log_widget = tk.Text(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `output_frame,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bg=self.C["code_bg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `fg=self.C["code_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `insertbackground=self.C["code_fg"],` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `font=getattr(mod, "_FONT_MONO"),` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `wrap="word",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `bd=0,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `padx=10,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `pady=10,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `yscrollcommand=scroll.set,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `state="disabled",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self._eval_log_widget.pack(fill="both", expand=True)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `scroll.configure(command=self._eval_log_widget.yview)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_append_eval_log(` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `self,` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"Ready. Start Eval runs the canonical suite in a separate process.\n"` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `"Pause waits for a safe item/phase boundary. Cancel always asks for confirmation.\n",` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_poll_eval(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `def close_with_eval_cleanup(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if _eval_alive(self):` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_signal_eval_cancel(self, "app-close")` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc = getattr(self, "_eval_proc", None)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `if proc is not None:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `try:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `proc.wait(timeout=2.0)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `except Exception:` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `_kill_eval_tree(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `return original_close(self)` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls._build_single_top_bar = build_with_eval` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls._on_switch_model_tab = switch_with_eval` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls._apply_theme_colors = theme_with_eval` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls._on_close_app = close_with_eval_cleanup` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls._open_eval_window = _open_eval_window` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls._sync_eval_button_visibility = _sync_eval_button` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+- **ADD** `cls._eval_panel_installed = True` — add text-only Eval UI with live output, telemetry, RAM watcher, pause/resume, confirmed cancel and exclusivity; exact location: `@@ -0,0 +1,720 @@`.
+
+## `core/gui_generation_cap.py` — modified, +10/-3
+
+**Shared rationale:** expose Context Limit and preserve current Learn/attachment arguments.
+
+
+### `@@ -108,7 +108,7 @@ def build_top_with_cap(self):`
+
+- **REMOVE** `text="Context",` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -108,7 +108,7 @@ def build_top_with_cap(self):`.
+- **ADD** `text="Context Limit",` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -108,7 +108,7 @@ def build_top_with_cap(self):`.
+
+### `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`
+
+- **REMOVE** `def process_with_real_pro_metadata(self, full_msg: str, user_prompt: str):` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **REMOVE** `result = original_process(self, full_msg, user_prompt)` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `def process_with_real_pro_metadata(` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `self,` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `full_msg: str,` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `user_prompt: str,` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `*args,` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `**kwargs,` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `):` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `# Preserve newer Learn/attachment arguments while adding only telemetry.` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+- **ADD** `result = original_process(self, full_msg, user_prompt, *args, **kwargs)` — expose Context Limit and preserve current Learn/attachment arguments; exact location: `@@ -172,8 +172,15 @@ def set_generating_with_cap_reason(self, generating: bool):`.
+
+## `core/lif_gating.py` — modified, +61/-0
+
+**Shared rationale:** add diagnostic entropy/ladder/spike helpers without replacing production routing.
+
+
+### `@@ -2,6 +2,63 @@`
+
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `def convex_temperature_ladder(` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `num_branches: int,` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `t_min: float = 0.20,` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `t_max: float = 0.88,` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `) -> List[float]:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `"""Pure compatibility helper; active chat/eval temperature policy stays authoritative."""` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `n = max(1, int(num_branches))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `if n == 1:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return [0.0]` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `if t_min <= 0 or t_max <= 0:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `raise ValueError("temperature bounds must be positive")` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `ratio = float(t_max) / float(t_min)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return [` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `float(round(float(t_min) * (ratio ** (i / (n - 1))), 4))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `for i in range(n)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `]` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `def normalized_shannon_from_probabilities(probabilities) -> Tuple[float, float]:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `values = [max(0.0, float(x)) for x in probabilities]` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `total = sum(values)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `if total <= 0:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return 0.0, 0.0` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `probs = [x / total for x in values if x > 0]` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `raw = -sum(x * math.log2(max(x, 1e-12)) for x in probs)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `denom = math.log2(max(2, len(probs)))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return raw, max(0.0, min(1.0, raw / denom))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `def topk_shannon_from_logits(logits, top_k: int = 40) -> Tuple[float, float]:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `"""Diagnostic entropy helper; it does not change the active router."""` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `try:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `import mlx.core as mx` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `flat = logits.reshape(-1).astype(mx.float32)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `k = max(2, min(int(top_k), int(flat.shape[0])))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `idx = mx.argpartition(-flat, kth=k - 1)[:k]` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `probs = mx.softmax(flat[idx], axis=-1)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `raw_arr = -mx.sum(probs * mx.log2(mx.clip(probs, 1e-12, 1.0)))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `mx.eval(raw_arr)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `raw = float(raw_arr.item())` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return raw, max(0.0, min(1.0, raw / math.log2(k)))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `except Exception:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `pass` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `try:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `values = sorted((float(x) for x in logits), reverse=True)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `except Exception:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return 0.0, 0.0` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `values = values[: max(2, min(int(top_k), len(values)))]` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `if not values:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return 0.0, 0.0` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `vmax = max(values)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `exps = [math.exp(v - vmax) for v in values]` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `total = sum(exps)` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `return normalized_shannon_from_probabilities([x / total for x in exps])` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -2,6 +2,63 @@`.
+
+### `@@ -32,3 +89,7 @@ def determine_branch_budget(self, entropy: float) -> Tuple[int, List[float], int`
+
+- **ADD** `blank-line formatting change within this audited hunk` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -32,3 +89,7 @@ def determine_branch_budget(self, entropy: float) -> Tuple[int, List[float], int`.
+- **ADD** `@property` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -32,3 +89,7 @@ def determine_branch_budget(self, entropy: float) -> Tuple[int, List[float], int`.
+- **ADD** `def spike_count(self) -> int:` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -32,3 +89,7 @@ def determine_branch_budget(self, entropy: float) -> Tuple[int, List[float], int`.
+- **ADD** `return int(sum(self.spike_history))` — add diagnostic entropy/ladder/spike helpers without replacing production routing; exact location: `@@ -32,3 +89,7 @@ def determine_branch_budget(self, entropy: float) -> Tuple[int, List[float], int`.
+
+## `core/media_learning.py` — modified, +67/-2
+
+**Shared rationale:** require provable nonzero media updates and rollback on failure/cancel.
+
+
+### `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`
+
+- **ADD** `def _persisted_lora_delta_proven(directory: Path) -> bool:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"""Prove an external LoRA artifact contains a learned nonzero update factor.` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `blank-line formatting change within this audited hunk` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `Standard LoRA initializes one factor (usually B/up) at zero. A successful` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `optimization must move that output/update factor away from zero. If the` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `artifact format does not expose a recognizable LoRA update tensor, fail` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `closed rather than claiming a parameter update that cannot be verified.` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"""` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `files = list(Path(directory).rglob("*.safetensors"))` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `if not files:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `return False` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `blank-line formatting change within this audited hunk` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `output_markers = (` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"lora_b",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"lora.b",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"lora_up",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"lora.up",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"lora_out",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"lora.out",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"adapter_b",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `"adapter.b",` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `)` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `try:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `import torch` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `from safetensors import safe_open` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `except Exception:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `return False` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `blank-line formatting change within this audited hunk` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `saw_output_factor = False` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `for file in files:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `try:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `with safe_open(str(file), framework="pt", device="cpu") as handle:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `for key in handle.keys():` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `lowered = str(key).lower()` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `if not any(marker in lowered for marker in output_markers):` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `continue` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `saw_output_factor = True` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `tensor = handle.get_tensor(key)` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `if tensor.numel() <= 0:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `continue` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `if not bool(torch.isfinite(tensor).all().item()):` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `raise RuntimeError(` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `f"Persisted media LoRA contains non-finite tensor: {key}"` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `)` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `if float(tensor.detach().abs().max().item()) > 0.0:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `return True` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `except RuntimeError:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `raise` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `except Exception:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `continue` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `blank-line formatting change within this audited hunk` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `if saw_output_factor:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `return False` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `return False` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `blank-line formatting change within this audited hunk` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+- **ADD** `blank-line formatting change within this audited hunk` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -52,6 +52,62 @@ def _atomic_json(path, data):`.
+
+### `@@ -374,6 +430,11 @@ def _external_update(self, session, samples, repo, cancel_event):`
+
+- **ADD** `if not _persisted_lora_delta_proven(directory):` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -374,6 +430,11 @@ def _external_update(self, session, samples, repo, cancel_event):`.
+- **ADD** `raise RuntimeError(` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -374,6 +430,11 @@ def _external_update(self, session, samples, repo, cancel_event):`.
+- **ADD** `"External media trainer produced an artifact, but a real nonzero "` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -374,6 +430,11 @@ def _external_update(self, session, samples, repo, cancel_event):`.
+- **ADD** `"LoRA update factor could not be proven; refusing weights_updated=True"` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -374,6 +430,11 @@ def _external_update(self, session, samples, repo, cancel_event):`.
+- **ADD** `)` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -374,6 +430,11 @@ def _external_update(self, session, samples, repo, cancel_event):`.
+
+### `@@ -391,7 +452,7 @@ def _external_update(self, session, samples, repo, cancel_event):`
+
+- **REMOVE** `except Exception:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -391,7 +452,7 @@ def _external_update(self, session, samples, repo, cancel_event):`.
+- **ADD** `except BaseException:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -391,7 +452,7 @@ def _external_update(self, session, samples, repo, cancel_event):`.
+
+### `@@ -410,6 +471,7 @@ def _update(self, session, samples, repo, cancel_event):`
+
+- **ADD** `directory = None` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -410,6 +471,7 @@ def _update(self, session, samples, repo, cancel_event):`.
+
+### `@@ -452,10 +514,13 @@ def _update(self, session, samples, repo, cancel_event):`
+
+- **REMOVE** `except Exception:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -452,10 +514,13 @@ def _update(self, session, samples, repo, cancel_event):`.
+- **ADD** `except BaseException:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -452,10 +514,13 @@ def _update(self, session, samples, repo, cancel_event):`.
+- **ADD** `if directory is not None:` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -452,10 +514,13 @@ def _update(self, session, samples, repo, cancel_event):`.
+- **ADD** `import shutil` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -452,10 +514,13 @@ def _update(self, session, samples, repo, cancel_event):`.
+- **ADD** `shutil.rmtree(directory, ignore_errors=True)` — require provable nonzero media updates and rollback on failure/cancel; exact location: `@@ -452,10 +514,13 @@ def _update(self, session, samples, repo, cancel_event):`.
+
+## `core/online_consolidator.py` — modified, +34/-9
+
+**Shared rationale:** avoid duplicate adapter copies and clean/report RAM around awake updates.
+
+
+### `@@ -7,12 +7,13 @@`
+
+- **REMOVE** `import copy` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -7,12 +7,13 @@`.
+- **ADD** `from core.training_memory import backend_label, process_rss_mb, release_training_memory` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -7,12 +7,13 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -7,12 +7,13 @@`.
+
+### `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`
+
+- **REMOVE** `logger.info("[AwakeConsolidator] Commencing consolidation on %d turns...", len(chunk))` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `backend_name = backend_label(self.engine)` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `ram_start_mb = process_rss_mb()` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `logger.info(` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `"[AwakeConsolidator] start backend=%s turns=%d RAM=%.0f MB",` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `backend_name,` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `len(chunk),` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `ram_start_mb,` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+- **ADD** `)` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -167,7 +168,14 @@ def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:`.
+
+### `@@ -180,7 +188,10 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`
+
+- **REMOVE** `shadow_adapters = copy.deepcopy(active_adapters) if active_adapters is not None else {}` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -180,7 +188,10 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `# train_mini_batch updates the live backend transactionally; this` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -180,7 +188,10 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `# argument is compatibility metadata, not a rollback snapshot.` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -180,7 +188,10 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `# A deep copy can duplicate every MLX LoRA tensor for no benefit.` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -180,7 +188,10 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `shadow_adapters = dict(active_adapters) if isinstance(active_adapters, dict) else {}` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -180,7 +188,10 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+
+### `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`
+
+- **ADD** `if self.db and hasattr(self.db, "mark_traces_consolidated"):` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `self.db.mark_traces_consolidated(chunk)` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `success = True` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `blank-line formatting change within this audited hunk` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **REMOVE** `"[AwakeConsolidator] Cycle #%d complete in %.2fs | Param Drift ||ΔW||2: %.6f",` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `"[AwakeConsolidator] complete backend=%s cycle=%d %.2fs drift=%.6f",` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `backend_name,` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **REMOVE** `if self.db and hasattr(self.db, "mark_traces_consolidated"):` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **REMOVE** `self.db.mark_traces_consolidated(chunk)` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **REMOVE** `success = True` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **REMOVE** `blank-line formatting change within this audited hunk` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **REMOVE** `"[AwakeConsolidator] Real consolidation failed: %s",` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `"[AwakeConsolidator] Real consolidation failed backend=%s: %s",` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `backend_name,` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `# Release transient gradients/optimizers/framework caches for every` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `# backend without unloading the working inference model.` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `updated_adapters = None` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `shadow_adapters = None` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `stats = release_training_memory(self.engine)` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `logger.info(` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `"[AwakeConsolidator] cleanup backend=%s RAM %.0f -> %.0f MB (released %.0f MB)",` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `backend_name,` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `ram_start_mb,` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `stats["after_mb"],` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `max(0.0, ram_start_mb - stats["after_mb"]),` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+- **ADD** `)` — avoid duplicate adapter copies and clean/report RAM around awake updates; exact location: `@@ -208,24 +219,38 @@ def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:`.
+
+## `core/training_memory.py` — added, +131/-0
+
+**Shared rationale:** shared backend-neutral cleanup and memory measurement including macOS physical footprint.
+
+
+### `@@ -0,0 +1,131 @@`
+
+- **ADD** `"""Backend-neutral training-memory cleanup and concise RAM telemetry.` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `Used by app Learn/RSI/awake consolidation and non-MLX trainer bridges. This never` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `changes model weights, sampling, KV policy, or backend selection. It only releases` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `transient training state/caches after an update and reports process RSS in MB.` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `"""` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `from __future__ import annotations` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import gc` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import os` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import platform` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `from typing import Any, Dict` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `def process_memory_bytes(pid: int | None = None) -> int:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `"""Best-effort live process footprint.` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `On macOS, proc_pid_rusage/ri_phys_footprint includes unified-memory pressure` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `that ordinary RSS can miss for MLX/Metal allocations. Other platforms use` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `psutil RSS. Falls back to RSS everywhere if libproc is unavailable.` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `"""` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `target_pid = int(pid or os.getpid())` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if platform.system() == "Darwin":` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import ctypes` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import ctypes.util` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `class _RUsageInfoV2(ctypes.Structure):` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `_fields_ = [` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_uuid", ctypes.c_ubyte * 16),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_user_time", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_system_time", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_pkg_idle_wkups", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_interrupt_wkups", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_pageins", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_wired_size", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_resident_size", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_phys_footprint", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_proc_start_abstime", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_proc_exit_abstime", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_child_user_time", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_child_system_time", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_child_pkg_idle_wkups", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_child_interrupt_wkups", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_child_pageins", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_child_elapsed_abstime", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_diskio_bytesread", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `("ri_diskio_byteswritten", ctypes.c_uint64),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `]` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `lib_path = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `libproc = ctypes.CDLL(lib_path, use_errno=True)` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `fn = libproc.proc_pid_rusage` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `fn.restype = ctypes.c_int` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `info = _RUsageInfoV2()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if fn(target_pid, 2, ctypes.byref(info)) == 0 and int(info.ri_phys_footprint) > 0:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return int(info.ri_phys_footprint)` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `pass` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import psutil` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return int(psutil.Process(target_pid).memory_info().rss)` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return 0` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `def process_rss_mb() -> float:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return float(process_memory_bytes()) / (1024.0 ** 2)` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return 0.0` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `def backend_label(backend: Any) -> str:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if backend is None:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return "none"` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `for attr in ("runtime", "active_backend"):` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `value = str(getattr(backend, attr, "") or "").strip()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if value:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return value` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return type(backend).__name__` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `def release_training_memory(backend: Any = None) -> Dict[str, float]:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `"""Drop transient Python/framework caches without unloading the live inference model."""` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `before = process_rss_mb()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `# Backend-specific optional hook first.` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `hook = getattr(backend, "release_training_memory", None)` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if callable(hook):` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `hook()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `pass` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `gc.collect(2)` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import mlx.core as mx` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if hasattr(mx, "clear_cache"):` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `mx.clear_cache()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `mx.metal.clear_cache()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `pass` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `import torch` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if torch.cuda.is_available():` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `torch.cuda.empty_cache()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `torch.cuda.ipc_collect()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `pass` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `try:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `torch.mps.empty_cache()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `pass` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `except Exception:` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `pass` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `gc.collect(2)` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `after = process_rss_mb()` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `return {` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `"before_mb": float(before),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `"after_mb": float(after),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `"released_mb": max(0.0, float(before) - float(after)),` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+- **ADD** `}` — shared backend-neutral cleanup and memory measurement including macOS physical footprint; exact location: `@@ -0,0 +1,131 @@`.
+
+## `docs/BRANCH_AUDIT_fix_real_benchmarks_final_32k_2026-09-19.md` — added, +735/-0
+
+**Shared rationale:** main branch audit/reconciliation/call-chain documentation.
+
+
+### `@@ -0,0 +1,735 @@`
+
+- **ADD** `# Smart AI Studio — Full Feature-Branch Audit and Reconciliation` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `**Repository:** \`Eabusham2/smart-ai-studio\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `**Authoritative branch:** \`fix/real-benchmarks-final-32k\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `**Historical baseline:** \`master\` at \`06390e5357a07f80a8089ac28fc16c75461a48a6\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `**Latest code/test snapshot audited before this documentation update:** \`d039972963735dbba25ad4ff2694b09a1924e1bc\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `**Audit date:** 2026-09-19` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 1. Audit rule` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The feature branch is authoritative. \`master\` is only a historical comparison baseline.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `This audit does **not** revert a newer feature-branch implementation merely because \`master\` is simpler. It uses these rules:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `1. Preserve working/newer feature-branch behavior.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `2. Prefer surgical layering over file/subsystem rewrites.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `3. If old/diverged branches contain a genuinely better isolated behavior, port only that behavior.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `4. Reject stale policy regressions, especially quantized/lossy eval KV, context dropping, fabricated telemetry, fake learning success, mo...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `5. Preserve the canonical 4,014 stage/scoring/checkpoint/prompt flow unless a concrete bug requires a narrow fix.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `6. Distinguish **source/call-graph verification** from **real hardware/native-runtime execution**. They are not interchangeable.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `7. Full CI was not run because the standing project rule is not to run full CI unless explicitly requested.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 2. Final branch-vs-master shape` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `At the final code-audit checkpoint before these documentation commits:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- the feature branch was **ahead of master and 0 behind**;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- the implementation diff was concentrated in RAM/training safety, Eval GUI/cross-platform plumbing, Phase-3/RSI hardening, packaging, an...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- \`app_gui.py\` itself was only incrementally modified rather than replaced;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- the only branch-file removals were two obsolete session/branch guard documents:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- \`ACTIVE_SESSION_GUARD_2026-09-18_GGUF_ONLY.md\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- \`BRANCH_GUARD_GGUF_LEARNING_20260918.txt\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `No useful implementation was removed by those deletions.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 3. Current intended behavior` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.1 Chat / Pro temperature policy` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Normal chat N=1: **T=0.65**.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Eval single-pass: **T=0.55**.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Pro N>1: **0.20 → 0.95**, gamma **1.35**, plus the extra fixed **T=0.65** candidate.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Older greedy and older 0.88-max policies are historical and must not silently replace these values.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.2 Context / KV policy` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- The top app has exactly one **Context Limit** control.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- One Context budget means **packed prompt/history + generated output**.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- The same context budget is now applied across MLX, GGUF/Prism, BitNet, and controller text backends.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Eval and normal chat refuse silent truncation when the packed prompt already exceeds the available physical context.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Current eval RSI/Phase-4 memory handling keeps **full-precision KV** and reduces prefill size on Metal OOM rather than switching to the...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Old lossy H2O/context-dropping behavior remains retired.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- App TurboQuant remains a separate accepted approximate cache path where supported; it is not used as a hidden eval fallback.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.3 Main app top controls` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Exactly one of each:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- **Eval** (text models only)` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- **Context Limit**` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- **Mem Limit** checkbox + GB value` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The Eval page has its own eval-process memory watcher; it does **not** duplicate the normal app Context/Mem Limit controls.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.4 Canonical Eval GUI` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The desktop Eval UI is a launcher/monitor around the existing canonical runner:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`Eval button → eval/app_eval_runner.py → master_4000_eval_suite.py → Master4000EvaluationEngine.run_full_suite()\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `It is **not** a second rewritten benchmark suite.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Features:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- text models only;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- dedicated Toplevel Eval window;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- live raw output console;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- elapsed/state/RAM/peak RAM/CPU telemetry;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- optional process-tree memory watcher with user-selected GB threshold;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Pause/Resume at safe boundaries;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- confirmed Cancel;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- cancellation during model load;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- process-tree cleanup on app close;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- isolated eval checkpoints/DB/learned state while native runtimes/HF cache remain shared;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- standalone app packaging includes the canonical eval suite and required dependencies.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.5 Cross-platform Eval backend behavior` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Apple MLX keeps the existing optimized MLX path.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `App-launched non-MLX Eval uses the production app backend:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- GGUF / Prism GGUF` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- BitNet` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Transformers/controller` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The bridge is dormant for normal CLI runs.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The canonical suite's module import graph was hardened so a Windows/Linux machine can import it without having \`mlx_lm\` installed before ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Windows SWE patch verification uses Git's unified-diff parser when POSIX \`patch\` is unavailable.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.6 Memory accounting` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The Eval memory watcher and training telemetry now use:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- macOS: process **physical footprint** when libproc exposes it, so MLX/Metal unified-memory pressure is counted;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- other platforms: process RSS fallback;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Eval UI/runner: total of root process + native child processes.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `This replaced misleading whole-system-used-RAM and plain-RSS-only paths.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.7 Learning / Phase 3` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `#### MLX` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- real \`value_and_grad\` + AdamW;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- LoRA-only trainables;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- q/v/down/linear-attention LoRA unfreeze is restricted to \`lora_a/lora_b\`;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Fisher/EWC remains real;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- bounded Phase-3 backprop uses local target windows to avoid retaining one giant graph;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- completion-only targets;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- nonzero parameter drift required;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- atomic adapter persistence;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- live LoRA tensors and persisted adapter roll back on failure/cancellation.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `#### GGUF / Prism GGUF` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- quantized base remains frozen;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- real PEFT/QLoRA sidecar is trained against a declared compatible parent;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- backward + optimizer step + nonzero drift;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- training model is released before LoRA→GGUF conversion;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- learned GGUF adapter is hot-reloaded;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- rollback backups survive until successful return;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- cancellation is treated as a transaction failure.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Prism remains process-isolated and keeps its specialized runtime/projector path.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `#### BitNet` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- official/real bitnet.cpp runtime path;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- BF16 parent → PEFT update → merge → BitNet I2_S conversion;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- nonzero drift required;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- giant training models are released before conversion;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- rebuilt learned GGUF is reloaded;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- rollback on failure/cancellation;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- no synthetic BitLinear “learning success.”` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `#### Transformers/controller` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- language projection LoRA only;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- completion-only masking;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- real AdamW/backward;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- nonzero drift;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- transactional directory persistence;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- live tensor rollback + persisted adapter rollback on failure/cancellation.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.8 Learn / RSI / DB semantics` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Learn and RSI use the active real trainable backend.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Zero parameter change is failure.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- RSI successful persistent memory remains in \`rsi_self_memories\` as the self-generated trace only.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Benchmark question, expected answer, reward, PASS/FAIL and verifier metadata do not belong in the persistent RSI self-memory sample.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Answer-blind deterministic verifier feedback can guide RSI round 2, but hidden expected answers remain reward-only.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Non-MLX Phase 3 proves the persisted artifact before marking memory rows consolidated.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Learn + RSI consolidation markers are committed in one SQLite transaction.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.9 Phase-3 RAM / telemetry` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Fisher drops each anchor's transient graph.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Phase 3 uses bounded local windows.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- transient gradient/cache references are released continuously.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- cumulative progress reports **global current/all targets**, not per-row resets.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- percent, TPS and ETA use the same global denominator.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- telemetry no longer carries fabricated fallback TPS/speculative rates.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- process RAM is measured, not unrelated whole-system used RAM.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 3.10 Media learning` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Native differentiable media training:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- requires real trainable parameters/loss/persistence;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- performs backward/optimizer updates;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- verifies finite loss/weights;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- requires measurable parameter delta;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- restores the pre-update tensors on failure/cancellation.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `External media trainers:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- must persist an adapter/checkpoint;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- saved artifacts must pass backend verification;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- LoRA artifacts must expose a provable **nonzero learned output/update factor**;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- “file exists” is not accepted as proof that weights changed;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- unsupported/unverifiable formats fail closed rather than reporting \`weights_updated=True\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Media generation support does not automatically imply media training/RSI support.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 4. Concrete defects found and fixed during this full audit` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The following were real current-branch defects discovered while walking the code, not hypothetical concerns:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `1. **GGUF Phase-3B tokenizer assignment** — conversation-teach unconditionally wrote \`backend.tokenizer\`; GGUF exposes a read-only tokeni...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `2. **macOS Eval RAM undercounting** — watcher used RSS only. Fixed with \`proc_pid_rusage(...).ri_phys_footprint\` when available.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `3. **MLX q/v LoRA trainability leak** — q/v projections still used unrestricted \`.unfreeze()\`. Fixed to \`lora_a/lora_b\` only.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `4. **MLX training transactionality** — added nonzero-drift fail-closed behavior, pre-update snapshots, atomic safetensors persistence and...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `5. **Controller PEFT transactionality** — added live tensor rollback and persisted adapter rollback.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `6. **Single Context semantics** — non-MLX chat paths still used old fixed \`max_new_tokens\`. Fixed so one Context budget constrains prompt...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `7. **Eval report syntax defect** — a literal escaped \`\n\` existed inside Python source after the target-model label patch. Replaced with ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `8. **Cross-platform legacy engine surface** — app Eval adapter was missing the LIF controller required by the canonical suite. Added the ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `9. **Legacy fabricated telemetry** — removed fallback \`12.0 t/s\`, \`15.0 t/s\`, \`42.5%\` speculative rate and synthetic \`[Offline: ...]\` ben...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `10. **Windows SWE patch verification** — old path assumed POSIX \`patch\`. Added Git fallback on Windows/no-\`patch\` systems.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `11. **Non-MLX import blocker** — \`live_generation_stream.py\` and \`rsi_generation_memory_hardening.py\` imported MLX-LM unconditionally. Gu...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `12. **Non-MLX Phase-3 commit order** — rows could be marked consolidated before persisted artifact proof. Reordered.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `13. **Learn/RSI table atomicity** — Learn and RSI markers were separate DB writes. Combined into one SQLite transaction.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `14. **Cancellation rollback** — GGUF/BitNet callers and conversion trainers caught \`Exception\`, not \`KeyboardInterrupt\`. Changed transact...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `15. **Rollback backup lifetime** — controller/GGUF/BitNet removed backups before the successful function return. Backups now survive unti...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `16. **Cross-platform Eval token counting** — GGUF could fall back to a rough character estimate despite native llama.cpp tokenization. Na...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `17. **Eval memory-limit interrupt** — child watcher self-signaled with \`os.kill(SIGINT)\`; switched to Python main-thread interrupt for po...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `18. **Media external trainer proof** — a nonempty checkpoint could be reported as learning. Now a nonzero learned LoRA update factor must...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `19. **Native media cancellation** — pre-update tensors are restored and uncommitted adapter directories removed on cancellation.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `20. **Failure-path cleanup** — app Eval non-MLX Phase 3 now releases backend training memory even if training throws.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `21. **MLX Phase-3 integrity contract** — bounded MLX Phase 3 updated real LoRA weights but did not return \`real_trainable_delta_l2\`, so t...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `22. **Audit-test regressions** — the newly added audit contract itself contained one invalid quoted string and one stale assertion that r...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `23. **RSI resume persistence semantics** — the resume layer still reconstructed successful RSI items through legacy \`episodic_interaction...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 5. Diverged/rogue branch reconciliation` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The audit did **not** merge diverged branches wholesale.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### \`code-low-think-hardening\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Useful parts already ported/current:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- LoRA-only trainability;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Fisher graph cleanup;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- bounded Phase 3;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- daemon RAM cleanup.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Rejected stale behavior:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- forced 4-bit/quantized KV policy.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### \`fix/rsi-memory-safe-resume-v2\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Useful parts retained:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- answer-blind deterministic verifier feedback;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- same-model checks every recursive round;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- earlier release of unused branch strings.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Rejected:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- 4-bit/sliding KV fallback;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- old persistence semantics.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### \`fix/rsi-resume-compact-telemetry\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `No useful behavior beyond the superseded quantized-KV memory strategy.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### \`fix/metal-branch-memory\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Kept only the useful synchronize-before-pressure-cache-release detail.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Did not restore unconditional per-branch purging as the normal policy.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### \`fix/hle-i0-loop\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Current HLE logic is newer:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- treats the token after \`T = ZFC +\` as arbitrary opaque literal text;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- first completed \`Con(...)\` is final;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- stronger anti-repeat/anti-recheck wording.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Rejected the old digit-only assumption and fixed 128-token cap.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### \`fix/real-4k-benchmarks-32k\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Superseded by the current real benchmark runtime plus later schema/fetch fixes.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### \`arch-merge-staging\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Useful architecture modules already exist in the current tree, including:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- adaptive hyperparameters;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- empirical Fisher/EWC;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- GRPO;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- MCTS discovery;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- in-process MCP;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- knowledge graph;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- round-robin LoRA;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- SmartKV;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- dual/MoE buffers.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Safe diagnostic/lifecycle pieces were reconciled additively:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- grammar-guided drafter diagnostics;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- LIF entropy helpers;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- projected-daemon lifecycle/status telemetry.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Rejected staging regressions:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- obsolete app/model registry rewrites;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- lossy H2O/context dropping;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- speculative decoding activation without proven exact equivalence;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- old MLX-only wrapper architecture;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- stale quantized-KV assumptions.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 6. Gemini-history reconciliation` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The historical Gemini log is useful as a record of desired architecture and experiments, **not as proof of completion**.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Claims later contradicted or not supported by reliable execution evidence include:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- “everything is built” / all checks passing / packaged in \`dist/\`;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- repeated 86/86, 94/94, 112/112 and 123/123 completion claims;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- 100% across all benchmark splits;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- DeepSWE/SWE-bench results presented as if they proved the final DeepSWE flagship workload;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- release binaries claimed uploaded and master claimed synchronized without durable verification;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- contradictory TPS explanations and changing “hardware ceiling” claims;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- verification scripts that printed a success count instead of actually checking requirements.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The current branch explicitly removes fake fallback telemetry and requires source/runtime proof where possible.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `See \`docs/GEMINI_POSTMORTEM_2026-09-19.md\` for the detailed postmortem.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 7. Validation status — what is and is not proven` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### Source/call-graph verified in this audit` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- complete sequential branch history was read oldest→newest;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- final \`master..feature\` diff inspected;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- canonical Eval wrapper/install order inspected;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- canonical Eval startup imports checked for non-MLX portability;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- active backend routing and training call graph inspected;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- DB/persistence ordering inspected;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- cancellation/rollback paths inspected;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- top-bar control uniqueness checked;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- no fabricated eval fallback speed/spec telemetry remains;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- focused full-branch source-contract sweep passed after correcting two bad test assumptions; the concurrent MLX real-delta commit was th...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### Not claimed as executed in this audit environment` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `This environment could not clone GitHub into the local shell, so this audit does **not** claim:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- a local \`py_compile\` over the entire repository;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- a local pytest run;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- full CI;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- real Apple MLX heavyweight training;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- real Prism native library execution;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- real bitnet.cpp rebuild/reload on Windows/Linux;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- CUDA controller PEFT training;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- every external media trainer;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Docker/Pier flagship DeepSWE;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- release packaging/publishing.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Those are runtime/hardware validation tasks, not source-implementation gaps. They must be reported honestly if/when executed.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 8. Remaining external prerequisites, not hidden “unfinished code”` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Some paths are intentionally fail-closed when their required native/upstream dependency is absent:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Prism specialized llama.cpp/mtmd libraries and projector;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Microsoft bitnet.cpp / converter toolchain;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- BF16 parent model for trainable BitNet/GGUF lineage;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Docker + official SWE-bench package for SWE-bench Verified scoring;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Pier/mini-swe-agent/Docker for optional flagship DeepSWE;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Diffusers/accelerate, MFLUX, Stable Audio, AI Toolkit, etc. for particular media trainers.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The code must not report these as successful when the dependency is missing.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 9. Sequential commit ledger` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The implementation was audited in chronological order. Documentation commits are intentionally excluded from this implementation ledger.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The final two implementation commits landed concurrently during documentation and were re-audited before sign-off:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- \`f267e44bd1\` fixes the audit test to match the atomic DB contract.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- \`ce26510b50\` returns the real MLX Phase-3 LoRA delta required by the stage-integrity layer.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| # | Commit | Phase | Change | Audit disposition |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `|---:|---|---|---|---|` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 1 | \`a9ba9c00c3\` | RAM / bounded Phase 3 | Keep EWC rollback compatible with bounded Phase 3 | Retained; later transaction/cancel harde...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 2 | \`35bd3884bb\` | RAM / bounded Phase 3 | Port bounded Phase 3 without losing current Learn RSI semantics | Retained; later transactio...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 3 | \`d8f0b719b5\` | RAM / bounded Phase 3 | Add backend-neutral training memory guard | Retained; later transaction/cancel hardening ext...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 4 | \`86526c674a\` | RAM / bounded Phase 3 | Guard app awake consolidation memory on every backend | Retained; later transaction/cancel h...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 5 | \`22234eafbe\` | RAM / bounded Phase 3 | Guard app Learn and RSI memory across active backends | Retained; later transaction/cancel h...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 6 | \`3e49d834fd\` | RAM / bounded Phase 3 | Release GGUF QLoRA training memory deterministically | Retained; later transaction/cancel ha...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 7 | \`0ce83994e8\` | RAM / bounded Phase 3 | Release BitNet rebuild training memory deterministically | Retained; later transaction/cance...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 8 | \`6914ddbee3\` | RAM / bounded Phase 3 | Release controller PEFT training memory after updates | Retained; later transaction/cancel h...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 9 | \`f162b3bcb1\` | RAM / bounded Phase 3 | Fix Learn RSI EWC and RAM telemetry accuracy | Retained; later transaction/cancel hardening ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 10 | \`1829b2625a\` | RAM / bounded Phase 3 | Drop GGUF training graph before adapter conversion | Retained; later transaction/cancel har...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 11 | \`9e40426508\` | RAM / bounded Phase 3 | Drop BitNet training models before I2_S conversion | Retained; later transaction/cancel har...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 12 | \`7a063763e0\` | RAM / bounded Phase 3 | Avoid duplicate adapter tensors during awake consolidation | Retained; later transaction/ca...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 13 | \`6c9b6fd0ae\` | RAM / bounded Phase 3 | Make Phase 3 telemetry cumulative across all targets | Retained; later transaction/cancel h...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 14 | \`915f371a27\` | RAM / bounded Phase 3 | Drop final GGUF training references before conversion | Retained; later transaction/cancel ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 15 | \`ebb59dde3b\` | RAM / bounded Phase 3 | Drop final BitNet training references before conversion | Retained; later transaction/cance...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 16 | \`4a0d3d9fc7\` | RAM / bounded Phase 3 | Drop final controller training references after updates | Retained; later transaction/cance...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 17 | \`ab72296d7e\` | RAM / bounded Phase 3 | Keep cumulative Phase 3 telemetry bounded in memory | Retained; later transaction/cancel ha...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 18 | \`c118cef33d\` | RAM / bounded Phase 3 | Add app eval cross-platform runtime bridge | Retained; later transaction/cancel hardening e...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 19 | \`7883826d47\` | RAM / bounded Phase 3 | Wire app eval bridge into canonical suite | Retained; later transaction/cancel hardening ex...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 20 | \`3c6e335093\` | App Eval / cross-platform foundation | Keep MLX legacy wrapper off non-MLX app evals | Retained; later audit closes...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 21 | \`bb782976f7\` | App Eval / cross-platform foundation | Add isolated app eval subprocess runner | Retained; later audit closes porta...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 22 | \`52f93dcc6c\` | App Eval / cross-platform foundation | Add text-model Eval window to desktop app | Retained; later audit closes por...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 23 | \`5df88c336a\` | App Eval / cross-platform foundation | Wire Eval window into desktop app | Retained; later audit closes portability...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 24 | \`621220ec93\` | App Eval / cross-platform foundation | Ship eval suite in standalone app bundles | Retained; later audit closes por...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 25 | \`9450f879f2\` | App Eval / cross-platform foundation | Add standalone eval runtime dependencies | Retained; later audit closes port...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 26 | \`1790718ab9\` | App Eval / cross-platform foundation | Declare cross-platform app eval dependencies | Retained; later audit closes ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 27 | \`7e1ebd485a\` | App Eval / cross-platform foundation | Switch standalone eval default to Bonsai 2 | Retained; later audit closes po...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 28 | \`dee1cab77c\` | App Eval / cross-platform foundation | Report actual Bonsai 2 or selected app eval model | Retained; later audit cl...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 29 | \`2f6b3993ba\` | App Eval / cross-platform foundation | Fix app eval dataset and RSI memory wiring | Retained; later audit closes po...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 30 | \`55095ca10f\` | App Eval / cross-platform foundation | Align Phase 3 integrity with current memory queue schema | Retained; later a...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 31 | \`75f4319c6a\` | App Eval / cross-platform foundation | Make non-MLX eval pause between Pro branches | Retained; later audit closes ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 32 | \`df8e3402a5\` | App Eval / cross-platform foundation | Prevent orphaned eval workers on app close | Retained; later audit closes po...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 33 | \`cf73e9f56e\` | App Eval / cross-platform foundation | Enforce app eval RAM limit inside runner | Retained; later audit closes port...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 34 | \`2db156fa41\` | App Eval / cross-platform foundation | Make Eval window output truly live | Retained; later audit closes portabilit...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 35 | \`1ea2eb8feb\` | App Eval / cross-platform foundation | Clamp app eval to actual backend context | Retained; later audit closes port...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 36 | \`58b4579bd8\` | App Eval / cross-platform foundation | Use active backend adapter path throughout app eval | Retained; later audit ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 37 | \`abd9ff4eb1\` | App Eval / cross-platform foundation | Allow isolated app-eval GGUF adapter state | Retained; later audit closes po...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 38 | \`4e71c953bc\` | App Eval / cross-platform foundation | Allow isolated app-eval BitNet learned state | Retained; later audit closes ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 39 | \`bc52e23a81\` | App Eval / cross-platform foundation | Allow isolated app-eval controller adapter state | Retained; later audit clo...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 40 | \`7408f1e104\` | App Eval / cross-platform foundation | Separate app eval learned state from shared runtimes | Retained; later audit...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 41 | \`155ea77a38\` | App Eval / cross-platform foundation | Isolate MLX app-eval adapter state | Retained; later audit closes portabilit...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 42 | \`e2dcdcb197\` | App Eval / cross-platform foundation | Lock desktop Eval integration contracts | Retained; later audit closes porta...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 43 | \`fae826327b\` | App Eval / cross-platform foundation | Allow verified app backends through eval orchestrator | Retained; later audi...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 44 | \`255771ba49\` | App Eval / cross-platform foundation | Make top Eval button label explicit | Retained; later audit closes portabili...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 45 | \`d892c2dc1a\` | Eval UX / safety / contracts | Label top context control explicitly | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 46 | \`5ec5b7ed2f\` | Eval UX / safety / contracts | Fail app eval closed on GGUF runtime errors | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 47 | \`2292c09170\` | Eval UX / safety / contracts | Lock Eval run settings while active | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 48 | \`78b3659da2\` | Eval UX / safety / contracts | Install Context Limit and Eval controls explicitly at app startup | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 49 | \`e543c6641f\` | Eval UX / safety / contracts | Keep top Context control compatible with current chat arguments | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 50 | \`103fc7a26f\` | Eval UX / safety / contracts | Make Eval cancel safe during model load | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 51 | \`d6fec5e7aa\` | Eval UX / safety / contracts | Lock Eval Context and Mem Limit top-bar contracts | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 52 | \`e2d83ea48c\` | Eval UX / safety / contracts | Keep app model controls exclusive during Eval | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 53 | \`601dbbf689\` | Eval UX / safety / contracts | Keep conversation teach backend identity accurate | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 54 | \`94d577e6fe\` | Eval UX / safety / contracts | Verify Learn and RSI consolidation in their own tables | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 55 | \`d360d5d755\` | Eval UX / safety / contracts | Lock single Context and Mem Limit controls | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 56 | \`1ee980fe67\` | Eval UX / safety / contracts | Port answer-blind RSI feedback without old KV regressions | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 57 | \`50a4f356ab\` | Eval UX / safety / contracts | Synchronize MLX work before pressure cache release | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 58 | \`40990c6184\` | Eval UX / safety / contracts | Preserve grammar-guided drafter diagnostics | Retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 59 | \`3c06189f56\` | Diverged-branch reconciliation | Preserve LIF diagnostic entropy helpers | Retained only as additive/safe reconcili...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 60 | \`8a40007193\` | Diverged-branch reconciliation | Preserve OGP daemon lifecycle telemetry | Retained only as additive/safe reconcili...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 61 | \`a6e147e8f8\` | Diverged-branch reconciliation | Lock best-of-diverged-branches reconciliation | Retained only as additive/safe rec...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 62 | \`2c51d357c3\` | Diverged-branch reconciliation | Remove BRANCH_GUARD_GGUF_LEARNING_20260918.txt | Intentional cleanup |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 63 | \`90b6946c66\` | Diverged-branch reconciliation | Remove ACTIVE_SESSION_GUARD_2026-09-18_GGUF_ONLY.md | Intentional cleanup |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 64 | \`9796f421dd\` | Diverged-branch reconciliation | Keep Phase 3B compatible with read-only GGUF tokenizer facade | Retained only as a...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 65 | \`b7da23ecec\` | Guard-file cleanup | Measure macOS training/eval memory by physical footprint | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 66 | \`1661aa5949\` | Guard-file cleanup | Use macOS physical footprint in Eval UI memory telemetry | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 67 | \`358e22904e\` | Full-audit corrective hardening | Enforce Eval RAM limit with macOS physical footprint | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 68 | \`8a53447c1e\` | Full-audit corrective hardening | Clean app Eval Phase 3 memory on failure | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 69 | \`04fb103f3e\` | Full-audit corrective hardening | Restrict all MLX LoRA trainables to adapter tensors | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 70 | \`7aef6c6370\` | Full-audit corrective hardening | Make MLX LoRA training transactional | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 71 | \`890b6e01c8\` | Full-audit corrective hardening | Make controller PEFT training transactional | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 72 | \`e34da4f1c5\` | Full-audit corrective hardening | Apply one Context budget across all text backends | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 73 | \`39e11b35ac\` | Full-audit corrective hardening | Close MLX adapter persistence cancellation window | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 74 | \`b362044a6f\` | Full-audit corrective hardening | Fix eval report target-model syntax | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 75 | \`55da13b154\` | Full-audit corrective hardening | Complete app Eval legacy engine surface | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 76 | \`4454687413\` | Full-audit corrective hardening | Report actual eval process memory | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 77 | \`c6a3dc6e0a\` | Full-audit corrective hardening | Remove legacy fabricated eval telemetry fallbacks | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 78 | \`d17252a65d\` | Full-audit corrective hardening | Make SWE patch verification cross-platform | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 79 | \`52cacb5a1e\` | Full-audit corrective hardening | Make live eval stream import-safe off MLX | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 80 | \`3450925244\` | Full-audit corrective hardening | Make RSI memory module import-safe off MLX | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 81 | \`b9e114b0e7\` | Full-audit corrective hardening | Commit non-MLX Phase 3 only after persisted artifact proof | Audit correction / r...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 82 | \`b6b1a9282f\` | Full-audit corrective hardening | Roll back GGUF training on cancellation | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 83 | \`d485a66b55\` | Full-audit corrective hardening | Roll back BitNet training on cancellation | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 84 | \`cb7209f506\` | Full-audit corrective hardening | Restore GGUF PEFT state on cancellation | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 85 | \`5ea3712b99\` | Full-audit corrective hardening | Restore BitNet PEFT state on cancellation | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 86 | \`d0f2cd9b97\` | Full-audit corrective hardening | Require proven nonzero media LoRA updates | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 87 | \`0cefd44394\` | Full-audit corrective hardening | Roll back native media training on cancellation | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 88 | \`7bafce3e7c\` | Full-audit corrective hardening | Lock full branch audit regressions | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 89 | \`1c9b25b89a\` | Full-audit corrective hardening | Use native tokenizers for cross-platform Eval context accounting | Audit correcti...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 90 | \`04c437b3a1\` | Full-audit corrective hardening | Commit Learn and RSI Phase 3 markers atomically | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 91 | \`cbace46be4\` | Full-audit corrective hardening | Keep controller adapter backup until successful return | Audit correction / retai...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 92 | \`0c6b4672e1\` | Full-audit corrective hardening | Keep GGUF rollback backups until successful return | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 93 | \`84d7867b93\` | Full-audit corrective hardening | Keep BitNet rollback backup until successful return | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 94 | \`9990af4ab0\` | Full-audit corrective hardening | Make Eval memory-limit interrupt cross-platform | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 95 | \`39919e0a4f\` | Full-audit corrective hardening | Extend full branch audit contracts | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 96 | \`c7deb15a85\` | Full-audit corrective hardening | Correct full branch audit contract invariants | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 97 | \`f267e44bd1\` | Full-audit corrective hardening | Fix full branch audit test regressions | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| 98 | \`ce26510b50\` | Full-audit corrective hardening | Return real MLX Phase 3 parameter drift | Audit correction / retained |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 10. Exact end-to-end call-chain trace` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `This audit traced the actual current call graph, not only file names or contract strings.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.1 Model selection and load` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`app_gui.SmartAIChatbotApp._on_toggle_load_unload/_on_switch_model_tab\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`ProReasoningEngine.load_model(..., model_info=target_info)\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ metadata/runtime resolution in \`core.controller_runtime.resolve_controller_runtime\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ one real active backend:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- MLX / MLX-VLM` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Prism GGUF / generic GGUF` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- BitNet` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Transformers/controller` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`ProReasoningEngine.active_backend\`, \`active_model_path\` and \`active_input_modalities\` are set before generation. The same loaded backend...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.2 User message → chat/Pro` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`app_gui._on_send_message\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`_process_message_thread\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The thread first handles explicit media commands and explicit \`/learn\`. Ordinary text goes through:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`self.multimodal.stream_solve(full_msg, history, cancel_event)\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`MediaController._stream_solve\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`self.app.engine.stream_solve(...)\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ the existing \`ProReasoningEngine\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The media wrapper therefore does not replace the text planner/model. It lets the same Pro response either remain ordinary text or emit an...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.3 Pro routing, Context and streaming` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Install order in \`core/__init__.py\` is intentional:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `1. chat temperature policy;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `2. awake-learning wrapper;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `3. full-context hardening;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `4. Pro runtime hardening.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The awake wrapper captured \`stream_solve/solve\`, but calls \`self._format_prompt_with_history\` dynamically. The later full-context hardeni...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Current runtime chain:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`stream_solve_with_awake_learning\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ selected single total Context budget` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ optional awake consolidation` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ entropy router` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ N=1 at T=0.65 or historical Pro N=8/N=16` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ remaining Context = packed prompt/history + generated output` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ active backend stream/branch generation.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `If the packed prompt already exceeds Context, generation fails closed rather than dropping conversation history.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.4 Awake consolidation` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `At the 80% Context watermark:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`_apply_awake_learning\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ choose oldest complete user/assistant chunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`AwakeOnlineConsolidator.consolidate_chunk_sync\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ real active backend \`train_mini_batch\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ nonzero measured parameter drift + persisted artifact` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ only then remove that old dialogue chunk from active textual history.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `If training fails, the dialogue remains in history. Every backend uses transaction/rollback semantics and shared training-memory cleanup.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.5 Explicit Learn → real update → RSI` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`app_gui._process_message_thread\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`AutonomousLearner.run_learning_session\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `For text/structured sources:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `1. real source extraction/search;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `2. active model synthesis;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `3. verbatim evidence verification;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `4. \`consolidate_parameters\` on the same active trainable backend;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `5. require nonzero drift/persistence;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `6. \`recursive_self_improve\` on the already-updated model;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `7. source-grounded verification;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `8. \`consolidate_rsi_parameters\` for the self-generated revision;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `9. require another real nonzero update.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The historical \`_require_live_mlx\` name is now only a compatibility alias to \`_require_live_trainable_backend\`; Learn is not MLX-only.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.6 Multimodal controller and media pipeline` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The selected text model carries \`input_modalities\`. \`ProReasoningEngine.supports_media_input/review_media_input\` delegates to the actual ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- MLX VLM language/vision runtime;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Prism GGUF + real mmproj;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- compatible controller backend;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- BitNet correctly reports no media input.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`MediaController._can_perceive\` requires both declared modality permission and a working backend perception hook.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Media Pro/RSI:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`MediaController.call("media_pro"/"media_rsi")\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ generate candidate media` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ real controller review when supported` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ numeric self-grade required for RSI` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ winner becomes a real training sample` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`MediaLearningService.learn\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `If the controller cannot actually ingest that modality, media RSI returns \`unsupported\`; it does not pretend to see/hear the artifact.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Explicit media Learn remains available independently when the selected generator has a real trainable backend.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.7 Media parameter updates` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Native media training:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `real trainable module` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ real differentiable loss` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ backward/AdamW` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ finite-weight checks` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ measured nonzero tensor delta` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ persisted adapter` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ rollback live tensors + uncommitted directory on failure/cancellation.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `External upstream trainers:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `upstream trainer process` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ persisted adapter/checkpoint` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ backend save verification` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ proof of a nonzero learned LoRA output/update factor` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ only then \`weights_updated=True\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `An artifact merely existing is not accepted as learning proof.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.8 Canonical Eval GUI → same 4,014 runner` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `\`Eval\` top button` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`core.gui_eval_panel\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ isolated \`eval.app_eval_runner\` subprocess` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`import master_4000_eval_suite as suite\`` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `→ \`Master4000EvaluationEngine.run_full_suite()\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The GUI is a launcher/monitor around the same canonical suite, not a rewritten benchmark.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `For app-launched non-MLX runs, \`app_cross_platform_bridge\` swaps only model/runtime plumbing. Dataset, scoring, prompts, checkpoints and ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.9 Eval stage flow` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The final \`phase4_pro_rsi.run_full_rsi\` orchestration is:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `1. **Phase 1 Baseline** — real published/project split evaluation, single-pass T=0.55 path.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `2. **Phase 2 Learn/MCTS** — supplied LearningFacts + semantic dialogue graph + bounded DSL MCTS teaching.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `3. **RSI** — Phase-1 misses only, two answer-blind self-improvement rounds, hidden verifier used only after candidate selection.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `4. **RSI persistence** — successful training samples persist only the self-generated trace in \`rsi_self_memories\`.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `5. **Phase 3** — Learn + RSI parameter consolidation; MLX uses bounded completion-only graphs/Fisher/EWC/OGP; non-MLX uses the production...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `6. **Phase 3B Conversation Teach** — independent facts through the same production awake trainer.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `7. **Learning retention test** — same updated logical model.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `8. **Phase 4 Post-Consolidation** — Pro retests Phase-1 misses only; already-passed Phase-1 items are carried forward.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `9. **Final conversation recall/report** — independent recall checks and final report.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `10. Optional **DeepSWE** remains separate/opt-in and uses the flagship harness rather than being mislabeled as ordinary SWE-bench.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `Resume paths require trustworthy boolean checkpoint results and the persisted learned artifact. RSI resume now reconstructs only question...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### 10.10 Failure/crash paths traced` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The source/call-graph audit explicitly checked:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- model-load failures;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- context overflow;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- missing native runtime/dependency;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- GUI cancellation and process-tree termination;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Eval memory-limit cancellation;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- training exception/cancellation during MLX/GGUF/BitNet/controller updates;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- adapter/rebuilt-model persistence and rollback;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- GGUF/BitNet conversion memory overlap;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- media native/external trainer failure/cancellation;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Phase-3 DB commit ordering;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- interrupted RSI resume;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- non-MLX Eval import before MLX is installed;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- Windows SWE patch application.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The code now fails closed or rolls back for these paths. This is source/call-graph verification; it is **not** a claim that every native ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 11. Final \`master → feature\` file-by-file +/- ledger` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `This is the final diff shape at the documentation checkpoint: **107 commits ahead / 0 behind \`master\`**. The \`+\`/\`-\` counts below are Git...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| Path | + | - | Why the final diff exists / disposition |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `|---|---:|---:|---|` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`ACTIVE_SESSION_GUARD_2026-09-18_GGUF_ONLY.md\` | 0 | 19 | Deleted obsolete session guard only; no runtime behavior removed. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`BRANCH_GUARD_GGUF_LEARNING_20260918.txt\` | 0 | 14 | Deleted obsolete branch guard only; no implementation removed. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`app_gui.py\` | 16 | 0 | Additive startup installation of the existing single Context control and the text-only Eval panel; no main GUI ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`build_app.py\` | 3 | 3 | Extends macOS/Windows/Linux bundles to include the canonical eval entrypoint, runtime file and \`eval/\` package. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`consolidation/projected_daemon.py\` | 98 | 19 | Keeps the existing daemon but adds bounded cleanup, model-mode restoration, status/stop...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/_mlx_engine_base.py\` | 202 | 68 | Restricts LoRA trainables, fixes Fisher graph retention, removes fake drift, adds real transact...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/autonomous_learner.py\` | 70 | 33 | Makes Learn/RSI use backend-neutral cleanup/telemetry, accurate EWC reporting and fail-closed ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/awake_auto_hook.py\` | 88 | 28 | Makes one Context budget apply to prompt/history + output across all text backends while preservi...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/bitnet_rebuild_trainer.py\` | 42 | 5 | Releases PEFT/merged models before I2_S conversion and restores PEFT state on cancellation/...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/controller_runtime.py\` | 99 | 9 | Adds eval-isolated adapter root and makes controller PEFT real, completion-only, nonzero-drift,...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/drafter.py\` | 125 | 0 | Additive recovered grammar-guided proposal/telemetry helpers only; production speculative decoding stays ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/engines/bitnet_cpp_engine.py\` | 23 | 8 | Adds eval-isolated learned-state root and preserves/reloads/rolls back rebuilt BitNet ar...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/engines/gguf_engine.py\` | 19 | 9 | Adds eval-isolated GGUF adapter root and transactional live reload/rollback, including cancell...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/gguf_lora_trainer.py\` | 40 | 4 | Drops the 27B training graph before conversion and restores PEFT state on exceptions/cancellatio...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/gui_eval_panel.py\` | 720 | 0 | New additive text-only Eval window: live output, telemetry, process-tree RAM watcher, pause/resume...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/gui_generation_cap.py\` | 10 | 3 | Renames the visible control to Context Limit and preserves newer chat/Learn/attachment argument...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/lif_gating.py\` | 61 | 0 | Additive diagnostic entropy/ladder/spike helpers; does not replace the current calibrated routing polic...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/media_learning.py\` | 67 | 2 | Requires provable nonzero external LoRA updates and restores native media tensors/artifacts on canc...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/online_consolidator.py\` | 34 | 9 | Removes unnecessary adapter deep-copy, adds backend-neutral cleanup and measured RAM telemetry...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`core/training_memory.py\` | 131 | 0 | New shared cleanup/memory helper; macOS uses physical footprint when available, others use RSS. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`docs/BRANCH_AUDIT_fix_real_benchmarks_final_32k_2026-09-19.md\` | 489+ | 0 | This complete branch audit/reconciliation record; document...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`docs/GEMINI_POSTMORTEM_2026-09-19.md\` | 525 | 0 | Separate Gemini verification/postmortem document; documentation only. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/_master_4000_base.py\` | 21 | 11 | Removes synthetic/offline output and fabricated TPS/speculative fallbacks; reports actual selec...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/app_cross_platform_bridge.py\` | 680 | 0 | New app-only adapter around the same canonical suite, reusing production MLX/GGUF/Prism...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/app_eval_runner.py\` | 186 | 0 | New isolated subprocess launcher/control layer for the GUI Eval; cross-platform memory-limit inte...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/conversation_teach_hardening.py\` | 14 | 3 | Keeps Phase 3B on the actual backend/model without writing read-only GGUF facades or ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/live_generation_stream.py\` | 14 | 3 | Makes the canonical suite import-safe when MLX-LM is absent; MLX behavior remains unchanged...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/master_4000_runtime.py\` | 4 | 1 | Reports actual eval-process memory rather than unrelated total system-used RAM. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/phase4_pro_rsi.py\` | 648 | 79 | Main bounded Phase-3/RSI hardening: global telemetry, completion-only bounded graphs, EWC/OGP pre...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/rsi_generation_memory_hardening.py\` | 16 | 2 | Makes module import-safe off MLX and synchronizes MLX only when pressure cleanup i...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/rsi_legacy_training_hardening.py\` | 71 | 48 | Keeps legacy transactional rollback/EWC compatible with bounded Phase 3 and skips M...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/rsi_resume_hardening.py\` | 33 | 34 | Replaces legacy prompt/reward RSI resume reconstruction with question-free \`rsi_self_memorie...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/stage_integrity_telemetry.py\` | 46 | 10 | Understands separate Learn vs RSI tables and verifies trained/persisted/consolidated st...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`eval/swe_verifier_hardening.py\` | 55 | 15 | Keeps verifier semantics but uses \`git apply\` on Windows/no-\`patch\` systems for cross-plat...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`master_4000_eval_suite.py\` | 7 | 0 | Installs the app bridge at the correct wrapper point; normal CLI behavior remains dormant/unmodif...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`pyproject.toml\` | 2 | 0 | Adds \`datasets\` and non-Apple \`llama-cpp-python\` runtime dependencies needed by standalone cross-platform Ev...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`requirements.txt\` | 2 | 0 | Same dependency declaration for requirements-based installs. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`run_studio_complete.py\` | 1 | 1 | Changes standalone eval default model from TernaryQuench to the requested Bonsai 2 MLX model. |` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`tests/unit/test_app_eval_integration_contract.py\` | 104 | 0 | Locks Eval UI/cross-platform/packaging/top-control invariants at source ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`tests/unit/test_diverged_branch_reconciliation_contract.py\` | 85 | 0 | Locks the chosen best-of-old reconciliation and prevents stale ...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `| \`tests/unit/test_full_branch_audit_contract.py\` | 181 | 0 | Locks concrete defects plus the end-to-end call chain and question-free RSI...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `### Reading the +/- correctly` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The largest additions are new **adapter/GUI/contract modules**, not replacements of the old app. The most important evidence for the “mod...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- \`app_gui.py\`: only **+16 / -0**;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- canonical \`master_4000_eval_suite.py\`: only **+7 / -0**;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- build/dependency/default-model files have tiny surgical diffs;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- large edits are concentrated where the requested behavior actually lives: bounded Phase 3, backend training transactions, cross-platfor...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The only deletions of whole files are the two obsolete branch/session guard documents.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `## 12. Final conclusion` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `The feature branch is not a master rewrite. It is an additive/surgical hardening line whose major goals are:` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- eliminate the known Phase-3/Fisher/training RAM blowups;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- make learning real and transactional across supported text backends;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- preserve question-free RSI self-memory semantics;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- keep telemetry measured rather than fabricated;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- expose the same canonical 4,014 runner through a dedicated text-model Eval GUI;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- make that Eval path import/run through non-MLX production backends;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- keep one Context and one main-app memory control;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- preserve newer prompt/scoring/stage behavior;` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `- reconcile only the better parts of diverged branches.` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `blank-line formatting change within this audited hunk` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
+- **ADD** `No known useful branch-only behavior was intentionally discarded during this audit. Old behavior was excluded only where the current bran...` — main branch audit/reconciliation/call-chain documentation; exact location: `@@ -0,0 +1,735 @@`.
