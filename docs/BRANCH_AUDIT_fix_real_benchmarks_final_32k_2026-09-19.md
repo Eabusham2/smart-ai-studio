@@ -3,7 +3,7 @@
 **Repository:** `Eabusham2/smart-ai-studio`  
 **Authoritative branch:** `fix/real-benchmarks-final-32k`  
 **Historical baseline:** `master` at `06390e5357a07f80a8089ac28fc16c75461a48a6`  
-**Implementation head audited before documentation commits:** `ce26510b50c06fdc37cfbe2181e05918ba6e9a1e`  
+**Latest code/test snapshot audited before this documentation update:** `d039972963735dbba25ad4ff2694b09a1924e1bc`  
 **Audit date:** 2026-09-19
 
 ## 1. Audit rule
@@ -221,6 +221,7 @@ The following were real current-branch defects discovered while walking the code
 20. **Failure-path cleanup** — app Eval non-MLX Phase 3 now releases backend training memory even if training throws.
 21. **MLX Phase-3 integrity contract** — bounded MLX Phase 3 updated real LoRA weights but did not return `real_trainable_delta_l2`, so the integrity wrapper could falsely reject a successful update. Fixed by snapshotting only LoRA trainables, measuring real L2 drift after training, failing on zero drift, and returning the measured value.
 22. **Audit-test regressions** — the newly added audit contract itself contained one invalid quoted string and one stale assertion that referenced the pre-atomic Phase-3 marker path. Both were corrected before final documentation.
+23. **RSI resume persistence semantics** — the resume layer still reconstructed successful RSI items through legacy `episodic_interactions` rows containing prompt/reward/session metadata, and base RSI would clear the new question-free inbox on restart. Resume now queries/restores only exact `rsi_self_memories.trace` values, never persists the benchmark question/reward/PASS state as training data, and preserves reconstructed self-traces across the resumed base-RSI startup clear.
 
 ## 5. Diverged/rogue branch reconciliation
 
@@ -476,9 +477,191 @@ The final two implementation commits landed concurrently during documentation an
 | 97 | `f267e44bd1` | Full-audit corrective hardening | Fix full branch audit test regressions | Audit correction / retained |
 | 98 | `ce26510b50` | Full-audit corrective hardening | Return real MLX Phase 3 parameter drift | Audit correction / retained |
 
-## 10. Final `master → feature` file-by-file +/- ledger
+## 10. Exact end-to-end call-chain trace
 
-This is the final diff shape at the documentation checkpoint: **102 commits ahead / 0 behind `master`**. The `+`/`-` counts below are Git line counts versus `master`; they are not a quality score.
+This audit traced the actual current call graph, not only file names or contract strings.
+
+### 10.1 Model selection and load
+
+`app_gui.SmartAIChatbotApp._on_toggle_load_unload/_on_switch_model_tab`
+→ `ProReasoningEngine.load_model(..., model_info=target_info)`
+→ metadata/runtime resolution in `core.controller_runtime.resolve_controller_runtime`
+→ one real active backend:
+
+- MLX / MLX-VLM
+- Prism GGUF / generic GGUF
+- BitNet
+- Transformers/controller
+
+`ProReasoningEngine.active_backend`, `active_model_path` and `active_input_modalities` are set before generation. The same loaded backend is assigned to `awake_consolidator.engine`. Media generators remain outside the text Pro engine.
+
+### 10.2 User message → chat/Pro
+
+`app_gui._on_send_message`
+→ `_process_message_thread`.
+
+The thread first handles explicit media commands and explicit `/learn`. Ordinary text goes through:
+
+`self.multimodal.stream_solve(full_msg, history, cancel_event)`
+→ `MediaController._stream_solve`
+→ `self.app.engine.stream_solve(...)`
+→ the existing `ProReasoningEngine`.
+
+The media wrapper therefore does not replace the text planner/model. It lets the same Pro response either remain ordinary text or emit an exact `<media_call>{...}</media_call>` tool request, executes the local media tool, feeds the result back as untrusted data, and returns to the same Pro engine for the next/final response.
+
+### 10.3 Pro routing, Context and streaming
+
+Install order in `core/__init__.py` is intentional:
+
+1. chat temperature policy;
+2. awake-learning wrapper;
+3. full-context hardening;
+4. Pro runtime hardening.
+
+The awake wrapper captured `stream_solve/solve`, but calls `self._format_prompt_with_history` dynamically. The later full-context hardening therefore owns the active history packer and removes the older free-RAM-based silent history truncation.
+
+Current runtime chain:
+
+`stream_solve_with_awake_learning`
+→ selected single total Context budget
+→ optional awake consolidation
+→ entropy router
+→ N=1 at T=0.65 or historical Pro N=8/N=16
+→ remaining Context = packed prompt/history + generated output
+→ active backend stream/branch generation.
+
+If the packed prompt already exceeds Context, generation fails closed rather than dropping conversation history.
+
+### 10.4 Awake consolidation
+
+At the 80% Context watermark:
+
+`_apply_awake_learning`
+→ choose oldest complete user/assistant chunk
+→ `AwakeOnlineConsolidator.consolidate_chunk_sync`
+→ real active backend `train_mini_batch`
+→ nonzero measured parameter drift + persisted artifact
+→ only then remove that old dialogue chunk from active textual history.
+
+If training fails, the dialogue remains in history. Every backend uses transaction/rollback semantics and shared training-memory cleanup.
+
+### 10.5 Explicit Learn → real update → RSI
+
+`app_gui._process_message_thread`
+→ `AutonomousLearner.run_learning_session`.
+
+For text/structured sources:
+
+1. real source extraction/search;
+2. active model synthesis;
+3. verbatim evidence verification;
+4. `consolidate_parameters` on the same active trainable backend;
+5. require nonzero drift/persistence;
+6. `recursive_self_improve` on the already-updated model;
+7. source-grounded verification;
+8. `consolidate_rsi_parameters` for the self-generated revision;
+9. require another real nonzero update.
+
+The historical `_require_live_mlx` name is now only a compatibility alias to `_require_live_trainable_backend`; Learn is not MLX-only.
+
+### 10.6 Multimodal controller and media pipeline
+
+The selected text model carries `input_modalities`. `ProReasoningEngine.supports_media_input/review_media_input` delegates to the actual loaded controller:
+
+- MLX VLM language/vision runtime;
+- Prism GGUF + real mmproj;
+- compatible controller backend;
+- BitNet correctly reports no media input.
+
+`MediaController._can_perceive` requires both declared modality permission and a working backend perception hook.
+
+Media Pro/RSI:
+
+`MediaController.call("media_pro"/"media_rsi")`
+→ generate candidate media
+→ real controller review when supported
+→ numeric self-grade required for RSI
+→ winner becomes a real training sample
+→ `MediaLearningService.learn`.
+
+If the controller cannot actually ingest that modality, media RSI returns `unsupported`; it does not pretend to see/hear the artifact.
+
+Explicit media Learn remains available independently when the selected generator has a real trainable backend.
+
+### 10.7 Media parameter updates
+
+Native media training:
+
+real trainable module
+→ real differentiable loss
+→ backward/AdamW
+→ finite-weight checks
+→ measured nonzero tensor delta
+→ persisted adapter
+→ rollback live tensors + uncommitted directory on failure/cancellation.
+
+External upstream trainers:
+
+upstream trainer process
+→ persisted adapter/checkpoint
+→ backend save verification
+→ proof of a nonzero learned LoRA output/update factor
+→ only then `weights_updated=True`.
+
+An artifact merely existing is not accepted as learning proof.
+
+### 10.8 Canonical Eval GUI → same 4,014 runner
+
+`Eval` top button
+→ `core.gui_eval_panel`
+→ isolated `eval.app_eval_runner` subprocess
+→ `import master_4000_eval_suite as suite`
+→ `Master4000EvaluationEngine.run_full_suite()`.
+
+The GUI is a launcher/monitor around the same canonical suite, not a rewritten benchmark.
+
+For app-launched non-MLX runs, `app_cross_platform_bridge` swaps only model/runtime plumbing. Dataset, scoring, prompts, checkpoints and stage ownership remain the canonical suite's.
+
+### 10.9 Eval stage flow
+
+The final `phase4_pro_rsi.run_full_rsi` orchestration is:
+
+1. **Phase 1 Baseline** — real published/project split evaluation, single-pass T=0.55 path.
+2. **Phase 2 Learn/MCTS** — supplied LearningFacts + semantic dialogue graph + bounded DSL MCTS teaching.
+3. **RSI** — Phase-1 misses only, two answer-blind self-improvement rounds, hidden verifier used only after candidate selection.
+4. **RSI persistence** — successful training samples persist only the self-generated trace in `rsi_self_memories`.
+5. **Phase 3** — Learn + RSI parameter consolidation; MLX uses bounded completion-only graphs/Fisher/EWC/OGP; non-MLX uses the production backend trainer.
+6. **Phase 3B Conversation Teach** — independent facts through the same production awake trainer.
+7. **Learning retention test** — same updated logical model.
+8. **Phase 4 Post-Consolidation** — Pro retests Phase-1 misses only; already-passed Phase-1 items are carried forward.
+9. **Final conversation recall/report** — independent recall checks and final report.
+10. Optional **DeepSWE** remains separate/opt-in and uses the flagship harness rather than being mislabeled as ordinary SWE-bench.
+
+Resume paths require trustworthy boolean checkpoint results and the persisted learned artifact. RSI resume now reconstructs only question-free self traces and does not re-create legacy prompt/reward training rows.
+
+### 10.10 Failure/crash paths traced
+
+The source/call-graph audit explicitly checked:
+
+- model-load failures;
+- context overflow;
+- missing native runtime/dependency;
+- GUI cancellation and process-tree termination;
+- Eval memory-limit cancellation;
+- training exception/cancellation during MLX/GGUF/BitNet/controller updates;
+- adapter/rebuilt-model persistence and rollback;
+- GGUF/BitNet conversion memory overlap;
+- media native/external trainer failure/cancellation;
+- Phase-3 DB commit ordering;
+- interrupted RSI resume;
+- non-MLX Eval import before MLX is installed;
+- Windows SWE patch application.
+
+The code now fails closed or rolls back for these paths. This is source/call-graph verification; it is **not** a claim that every native backend/hardware combination was physically executed in this audit environment.
+
+## 11. Final `master → feature` file-by-file +/- ledger
+
+This is the final diff shape at the documentation checkpoint: **107 commits ahead / 0 behind `master`**. The `+`/`-` counts below are Git line counts versus `master`; they are not a quality score.
 
 | Path | + | - | Why the final diff exists / disposition |
 |---|---:|---:|---|
@@ -513,6 +696,7 @@ This is the final diff shape at the documentation checkpoint: **102 commits ahea
 | `eval/phase4_pro_rsi.py` | 648 | 79 | Main bounded Phase-3/RSI hardening: global telemetry, completion-only bounded graphs, EWC/OGP preservation, answer-blind feedback, real MLX drift proof and backend-neutral orchestration gate. |
 | `eval/rsi_generation_memory_hardening.py` | 16 | 2 | Makes module import-safe off MLX and synchronizes MLX only when pressure cleanup is already occurring; preserves full-precision KV policy. |
 | `eval/rsi_legacy_training_hardening.py` | 71 | 48 | Keeps legacy transactional rollback/EWC compatible with bounded Phase 3 and skips MLX monkeypatching for non-MLX app Eval. |
+| `eval/rsi_resume_hardening.py` | 33 | 34 | Replaces legacy prompt/reward RSI resume reconstruction with question-free `rsi_self_memories.trace` preservation/reconstruction and protects resumed traces from the base-RSI startup clear. |
 | `eval/stage_integrity_telemetry.py` | 46 | 10 | Understands separate Learn vs RSI tables and verifies trained/persisted/consolidated state correctly. |
 | `eval/swe_verifier_hardening.py` | 55 | 15 | Keeps verifier semantics but uses `git apply` on Windows/no-`patch` systems for cross-platform SWE patch checking. |
 | `master_4000_eval_suite.py` | 7 | 0 | Installs the app bridge at the correct wrapper point; normal CLI behavior remains dormant/unmodified by the bridge. |
@@ -521,7 +705,7 @@ This is the final diff shape at the documentation checkpoint: **102 commits ahea
 | `run_studio_complete.py` | 1 | 1 | Changes standalone eval default model from TernaryQuench to the requested Bonsai 2 MLX model. |
 | `tests/unit/test_app_eval_integration_contract.py` | 104 | 0 | Locks Eval UI/cross-platform/packaging/top-control invariants at source level. |
 | `tests/unit/test_diverged_branch_reconciliation_contract.py` | 85 | 0 | Locks the chosen best-of-old reconciliation and prevents stale quantized-KV/speculative regressions. |
-| `tests/unit/test_full_branch_audit_contract.py` | 148 | 0 | Locks concrete defects found in the final audit; source contract only, not evidence of runtime execution. |
+| `tests/unit/test_full_branch_audit_contract.py` | 181 | 0 | Locks concrete defects plus the end-to-end call chain and question-free RSI-resume semantics; source contract only, not evidence of runtime execution. |
 
 ### Reading the +/- correctly
 
@@ -534,7 +718,7 @@ The largest additions are new **adapter/GUI/contract modules**, not replacements
 
 The only deletions of whole files are the two obsolete branch/session guard documents.
 
-## 11. Final conclusion
+## 12. Final conclusion
 
 The feature branch is not a master rewrite. It is an additive/surgical hardening line whose major goals are:
 
