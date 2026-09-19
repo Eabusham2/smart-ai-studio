@@ -347,15 +347,22 @@ def install(runtime_module, phase4_module, cls) -> None:
             raise RuntimeError("App eval backend disappeared")
         temps = list(temperatures or [0.65])
         started = time.perf_counter()
-        values = backend.generate_branches(
-            formatted_prompt,
-            branch_count=len(temps),
-            max_tokens=max(1, int(max_tokens)),
-            temperature=temps,
-            top_p=float(top_p),
-        )
+        values = []
+        # Generate one branch at a time so Pause/Cancel can take effect between
+        # branches without changing branch temperatures or selection semantics.
+        for temp in temps:
+            _control_wait()
+            one = backend.generate_branches(
+                formatted_prompt,
+                branch_count=1,
+                max_tokens=max(1, int(max_tokens)),
+                temperature=float(temp),
+                top_p=float(top_p),
+            )
+            if not one:
+                raise RuntimeError("App eval backend returned no branch")
+            values.append(str(one[0] or ""))
         elapsed = max(0.001, time.perf_counter() - started)
-        values = [str(value or "") for value in values]
         total_tokens = sum(_token_count(self.engine.tokenizer, value) for value in values)
         self.last_tok_per_sec = total_tokens / elapsed if total_tokens else 0.0
         self.last_generation_seconds = elapsed
