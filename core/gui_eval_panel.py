@@ -346,6 +346,12 @@ def install_gui_eval_panel() -> None:
                     self._eval_pause_button.configure(state="disabled", text="⏸ Pause")
                 if getattr(self, "_eval_cancel_button", None) is not None:
                     self._eval_cancel_button.configure(state="disabled")
+                if getattr(self, "_eval_mem_check", None) is not None:
+                    self._eval_mem_check.configure(state="normal")
+                if getattr(self, "_eval_mem_entry", None) is not None:
+                    self._eval_mem_entry.configure(state="normal")
+                if getattr(self, "_eval_deepswe_check", None) is not None:
+                    self._eval_deepswe_check.configure(state="normal")
             except Exception:
                 pass
             self._eval_proc = None
@@ -455,6 +461,9 @@ def install_gui_eval_panel() -> None:
             self._eval_start_button.configure(state="disabled", text="Running…")
             self._eval_pause_button.configure(state="normal", text="⏸ Pause")
             self._eval_cancel_button.configure(state="normal")
+            self._eval_mem_check.configure(state="disabled")
+            self._eval_mem_entry.configure(state="disabled")
+            self._eval_deepswe_check.configure(state="disabled")
         except Exception:
             pass
 
@@ -519,7 +528,7 @@ def install_gui_eval_panel() -> None:
         self._eval_mem_gb_var = tk.StringVar(value=f"{current_mem_gb:.1f}")
         self._eval_deepswe_var = tk.BooleanVar(value=False)
 
-        tk.Checkbutton(
+        self._eval_mem_check = tk.Checkbutton(
             controls,
             text="Memory watcher",
             variable=self._eval_mem_enabled_var,
@@ -530,8 +539,9 @@ def install_gui_eval_panel() -> None:
             activeforeground=self.C["text_main"],
             selectcolor=self.C["btn_bg"],
             highlightthickness=0,
-        ).pack(side="left", padx=(10, 4), pady=8)
-        tk.Entry(
+        )
+        self._eval_mem_check.pack(side="left", padx=(10, 4), pady=8)
+        self._eval_mem_entry = tk.Entry(
             controls,
             textvariable=self._eval_mem_gb_var,
             width=6,
@@ -542,7 +552,8 @@ def install_gui_eval_panel() -> None:
             insertbackground=self.C["text_main"],
             relief="flat",
             bd=0,
-        ).pack(side="left", ipady=3)
+        )
+        self._eval_mem_entry.pack(side="left", ipady=3)
         tk.Label(
             controls,
             text="GB process-tree limit",
@@ -551,7 +562,7 @@ def install_gui_eval_panel() -> None:
             fg=self.C["text_muted"],
         ).pack(side="left", padx=(3, 12))
 
-        tk.Checkbutton(
+        self._eval_deepswe_check = tk.Checkbutton(
             controls,
             text="DeepSWE flagship (113, very slow)",
             variable=self._eval_deepswe_var,
@@ -562,7 +573,8 @@ def install_gui_eval_panel() -> None:
             activeforeground=self.C["text_main"],
             selectcolor=self.C["btn_bg"],
             highlightthickness=0,
-        ).pack(side="left", padx=6)
+        )
+        self._eval_deepswe_check.pack(side="left", padx=6)
 
         self._eval_start_button = tk.Button(
             controls,
