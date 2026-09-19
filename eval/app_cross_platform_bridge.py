@@ -212,6 +212,56 @@ def install(runtime_module, phase4_module, cls) -> None:
     original_assert_same = phase4_module._assert_same_model
     original_phase3 = phase4_module._run_phase3_consolidation
     original_restore = phase4_module._restore_rsi_adapter
+    original_context_limit = runtime_module._model_context_limit
+
+    def _backend_context_limit(engine) -> Optional[int]:
+        if not isinstance(engine, AppEvalEngineAdapter):
+            return original_context_limit(engine)
+
+        backend = getattr(engine, "backend", None)
+        values = []
+        for value in (
+            getattr(backend, "n_ctx", None),
+            (engine.model_info or {}).get("max_context"),
+        ):
+            try:
+                parsed = int(value)
+            except Exception:
+                continue
+            if 1024 <= parsed <= 10_000_000:
+                values.append(parsed)
+
+        model = getattr(backend, "model", None)
+        n_ctx_fn = getattr(model, "n_ctx", None)
+        if callable(n_ctx_fn):
+            try:
+                parsed = int(n_ctx_fn())
+                if 1024 <= parsed <= 10_000_000:
+                    values.append(parsed)
+            except Exception:
+                pass
+
+        native = original_context_limit(engine)
+        if native is not None:
+            try:
+                values.append(int(native))
+            except Exception:
+                pass
+        return min(values) if values else None
+
+    def _clamp_output_to_backend(self, prompt: str, requested: int) -> int:
+        requested = max(1, int(requested))
+        limit = _backend_context_limit(self.engine)
+        if limit is None:
+            return requested
+        prompt_tokens = _token_count(self.engine.tokenizer, prompt)
+        remaining = int(limit) - int(prompt_tokens)
+        if remaining <= 0:
+            raise RuntimeError(
+                f"Formatted eval prompt requires {prompt_tokens:,} tokens but "
+                f"{self.engine.backend_key} context is {limit:,}; refusing truncation."
+            )
+        return max(1, min(requested, remaining))
 
     def app_eval_init(self, max_duration_hours: float = 72.0):
         # Do not call the legacy constructor: it eagerly owns an MLX-only engine.
@@ -252,10 +302,11 @@ def install(runtime_module, phase4_module, cls) -> None:
             raise RuntimeError("App eval backend disappeared")
         pieces = []
         started = time.perf_counter()
+        safe_max_tokens = _clamp_output_to_backend(self, prompt, max_tokens)
         try:
             iterator = backend.stream_generate_tokens(
                 prompt,
-                max_tokens=max(1, int(max_tokens)),
+                max_tokens=safe_max_tokens,
                 temperature=float(EVAL_N1_TEMPERATURE),
                 top_p=0.92,
             )
@@ -352,10 +403,13 @@ def install(runtime_module, phase4_module, cls) -> None:
         # branches without changing branch temperatures or selection semantics.
         for temp in temps:
             _control_wait()
+            safe_max_tokens = _clamp_output_to_backend(
+                self, formatted_prompt, max_tokens
+            )
             one = backend.generate_branches(
                 formatted_prompt,
                 branch_count=1,
-                max_tokens=max(1, int(max_tokens)),
+                max_tokens=safe_max_tokens,
                 temperature=float(temp),
                 top_p=float(top_p),
             )
@@ -502,6 +556,7 @@ def install(runtime_module, phase4_module, cls) -> None:
             ) if isinstance(meta, dict) else 0,
         }
 
+    runtime_module._model_context_limit = _backend_context_limit
     cls.__init__ = app_eval_init
     cls._fast_generate = generic_fast
     phase4_module._generate_branches_same_model = generic_branches
