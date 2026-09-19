@@ -308,8 +308,16 @@ def install(p4, cls) -> None:
     def phase3_with_integrity(self) -> Dict[str, Any]:
         queued = list(p4._fetch_benchmark_training_memories(self))
         target_learn = len({(str(q), str(a)) for q, a in p4.LEARN_EXAMPLES})
-        learn_rows = [r for r in queued if str(r.get("session_id", "")) == str(p4.LEARN_SESSION_ID)]
-        rsi_rows = [r for r in queued if str(r.get("session_id", "")) == str(p4.RSI_SESSION_ID)]
+        learn_rows = [
+            r for r in queued
+            if str(r.get("memory_kind") or "") == "learn"
+            or str(r.get("session_id", "")) == str(p4.LEARN_SESSION_ID)
+        ]
+        rsi_rows = [
+            r for r in queued
+            if str(r.get("memory_kind") or "") == "rsi_self"
+            or str(r.get("session_id", "")) == str(p4.RSI_SESSION_ID)
+        ]
 
         if len(learn_rows) != target_learn:
             raise RuntimeError(
