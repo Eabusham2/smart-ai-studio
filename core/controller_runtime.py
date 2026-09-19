@@ -485,6 +485,7 @@ class UniversalControllerBackend:
         model.train()
         tmp = ""
         backup = ""
+        success = False
         had_adapter = bool(self.adapter_path and os.path.isdir(self.adapter_path))
 
         try:
@@ -573,17 +574,17 @@ class UniversalControllerBackend:
                 os.replace(self.adapter_path, backup)
             os.replace(tmp, self.adapter_path)
             tmp = ""
-            if os.path.isdir(backup):
-                shutil.rmtree(backup, ignore_errors=True)
-            backup = ""
 
             self.adapters = {
                 "trainable_parameters_touched": touched,
                 "adapter_format": "peft-lora",
             }
-            return dict(self.adapters), float(drift)
+            result = (dict(self.adapters), float(drift))
+            success = True
+            return result
 
         except BaseException:
+            success = False
             # Restore live trainable tensors first, then restore the persisted
             # adapter directory if the filesystem transaction had started.
             try:
@@ -615,16 +616,18 @@ class UniversalControllerBackend:
         finally:
             if tmp and os.path.isdir(tmp):
                 shutil.rmtree(tmp, ignore_errors=True)
-            if backup and os.path.isdir(backup):
-                # Reaching finally with a backup means the previous adapter is the
-                # authoritative state unless the normal success path removed it.
-                if not os.path.isdir(self.adapter_path):
-                    try:
-                        os.replace(backup, self.adapter_path)
-                    except Exception:
-                        pass
-                elif os.path.isdir(backup):
-                    shutil.rmtree(backup, ignore_errors=True)
+            if success and backup and os.path.isdir(backup):
+                shutil.rmtree(backup, ignore_errors=True)
+                backup = ""
+            elif backup and os.path.isdir(backup):
+                # Failure/cancellation keeps the previous adapter authoritative.
+                if os.path.isdir(self.adapter_path):
+                    shutil.rmtree(self.adapter_path, ignore_errors=True)
+                try:
+                    os.replace(backup, self.adapter_path)
+                    backup = ""
+                except Exception:
+                    pass
 
             try:
                 optimizer.zero_grad(set_to_none=True)
