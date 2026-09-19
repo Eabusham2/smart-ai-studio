@@ -383,7 +383,8 @@ class MLXReasoningBackend:
         steps: int = 3,
         save_path: Optional[str] = None
     ) -> Tuple[Dict[str, Any], float]:
-        """Run a real MLX AdamW/EWC adapter update with bounded transient graph lifetime."""
+        """Run a real transactional MLX AdamW/EWC LoRA update."""
+        del adapters
         if not self.is_mlx_available or self.model is None or self.tokenizer is None:
             raise RuntimeError("MLX training requires the currently loaded real model and tokenizer")
 
@@ -400,15 +401,26 @@ class MLXReasoningBackend:
         if not trainable_params:
             raise RuntimeError("MLX training exposes no trainable adapter parameters")
 
-        w_initial_flat = mx.concat([mx.reshape(p, (-1,)) for p in trainable_params.values()])
+        def _clone(value):
+            try:
+                return mx.copy(value)
+            except Exception:
+                return value + mx.zeros_like(value)
+
+        rollback_params = {key: _clone(value) for key, value in trainable_params.items()}
+        mx.eval(*rollback_params.values())
+
+        w_initial_flat = mx.concat(
+            [mx.reshape(value, (-1,)) for value in rollback_params.values()]
+        )
         mx.eval(w_initial_flat)
 
         if reference_weights is None:
-            reference_weights = {k: mx.array(v) for k, v in trainable_params.items()}
-            if reference_weights:
-                mx.eval(*reference_weights.values())
+            reference_weights = dict(rollback_params)
 
         optimizer = optim.AdamW(learning_rate=learning_rate)
+        tmp_save_path = None
+        was_training = bool(getattr(self.model, "training", False))
 
         def ewc_loss_fn(model, inputs, targets):
             logits = model(inputs)
@@ -427,10 +439,10 @@ class MLXReasoningBackend:
             return ce_loss
 
         loss_and_grad_fn = nn.value_and_grad(self.model, ewc_loss_fn)
-        was_training = bool(getattr(self.model, "training", False))
 
         try:
             self.model.train()
+            trained_rows = 0
             for _step in range(max(1, int(steps))):
                 for item in data:
                     prompt_text = item.get("prompt", "")
@@ -447,6 +459,7 @@ class MLXReasoningBackend:
                     loss, grads = loss_and_grad_fn(self.model, inputs, inputs)
                     optimizer.update(self.model, grads)
                     mx.eval(self.model.parameters(), optimizer.state)
+                    trained_rows += 1
 
                     loss = None
                     grads = None
@@ -456,27 +469,63 @@ class MLXReasoningBackend:
                         mx.clear_cache()
                     except Exception:
                         pass
+
+            if trained_rows <= 0:
+                raise RuntimeError("MLX training found no valid prompt/completion token rows")
+
+            updated_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
+            w_final_flat = mx.concat(
+                [mx.reshape(value, (-1,)) for value in updated_params.values()]
+            )
+            mx.eval(w_final_flat)
+            param_drift = float(mx.linalg.norm(w_final_flat - w_initial_flat).item())
+            if param_drift <= 0.0:
+                raise RuntimeError("MLX training completed but measured zero parameter change")
+
+            if save_path:
+                os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+                tmp_save_path = save_path + ".next.safetensors"
+                try:
+                    if os.path.exists(tmp_save_path):
+                        os.remove(tmp_save_path)
+                except OSError:
+                    pass
+                mx.save_safetensors(tmp_save_path, updated_params)
+                os.replace(tmp_save_path, save_path)
+                tmp_save_path = None
+
+            self.adapters = updated_params
+            return updated_params, param_drift
+
+        except BaseException:
+            # A failed update/persist must not remain live. Restore only the LoRA
+            # trainables captured before the transaction; foundation weights stay frozen.
+            try:
+                self.model.update(
+                    mlx.utils.tree_unflatten(list(rollback_params.items()))
+                )
+                mx.eval(self.model.parameters())
+                self.adapters = dict(
+                    mlx.utils.tree_flatten(self.model.trainable_parameters())
+                )
+            finally:
+                if tmp_save_path:
+                    try:
+                        if os.path.exists(tmp_save_path):
+                            os.remove(tmp_save_path)
+                    except OSError:
+                        pass
+            raise
         finally:
             if not was_training:
                 try:
                     self.model.eval()
                 except Exception:
                     pass
+            rollback_params.clear()
             gc.collect(2)
             try:
                 mx.clear_cache()
             except Exception:
                 pass
-
-        updated_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
-        w_final_flat = mx.concat([mx.reshape(p, (-1,)) for p in updated_params.values()])
-        mx.eval(w_final_flat)
-        param_drift = float(mx.linalg.norm(w_final_flat - w_initial_flat).item())
-
-        if save_path:
-            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-            mx.save_safetensors(save_path, updated_params)
-
-        self.adapters = updated_params
-        return updated_params, param_drift
 
