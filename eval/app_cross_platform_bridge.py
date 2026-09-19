@@ -267,7 +267,11 @@ def install(runtime_module, phase4_module, cls) -> None:
         limit = _backend_context_limit(self.engine)
         if limit is None:
             return requested
-        prompt_tokens = _token_count(self.engine.tokenizer, prompt)
+        prompt_tokens = _token_count(
+            self.engine.tokenizer,
+            prompt,
+            backend=getattr(self.engine, "backend", None),
+        )
         remaining = int(limit) - int(prompt_tokens)
         if remaining <= 0:
             raise RuntimeError(
@@ -307,11 +311,33 @@ def install(runtime_module, phase4_module, cls) -> None:
     def _backend(self):
         return self.engine.backend
 
-    def _token_count(tokenizer, text: str) -> int:
-        try:
-            return len(tokenizer.encode(str(text)))
-        except Exception:
-            return max(1, len(str(text)) // 4)
+    def _token_count(tokenizer, text: str, backend=None) -> int:
+        value = str(text)
+        encode = getattr(tokenizer, "encode", None)
+        if callable(encode):
+            try:
+                return max(0, len(encode(value)))
+            except Exception:
+                pass
+
+        tokenize = getattr(tokenizer, "tokenize", None)
+        if callable(tokenize):
+            try:
+                return max(0, len(tokenize(value.encode("utf-8"))))
+            except Exception:
+                pass
+
+        counter = getattr(backend, "count_tokens", None)
+        if callable(counter):
+            try:
+                return max(
+                    0,
+                    int(counter([{"role": "user", "content": value}])),
+                )
+            except Exception:
+                pass
+
+        return max(1, len(value) // 4)
 
     def _single_generate(self, prompt: str, max_tokens: int) -> str:
         _control_wait()
@@ -361,7 +387,11 @@ def install(runtime_module, phase4_module, cls) -> None:
                 print(value, flush=True)
 
         elapsed = max(0.001, time.perf_counter() - started)
-        generated = _token_count(self.engine.tokenizer, output) if output else 0
+        generated = _token_count(
+            self.engine.tokenizer,
+            output,
+            backend=getattr(self.engine, "backend", None),
+        ) if output else 0
         self.last_output_tokens = generated
         self.live_generated_tokens = generated
         self.last_generation_seconds = elapsed
@@ -401,8 +431,19 @@ def install(runtime_module, phase4_module, cls) -> None:
                 self, split, item, branches
             )
             elapsed = max(0.001, time.perf_counter() - started)
-            all_tokens = sum(_token_count(self.engine.tokenizer, value) for value in branches)
-            selected_tokens = _token_count(self.engine.tokenizer, winner)
+            all_tokens = sum(
+                _token_count(
+                    self.engine.tokenizer,
+                    value,
+                    backend=getattr(self.engine, "backend", None),
+                )
+                for value in branches
+            )
+            selected_tokens = _token_count(
+                self.engine.tokenizer,
+                winner,
+                backend=getattr(self.engine, "backend", None),
+            )
             self.last_output_tokens = selected_tokens
             self.live_generated_tokens = selected_tokens
             self.last_generation_seconds = elapsed
@@ -456,10 +497,21 @@ def install(runtime_module, phase4_module, cls) -> None:
                 raise RuntimeError(value)
             values.append(value)
         elapsed = max(0.001, time.perf_counter() - started)
-        total_tokens = sum(_token_count(self.engine.tokenizer, value) for value in values)
+        total_tokens = sum(
+            _token_count(
+                self.engine.tokenizer,
+                value,
+                backend=getattr(self.engine, "backend", None),
+            )
+            for value in values
+        )
         self.last_tok_per_sec = total_tokens / elapsed if total_tokens else 0.0
         self.last_generation_seconds = elapsed
-        self.last_output_tokens = _token_count(self.engine.tokenizer, values[0]) if values else 0
+        self.last_output_tokens = _token_count(
+            self.engine.tokenizer,
+            values[0],
+            backend=getattr(self.engine, "backend", None),
+        ) if values else 0
         for idx, value in enumerate(values, 1):
             print(f"\n[APP EVAL branch {idx}/{len(values)}]\n{value}", flush=True)
         return values
