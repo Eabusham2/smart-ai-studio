@@ -219,6 +219,8 @@ The following were real current-branch defects discovered while walking the code
 18. **Media external trainer proof** — a nonempty checkpoint could be reported as learning. Now a nonzero learned LoRA update factor must be demonstrable.
 19. **Native media cancellation** — pre-update tensors are restored and uncommitted adapter directories removed on cancellation.
 20. **Failure-path cleanup** — app Eval non-MLX Phase 3 now releases backend training memory even if training throws.
+21. **MLX Phase-3 integrity contract** — bounded MLX Phase 3 updated real LoRA weights but did not return `real_trainable_delta_l2`, so the integrity wrapper could falsely reject a successful update. Fixed by snapshotting only LoRA trainables, measuring real L2 drift after training, failing on zero drift, and returning the measured value.
+22. **Audit-test regressions** — the newly added audit contract itself contained one invalid quoted string and one stale assertion that referenced the pre-atomic Phase-3 marker path. Both were corrected before final documentation.
 
 ## 5. Diverged/rogue branch reconciliation
 
@@ -474,7 +476,65 @@ The final two implementation commits landed concurrently during documentation an
 | 97 | `f267e44bd1` | Full-audit corrective hardening | Fix full branch audit test regressions | Audit correction / retained |
 | 98 | `ce26510b50` | Full-audit corrective hardening | Return real MLX Phase 3 parameter drift | Audit correction / retained |
 
-## 10. Final conclusion
+## 10. Final `master → feature` file-by-file +/- ledger
+
+This is the final diff shape at the documentation checkpoint: **102 commits ahead / 0 behind `master`**. The `+`/`-` counts below are Git line counts versus `master`; they are not a quality score.
+
+| Path | + | - | Why the final diff exists / disposition |
+|---|---:|---:|---|
+| `ACTIVE_SESSION_GUARD_2026-09-18_GGUF_ONLY.md` | 0 | 19 | Deleted obsolete session guard only; no runtime behavior removed. |
+| `BRANCH_GUARD_GGUF_LEARNING_20260918.txt` | 0 | 14 | Deleted obsolete branch guard only; no implementation removed. |
+| `app_gui.py` | 16 | 0 | Additive startup installation of the existing single Context control and the text-only Eval panel; no main GUI rewrite. |
+| `build_app.py` | 3 | 3 | Extends macOS/Windows/Linux bundles to include the canonical eval entrypoint, runtime file and `eval/` package. |
+| `consolidation/projected_daemon.py` | 98 | 19 | Keeps the existing daemon but adds bounded cleanup, model-mode restoration, status/stop telemetry and error visibility. |
+| `core/_mlx_engine_base.py` | 202 | 68 | Restricts LoRA trainables, fixes Fisher graph retention, removes fake drift, adds real transactional MLX training/persistence/rollback. |
+| `core/autonomous_learner.py` | 70 | 33 | Makes Learn/RSI use backend-neutral cleanup/telemetry, accurate EWC reporting and fail-closed real drift. |
+| `core/awake_auto_hook.py` | 88 | 28 | Makes one Context budget apply to prompt/history + output across all text backends while preserving awake consolidation semantics. |
+| `core/bitnet_rebuild_trainer.py` | 42 | 5 | Releases PEFT/merged models before I2_S conversion and restores PEFT state on cancellation/failure. |
+| `core/controller_runtime.py` | 99 | 9 | Adds eval-isolated adapter root and makes controller PEFT real, completion-only, nonzero-drift, atomic and rollback-safe. |
+| `core/drafter.py` | 125 | 0 | Additive recovered grammar-guided proposal/telemetry helpers only; production speculative decoding stays disabled. |
+| `core/engines/bitnet_cpp_engine.py` | 23 | 8 | Adds eval-isolated learned-state root and preserves/reloads/rolls back rebuilt BitNet artifacts transactionally. |
+| `core/engines/gguf_engine.py` | 19 | 9 | Adds eval-isolated GGUF adapter root and transactional live reload/rollback, including cancellation. |
+| `core/gguf_lora_trainer.py` | 40 | 4 | Drops the 27B training graph before conversion and restores PEFT state on exceptions/cancellation. |
+| `core/gui_eval_panel.py` | 720 | 0 | New additive text-only Eval window: live output, telemetry, process-tree RAM watcher, pause/resume, confirmed cancel and model exclusivity. |
+| `core/gui_generation_cap.py` | 10 | 3 | Renames the visible control to Context Limit and preserves newer chat/Learn/attachment arguments in its wrapper. |
+| `core/lif_gating.py` | 61 | 0 | Additive diagnostic entropy/ladder/spike helpers; does not replace the current calibrated routing policy. |
+| `core/media_learning.py` | 67 | 2 | Requires provable nonzero external LoRA updates and restores native media tensors/artifacts on cancellation. |
+| `core/online_consolidator.py` | 34 | 9 | Removes unnecessary adapter deep-copy, adds backend-neutral cleanup and measured RAM telemetry around real awake updates. |
+| `core/training_memory.py` | 131 | 0 | New shared cleanup/memory helper; macOS uses physical footprint when available, others use RSS. |
+| `docs/BRANCH_AUDIT_fix_real_benchmarks_final_32k_2026-09-19.md` | 489+ | 0 | This complete branch audit/reconciliation record; documentation only. |
+| `docs/GEMINI_POSTMORTEM_2026-09-19.md` | 525 | 0 | Separate Gemini verification/postmortem document; documentation only. |
+| `eval/_master_4000_base.py` | 21 | 11 | Removes synthetic/offline output and fabricated TPS/speculative fallbacks; reports actual selected model and process memory. |
+| `eval/app_cross_platform_bridge.py` | 680 | 0 | New app-only adapter around the same canonical suite, reusing production MLX/GGUF/Prism/BitNet/controller backends and real Phase-3 persistence. |
+| `eval/app_eval_runner.py` | 186 | 0 | New isolated subprocess launcher/control layer for the GUI Eval; cross-platform memory-limit interrupt and safe cleanup. |
+| `eval/conversation_teach_hardening.py` | 14 | 3 | Keeps Phase 3B on the actual backend/model without writing read-only GGUF facades or falsely relabeling non-MLX as MLX. |
+| `eval/live_generation_stream.py` | 14 | 3 | Makes the canonical suite import-safe when MLX-LM is absent; MLX behavior remains unchanged when available. |
+| `eval/master_4000_runtime.py` | 4 | 1 | Reports actual eval-process memory rather than unrelated total system-used RAM. |
+| `eval/phase4_pro_rsi.py` | 648 | 79 | Main bounded Phase-3/RSI hardening: global telemetry, completion-only bounded graphs, EWC/OGP preservation, answer-blind feedback, real MLX drift proof and backend-neutral orchestration gate. |
+| `eval/rsi_generation_memory_hardening.py` | 16 | 2 | Makes module import-safe off MLX and synchronizes MLX only when pressure cleanup is already occurring; preserves full-precision KV policy. |
+| `eval/rsi_legacy_training_hardening.py` | 71 | 48 | Keeps legacy transactional rollback/EWC compatible with bounded Phase 3 and skips MLX monkeypatching for non-MLX app Eval. |
+| `eval/stage_integrity_telemetry.py` | 46 | 10 | Understands separate Learn vs RSI tables and verifies trained/persisted/consolidated state correctly. |
+| `eval/swe_verifier_hardening.py` | 55 | 15 | Keeps verifier semantics but uses `git apply` on Windows/no-`patch` systems for cross-platform SWE patch checking. |
+| `master_4000_eval_suite.py` | 7 | 0 | Installs the app bridge at the correct wrapper point; normal CLI behavior remains dormant/unmodified by the bridge. |
+| `pyproject.toml` | 2 | 0 | Adds `datasets` and non-Apple `llama-cpp-python` runtime dependencies needed by standalone cross-platform Eval. |
+| `requirements.txt` | 2 | 0 | Same dependency declaration for requirements-based installs. |
+| `run_studio_complete.py` | 1 | 1 | Changes standalone eval default model from TernaryQuench to the requested Bonsai 2 MLX model. |
+| `tests/unit/test_app_eval_integration_contract.py` | 104 | 0 | Locks Eval UI/cross-platform/packaging/top-control invariants at source level. |
+| `tests/unit/test_diverged_branch_reconciliation_contract.py` | 85 | 0 | Locks the chosen best-of-old reconciliation and prevents stale quantized-KV/speculative regressions. |
+| `tests/unit/test_full_branch_audit_contract.py` | 148 | 0 | Locks concrete defects found in the final audit; source contract only, not evidence of runtime execution. |
+
+### Reading the +/- correctly
+
+The largest additions are new **adapter/GUI/contract modules**, not replacements of the old app. The most important evidence for the “modify, do not rewrite” requirement is:
+
+- `app_gui.py`: only **+16 / -0**;
+- canonical `master_4000_eval_suite.py`: only **+7 / -0**;
+- build/dependency/default-model files have tiny surgical diffs;
+- large edits are concentrated where the requested behavior actually lives: bounded Phase 3, backend training transactions, cross-platform Eval bridge/UI and regression contracts.
+
+The only deletions of whole files are the two obsolete branch/session guard documents.
+
+## 11. Final conclusion
 
 The feature branch is not a master rewrite. It is an additive/surgical hardening line whose major goals are:
 
