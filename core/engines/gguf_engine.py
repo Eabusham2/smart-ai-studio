@@ -170,6 +170,7 @@ class GGUFReasoningBackend:
         if had_peft:
             shutil.copytree(peft_dir, peft_backup)
 
+        success = False
         self.unload_model()
         trainer = GGUFLoRATrainer(
             model_path=self.model_path,
@@ -186,14 +187,11 @@ class GGUFReasoningBackend:
             self.adapters = dict(meta or {})
             if not self.load_model():
                 raise RuntimeError("GGUF LoRA trained successfully but llama.cpp failed to reload it")
-            try:
-                os.remove(backup_path)
-            except OSError:
-                pass
-            if os.path.isdir(peft_backup):
-                shutil.rmtree(peft_backup, ignore_errors=True)
-            return dict(self.adapters), float(drift)
+            result = (dict(self.adapters), float(drift))
+            success = True
+            return result
         except BaseException:
+            success = False
             # Roll back the adapter atomically and restore inference. Cancellation
             # (KeyboardInterrupt) is a transaction failure too.
             # failed consolidation as the live parameter state.
@@ -214,6 +212,14 @@ class GGUFReasoningBackend:
 
             self.load_model()
             raise
+        finally:
+            if success:
+                try:
+                    os.remove(backup_path)
+                except OSError:
+                    pass
+                if os.path.isdir(peft_backup):
+                    shutil.rmtree(peft_backup, ignore_errors=True)
 
     def supports_media_input(self, kind: str) -> bool:
         """Bonsai GGUF accepts images and sampled-video frames when its projector is loaded."""
