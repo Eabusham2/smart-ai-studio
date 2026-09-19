@@ -19,6 +19,7 @@ import gc
 import json
 import math
 import os
+import psutil
 import re
 import sqlite3
 import time
@@ -657,6 +658,279 @@ def _restore_rsi_adapter(self) -> bool:
         return False
 
 
+
+def _phase3_fmt_eta(seconds: Optional[float]) -> str:
+    if seconds is None or seconds <= 0:
+        return "calculating"
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _phase3_stack(model):
+    text_model = getattr(model, "language_model", None)
+    if text_model is None:
+        text_model = model
+
+    inner = getattr(text_model, "model", None)
+    if inner is None:
+        inner = text_model
+
+    layers = getattr(inner, "pipeline_layers", None)
+    if layers is None:
+        layers = getattr(inner, "layers", None)
+    if layers is None:
+        layers = getattr(model, "layers", None)
+
+    layers = list(layers or [])
+    embed_tokens = getattr(inner, "embed_tokens", None)
+    norm = getattr(inner, "norm", None)
+
+    if not layers or embed_tokens is None or norm is None:
+        raise RuntimeError(
+            "Phase 3 bounded training could not resolve the loaded transformer stack"
+        )
+
+    return text_model, inner, layers, embed_tokens, norm
+
+
+def _phase3_window_value_and_grad(self, inp, target_start: int, target_end: int):
+    """Backprop one small target window one decoder layer at a time."""
+    model = self.engine.model
+    text_model, inner, layers, embed_tokens, norm = _phase3_stack(model)
+
+    module_paths = {}
+    try:
+        module_paths = {id(module): name for name, module in model.named_modules()}
+    except Exception:
+        pass
+
+    hidden = embed_tokens(inp)
+    mx.eval(hidden)
+    hidden = mx.stop_gradient(hidden)
+    boundaries = [hidden]
+
+    for layer in layers:
+        mask = None if bool(getattr(layer, "is_linear", False)) else "causal"
+        hidden = layer(hidden, mask=mask, cache=None)
+        mx.eval(hidden)
+        hidden = mx.stop_gradient(hidden)
+        boundaries.append(hidden)
+
+    final_hidden = boundaries[-1]
+    targets = inp[:, target_start + 1 : target_end + 1]
+
+    def head_loss(local_hidden):
+        selected = local_hidden[:, target_start:target_end, :]
+        z = norm(selected)
+
+        if hasattr(text_model, "lm_head"):
+            logits = text_model.lm_head(z)
+        elif hasattr(embed_tokens, "as_linear"):
+            logits = embed_tokens.as_linear(z)
+        else:
+            raise RuntimeError("Phase 3 could not resolve LM head")
+
+        return mx.mean(
+            nn.losses.cross_entropy(
+                logits.astype(mx.float32),
+                targets,
+            )
+        )
+
+    loss, cotangent = mx.value_and_grad(head_loss)(final_hidden)
+    mx.eval(loss, cotangent)
+    cotangent = mx.stop_gradient(cotangent)
+
+    flat_grads: Dict[str, Any] = {}
+
+    for layer_idx in range(len(layers) - 1, -1, -1):
+        layer = layers[layer_idx]
+        h_in = boundaries[layer_idx]
+        incoming = mx.stop_gradient(cotangent)
+        mask = None if bool(getattr(layer, "is_linear", False)) else "causal"
+        params = layer.trainable_parameters()
+        local_param_items = list(mlx.utils.tree_flatten(params))
+
+        def forward_layer(local_params, local_hidden):
+            layer.update(local_params)
+            return layer(local_hidden, mask=mask, cache=None)
+
+        checkpointed = mx.checkpoint(forward_layer)
+
+        if local_param_items:
+            def scalar(local_params, local_hidden):
+                out = checkpointed(local_params, local_hidden)
+                return mx.sum(
+                    out.astype(mx.float32)
+                    * incoming.astype(mx.float32)
+                )
+
+            _, pair = mx.value_and_grad(
+                scalar,
+                argnums=[0, 1],
+            )(params, h_in)
+
+            param_grads, input_grad = pair
+            mx.eval(
+                input_grad,
+                *[g for _, g in mlx.utils.tree_flatten(param_grads)],
+            )
+
+            path = module_paths.get(id(layer), "")
+            for local_key, grad in mlx.utils.tree_flatten(param_grads):
+                key = f"{path}.{local_key}" if path else str(local_key)
+                flat_grads[key] = mx.stop_gradient(grad)
+        else:
+            def scalar_hidden(local_hidden):
+                out = layer(local_hidden, mask=mask, cache=None)
+                return mx.sum(
+                    out.astype(mx.float32)
+                    * incoming.astype(mx.float32)
+                )
+
+            input_grad = mx.grad(scalar_hidden)(h_in)
+            mx.eval(input_grad)
+
+        cotangent = mx.stop_gradient(input_grad)
+        boundaries[layer_idx + 1] = None
+
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+
+    expected = dict(
+        mlx.utils.tree_flatten(
+            model.trainable_parameters()
+        )
+    )
+
+    missing = set(expected) - set(flat_grads)
+    extra = set(flat_grads) - set(expected)
+    if missing or extra:
+        raise RuntimeError(
+            "Phase 3 bounded gradient mismatch: "
+            f"missing={sorted(missing)[:6]} extra={sorted(extra)[:6]}"
+        )
+
+    grads = mlx.utils.tree_unflatten(
+        [(key, flat_grads[key]) for key in expected]
+    )
+    return loss, grads
+
+
+def _phase3_bounded_gradients(
+    self,
+    ids: List[int],
+    memory_index: int,
+    memory_total: int,
+):
+    """Consume the selected row through bounded local-context windows."""
+    selected = list(ids[-16384:])
+    if len(selected) < 2:
+        raise RuntimeError("Phase 3 training row has fewer than two tokens")
+
+    full = mx.array([selected])
+    total_targets = len(selected) - 1
+    window_tokens = 64
+    targets_per_window = 32
+
+    aggregate: Dict[str, Any] = {}
+    weighted_loss = 0.0
+    trained_targets = 0
+    target_global = 0
+    started = time.monotonic()
+
+    while target_global < total_targets:
+        target_end = min(total_targets, target_global + targets_per_window)
+        window_end = target_end + 1
+        window_start = max(0, window_end - window_tokens)
+
+        local = full[:, window_start:window_end]
+        local_start = target_global - window_start
+        local_end = target_end - window_start
+        count = target_end - target_global
+
+        loss, grads = _phase3_window_value_and_grad(
+            self,
+            local,
+            local_start,
+            local_end,
+        )
+
+        flat = dict(mlx.utils.tree_flatten(grads))
+        mx.eval(loss, *flat.values())
+
+        for key, grad in flat.items():
+            weighted = mx.stop_gradient(grad) * float(count)
+            mx.eval(weighted)
+            if key in aggregate:
+                value = aggregate[key] + weighted
+                mx.eval(value)
+                aggregate[key] = mx.stop_gradient(value)
+            else:
+                aggregate[key] = mx.stop_gradient(weighted)
+
+        weighted_loss += float(loss.item()) * count
+        trained_targets += count
+        target_global = target_end
+
+        elapsed = max(0.001, time.monotonic() - started)
+        speed = trained_targets / elapsed
+        pct = 100.0 * trained_targets / max(1, total_targets)
+
+        remaining_estimate = (
+            (total_targets - trained_targets)
+            + max(0, memory_total - memory_index) * total_targets
+        )
+        total_eta = (
+            remaining_estimate / speed
+            if speed > 0
+            else None
+        )
+
+        try:
+            ram_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+        except Exception:
+            ram_mb = 0.0
+
+        print(
+            f"Phase 3: {trained_targets}/{total_targets}"
+            f" | {pct:.1f}%"
+            f" | {speed:.2f} tgt/s"
+            f" | Total ETA {_phase3_fmt_eta(total_eta)}"
+            f" | RAM {ram_mb:.0f} MB",
+            flush=True,
+        )
+
+        loss = None
+        grads = None
+        flat = None
+        local = None
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+        gc.collect(1)
+
+    inv = 1.0 / float(total_targets)
+    for key in list(aggregate):
+        value = aggregate[key] * inv
+        mx.eval(value)
+        aggregate[key] = mx.stop_gradient(value)
+
+    grads = mlx.utils.tree_unflatten(
+        list(aggregate.items())
+    )
+    return mx.array(weighted_loss * inv, dtype=mx.float32), grads
+
+
 def _run_phase3_consolidation(self) -> Dict[str, Any]:
     """Train the exact already-loaded model in-place on Learn + RSI traces."""
     memories = _fetch_benchmark_training_memories(self)
@@ -667,98 +941,126 @@ def _run_phase3_consolidation(self) -> Dict[str, Any]:
     if not MLX_AVAILABLE or self.engine.model is None:
         raise RuntimeError("Phase 3 requires the already-loaded MLX model")
 
+    # Ensure the eval has real LoRA trainables, but never unfreeze quantized base weights.
+    trainable = dict(mlx.utils.tree_flatten(self.engine.model.trainable_parameters()))
+    if not trainable:
+        _pro_backend(self).inject_lora_adapters(r=8)
+        trainable = dict(mlx.utils.tree_flatten(self.engine.model.trainable_parameters()))
+    if not trainable:
+        raise RuntimeError("Phase 3 has no trainable LoRA parameters")
+
+    bad = [
+        key for key in trainable
+        if key.rsplit(".", 1)[-1] not in {"lora_a", "lora_b"}
+    ]
+    if bad:
+        raise RuntimeError(
+            "Phase 3 refuses non-LoRA trainables: "
+            + ", ".join(bad[:6])
+        )
+
     model_identity = id(self.engine.model)
     opt = optim.AdamW(learning_rate=1e-4)
     updated = 0
     fallback_updates = 0
     consolidated_ids: List[int] = []
+    was_training = bool(getattr(self.engine.model, "training", False))
 
-    for memory in memories:
-        text = (
-            f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
-            f"<|im_start|>assistant\n{memory['completion']}<|im_end|>"
-        )
-        ids = self.engine.tokenizer.encode(text)
-        if len(ids) <= 1:
-            continue
+    try:
+        self.engine.model.train()
 
-        with METAL_STREAM_LOCK:
-            inp = mx.array([ids[: min(len(ids), 256)]])
-
-            def lossfn(model):
-                logits = model(inp)
-                return mx.mean(
-                    nn.losses.cross_entropy(
-                        logits[:, :-1, :].astype(mx.float32),
-                        inp[:, 1:],
-                    )
-                )
-
-            loss, grads = nn.value_and_grad(self.engine.model, lossfn)(
-                self.engine.model
+        for memory_index, memory in enumerate(memories, 1):
+            text = (
+                f"<|im_start|>user\n{memory['prompt']}<|im_end|>\n"
+                f"<|im_start|>assistant\n{memory['completion']}<|im_end|>"
             )
+            ids = self.engine.tokenizer.encode(text)
+            if len(ids) <= 1:
+                continue
 
-            applied = False
+            with METAL_STREAM_LOCK:
+                loss, grads = _phase3_bounded_gradients(
+                    self,
+                    ids,
+                    memory_index,
+                    len(memories),
+                )
+
+                applied = False
+                try:
+                    flat, shapes = self.engine.ogp_projector.flatten_gradients(
+                        dict(mlx.utils.tree_flatten(grads))
+                    )
+                    projected = self.engine.ogp_projector.project_gradient(flat)
+                    tree = self.engine.ogp_projector.unflatten_gradients(projected, shapes)
+                    opt.update(
+                        self.engine.model,
+                        mlx.utils.tree_unflatten(list(tree.items())),
+                    )
+                    applied = True
+                except Exception:
+                    opt.update(self.engine.model, grads)
+                    fallback_updates += 1
+                    applied = True
+
+                if applied:
+                    mx.eval(self.engine.model.parameters(), opt.state)
+                    updated += 1
+                    if memory.get("id") is not None:
+                        consolidated_ids.append(int(memory["id"]))
+
+                loss = None
+                grads = None
+                try:
+                    mx.clear_cache()
+                except Exception:
+                    pass
+                gc.collect(1)
+
+        _assert_same_model(self, model_identity, "Phase 3 consolidation")
+
+        if getattr(self.engine, "moe_manager", None) is not None:
+            current = {
+                k: mx.array(v)
+                for k, v in dict(
+                    mlx.utils.tree_flatten(
+                        self.engine.model.trainable_parameters()
+                    )
+                ).items()
+            }
+            self.engine.moe_manager.adapters_buffer_b = current
+            self.engine.moe_manager.swap_buffers_atomic()
+            _assert_same_model(self, model_identity, "Phase 3 buffer swap")
+
+        if consolidated_ids:
             try:
-                flat, shapes = self.engine.ogp_projector.flatten_gradients(
-                    dict(mlx.utils.tree_flatten(grads))
-                )
-                projected = self.engine.ogp_projector.project_gradient(flat)
-                tree = self.engine.ogp_projector.unflatten_gradients(projected, shapes)
-                opt.update(
-                    self.engine.model,
-                    mlx.utils.tree_unflatten(list(tree.items())),
-                )
-                applied = True
+                self.engine.kg.mark_consolidated(consolidated_ids)
             except Exception:
-                # RSI must actually train. If OGP projection is unsupported for this
-                # model/kernel, fall back to the same raw verified self-training gradient.
-                opt.update(self.engine.model, grads)
-                fallback_updates += 1
-                applied = True
+                pass
 
-            if applied:
-                mx.eval(self.engine.model.parameters(), opt.state)
-                updated += 1
-                if memory.get("id") is not None:
-                    consolidated_ids.append(int(memory["id"]))
-
-    _assert_same_model(self, model_identity, "Phase 3 consolidation")
-
-    # Important: the old implementation swapped a stale buffer B after training,
-    # which could restore pre-training LoRA weights. Refresh B from the trained
-    # model BEFORE the atomic swap so the learned state cannot be reverted.
-    if getattr(self.engine, "moe_manager", None) is not None:
-        current = {
-            k: mx.array(v)
-            for k, v in dict(
-                mlx.utils.tree_flatten(
-                    self.engine.model.trainable_parameters()
-                )
-            ).items()
+        persisted = _save_rsi_adapter(self)
+        print(
+            f"[✓] Phase 3 trained {updated} Learn/RSI memories in-place "
+            f"(raw-gradient fallback updates: {fallback_updates}; persisted={persisted}).",
+            flush=True,
+        )
+        return {
+            "updated": updated > 0,
+            "memories": updated,
+            "fallback_updates": fallback_updates,
+            "persisted": persisted,
         }
-        self.engine.moe_manager.adapters_buffer_b = current
-        self.engine.moe_manager.swap_buffers_atomic()
-        _assert_same_model(self, model_identity, "Phase 3 buffer swap")
-
-    if consolidated_ids:
+    finally:
+        if not was_training:
+            try:
+                self.engine.model.eval()
+            except Exception:
+                pass
         try:
-            self.engine.kg.mark_consolidated(consolidated_ids)
+            mx.clear_cache()
         except Exception:
             pass
-
-    persisted = _save_rsi_adapter(self)
-    print(
-        f"[✓] Phase 3 trained {updated} Learn/RSI memories in-place "
-        f"(raw-gradient fallback updates: {fallback_updates}; persisted={persisted}).",
-        flush=True,
-    )
-    return {
-        "updated": updated > 0,
-        "memories": updated,
-        "fallback_updates": fallback_updates,
-        "persisted": persisted,
-    }
+        gc.collect(2)
 
 
 def _run_learning_retention_test(self, model_identity: int) -> Dict[str, Any]:
