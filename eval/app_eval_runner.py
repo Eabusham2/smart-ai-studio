@@ -6,7 +6,56 @@ import json
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
+
+
+def _start_memory_guard(config, run_dir: Path):
+    if not bool(config.get("memory_limit_enabled", False)):
+        return None
+    try:
+        limit_gb = float(config.get("memory_limit_gb", 0.0) or 0.0)
+    except Exception:
+        limit_gb = 0.0
+    if limit_gb <= 0.0:
+        return None
+
+    stop = threading.Event()
+
+    def _watch():
+        import psutil
+        root = psutil.Process(os.getpid())
+        while not stop.wait(0.25):
+            total = 0
+            try:
+                procs = [root] + root.children(recursive=True)
+            except Exception:
+                procs = [root]
+            for proc in procs:
+                try:
+                    total += int(proc.memory_info().rss)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            used_gb = total / (1024.0 ** 3)
+            if used_gb >= limit_gb:
+                try:
+                    (run_dir / "cancel.flag").write_text("memory-limit", encoding="utf-8")
+                except Exception:
+                    pass
+                print(
+                    f"\n[MEM WATCH] process tree {used_gb:.2f} GB >= {limit_gb:.2f} GB; "
+                    "interrupting eval safely.",
+                    flush=True,
+                )
+                try:
+                    os.kill(os.getpid(), signal.SIGINT)
+                except Exception:
+                    os._exit(130)
+                return
+
+    thread = threading.Thread(target=_watch, daemon=True, name="SmartAI-EvalMemoryGuard")
+    thread.start()
+    return stop
 
 
 def _install_signal_handlers() -> None:
@@ -50,6 +99,7 @@ def main() -> int:
         sys.path.insert(0, str(repo_root))
     os.chdir(run_dir)
     _install_signal_handlers()
+    memory_guard_stop = _start_memory_guard(config, run_dir)
 
     from eval import app_cross_platform_bridge
     import master_4000_eval_suite as suite
@@ -110,6 +160,8 @@ def main() -> int:
         print("\n[APP EVAL] Cancelled; safe checkpoint/rollback handlers were invoked.", flush=True)
         return 130
     finally:
+        if memory_guard_stop is not None:
+            memory_guard_stop.set()
         try:
             runner.engine.unload_model()
         except Exception:
