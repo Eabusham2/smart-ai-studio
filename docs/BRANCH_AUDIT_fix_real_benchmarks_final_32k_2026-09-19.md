@@ -3,7 +3,7 @@
 **Repository:** `Eabusham2/smart-ai-studio`  
 **Authoritative branch:** `fix/real-benchmarks-final-32k`  
 **Historical baseline:** `master` at `06390e5357a07f80a8089ac28fc16c75461a48a6`  
-**Latest code/test snapshot audited before this documentation update:** `d039972963735dbba25ad4ff2694b09a1924e1bc`  
+**Frozen implementation/audit snapshot used for the exact annotated diff:** `3c17c359fd8d0a72e9ea2cdb3d79630a9e93324b`  
 **Audit date:** 2026-09-19
 
 ## 1. Audit rule
@@ -661,10 +661,11 @@ The code now fails closed or rolls back for these paths. This is source/call-gra
 
 ## 11. Final `master → feature` file-by-file +/- ledger
 
-This is the final diff shape at the documentation checkpoint: **107 commits ahead / 0 behind `master`**. The `+`/`-` counts below are Git line counts versus `master`; they are not a quality score.
+This is the frozen implementation/audit diff shape used by the exact appendix: **112 commits ahead / 0 behind `master`**, across **42 changed paths**. The `+`/`-` counts below are Git line counts versus `master`; they are not a quality score.
 
 | Path | + | - | Why the final diff exists / disposition |
 |---|---:|---:|---|
+| `.github/workflows/feature-audit.yml` | 100 | 0 | Focused audit/evidence workflow only; compiles tracked Python, runs the three audit contract files, and preserves exact source/history/diff artifacts without changing product runtime. |
 | `ACTIVE_SESSION_GUARD_2026-09-18_GGUF_ONLY.md` | 0 | 19 | Deleted obsolete session guard only; no runtime behavior removed. |
 | `BRANCH_GUARD_GGUF_LEARNING_20260918.txt` | 0 | 14 | Deleted obsolete branch guard only; no implementation removed. |
 | `app_gui.py` | 16 | 0 | Additive startup installation of the existing single Context control and the text-only Eval panel; no main GUI rewrite. |
@@ -685,7 +686,7 @@ This is the final diff shape at the documentation checkpoint: **107 commits ahea
 | `core/media_learning.py` | 67 | 2 | Requires provable nonzero external LoRA updates and restores native media tensors/artifacts on cancellation. |
 | `core/online_consolidator.py` | 34 | 9 | Removes unnecessary adapter deep-copy, adds backend-neutral cleanup and measured RAM telemetry around real awake updates. |
 | `core/training_memory.py` | 131 | 0 | New shared cleanup/memory helper; macOS uses physical footprint when available, others use RSS. |
-| `docs/BRANCH_AUDIT_fix_real_benchmarks_final_32k_2026-09-19.md` | 489+ | 0 | This complete branch audit/reconciliation record; documentation only. |
+| `docs/BRANCH_AUDIT_fix_real_benchmarks_final_32k_2026-09-19.md` | 735+ | 0 | This complete branch audit/reconciliation record; documentation only. |
 | `docs/GEMINI_POSTMORTEM_2026-09-19.md` | 525 | 0 | Separate Gemini verification/postmortem document; documentation only. |
 | `eval/_master_4000_base.py` | 21 | 11 | Removes synthetic/offline output and fabricated TPS/speculative fallbacks; reports actual selected model and process memory. |
 | `eval/app_cross_platform_bridge.py` | 680 | 0 | New app-only adapter around the same canonical suite, reusing production MLX/GGUF/Prism/BitNet/controller backends and real Phase-3 persistence. |
@@ -717,6 +718,21 @@ The largest additions are new **adapter/GUI/contract modules**, not replacements
 - large edits are concentrated where the requested behavior actually lives: bounded Phase 3, backend training transactions, cross-platform Eval bridge/UI and regression contracts.
 
 The only deletions of whole files are the two obsolete branch/session guard documents.
+
+## Exact raw diff appendix
+
+The complete frozen `master → 3c17c359fd8d0a72e9ea2cdb3d79630a9e93324b` patch is stored in:
+
+`docs/FULL_MASTER_TO_FEATURE_DIFF_ANNOTATED_2026-09-19.md`
+
+That appendix reproduces **every GitHub compare `+`/`-` line** from the frozen implementation/audit snapshot:
+
+- 42 changed paths;
+- 113 diff hunks;
+- 5,818 raw added/deleted lines;
+- no missing GitHub patch payloads.
+
+Every hunk has an immediate rationale explaining why those changed lines exist. The appendix itself is committed after the frozen snapshot; this is intentional because a document cannot recursively contain the diff that adds itself.
 
 ## 12. Final conclusion
 
