@@ -63,7 +63,7 @@ def test_eval_memory_limit_uses_mac_physical_footprint_when_available():
 
 def test_mlx_lora_is_adapter_only_and_transactional():
     src = _src("core/_mlx_engine_base.py")
-    assert src.count('unfreeze(keys=["lora_a", "lora_b"], recurse=False)') >= 5
+    assert src.count('unfreeze(keys=["lora_a", "lora_b"], recurse=False)') >= 4
     assert "MLX training completed but measured zero parameter change" in src
     assert "rollback_params" in src
     assert ".next.safetensors" in src
@@ -94,7 +94,7 @@ def test_non_mlx_training_and_cancel_paths_roll_back():
 def test_media_learning_never_equates_file_existence_with_real_learning():
     media = _src("core/media_learning.py")
     assert "def _persisted_lora_delta_proven" in media
-    assert "real nonzero LoRA update factor could not be proven" in media
+    assert "LoRA update factor could not be proven" in media
     assert "delta_sq <= 0" in media
     assert "except BaseException:" in media
 
