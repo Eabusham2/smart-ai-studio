@@ -7,7 +7,6 @@ a hard context-capacity request can use the same trainer synchronously so dialog
 not removed before its parameter update has actually completed.
 """
 
-import copy
 import logging
 import threading
 import time
@@ -189,7 +188,10 @@ class AwakeOnlineConsolidator:
 
             with self.lock:
                 active_adapters = getattr(self.engine, "adapters", None)
-                shadow_adapters = copy.deepcopy(active_adapters) if active_adapters is not None else {}
+                # train_mini_batch updates the live backend transactionally; this
+                # argument is compatibility metadata, not a rollback snapshot.
+                # A deep copy can duplicate every MLX LoRA tensor for no benefit.
+                shadow_adapters = dict(active_adapters) if isinstance(active_adapters, dict) else {}
 
             updated_adapters, param_drift = self.engine.train_mini_batch(
                 adapters=shadow_adapters,
