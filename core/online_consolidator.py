@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.training_memory import backend_label, process_rss_mb, release_training_memory
+
 logger = logging.getLogger(__name__)
 
 
@@ -167,7 +169,14 @@ class AwakeOnlineConsolidator:
     def _run_shadow_consolidation(self, chunk: List[Dict[str, str]]) -> bool:
         """Run and persist a genuine parameter update; never fabricate drift."""
         start_time = time.time()
-        logger.info("[AwakeConsolidator] Commencing consolidation on %d turns...", len(chunk))
+        backend_name = backend_label(self.engine)
+        ram_start_mb = process_rss_mb()
+        logger.info(
+            "[AwakeConsolidator] start backend=%s turns=%d RAM=%.0f MB",
+            backend_name,
+            len(chunk),
+            ram_start_mb,
+        )
         success = False
 
         try:
@@ -208,24 +217,38 @@ class AwakeOnlineConsolidator:
                 cycle = self.consolidation_count
 
             duration = time.time() - start_time
+            if self.db and hasattr(self.db, "mark_traces_consolidated"):
+                self.db.mark_traces_consolidated(chunk)
+            success = True
+
             logger.info(
-                "[AwakeConsolidator] Cycle #%d complete in %.2fs | Param Drift ||ΔW||2: %.6f",
+                "[AwakeConsolidator] complete backend=%s cycle=%d %.2fs drift=%.6f",
+                backend_name,
                 cycle,
                 duration,
                 float(param_drift),
             )
 
-            if self.db and hasattr(self.db, "mark_traces_consolidated"):
-                self.db.mark_traces_consolidated(chunk)
-            success = True
-
         except Exception as exc:
             logger.error(
-                "[AwakeConsolidator] Real consolidation failed: %s",
+                "[AwakeConsolidator] Real consolidation failed backend=%s: %s",
+                backend_name,
                 exc,
                 exc_info=True,
             )
         finally:
+            # Release transient gradients/optimizers/framework caches for every
+            # backend without unloading the working inference model.
+            updated_adapters = None
+            shadow_adapters = None
+            stats = release_training_memory(self.engine)
+            logger.info(
+                "[AwakeConsolidator] cleanup backend=%s RAM %.0f -> %.0f MB (released %.0f MB)",
+                backend_name,
+                ram_start_mb,
+                stats["after_mb"],
+                max(0.0, ram_start_mb - stats["after_mb"]),
+            )
             with self.lock:
                 self.is_consolidating = False
 
