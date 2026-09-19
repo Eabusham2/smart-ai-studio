@@ -172,8 +172,15 @@ def install_gui_generation_cap() -> None:
                 _set_reason(self, combined)
         return result
 
-    def process_with_real_pro_metadata(self, full_msg: str, user_prompt: str):
-        result = original_process(self, full_msg, user_prompt)
+    def process_with_real_pro_metadata(
+        self,
+        full_msg: str,
+        user_prompt: str,
+        *args,
+        **kwargs,
+    ):
+        # Preserve newer Learn/attachment arguments while adding only telemetry.
+        result = original_process(self, full_msg, user_prompt, *args, **kwargs)
         engine = getattr(self, "engine", None)
         backend = getattr(engine, "mlx_backend", None)
 
