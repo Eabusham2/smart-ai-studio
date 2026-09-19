@@ -4,7 +4,8 @@
 **Authoritative branch:** `fix/real-benchmarks-final-32k`  
 **Historical baseline:** `master` at `06390e5357a07f80a8089ac28fc16c75461a48a6`  
 **Frozen implementation/audit snapshot used for the exact annotated diff:** `3c17c359fd8d0a72e9ea2cdb3d79630a9e93324b`  
-**Audit date:** 2026-09-19
+**Audit date:** 2026-09-19  
+**Pre-final-documentation branch checkpoint:** `d8b164ae4a65206e55356f9bf1e0eee39751f0a5` — 119 ahead / 0 behind `master`, 47 changed paths (the extra paths after the frozen implementation snapshot are audit documentation, plus the one comment-only Phase-1 wording correction documented below).
 
 ## 1. Audit rule
 
@@ -370,112 +371,129 @@ The code must not report these as successful when the dependency is missing.
 
 ## 9. Sequential commit ledger
 
-The implementation was audited in chronological order. Documentation commits are intentionally excluded from this implementation ledger.
-
-The final two implementation commits landed concurrently during documentation and were re-audited before sign-off:
-- `f267e44bd1` fixes the audit test to match the atomic DB contract.
-- `ce26510b50` returns the real MLX Phase-3 LoRA delta required by the stage-integrity layer.
+The branch ancestry was rebuilt directly from GitHub from `master` (06390e5357a07f80a8089ac28fc16c75461a48a6) to the pre-document-update head `d8b164ae4a65206e55356f9bf1e0eee39751f0a5`. This corrects the earlier ledger that accidentally omitted the first two RAM commits. All **119** feature commits are listed oldest→newest.
 
 | # | Commit | Phase | Change | Audit disposition |
 |---:|---|---|---|---|
-| 1 | `a9ba9c00c3` | RAM / bounded Phase 3 | Keep EWC rollback compatible with bounded Phase 3 | Retained; later transaction/cancel hardening extends it |
-| 2 | `35bd3884bb` | RAM / bounded Phase 3 | Port bounded Phase 3 without losing current Learn RSI semantics | Retained; later transaction/cancel hardening extends it |
-| 3 | `d8f0b719b5` | RAM / bounded Phase 3 | Add backend-neutral training memory guard | Retained; later transaction/cancel hardening extends it |
-| 4 | `86526c674a` | RAM / bounded Phase 3 | Guard app awake consolidation memory on every backend | Retained; later transaction/cancel hardening extends it |
-| 5 | `22234eafbe` | RAM / bounded Phase 3 | Guard app Learn and RSI memory across active backends | Retained; later transaction/cancel hardening extends it |
-| 6 | `3e49d834fd` | RAM / bounded Phase 3 | Release GGUF QLoRA training memory deterministically | Retained; later transaction/cancel hardening extends it |
-| 7 | `0ce83994e8` | RAM / bounded Phase 3 | Release BitNet rebuild training memory deterministically | Retained; later transaction/cancel hardening extends it |
-| 8 | `6914ddbee3` | RAM / bounded Phase 3 | Release controller PEFT training memory after updates | Retained; later transaction/cancel hardening extends it |
-| 9 | `f162b3bcb1` | RAM / bounded Phase 3 | Fix Learn RSI EWC and RAM telemetry accuracy | Retained; later transaction/cancel hardening extends it |
-| 10 | `1829b2625a` | RAM / bounded Phase 3 | Drop GGUF training graph before adapter conversion | Retained; later transaction/cancel hardening extends it |
-| 11 | `9e40426508` | RAM / bounded Phase 3 | Drop BitNet training models before I2_S conversion | Retained; later transaction/cancel hardening extends it |
-| 12 | `7a063763e0` | RAM / bounded Phase 3 | Avoid duplicate adapter tensors during awake consolidation | Retained; later transaction/cancel hardening extends it |
-| 13 | `6c9b6fd0ae` | RAM / bounded Phase 3 | Make Phase 3 telemetry cumulative across all targets | Retained; later transaction/cancel hardening extends it |
-| 14 | `915f371a27` | RAM / bounded Phase 3 | Drop final GGUF training references before conversion | Retained; later transaction/cancel hardening extends it |
-| 15 | `ebb59dde3b` | RAM / bounded Phase 3 | Drop final BitNet training references before conversion | Retained; later transaction/cancel hardening extends it |
-| 16 | `4a0d3d9fc7` | RAM / bounded Phase 3 | Drop final controller training references after updates | Retained; later transaction/cancel hardening extends it |
-| 17 | `ab72296d7e` | RAM / bounded Phase 3 | Keep cumulative Phase 3 telemetry bounded in memory | Retained; later transaction/cancel hardening extends it |
-| 18 | `c118cef33d` | RAM / bounded Phase 3 | Add app eval cross-platform runtime bridge | Retained; later transaction/cancel hardening extends it |
-| 19 | `7883826d47` | RAM / bounded Phase 3 | Wire app eval bridge into canonical suite | Retained; later transaction/cancel hardening extends it |
-| 20 | `3c6e335093` | App Eval / cross-platform foundation | Keep MLX legacy wrapper off non-MLX app evals | Retained; later audit closes portability/failure edges |
-| 21 | `bb782976f7` | App Eval / cross-platform foundation | Add isolated app eval subprocess runner | Retained; later audit closes portability/failure edges |
-| 22 | `52f93dcc6c` | App Eval / cross-platform foundation | Add text-model Eval window to desktop app | Retained; later audit closes portability/failure edges |
-| 23 | `5df88c336a` | App Eval / cross-platform foundation | Wire Eval window into desktop app | Retained; later audit closes portability/failure edges |
-| 24 | `621220ec93` | App Eval / cross-platform foundation | Ship eval suite in standalone app bundles | Retained; later audit closes portability/failure edges |
-| 25 | `9450f879f2` | App Eval / cross-platform foundation | Add standalone eval runtime dependencies | Retained; later audit closes portability/failure edges |
-| 26 | `1790718ab9` | App Eval / cross-platform foundation | Declare cross-platform app eval dependencies | Retained; later audit closes portability/failure edges |
-| 27 | `7e1ebd485a` | App Eval / cross-platform foundation | Switch standalone eval default to Bonsai 2 | Retained; later audit closes portability/failure edges |
-| 28 | `dee1cab77c` | App Eval / cross-platform foundation | Report actual Bonsai 2 or selected app eval model | Retained; later audit closes portability/failure edges |
-| 29 | `2f6b3993ba` | App Eval / cross-platform foundation | Fix app eval dataset and RSI memory wiring | Retained; later audit closes portability/failure edges |
-| 30 | `55095ca10f` | App Eval / cross-platform foundation | Align Phase 3 integrity with current memory queue schema | Retained; later audit closes portability/failure edges |
-| 31 | `75f4319c6a` | App Eval / cross-platform foundation | Make non-MLX eval pause between Pro branches | Retained; later audit closes portability/failure edges |
-| 32 | `df8e3402a5` | App Eval / cross-platform foundation | Prevent orphaned eval workers on app close | Retained; later audit closes portability/failure edges |
-| 33 | `cf73e9f56e` | App Eval / cross-platform foundation | Enforce app eval RAM limit inside runner | Retained; later audit closes portability/failure edges |
-| 34 | `2db156fa41` | App Eval / cross-platform foundation | Make Eval window output truly live | Retained; later audit closes portability/failure edges |
-| 35 | `1ea2eb8feb` | App Eval / cross-platform foundation | Clamp app eval to actual backend context | Retained; later audit closes portability/failure edges |
-| 36 | `58b4579bd8` | App Eval / cross-platform foundation | Use active backend adapter path throughout app eval | Retained; later audit closes portability/failure edges |
-| 37 | `abd9ff4eb1` | App Eval / cross-platform foundation | Allow isolated app-eval GGUF adapter state | Retained; later audit closes portability/failure edges |
-| 38 | `4e71c953bc` | App Eval / cross-platform foundation | Allow isolated app-eval BitNet learned state | Retained; later audit closes portability/failure edges |
-| 39 | `bc52e23a81` | App Eval / cross-platform foundation | Allow isolated app-eval controller adapter state | Retained; later audit closes portability/failure edges |
-| 40 | `7408f1e104` | App Eval / cross-platform foundation | Separate app eval learned state from shared runtimes | Retained; later audit closes portability/failure edges |
-| 41 | `155ea77a38` | App Eval / cross-platform foundation | Isolate MLX app-eval adapter state | Retained; later audit closes portability/failure edges |
-| 42 | `e2dcdcb197` | App Eval / cross-platform foundation | Lock desktop Eval integration contracts | Retained; later audit closes portability/failure edges |
-| 43 | `fae826327b` | App Eval / cross-platform foundation | Allow verified app backends through eval orchestrator | Retained; later audit closes portability/failure edges |
-| 44 | `255771ba49` | App Eval / cross-platform foundation | Make top Eval button label explicit | Retained; later audit closes portability/failure edges |
-| 45 | `d892c2dc1a` | Eval UX / safety / contracts | Label top context control explicitly | Retained |
-| 46 | `5ec5b7ed2f` | Eval UX / safety / contracts | Fail app eval closed on GGUF runtime errors | Retained |
-| 47 | `2292c09170` | Eval UX / safety / contracts | Lock Eval run settings while active | Retained |
-| 48 | `78b3659da2` | Eval UX / safety / contracts | Install Context Limit and Eval controls explicitly at app startup | Retained |
-| 49 | `e543c6641f` | Eval UX / safety / contracts | Keep top Context control compatible with current chat arguments | Retained |
-| 50 | `103fc7a26f` | Eval UX / safety / contracts | Make Eval cancel safe during model load | Retained |
-| 51 | `d6fec5e7aa` | Eval UX / safety / contracts | Lock Eval Context and Mem Limit top-bar contracts | Retained |
-| 52 | `e2d83ea48c` | Eval UX / safety / contracts | Keep app model controls exclusive during Eval | Retained |
-| 53 | `601dbbf689` | Eval UX / safety / contracts | Keep conversation teach backend identity accurate | Retained |
-| 54 | `94d577e6fe` | Eval UX / safety / contracts | Verify Learn and RSI consolidation in their own tables | Retained |
-| 55 | `d360d5d755` | Eval UX / safety / contracts | Lock single Context and Mem Limit controls | Retained |
-| 56 | `1ee980fe67` | Eval UX / safety / contracts | Port answer-blind RSI feedback without old KV regressions | Retained |
-| 57 | `50a4f356ab` | Eval UX / safety / contracts | Synchronize MLX work before pressure cache release | Retained |
-| 58 | `40990c6184` | Eval UX / safety / contracts | Preserve grammar-guided drafter diagnostics | Retained |
-| 59 | `3c06189f56` | Diverged-branch reconciliation | Preserve LIF diagnostic entropy helpers | Retained only as additive/safe reconciliation |
-| 60 | `8a40007193` | Diverged-branch reconciliation | Preserve OGP daemon lifecycle telemetry | Retained only as additive/safe reconciliation |
-| 61 | `a6e147e8f8` | Diverged-branch reconciliation | Lock best-of-diverged-branches reconciliation | Retained only as additive/safe reconciliation |
-| 62 | `2c51d357c3` | Diverged-branch reconciliation | Remove BRANCH_GUARD_GGUF_LEARNING_20260918.txt | Intentional cleanup |
-| 63 | `90b6946c66` | Diverged-branch reconciliation | Remove ACTIVE_SESSION_GUARD_2026-09-18_GGUF_ONLY.md | Intentional cleanup |
-| 64 | `9796f421dd` | Diverged-branch reconciliation | Keep Phase 3B compatible with read-only GGUF tokenizer facade | Retained only as additive/safe reconciliation |
-| 65 | `b7da23ecec` | Guard-file cleanup | Measure macOS training/eval memory by physical footprint | Audit correction / retained |
-| 66 | `1661aa5949` | Guard-file cleanup | Use macOS physical footprint in Eval UI memory telemetry | Audit correction / retained |
-| 67 | `358e22904e` | Full-audit corrective hardening | Enforce Eval RAM limit with macOS physical footprint | Audit correction / retained |
-| 68 | `8a53447c1e` | Full-audit corrective hardening | Clean app Eval Phase 3 memory on failure | Audit correction / retained |
-| 69 | `04fb103f3e` | Full-audit corrective hardening | Restrict all MLX LoRA trainables to adapter tensors | Audit correction / retained |
-| 70 | `7aef6c6370` | Full-audit corrective hardening | Make MLX LoRA training transactional | Audit correction / retained |
-| 71 | `890b6e01c8` | Full-audit corrective hardening | Make controller PEFT training transactional | Audit correction / retained |
-| 72 | `e34da4f1c5` | Full-audit corrective hardening | Apply one Context budget across all text backends | Audit correction / retained |
-| 73 | `39e11b35ac` | Full-audit corrective hardening | Close MLX adapter persistence cancellation window | Audit correction / retained |
-| 74 | `b362044a6f` | Full-audit corrective hardening | Fix eval report target-model syntax | Audit correction / retained |
-| 75 | `55da13b154` | Full-audit corrective hardening | Complete app Eval legacy engine surface | Audit correction / retained |
-| 76 | `4454687413` | Full-audit corrective hardening | Report actual eval process memory | Audit correction / retained |
-| 77 | `c6a3dc6e0a` | Full-audit corrective hardening | Remove legacy fabricated eval telemetry fallbacks | Audit correction / retained |
-| 78 | `d17252a65d` | Full-audit corrective hardening | Make SWE patch verification cross-platform | Audit correction / retained |
-| 79 | `52cacb5a1e` | Full-audit corrective hardening | Make live eval stream import-safe off MLX | Audit correction / retained |
-| 80 | `3450925244` | Full-audit corrective hardening | Make RSI memory module import-safe off MLX | Audit correction / retained |
-| 81 | `b9e114b0e7` | Full-audit corrective hardening | Commit non-MLX Phase 3 only after persisted artifact proof | Audit correction / retained |
-| 82 | `b6b1a9282f` | Full-audit corrective hardening | Roll back GGUF training on cancellation | Audit correction / retained |
-| 83 | `d485a66b55` | Full-audit corrective hardening | Roll back BitNet training on cancellation | Audit correction / retained |
-| 84 | `cb7209f506` | Full-audit corrective hardening | Restore GGUF PEFT state on cancellation | Audit correction / retained |
-| 85 | `5ea3712b99` | Full-audit corrective hardening | Restore BitNet PEFT state on cancellation | Audit correction / retained |
-| 86 | `d0f2cd9b97` | Full-audit corrective hardening | Require proven nonzero media LoRA updates | Audit correction / retained |
-| 87 | `0cefd44394` | Full-audit corrective hardening | Roll back native media training on cancellation | Audit correction / retained |
-| 88 | `7bafce3e7c` | Full-audit corrective hardening | Lock full branch audit regressions | Audit correction / retained |
-| 89 | `1c9b25b89a` | Full-audit corrective hardening | Use native tokenizers for cross-platform Eval context accounting | Audit correction / retained |
-| 90 | `04c437b3a1` | Full-audit corrective hardening | Commit Learn and RSI Phase 3 markers atomically | Audit correction / retained |
-| 91 | `cbace46be4` | Full-audit corrective hardening | Keep controller adapter backup until successful return | Audit correction / retained |
-| 92 | `0c6b4672e1` | Full-audit corrective hardening | Keep GGUF rollback backups until successful return | Audit correction / retained |
-| 93 | `84d7867b93` | Full-audit corrective hardening | Keep BitNet rollback backup until successful return | Audit correction / retained |
-| 94 | `9990af4ab0` | Full-audit corrective hardening | Make Eval memory-limit interrupt cross-platform | Audit correction / retained |
-| 95 | `39919e0a4f` | Full-audit corrective hardening | Extend full branch audit contracts | Audit correction / retained |
-| 96 | `c7deb15a85` | Full-audit corrective hardening | Correct full branch audit contract invariants | Audit correction / retained |
-| 97 | `f267e44bd1` | Full-audit corrective hardening | Fix full branch audit test regressions | Audit correction / retained |
-| 98 | `ce26510b50` | Full-audit corrective hardening | Return real MLX Phase 3 parameter drift | Audit correction / retained |
+| 1 | `e53168a6e1` | RAM / bounded Phase 3 | Port MLX training RAM safety onto current feature branch | Retained; reconciled with later commits where applicable |
+| 2 | `70c89bdbc5` | RAM / bounded Phase 3 | Port background MLX consolidation RAM cleanup | Retained; reconciled with later commits where applicable |
+| 3 | `a9ba9c00c3` | RAM / bounded Phase 3 | Keep EWC rollback compatible with bounded Phase 3 | Retained; reconciled with later commits where applicable |
+| 4 | `35bd3884bb` | RAM / bounded Phase 3 | Port bounded Phase 3 without losing current Learn RSI semantics | Retained; reconciled with later commits where applicable |
+| 5 | `d8f0b719b5` | RAM / bounded Phase 3 | Add backend-neutral training memory guard | Retained; reconciled with later commits where applicable |
+| 6 | `86526c674a` | RAM / bounded Phase 3 | Guard app awake consolidation memory on every backend | Retained; reconciled with later commits where applicable |
+| 7 | `22234eafbe` | RAM / bounded Phase 3 | Guard app Learn and RSI memory across active backends | Retained; reconciled with later commits where applicable |
+| 8 | `3e49d834fd` | RAM / bounded Phase 3 | Release GGUF QLoRA training memory deterministically | Retained; reconciled with later commits where applicable |
+| 9 | `0ce83994e8` | RAM / bounded Phase 3 | Release BitNet rebuild training memory deterministically | Retained; reconciled with later commits where applicable |
+| 10 | `6914ddbee3` | RAM / bounded Phase 3 | Release controller PEFT training memory after updates | Retained; reconciled with later commits where applicable |
+| 11 | `f162b3bcb1` | RAM / bounded Phase 3 | Fix Learn RSI EWC and RAM telemetry accuracy | Retained; reconciled with later commits where applicable |
+| 12 | `1829b2625a` | RAM / bounded Phase 3 | Drop GGUF training graph before adapter conversion | Retained; reconciled with later commits where applicable |
+| 13 | `9e40426508` | RAM / bounded Phase 3 | Drop BitNet training models before I2_S conversion | Retained; reconciled with later commits where applicable |
+| 14 | `7a063763e0` | RAM / bounded Phase 3 | Avoid duplicate adapter tensors during awake consolidation | Retained; reconciled with later commits where applicable |
+| 15 | `6c9b6fd0ae` | RAM / bounded Phase 3 | Make Phase 3 telemetry cumulative across all targets | Retained; reconciled with later commits where applicable |
+| 16 | `915f371a27` | RAM / bounded Phase 3 | Drop final GGUF training references before conversion | Retained; reconciled with later commits where applicable |
+| 17 | `ebb59dde3b` | RAM / bounded Phase 3 | Drop final BitNet training references before conversion | Retained; reconciled with later commits where applicable |
+| 18 | `4a0d3d9fc7` | RAM / bounded Phase 3 | Drop final controller training references after updates | Retained; reconciled with later commits where applicable |
+| 19 | `ab72296d7e` | RAM / bounded Phase 3 | Keep cumulative Phase 3 telemetry bounded in memory | Retained; reconciled with later commits where applicable |
+| 20 | `c118cef33d` | App Eval / cross-platform foundation | Add app eval cross-platform runtime bridge | Retained; reconciled with later commits where applicable |
+| 21 | `7883826d47` | App Eval / cross-platform foundation | Wire app eval bridge into canonical suite | Retained; reconciled with later commits where applicable |
+| 22 | `3c6e335093` | App Eval / cross-platform foundation | Keep MLX legacy wrapper off non-MLX app evals | Retained; reconciled with later commits where applicable |
+| 23 | `bb782976f7` | App Eval / cross-platform foundation | Add isolated app eval subprocess runner | Retained; reconciled with later commits where applicable |
+| 24 | `52f93dcc6c` | App Eval / cross-platform foundation | Add text-model Eval window to desktop app | Retained; reconciled with later commits where applicable |
+| 25 | `5df88c336a` | App Eval / cross-platform foundation | Wire Eval window into desktop app | Retained; reconciled with later commits where applicable |
+| 26 | `621220ec93` | App Eval / cross-platform foundation | Ship eval suite in standalone app bundles | Retained; reconciled with later commits where applicable |
+| 27 | `9450f879f2` | App Eval / cross-platform foundation | Add standalone eval runtime dependencies | Retained; reconciled with later commits where applicable |
+| 28 | `1790718ab9` | App Eval / cross-platform foundation | Declare cross-platform app eval dependencies | Retained; reconciled with later commits where applicable |
+| 29 | `7e1ebd485a` | App Eval / cross-platform foundation | Switch standalone eval default to Bonsai 2 | Retained; reconciled with later commits where applicable |
+| 30 | `dee1cab77c` | App Eval / cross-platform foundation | Report actual Bonsai 2 or selected app eval model | Retained; reconciled with later commits where applicable |
+| 31 | `2f6b3993ba` | App Eval / cross-platform foundation | Fix app eval dataset and RSI memory wiring | Retained; reconciled with later commits where applicable |
+| 32 | `55095ca10f` | App Eval / cross-platform foundation | Align Phase 3 integrity with current memory queue schema | Retained; reconciled with later commits where applicable |
+| 33 | `75f4319c6a` | App Eval / cross-platform foundation | Make non-MLX eval pause between Pro branches | Retained; reconciled with later commits where applicable |
+| 34 | `df8e3402a5` | App Eval / cross-platform foundation | Prevent orphaned eval workers on app close | Retained; reconciled with later commits where applicable |
+| 35 | `cf73e9f56e` | App Eval / cross-platform foundation | Enforce app eval RAM limit inside runner | Retained; reconciled with later commits where applicable |
+| 36 | `2db156fa41` | App Eval / cross-platform foundation | Make Eval window output truly live | Retained; reconciled with later commits where applicable |
+| 37 | `1ea2eb8feb` | App Eval / cross-platform foundation | Clamp app eval to actual backend context | Retained; reconciled with later commits where applicable |
+| 38 | `58b4579bd8` | App Eval / cross-platform foundation | Use active backend adapter path throughout app eval | Retained; reconciled with later commits where applicable |
+| 39 | `abd9ff4eb1` | App Eval / cross-platform foundation | Allow isolated app-eval GGUF adapter state | Retained; reconciled with later commits where applicable |
+| 40 | `4e71c953bc` | App Eval / cross-platform foundation | Allow isolated app-eval BitNet learned state | Retained; reconciled with later commits where applicable |
+| 41 | `bc52e23a81` | App Eval / cross-platform foundation | Allow isolated app-eval controller adapter state | Retained; reconciled with later commits where applicable |
+| 42 | `7408f1e104` | App Eval / cross-platform foundation | Separate app eval learned state from shared runtimes | Retained; reconciled with later commits where applicable |
+| 43 | `155ea77a38` | App Eval / cross-platform foundation | Isolate MLX app-eval adapter state | Retained; reconciled with later commits where applicable |
+| 44 | `e2dcdcb197` | App Eval / cross-platform foundation | Lock desktop Eval integration contracts | Retained; reconciled with later commits where applicable |
+| 45 | `fae826327b` | App Eval / cross-platform foundation | Allow verified app backends through eval orchestrator | Retained; reconciled with later commits where applicable |
+| 46 | `255771ba49` | Eval UX / safety / contracts | Make top Eval button label explicit | Retained; reconciled with later commits where applicable |
+| 47 | `d892c2dc1a` | Eval UX / safety / contracts | Label top context control explicitly | Retained; reconciled with later commits where applicable |
+| 48 | `5ec5b7ed2f` | Eval UX / safety / contracts | Fail app eval closed on GGUF runtime errors | Retained; reconciled with later commits where applicable |
+| 49 | `2292c09170` | Eval UX / safety / contracts | Lock Eval run settings while active | Retained; reconciled with later commits where applicable |
+| 50 | `78b3659da2` | Eval UX / safety / contracts | Install Context Limit and Eval controls explicitly at app startup | Retained; reconciled with later commits where applicable |
+| 51 | `e543c6641f` | Eval UX / safety / contracts | Keep top Context control compatible with current chat arguments | Retained; reconciled with later commits where applicable |
+| 52 | `103fc7a26f` | Eval UX / safety / contracts | Make Eval cancel safe during model load | Retained; reconciled with later commits where applicable |
+| 53 | `d6fec5e7aa` | Eval UX / safety / contracts | Lock Eval Context and Mem Limit top-bar contracts | Retained; reconciled with later commits where applicable |
+| 54 | `e2d83ea48c` | Eval UX / safety / contracts | Keep app model controls exclusive during Eval | Retained; reconciled with later commits where applicable |
+| 55 | `601dbbf689` | Eval UX / safety / contracts | Keep conversation teach backend identity accurate | Retained; reconciled with later commits where applicable |
+| 56 | `94d577e6fe` | Eval UX / safety / contracts | Verify Learn and RSI consolidation in their own tables | Retained; reconciled with later commits where applicable |
+| 57 | `d360d5d755` | Eval UX / safety / contracts | Lock single Context and Mem Limit controls | Retained; reconciled with later commits where applicable |
+| 58 | `1ee980fe67` | Diverged-branch reconciliation | Port answer-blind RSI feedback without old KV regressions | Retained; reconciled with later commits where applicable |
+| 59 | `50a4f356ab` | Diverged-branch reconciliation | Synchronize MLX work before pressure cache release | Retained; reconciled with later commits where applicable |
+| 60 | `40990c6184` | Diverged-branch reconciliation | Preserve grammar-guided drafter diagnostics | Retained; reconciled with later commits where applicable |
+| 61 | `3c06189f56` | Diverged-branch reconciliation | Preserve LIF diagnostic entropy helpers | Retained; reconciled with later commits where applicable |
+| 62 | `8a40007193` | Diverged-branch reconciliation | Preserve OGP daemon lifecycle telemetry | Retained; reconciled with later commits where applicable |
+| 63 | `a6e147e8f8` | Diverged-branch reconciliation | Lock best-of-diverged-branches reconciliation | Retained; reconciled with later commits where applicable |
+| 64 | `2c51d357c3` | Diverged-branch reconciliation | Remove BRANCH_GUARD_GGUF_LEARNING_20260918.txt | Intentional obsolete-guard cleanup |
+| 65 | `90b6946c66` | Diverged-branch reconciliation | Remove ACTIVE_SESSION_GUARD_2026-09-18_GGUF_ONLY.md | Intentional obsolete-guard cleanup |
+| 66 | `9796f421dd` | Full-audit corrective hardening | Keep Phase 3B compatible with read-only GGUF tokenizer facade | Retained; reconciled with later commits where applicable |
+| 67 | `b7da23ecec` | Full-audit corrective hardening | Measure macOS training/eval memory by physical footprint | Retained; reconciled with later commits where applicable |
+| 68 | `1661aa5949` | Full-audit corrective hardening | Use macOS physical footprint in Eval UI memory telemetry | Retained; reconciled with later commits where applicable |
+| 69 | `358e22904e` | Full-audit corrective hardening | Enforce Eval RAM limit with macOS physical footprint | Retained; reconciled with later commits where applicable |
+| 70 | `8a53447c1e` | Full-audit corrective hardening | Clean app Eval Phase 3 memory on failure | Retained; reconciled with later commits where applicable |
+| 71 | `04fb103f3e` | Full-audit corrective hardening | Restrict all MLX LoRA trainables to adapter tensors | Retained; reconciled with later commits where applicable |
+| 72 | `7aef6c6370` | Full-audit corrective hardening | Make MLX LoRA training transactional | Retained; reconciled with later commits where applicable |
+| 73 | `890b6e01c8` | Full-audit corrective hardening | Make controller PEFT training transactional | Retained; reconciled with later commits where applicable |
+| 74 | `e34da4f1c5` | Full-audit corrective hardening | Apply one Context budget across all text backends | Retained; reconciled with later commits where applicable |
+| 75 | `39e11b35ac` | Full-audit corrective hardening | Close MLX adapter persistence cancellation window | Retained; reconciled with later commits where applicable |
+| 76 | `b362044a6f` | Full-audit corrective hardening | Fix eval report target-model syntax | Retained; reconciled with later commits where applicable |
+| 77 | `55da13b154` | Full-audit corrective hardening | Complete app Eval legacy engine surface | Retained; reconciled with later commits where applicable |
+| 78 | `4454687413` | Full-audit corrective hardening | Report actual eval process memory | Retained; reconciled with later commits where applicable |
+| 79 | `c6a3dc6e0a` | Full-audit corrective hardening | Remove legacy fabricated eval telemetry fallbacks | Retained; reconciled with later commits where applicable |
+| 80 | `d17252a65d` | Full-audit corrective hardening | Make SWE patch verification cross-platform | Retained; reconciled with later commits where applicable |
+| 81 | `52cacb5a1e` | Full-audit corrective hardening | Make live eval stream import-safe off MLX | Retained; reconciled with later commits where applicable |
+| 82 | `3450925244` | Full-audit corrective hardening | Make RSI memory module import-safe off MLX | Retained; reconciled with later commits where applicable |
+| 83 | `b9e114b0e7` | Full-audit corrective hardening | Commit non-MLX Phase 3 only after persisted artifact proof | Retained; reconciled with later commits where applicable |
+| 84 | `b6b1a9282f` | Full-audit corrective hardening | Roll back GGUF training on cancellation | Retained; reconciled with later commits where applicable |
+| 85 | `d485a66b55` | Full-audit corrective hardening | Roll back BitNet training on cancellation | Retained; reconciled with later commits where applicable |
+| 86 | `cb7209f506` | Full-audit corrective hardening | Restore GGUF PEFT state on cancellation | Retained; reconciled with later commits where applicable |
+| 87 | `5ea3712b99` | Full-audit corrective hardening | Restore BitNet PEFT state on cancellation | Retained; reconciled with later commits where applicable |
+| 88 | `d0f2cd9b97` | Full-audit corrective hardening | Require proven nonzero media LoRA updates | Retained; reconciled with later commits where applicable |
+| 89 | `0cefd44394` | Full-audit corrective hardening | Roll back native media training on cancellation | Retained; reconciled with later commits where applicable |
+| 90 | `7bafce3e7c` | Full-audit corrective hardening | Lock full branch audit regressions | Retained; reconciled with later commits where applicable |
+| 91 | `1c9b25b89a` | Full-audit corrective hardening | Use native tokenizers for cross-platform Eval context accounting | Retained; reconciled with later commits where applicable |
+| 92 | `04c437b3a1` | Full-audit corrective hardening | Commit Learn and RSI Phase 3 markers atomically | Retained; reconciled with later commits where applicable |
+| 93 | `cbace46be4` | Full-audit corrective hardening | Keep controller adapter backup until successful return | Retained; reconciled with later commits where applicable |
+| 94 | `0c6b4672e1` | Full-audit corrective hardening | Keep GGUF rollback backups until successful return | Retained; reconciled with later commits where applicable |
+| 95 | `84d7867b93` | Full-audit corrective hardening | Keep BitNet rollback backup until successful return | Retained; reconciled with later commits where applicable |
+| 96 | `9990af4ab0` | Full-audit corrective hardening | Make Eval memory-limit interrupt cross-platform | Retained; reconciled with later commits where applicable |
+| 97 | `39919e0a4f` | Full-audit corrective hardening | Extend full branch audit contracts | Retained; reconciled with later commits where applicable |
+| 98 | `c7deb15a85` | Full-audit corrective hardening | Correct full branch audit contract invariants | Retained; reconciled with later commits where applicable |
+| 99 | `f267e44bd1` | Full-audit corrective hardening | Fix full branch audit test regressions | Retained; reconciled with later commits where applicable |
+| 100 | `ce26510b50` | Full-audit corrective hardening | Return real MLX Phase 3 parameter drift | Retained; reconciled with later commits where applicable |
+| 101 | `1e58681e04` | Audit / Gemini documentation | Document full feature branch audit and reconciliation | Documentation only / retained |
+| 102 | `64cfedc75b` | Audit / Gemini documentation | Document Gemini verification failures and better practice | Documentation only / retained |
+| 103 | `9746d152dc` | Audit / Gemini documentation | Update audit report for concurrent final code commits | Documentation only / retained |
+| 104 | `fb9b454653` | Audit / Gemini documentation | Add final master diff +/- ledger to branch audit | Documentation only / retained |
+| 105 | `9d3b583f20` | End-to-end trace / RSI resume | Keep RSI resume question-free and preserve self traces | Retained; reconciled with later commits where applicable |
+| 106 | `bbe79caadb` | End-to-end trace / RSI resume | Lock end-to-end branch call chain and RSI resume semantics | Retained; reconciled with later commits where applicable |
+| 107 | `d039972963` | End-to-end trace / RSI resume | Correct media call-chain audit assertion | Retained; reconciled with later commits where applicable |
+| 108 | `5acdd64d1e` | End-to-end trace / RSI resume | Document end-to-end call chain and final RSI resume audit | Retained; reconciled with later commits where applicable |
+| 109 | `c261894ae2` | Focused executable audit / telemetry | Add focused executable audit and immutable source evidence (no release) | Retained; reconciled with later commits where applicable |
+| 110 | `c8cd5e7863` | Focused executable audit / telemetry | Use a valid job-level audit output path | Retained; reconciled with later commits where applicable |
+| 111 | `1231f735af` | Focused executable audit / telemetry | Publish focused audit artifacts from a visible output directory | Retained; reconciled with later commits where applicable |
+| 112 | `3c17c359fd` | Focused executable audit / telemetry | Use shared physical-footprint telemetry in Phase 3 | Retained; reconciled with later commits where applicable |
+| 113 | `9a84eea242` | Exact diff documentation | Add exact annotated master-to-feature diff appendix | Documentation only / retained |
+| 114 | `9db6606ddf` | Exact diff documentation | Sync audit doc to exact annotated diff snapshot | Documentation only / retained |
+| 115 | `b092e894a3` | Exact diff documentation | Add line-by-line diff annotations part 1 of 4 | Documentation only / retained |
+| 116 | `1fdbc76ed2` | Exact diff documentation | Add line-by-line diff annotations part 2 of 4 | Documentation only / retained |
+| 117 | `264402036b` | Exact diff documentation | Add line-by-line diff annotations part 3 of 4 | Documentation only / retained |
+| 118 | `313395be4f` | Exact diff documentation | Add line-by-line diff annotations part 4 of 4 | Documentation only / retained |
+| 119 | `d8b164ae4a` | Final documentation correctness | Correct stale Phase 1 greedy invariant comment | Comment-only policy clarification |
 
 ## 10. Exact end-to-end call-chain trace
 
@@ -718,6 +736,32 @@ The largest additions are new **adapter/GUI/contract modules**, not replacements
 - large edits are concentrated where the requested behavior actually lives: bounded Phase 3, backend training transactions, cross-platform Eval bridge/UI and regression contracts.
 
 The only deletions of whole files are the two obsolete branch/session guard documents.
+
+## Exact per-line diff annotations
+
+The frozen implementation/audit compare `master → 3c17c359fd8d0a72e9ea2cdb3d79630a9e93324b` contains **5,818 raw added/deleted lines**. The hunk-level appendix reproduces every one verbatim:
+
+`docs/FULL_MASTER_TO_FEATURE_DIFF_ANNOTATED_2026-09-19.md`
+
+To satisfy the stricter requirement that **each individual `+`/`-` line be separately written and explained**, the annotations are split across four size-safe files:
+
+1. `docs/FULL_MASTER_TO_FEATURE_DIFF_LINE_ANNOTATIONS_PART_1_OF_4_2026-09-19.md`
+2. `docs/FULL_MASTER_TO_FEATURE_DIFF_LINE_ANNOTATIONS_PART_2_OF_4_2026-09-19.md`
+3. `docs/FULL_MASTER_TO_FEATURE_DIFF_LINE_ANNOTATIONS_PART_3_OF_4_2026-09-19.md`
+4. `docs/FULL_MASTER_TO_FEATURE_DIFF_LINE_ANNOTATIONS_PART_4_OF_4_2026-09-19.md`
+
+A direct count of the annotation bullets is **5,818/5,818**, matching the raw frozen diff exactly.
+
+### Post-freeze source delta
+
+After that frozen implementation snapshot, all subsequent commits before this documentation update were audit/documentation commits **except one comment-only source correction**:
+
+```diff
+- Phase 1 is the unchanged greedy baseline.
++ Phase 1 uses the current single-pass T=0.55 sampling policy; the older greedy baseline is historical.
+```
+
+That correction changes no sampling code. It aligns the source comment with the already-active T=0.55 policy. The later documentation files cannot recursively contain the diff that adds themselves; this self-reference boundary is explicit rather than hidden.
 
 ## Exact raw diff appendix
 
