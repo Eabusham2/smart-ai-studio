@@ -103,7 +103,18 @@ class AppEvalEngineAdapter:
         info = dict(config.get("model_info") or {})
         self.model_info = info
         self.backend_key = ""
-        self.pro = ProReasoningEngine(settings=get_settings())
+
+        # This process is eval-only, so give MLX a run-local adapter without
+        # changing the normal app's persistent adapter or native runtime/cache.
+        settings = get_settings()
+        settings.lora_adapter_path = os.path.join(
+            run_dir, "backend_state", "mlx", "adapters.safetensors"
+        )
+        settings.database_path = os.path.join(run_dir, "memory.db")
+        self.pro = ProReasoningEngine(
+            settings=settings,
+            lora_adapter_path=settings.lora_adapter_path,
+        )
 
         model_path = _resolve_cached_path(info)
         result = self.pro.load_model(
