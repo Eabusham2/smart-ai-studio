@@ -258,11 +258,11 @@ class MLXReasoningBackend:
                 if hasattr(layer, "self_attn"):
                     if hasattr(layer.self_attn, "q_proj"):
                         layer.self_attn.q_proj = LoRALinear.from_base(layer.self_attn.q_proj, r=r, scale=scale)
-                        layer.self_attn.q_proj.unfreeze()
+                        layer.self_attn.q_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                         lora_count += 1
                     if hasattr(layer.self_attn, "v_proj"):
                         layer.self_attn.v_proj = LoRALinear.from_base(layer.self_attn.v_proj, r=r, scale=scale)
-                        layer.self_attn.v_proj.unfreeze()
+                        layer.self_attn.v_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                         lora_count += 1
                 elif hasattr(layer, "linear_attn") and hasattr(layer.linear_attn, "out_proj"):
                     layer.linear_attn.out_proj = LoRALinear.from_base(layer.linear_attn.out_proj, r=r, scale=scale)
