@@ -5310,8 +5310,15 @@ assert glyph_res["invariants_passed"] == True
 
 
 
-# Additive text-model evaluation window. Installed only after the GUI class exists,
-# so it can wrap top-bar/theme/switch methods without rewriting the main app class.
+# Top-level runtime controls are installed after the GUI class exists so they
+# wrap the normal app additively instead of rewriting the main class.
+try:
+    from core.gui_generation_cap import install_gui_generation_cap
+    install_gui_generation_cap()
+except Exception:
+    pass
+
+# Text-model evaluation window. This wraps the already context-enabled top bar.
 try:
     from core.gui_eval_panel import install_gui_eval_panel
     install_gui_eval_panel()
