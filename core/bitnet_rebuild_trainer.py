@@ -445,6 +445,20 @@ class BitNetRebuildTrainer:
                 max_shard_size="100GB",
             )
             tokenizer.save_pretrained(tmp_merged)
+
+            # Microsoft's converter is file-based. Release both the PEFT graph and
+            # merged BF16 model before conversion so their memory cannot overlap.
+            try:
+                optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            before.clear()
+            del optimizer
+            del merged
+            del model
+            model = None
+            release_training_memory()
+
             self._convert_merged_checkpoint(tmp_merged, tmp_deploy)
 
             if os.path.isdir(peft_backup):
@@ -493,7 +507,8 @@ class BitNetRebuildTrainer:
             except Exception:
                 pass
             try:
-                del model
+                if model is not None:
+                    del model
             except Exception:
                 pass
             release_training_memory()
