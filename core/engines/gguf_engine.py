@@ -193,8 +193,9 @@ class GGUFReasoningBackend:
             if os.path.isdir(peft_backup):
                 shutil.rmtree(peft_backup, ignore_errors=True)
             return dict(self.adapters), float(drift)
-        except Exception:
-            # Roll back the adapter atomically and restore inference. Never leave a
+        except BaseException:
+            # Roll back the adapter atomically and restore inference. Cancellation
+            # (KeyboardInterrupt) is a transaction failure too.
             # failed consolidation as the live parameter state.
             if os.path.isfile(backup_path):
                 os.replace(backup_path, self.adapter_path)
