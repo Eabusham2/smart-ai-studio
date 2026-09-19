@@ -167,7 +167,7 @@ def test_end_to_end_call_chain_is_wired_through_existing_components():
     assert "self.multimodal.stream_solve(full_msg" in app
     assert "self.learner.run_learning_session(" in app
     assert "iterator = self.app.engine.stream_solve(" in media
-    assert "self.learning.train" in media or "self.learning.update" in media
+    assert "self.learning.learn" in media
     assert init.index("install_awake_auto_learning") < init.index("install_full_context_hardening")
     assert "def run_learning_session" in learner
     assert "self.consolidate_parameters(" in learner
