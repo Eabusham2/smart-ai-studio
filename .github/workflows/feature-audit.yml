@@ -1,0 +1,100 @@
+name: Focused feature audit (no release)
+
+on:
+  push:
+    branches: [fix/real-benchmarks-final-32k]
+    paths:
+      - .github/workflows/feature-audit.yml
+      - tools/feature_audit.py
+      - tests/audit/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: focused-feature-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: 06390e5357a07f80a8089ac28fc16c75461a48a6
+      AUDIT_OUTPUT: ${{ runner.temp }}/feature-audit-evidence
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Preserve exact source, baseline, history and full diff
+        shell: bash
+        run: |
+          mkdir -p "$AUDIT_OUTPUT"
+          git archive --format=zip HEAD > "$AUDIT_OUTPUT/feature-source.zip"
+          git archive --format=zip "$BASE_SHA" > "$AUDIT_OUTPUT/master-source.zip"
+          git bundle create "$AUDIT_OUTPUT/history.bundle" HEAD refs/remotes/origin/master
+          git diff --binary --no-ext-diff "$BASE_SHA" HEAD > "$AUDIT_OUTPUT/master-to-feature.diff"
+          git log --reverse --format=fuller --stat --patch "$BASE_SHA"..HEAD > "$AUDIT_OUTPUT/sequential-commits.patch"
+          git diff --numstat "$BASE_SHA" HEAD > "$AUDIT_OUTPUT/numstat.tsv"
+          python - <<'PY'
+          import datetime, json, os, platform, subprocess
+          from pathlib import Path
+          out = Path(os.environ['AUDIT_OUTPUT'])
+          manifest = {
+              'head': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+              'base': os.environ['BASE_SHA'],
+              'python': platform.python_version(),
+              'platform': platform.platform(),
+              'utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'scope': 'Syntax and focused source contracts only; no native-model certification',
+          }
+          (out/'manifest.json').write_text(json.dumps(manifest, indent=2))
+          PY
+      - name: Compile every tracked Python source without importing models
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          paths = subprocess.check_output(['git','ls-files','-z','*.py']).decode().split('\0')
+          checked, errors = [], []
+          for path in filter(None, paths):
+              try:
+                  compile(Path(path).read_bytes(), path, 'exec')
+                  checked.append(path)
+              except Exception as exc:
+                  errors.append({'path':path,'type':type(exc).__name__,'error':str(exc)})
+          report = {'checked':len(checked)+len(errors),'passed':len(checked),'errors':errors}
+          Path(os.environ['AUDIT_OUTPUT'],'syntax.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          sys.exit(bool(errors))
+          PY
+      - name: Install focused test runner only
+        if: always()
+        run: python -m pip install pytest
+      - name: Execute existing audit contracts
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest --noconftest -o addopts='' -q \
+            tests/unit/test_app_eval_integration_contract.py \
+            tests/unit/test_diverged_branch_reconciliation_contract.py \
+            tests/unit/test_full_branch_audit_contract.py \
+            --junitxml="$AUDIT_OUTPUT/contracts.xml" 2>&1 | tee "$AUDIT_OUTPUT/contracts.log"
+      - name: Upload audit evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-audit-${{ github.sha }}
+          path: ${{ env.AUDIT_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 7
