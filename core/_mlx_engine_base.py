@@ -259,21 +259,21 @@ class MLXReasoningBackend:
                 # MLP down_proj
                 if hasattr(layer, "mlp") and hasattr(layer.mlp, "down_proj"):
                     layer.mlp.down_proj = LoRALinear.from_base(layer.mlp.down_proj, r=r, scale=scale)
-                    layer.mlp.down_proj.unfreeze()
+                    layer.mlp.down_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                     lora_count += 1
                 # Attention projections
                 if hasattr(layer, "self_attn"):
                     if hasattr(layer.self_attn, "q_proj"):
                         layer.self_attn.q_proj = LoRALinear.from_base(layer.self_attn.q_proj, r=r, scale=scale)
-                        layer.self_attn.q_proj.unfreeze()
+                        layer.self_attn.q_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                         lora_count += 1
                     if hasattr(layer.self_attn, "v_proj"):
                         layer.self_attn.v_proj = LoRALinear.from_base(layer.self_attn.v_proj, r=r, scale=scale)
-                        layer.self_attn.v_proj.unfreeze()
+                        layer.self_attn.v_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                         lora_count += 1
                 elif hasattr(layer, "linear_attn") and hasattr(layer.linear_attn, "out_proj"):
                     layer.linear_attn.out_proj = LoRALinear.from_base(layer.linear_attn.out_proj, r=r, scale=scale)
-                    layer.linear_attn.out_proj.unfreeze()
+                    layer.linear_attn.out_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
                     lora_count += 1
 
         trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
@@ -281,10 +281,7 @@ class MLXReasoningBackend:
         return trainable_params
 
     def compute_mlx_fisher(self, anchor_texts: List[str]) -> Dict[str, Any]:
-        """
-        Computes diagonal Fisher Information matrix on Apple Silicon unified memory
-        using MLX automatic differentiation (mx.grad).
-        """
+        """Compute diagonal Fisher without retaining prior-anchor autograd graphs."""
         if not self.is_mlx_available or self.model is None or self.tokenizer is None:
             try:
                 import mlx.core as mx
@@ -292,6 +289,7 @@ class MLXReasoningBackend:
             except Exception:
                 return {"mlx_layer_0.weight": [0.01 for _ in range(10)]}
 
+        import gc
         import mlx.core as mx
         import mlx.nn as nn
         import mlx.utils
@@ -302,6 +300,8 @@ class MLXReasoningBackend:
             trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
 
         fisher_matrix = {k: mx.zeros_like(v) for k, v in trainable_params.items()}
+        if fisher_matrix:
+            mx.eval(*fisher_matrix.values())
 
         def loss_fn(model, inputs, targets):
             logits = model(inputs)
@@ -310,25 +310,60 @@ class MLXReasoningBackend:
             return mx.mean(nn.losses.cross_entropy(logits, targets))
 
         grad_fn = mx.grad(loss_fn)
-
         valid_anchors = 0
-        for text in anchor_texts:
-            tokens = self.tokenizer.encode(text)
-            if len(tokens) < 2:
-                continue
-            inputs = mx.array([tokens])
-            grads = grad_fn(self.model, inputs, inputs)
-            flat_grads = dict(mlx.utils.tree_flatten(grads))
-            for k, g in flat_grads.items():
-                if k in fisher_matrix:
-                    fisher_matrix[k] = fisher_matrix[k] + (g ** 2)
-            valid_anchors += 1
+        was_training = bool(getattr(self.model, "training", False))
 
-        if valid_anchors > 0:
-            for k in fisher_matrix:
-                fisher_matrix[k] = fisher_matrix[k] / valid_anchors
+        try:
+            self.model.train()
+            for text in anchor_texts:
+                tokens = self.tokenizer.encode(text)
+                if len(tokens) < 2:
+                    continue
 
-        return fisher_matrix
+                inputs = mx.array([tokens])
+                grads = grad_fn(self.model, inputs, inputs)
+                flat_grads = dict(mlx.utils.tree_flatten(grads))
+                if flat_grads:
+                    mx.eval(*flat_grads.values())
+
+                for k, g in flat_grads.items():
+                    if k not in fisher_matrix:
+                        continue
+                    g = mx.stop_gradient(g)
+                    value = fisher_matrix[k] + (g * g)
+                    mx.eval(value)
+                    fisher_matrix[k] = mx.stop_gradient(value)
+
+                valid_anchors += 1
+                grads = None
+                flat_grads = None
+                inputs = None
+                gc.collect(2)
+                try:
+                    mx.clear_cache()
+                except Exception:
+                    pass
+
+            if valid_anchors > 0:
+                inv = 1.0 / float(valid_anchors)
+                for k in list(fisher_matrix):
+                    value = fisher_matrix[k] * inv
+                    mx.eval(value)
+                    fisher_matrix[k] = mx.stop_gradient(value)
+
+            return fisher_matrix
+        finally:
+            if not was_training:
+                try:
+                    self.model.eval()
+                except Exception:
+                    pass
+            gc.collect(2)
+            try:
+                mx.clear_cache()
+            except Exception:
+                pass
+
 
     def count_tokens(self, messages: List[Dict[str, str]]) -> int:
         """Calculates total token length of conversation turns."""
@@ -403,6 +438,8 @@ class MLXReasoningBackend:
 
             return ce_loss
 
+        was_training = bool(getattr(self.model, "training", False))
+        self.model.train()
         loss_and_grad_fn = nn.value_and_grad(self.model, ewc_loss_fn)
 
         for step in range(steps):
@@ -418,6 +455,19 @@ class MLXReasoningBackend:
                 loss, grads = loss_and_grad_fn(self.model, inputs, inputs)
                 optimizer.update(self.model, grads)
                 mx.eval(self.model.parameters(), optimizer.state)
+                loss = None
+                grads = None
+                inputs = None
+                try:
+                    mx.clear_cache()
+                except Exception:
+                    pass
+
+        if not was_training:
+            try:
+                self.model.eval()
+            except Exception:
+                pass
 
         updated_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
         w_final_flat = mx.concat([mx.reshape(p, (-1,)) for p in updated_params.values()])
