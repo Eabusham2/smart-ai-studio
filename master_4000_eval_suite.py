@@ -1,5 +1,6 @@
 """Canonical entry point for the merged 4,014-item evaluation suite."""
 from eval._master_4000_base import *
+import eval.app_cross_platform_bridge as app_cross_platform_bridge
 import eval.code_prompt_hardening as code_prompt_hardening
 import eval.deepswe_blind_pro_selector as deepswe_blind_pro_selector
 import eval.deepswe_dataset_override as deepswe_dataset_override
@@ -94,6 +95,12 @@ install_rsi_generation_memory_hardening(
 capture_before_historical_merge(phase4_pro_rsi)
 install_historical_good_merge(phase4_pro_rsi)
 enforce_after_historical_merge(phase4_pro_rsi)
+
+# Desktop Eval window only: keep all benchmark/data/scoring logic above, but let
+# the production app backend own inference/training on non-MLX Windows/Linux/Unix.
+# The bridge is a no-op for normal CLI runs and for Apple MLX it preserves the
+# existing native eval path.
+app_cross_platform_bridge.install(master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)
 
 # Persist completed RSI items across Ctrl+C/restarts. This wraps the final
 # Phase-1-miss-only RSI function, so passed Phase-1 questions and DialogueRecall
