@@ -453,10 +453,17 @@ class BitNetRebuildTrainer:
             except Exception:
                 pass
             before.clear()
+            params.clear()
+            encoded = None
+            prefix_ids = None
+            labels = None
+            out = None
+            loss = None
             del optimizer
             del merged
             del model
             model = None
+            tokenizer = None
             release_training_memory()
 
             self._convert_merged_checkpoint(tmp_merged, tmp_deploy)
