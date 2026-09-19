@@ -230,54 +230,66 @@ def install(p4: Any) -> None:
             except Exception:
                 backup_path = ""
 
+        # New bounded Phase-3 code handles completion-only target selection itself
+        # and consumes this EWC context directly. Older Phase-3 implementations keep
+        # the historical tokenizer/loss monkeypatch path below.
+        bounded = callable(getattr(p4, "_phase3_bounded_gradients", None))
         original_tokenizer = self.engine.tokenizer
         mask_state: Dict[str, Any] = {"loss_start": 0, "completion_mask_active": False}
         proxy = _CompletionWindowTokenizer(original_tokenizer, mask_state)
         original_ce = p4.nn.losses.cross_entropy
         original_value_and_grad = p4.nn.value_and_grad
 
-        def completion_only_cross_entropy(logits, targets, *args, **kwargs):
-            losses = original_ce(logits, targets, *args, **kwargs)
-            if not mask_state.get("completion_mask_active"):
-                return losses
-            start = max(0, int(mask_state.get("loss_start", 0) or 0))
-            shape = tuple(getattr(losses, "shape", ()) or ())
-            if not shape:
-                return losses
-            seq = int(shape[-1])
-            if seq <= 1 or start <= 0:
-                return losses
-            start = min(start, seq - 1)
-            return losses[..., start:]
+        if bounded:
+            self._phase3_ewc_context = {
+                "fisher": fisher,
+                "reference": snapshot,
+                "lambda": float(ewc_lambda),
+            }
+        else:
+            def completion_only_cross_entropy(logits, targets, *args, **kwargs):
+                losses = original_ce(logits, targets, *args, **kwargs)
+                if not mask_state.get("completion_mask_active"):
+                    return losses
+                start = max(0, int(mask_state.get("loss_start", 0) or 0))
+                shape = tuple(getattr(losses, "shape", ()) or ())
+                if not shape:
+                    return losses
+                seq = int(shape[-1])
+                if seq <= 1 or start <= 0:
+                    return losses
+                start = min(start, seq - 1)
+                return losses[..., start:]
 
-        def ewc_value_and_grad(model, lossfn):
-            if not fisher or not snapshot or ewc_lambda <= 0.0:
-                return original_value_and_grad(model, lossfn)
+            def ewc_value_and_grad(model, lossfn):
+                if not fisher or not snapshot or ewc_lambda <= 0.0:
+                    return original_value_and_grad(model, lossfn)
 
-            def protected_loss(current_model):
-                base_loss = lossfn(current_model)
-                current = dict(
-                    p4.mlx.utils.tree_flatten(current_model.trainable_parameters())
-                )
-                penalty = p4.mx.array(0.0)
-                matched = 0
-                for key, weight in current.items():
-                    f_k = fisher.get(key)
-                    ref = snapshot.get(key)
-                    if f_k is None or ref is None:
-                        continue
-                    diff = weight - ref
-                    penalty = penalty + p4.mx.sum(f_k * (diff ** 2))
-                    matched += 1
-                if matched == 0:
-                    return base_loss
-                return base_loss + (ewc_lambda / 2.0) * penalty
+                def protected_loss(current_model):
+                    base_loss = lossfn(current_model)
+                    current = dict(
+                        p4.mlx.utils.tree_flatten(current_model.trainable_parameters())
+                    )
+                    penalty = p4.mx.array(0.0)
+                    matched = 0
+                    for key, weight in current.items():
+                        f_k = fisher.get(key)
+                        ref = snapshot.get(key)
+                        if f_k is None or ref is None:
+                            continue
+                        diff = weight - ref
+                        penalty = penalty + p4.mx.sum(f_k * (diff ** 2))
+                        matched += 1
+                    if matched == 0:
+                        return base_loss
+                    return base_loss + (ewc_lambda / 2.0) * penalty
 
-            return original_value_and_grad(model, protected_loss)
+                return original_value_and_grad(model, protected_loss)
 
-        self.engine.tokenizer = proxy
-        p4.nn.losses.cross_entropy = completion_only_cross_entropy
-        p4.nn.value_and_grad = ewc_value_and_grad
+            self.engine.tokenizer = proxy
+            p4.nn.losses.cross_entropy = completion_only_cross_entropy
+            p4.nn.value_and_grad = ewc_value_and_grad
+
         _clear_mlx(p4)
 
         try:
@@ -289,10 +301,9 @@ def install(p4: Any) -> None:
             result["ewc_enabled"] = bool(fisher)
             result["ewc_lambda"] = float(ewc_lambda)
             result["fisher_anchors"] = FISHER_ANCHOR_COUNT if fisher else 0
+            result["bounded_phase3"] = bool(bounded)
             return result
         except BaseException:
-            # Roll back model, dual-buffer, persisted adapter and DB state so retrying
-            # Phase 3 begins from the exact pre-update state.
             try:
                 _restore_trainables(p4, self.engine.model, snapshot)
                 _restore_moe_buffers(self, moe_snapshot)
@@ -308,9 +319,15 @@ def install(p4: Any) -> None:
                 _reset_consolidated_flags(self, queued_ids)
             raise
         finally:
-            p4.nn.value_and_grad = original_value_and_grad
-            p4.nn.losses.cross_entropy = original_ce
-            self.engine.tokenizer = original_tokenizer
+            if bounded:
+                try:
+                    delattr(self, "_phase3_ewc_context")
+                except Exception:
+                    pass
+            else:
+                p4.nn.value_and_grad = original_value_and_grad
+                p4.nn.losses.cross_entropy = original_ce
+                self.engine.tokenizer = original_tokenizer
             if backup_path:
                 try:
                     if os.path.exists(backup_path):
