@@ -62,6 +62,12 @@ def _clear_runtime_memory(mx: Any, *, force: bool = False) -> None:
         return
     gc.collect(2)
     try:
+        sync = getattr(mx, "synchronize", None)
+        if callable(sync):
+            sync()
+    except Exception:
+        pass
+    try:
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
         elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
