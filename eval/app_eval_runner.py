@@ -1,6 +1,7 @@
 """Subprocess entry point for the desktop Eval window."""
 from __future__ import annotations
 
+import _thread
 import argparse
 import json
 import os
@@ -50,7 +51,7 @@ def _start_memory_guard(config, run_dir: Path):
                     flush=True,
                 )
                 try:
-                    os.kill(os.getpid(), signal.SIGINT)
+                    _thread.interrupt_main()
                 except Exception:
                     os._exit(130)
                 return
