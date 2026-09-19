@@ -46,7 +46,7 @@ def test_one_context_budget_controls_generation_for_every_text_backend():
     awake = _src("core/awake_auto_hook.py")
     assert "def _remaining_generation_tokens" in awake
     assert "Packed prompt requires" in awake
-    assert "previous_max = getattr(self.settings, "max_new_tokens", None)" in awake
+    assert 'previous_max = getattr(self.settings, "max_new_tokens", None)' in awake
     assert "self.settings.max_new_tokens = int(remaining)" in awake
     assert "self.settings.max_new_tokens = previous_max" in awake
 
@@ -87,8 +87,10 @@ def test_non_mlx_training_and_cancel_paths_roll_back():
     assert "model.save_pretrained(tmp" in controller
     assert "with torch.no_grad():" in controller
     persisted = bridge.index("persisted = bool(adapter_path")
-    mark = bridge.index("mark_consolidated(learn_ids)")
-    assert persisted < mark
+    transaction = bridge.index("with sqlite3.connect(db_path) as conn:")
+    learn_update = bridge.index("UPDATE episodic_interactions SET consolidated=1")
+    rsi_update = bridge.index("UPDATE rsi_self_memories SET consolidated=1")
+    assert persisted < transaction < learn_update < rsi_update
 
 
 def test_media_learning_never_equates_file_existence_with_real_learning():
