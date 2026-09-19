@@ -88,9 +88,17 @@ def test_bonsai2_is_the_default_eval_model_and_current_model_is_reported():
 def test_top_app_controls_explicitly_include_context_limit_and_memory_watcher():
     app = _src("app_gui.py")
     context = _src("core/gui_generation_cap.py")
-    assert "install_gui_generation_cap()" in app
-    assert 'text="Context Limit"' in context
-    assert 'text="Mem Limit"' in app
+    eval_ui = _src("core/gui_eval_panel.py")
+
+    # One existing app Context control + one existing top-app memory control.
+    # Eval gets its own memory watcher but must not clone the normal app controls.
+    assert app.count("install_gui_generation_cap()") == 1
+    assert context.count('text="Context Limit"') == 1
+    assert app.count('text="Mem Limit"') == 1
+    assert 'text="Context Limit"' not in eval_ui
+    assert 'text="Mem Limit"' not in eval_ui
+
     assert "self.memory_limit_var = tk.BooleanVar" in app
     assert "self.entry_memory_limit.pack(" in app
     assert 'text="GB"' in app
+    assert "tk.Toplevel(self.root)" in eval_ui
