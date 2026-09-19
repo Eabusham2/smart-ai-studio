@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from core.training_memory import process_memory_bytes
+
 # Ensure Root Engine Imports
 from run_studio_complete import (
     UnifiedMasterEngine, EngineSettings, RelationalKnowledgeGraph,
@@ -270,7 +272,7 @@ class Master4000EvaluationEngine:
             "split": split,
             "pass_rate": pass_rate,
             "tok_per_sec": tok_per_sec,
-            "ram_gb": psutil.Process().memory_info().rss / (1024 ** 3),
+            "ram_gb": process_memory_bytes() / (1024 ** 3),
             "lif_spikes": lif_spikes,
             "speculative_hit_rate": spec_rate,
             "ortho_overlap": ortho_overlap,
@@ -282,7 +284,9 @@ class Master4000EvaluationEngine:
     def _fast_generate(self, prompt: str, max_tokens: int = 48) -> str:
         if not MLX_AVAILABLE or self.engine.model is None or self.engine.tokenizer is None:
             self.last_tok_per_sec = 0.0
-            return f"[Offline: {prompt[:30]}]"
+            raise RuntimeError(
+                "Real model/tokenizer unavailable; refusing synthetic/offline benchmark output"
+            )
         
         tokenizer = self.engine.tokenizer
         model = self.engine.model
@@ -311,9 +315,9 @@ class Master4000EvaluationEngine:
             del prompt_cache
             del inp
             return tokenizer.decode(gen_tokens)
-        except Exception as e:
-            self.last_tok_per_sec = 12.0
-            return ""
+        except Exception:
+            self.last_tok_per_sec = 0.0
+            raise
 
     def run_full_suite(self):
         print("=" * 95)
@@ -402,13 +406,12 @@ class Master4000EvaluationEngine:
                 remaining_sec = (total_count - global_idx) / rate
                 eta_str = str(timedelta(seconds=int(remaining_sec)))
 
-                sys_mem = psutil.virtual_memory()
-                system_ram_gb = sys_mem.used / (1024 ** 3)
+                process_ram_gb = process_memory_bytes() / (1024 ** 3)
 
-                tok_speed = getattr(self, 'last_tok_per_sec', 15.0)
+                tok_speed = float(getattr(self, 'last_tok_per_sec', 0.0) or 0.0)
                 progress_pct = (global_idx / total_count) * 100.0
 
-                sys.stdout.write(f"\r[{phase_label}] {split_name:<14} | Item {global_idx}/{total_count} ({progress_pct:5.2f}%) | Speed: {tok_speed:4.1f}t/s | ETA: {eta_str} | RAM: {system_ram_gb:.1f}GB  ")
+                sys.stdout.write(f"\r[{phase_label}] {split_name:<14} | Item {global_idx}/{total_count} ({progress_pct:5.2f}%) | Speed: {tok_speed:4.1f}t/s | ETA: {eta_str} | RAM: {process_ram_gb:.1f}GB  ")
                 sys.stdout.flush()
 
                 if global_idx % 5 == 0:
@@ -439,7 +442,7 @@ class Master4000EvaluationEngine:
                         pass_rate=pass_rate,
                         tok_per_sec=tok_speed,
                         lif_spikes=len(self.engine.lif.spike_history),
-                        spec_rate=42.5,
+                        spec_rate=float(getattr(self, "last_speculative_hit_rate", 0.0) or 0.0),
                         ortho_overlap=0.0,
                         phase=phase_label
                     )
