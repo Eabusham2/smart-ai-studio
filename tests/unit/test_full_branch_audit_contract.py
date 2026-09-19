@@ -146,3 +146,36 @@ def test_eval_memory_guard_interrupts_main_thread_portably():
     runner = _src("eval/app_eval_runner.py")
     assert "import _thread" in runner
     assert "_thread.interrupt_main()" in runner
+
+
+def test_rsi_resume_preserves_question_free_self_memory_only():
+    resume = _src("eval/rsi_resume_hardening.py")
+    assert "SELECT trace FROM rsi_self_memories" in resume
+    assert "log_rsi_self_memory(candidate)" in resume
+    assert "clear_unconsolidated_rsi_self_memories = guarded_clear_self" in resume
+    assert "log_interaction(" not in resume
+
+
+def test_end_to_end_call_chain_is_wired_through_existing_components():
+    app = _src("app_gui.py")
+    media = _src("core/media_orchestrator.py")
+    init = _src("core/__init__.py")
+    learner = _src("core/autonomous_learner.py")
+    suite = _src("master_4000_eval_suite.py")
+    phase = _src("eval/phase4_pro_rsi.py")
+
+    assert "self.multimodal.stream_solve(full_msg" in app
+    assert "self.learner.run_learning_session(" in app
+    assert "iterator = self.app.engine.stream_solve(" in media
+    assert "self.learning.train" in media or "self.learning.update" in media
+    assert init.index("install_awake_auto_learning") < init.index("install_full_context_hardening")
+    assert "def run_learning_session" in learner
+    assert "self.consolidate_parameters(" in learner
+    assert "self.recursive_self_improve(" in learner
+    assert "self.consolidate_rsi_parameters(" in learner
+    assert "app_cross_platform_bridge.install(" in suite
+    assert "▶ PHASE 1: ZERO-SHOT SINGLE-PASS BASELINE" in phase
+    assert "▶ PHASE 2: SUPPLIED LEARN / MEMORY INGESTION + MCTS TEACHING" in phase
+    assert "▶ RSI: RECURSIVE SELF-IMPROVEMENT ON PHASE-1 MISSES" in phase
+    assert "▶ PHASE 3: LEARN + RSI PARAMETRIC CONSOLIDATION" in phase
+    assert "Phase 4: Post-Consolidation" in phase
