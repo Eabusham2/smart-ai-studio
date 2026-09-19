@@ -297,6 +297,7 @@ class AutonomousLearner:
         backend_name = backend_label(backend)
         ram_before_mb = process_rss_mb()
         cleanup_stats = {"after_mb": ram_before_mb, "released_mb": 0.0}
+        ewc_used = False
         try:
             # Fisher exists only on the real MLX path. Other backends intentionally
             # skip it rather than allocating a fake/duplicate model for EWC.
@@ -306,6 +307,7 @@ class AutonomousLearner:
             except Exception:
                 fisher = None
 
+            ewc_used = bool(fisher)
             updated_adapters, param_drift = backend.train_mini_batch(
                 adapters=getattr(backend, "adapters", {}) or {},
                 data=[
@@ -348,7 +350,7 @@ class AutonomousLearner:
             "parameter_drift_l2": drift,
             "trainable_parameters_touched": touched,
             "trainable_parameters_m": touched / 1_000_000.0,
-            "ewc_active": bool(getattr(backend, "compute_mlx_fisher", None)),
+            "ewc_active": bool(ewc_used),
             "adapter_saved_to": adapter_path,
             "backend": backend_name,
             "ram_before_mb": round(float(ram_before_mb), 1),
@@ -398,6 +400,7 @@ class AutonomousLearner:
         backend_name = backend_label(backend)
         ram_before_mb = process_rss_mb()
         cleanup_stats = {"after_mb": ram_before_mb, "released_mb": 0.0}
+        ewc_used = False
         try:
             fisher_fn = getattr(backend, "compute_mlx_fisher", None)
             try:
@@ -405,6 +408,7 @@ class AutonomousLearner:
             except Exception:
                 fisher = None
 
+            ewc_used = bool(fisher)
             updated_adapters, param_drift = backend.train_mini_batch(
                 adapters=getattr(backend, "adapters", {}) or {},
                 data=[{
@@ -443,7 +447,7 @@ class AutonomousLearner:
             "parameter_drift_l2": drift,
             "trainable_parameters_touched": touched,
             "trainable_parameters_m": touched / 1_000_000.0,
-            "ewc_active": bool(getattr(backend, "compute_mlx_fisher", None)),
+            "ewc_active": bool(ewc_used),
             "adapter_saved_to": adapter_path,
             "backend": backend_name,
             "ram_before_mb": round(float(ram_before_mb), 1),
@@ -566,7 +570,9 @@ class AutonomousLearner:
                     "consolidating",
                     f"📈 **[Cycle {cycle}/{max_cycles}] Learn + RSI parameter updates complete** "
                     f"(Learn ||ΔW||₂={learn_drift:.6f}; RSI ||ΔW||₂={rsi_drift:.6f}; "
-                    f"touched={params_m:.3f}M trainable params)\n\n"
+                    f"touched={params_m:.3f}M trainable params; "
+                    f"RAM after cleanup={float(rsi_result.get('ram_after_cleanup_mb', 0.0) or 0.0):.0f} MB; "
+                    f"backend={rsi_result.get('backend') or learn_result.get('backend') or 'unknown'})\n\n"
                     f"**Learn note**\n{synthesis}\n\n"
                     f"**RSI revision**\n{rsi_trace}\n\n{rsi_details}",
                     params_m,
