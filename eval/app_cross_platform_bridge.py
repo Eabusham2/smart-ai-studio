@@ -539,15 +539,20 @@ def install(runtime_module, phase4_module, cls) -> None:
             flush=True,
         )
         started = time.perf_counter()
-        meta, drift = trainer(
-            adapters=getattr(backend, "adapters", {}) or {},
-            data=data,
-            fisher_matrix=None,
-            lambda_ewc=0.0,
-            learning_rate=1e-4,
-            steps=1,
-            save_path=getattr(backend, "adapter_path", None),
-        )
+        try:
+            meta, drift = trainer(
+                adapters=getattr(backend, "adapters", {}) or {},
+                data=data,
+                fisher_matrix=None,
+                lambda_ewc=0.0,
+                learning_rate=1e-4,
+                steps=1,
+                save_path=getattr(backend, "adapter_path", None),
+            )
+        finally:
+            # Backends already clean their own successful path; this outer guard
+            # also covers early exceptions/custom controller failures.
+            release_training_memory(backend)
         elapsed = max(0.001, time.perf_counter() - started)
         drift = float(drift)
         if drift <= 0.0:
@@ -576,7 +581,6 @@ def install(runtime_module, phase4_module, cls) -> None:
             raise RuntimeError(
                 f"Phase 3 updated {key} weights but no persisted adapter/model artifact was found"
             )
-        release_training_memory(backend)
         print(
             f"[APP EVAL] Phase 3 complete: {len(data)}/{len(data)} memories | "
             f"||ΔW||2={drift:.8f} | {elapsed:.1f}s | RAM={process_rss_mb():.0f} MB",
