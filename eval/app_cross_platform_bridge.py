@@ -279,6 +279,11 @@ def install(runtime_module, phase4_module, cls) -> None:
         )
         self._app_eval_backend_key = self.engine.backend_key
         self._app_eval_logical_model_key = _logical_model_key(self.engine)
+        backend_adapter = str(
+            getattr(self.engine.backend, "adapter_path", "") or ""
+        )
+        if backend_adapter:
+            phase4_module.RSI_ADAPTER_PATH = backend_adapter
         os.makedirs(run_dir, exist_ok=True)
         print(
             f"[APP EVAL] model={self._eval_target_model_label} "
