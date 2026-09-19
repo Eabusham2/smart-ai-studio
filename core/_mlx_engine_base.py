@@ -420,6 +420,9 @@ class MLXReasoningBackend:
 
         optimizer = optim.AdamW(learning_rate=learning_rate)
         tmp_save_path = None
+        backup_save_path = None
+        had_persisted_adapter = bool(save_path and os.path.isfile(save_path))
+        transaction_committed = False
         was_training = bool(getattr(self.model, "training", False))
 
         def ewc_loss_fn(model, inputs, targets):
@@ -483,18 +486,28 @@ class MLXReasoningBackend:
                 raise RuntimeError("MLX training completed but measured zero parameter change")
 
             if save_path:
+                import shutil
+
                 os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
                 tmp_save_path = save_path + ".next.safetensors"
+                backup_save_path = save_path + ".previous"
                 try:
                     if os.path.exists(tmp_save_path):
                         os.remove(tmp_save_path)
+                    if os.path.exists(backup_save_path):
+                        os.remove(backup_save_path)
                 except OSError:
                     pass
+
+                if had_persisted_adapter:
+                    shutil.copy2(save_path, backup_save_path)
+
                 mx.save_safetensors(tmp_save_path, updated_params)
                 os.replace(tmp_save_path, save_path)
                 tmp_save_path = None
 
             self.adapters = updated_params
+            transaction_committed = True
             return updated_params, param_drift
 
         except BaseException:
@@ -515,8 +528,22 @@ class MLXReasoningBackend:
                             os.remove(tmp_save_path)
                     except OSError:
                         pass
+                if save_path:
+                    try:
+                        if backup_save_path and os.path.isfile(backup_save_path):
+                            os.replace(backup_save_path, save_path)
+                        elif not had_persisted_adapter and os.path.isfile(save_path):
+                            os.remove(save_path)
+                    except OSError:
+                        pass
             raise
         finally:
+            if transaction_committed and backup_save_path:
+                try:
+                    if os.path.isfile(backup_save_path):
+                        os.remove(backup_save_path)
+                except OSError:
+                    pass
             if not was_training:
                 try:
                     self.model.eval()
