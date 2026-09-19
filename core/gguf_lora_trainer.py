@@ -416,7 +416,7 @@ class GGUFLoRATrainer:
                 "base_model_id": self.base_model_id,
                 "adapter_format": "gguf-lora",
             }, float(drift), touched, self.gguf_adapter_path
-        except Exception:
+        except BaseException:
             if os.path.isdir(backup_peft) and not os.path.isdir(self.peft_dir):
                 os.replace(backup_peft, self.peft_dir)
             raise
