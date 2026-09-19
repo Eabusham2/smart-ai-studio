@@ -108,7 +108,7 @@ def install_gui_generation_cap() -> None:
 
         tk.Label(
             inner,
-            text="Context",
+            text="Context Limit",
             font=getattr(mod, "_FONT_TINY_BOLD"),
             bg=self.C["bg_hud"],
             fg=self.C["text_main"],
