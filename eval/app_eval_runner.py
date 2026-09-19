@@ -157,10 +157,11 @@ def main() -> int:
     )
     print("=" * 88, flush=True)
 
-    runner = suite.Master4000EvaluationEngine(
-        max_duration_hours=float(config.get("max_duration_hours", 72.0) or 72.0)
-    )
+    runner = None
     try:
+        runner = suite.Master4000EvaluationEngine(
+            max_duration_hours=float(config.get("max_duration_hours", 72.0) or 72.0)
+        )
         runner.run_full_suite()
     except KeyboardInterrupt:
         print("\n[APP EVAL] Cancelled; safe checkpoint/rollback handlers were invoked.", flush=True)
@@ -168,10 +169,11 @@ def main() -> int:
     finally:
         if memory_guard_stop is not None:
             memory_guard_stop.set()
-        try:
-            runner.engine.unload_model()
-        except Exception:
-            pass
+        if runner is not None:
+            try:
+                runner.engine.unload_model()
+            except Exception:
+                pass
 
     print("\n[APP EVAL] Evaluation completed.", flush=True)
     return 0
