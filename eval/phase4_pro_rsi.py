@@ -300,6 +300,135 @@ def _candidate_passes_answer_blind(
     return None
 
 
+def _clip_verifier_feedback(text: str, limit: int = 600) -> str:
+    """Keep deterministic verifier feedback short and free of hidden-answer dumps."""
+    clean = " ".join(str(text or "").split())
+    return clean[: max(1, int(limit))]
+
+
+def _sandbox_failure_feedback(result: Any, prefix: str) -> str:
+    """Return useful structural/runtime feedback without exposing assertion payloads."""
+    if bool(getattr(result, "passed", False)):
+        return ""
+
+    raw = str(getattr(result, "error", "") or "").strip()
+    if not raw:
+        return f"{prefix}: deterministic verifier rejected the selected candidate."
+
+    # Hidden tests can embed expected values in assertion text. Preserve only safe
+    # failure class information for assertion/test failures; syntax/runtime errors
+    # from the candidate remain useful for self-correction.
+    lowered = raw.lower()
+    if "assertionerror" in lowered or "assert " in lowered:
+        return f"{prefix}: deterministic assertion/test failed; inspect the candidate logic and edge cases."
+
+    last = raw.splitlines()[-1].strip()
+    if not last:
+        return f"{prefix}: deterministic verifier rejected the selected candidate."
+    return _clip_verifier_feedback(f"{prefix}: {last}")
+
+
+def _answer_blind_failure_feedback(
+    self,
+    split: str,
+    item: Dict[str, Any],
+    candidate: str,
+) -> str:
+    """Derive round-2 correction signal only from prompt-visible/deterministic verifiers."""
+    try:
+        kind = str(item.get("_real_kind") or "").strip().lower()
+        code = clean_output(candidate)
+
+        if kind == "humaneval":
+            result = self.engine.sandbox.execute_python_code(
+                str(item["prompt"]) + "\n" + code,
+                str(item["test"]),
+            )
+            return _sandbox_failure_feedback(result, "Python verifier")
+
+        if kind == "livecodebench":
+            result = self.engine.sandbox.execute_python_code(
+                "SOLUTION = " + repr(code),
+                str(item["test"]),
+            )
+            return _sandbox_failure_feedback(result, "Python verifier")
+
+        if kind == "code_repair":
+            result = self.engine.sandbox.execute_python_code(
+                code,
+                str(item["test"]),
+            )
+            return _sandbox_failure_feedback(result, "Repair verifier")
+
+        if "HumanEval" in split:
+            result = self.engine.sandbox.execute_python_code(
+                str(item["prompt"]) + "\n" + code,
+                str(item["test"]),
+            )
+            return _sandbox_failure_feedback(result, "Python verifier")
+
+        if "LiveCodeBench" in split:
+            result = self.engine.sandbox.execute_python_code(
+                code,
+                str(item["test"]),
+            )
+            return _sandbox_failure_feedback(result, "Python verifier")
+
+        if "DeepSWE" in split:
+            result = self.engine.sandbox.verify_git_diff_patch(
+                item["repo_files"],
+                code,
+                item["test_cmd"],
+            )
+            # Patch/test output can include hidden expected values, so keep this
+            # intentionally structural rather than echoing raw test output.
+            if not bool(getattr(result, "passed", False)):
+                return (
+                    "Patch verifier: selected patch failed deterministic verification; "
+                    "re-check the edited lines, imports, and test-sensitive edge cases."
+                )
+            return ""
+
+        if "TensorGraphDSL" in split:
+            value = self.engine.sandbox.evaluate_dsl_expression(item["dsl_expr"])
+            if value is None:
+                return (
+                    "DSL verifier: expression could not be evaluated; re-apply the "
+                    "literal fold/scale/fuse operators exactly once."
+                )
+            cleaned = clean_output(candidate).replace(" ", "")
+            if str(value).replace(" ", "") not in cleaned:
+                return (
+                    "DSL verifier: selected result was inconsistent with the prompt-visible "
+                    "DSL semantics; re-apply fold/scale/fuse exactly once."
+                )
+            return ""
+
+        if "BFCL" in split:
+            requested_name, requested_args = _prompt_requested_bfcl(item)
+            value = _parse_json_object(candidate)
+            if not isinstance(value, dict):
+                return "Tool-call verifier: return exactly one valid JSON object."
+            if isinstance(value.get("function"), dict):
+                value = value["function"]
+            name = value.get("name") or value.get("tool")
+            args = value.get("arguments") or value.get("args")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    return "Tool-call verifier: arguments must be one valid JSON object."
+            if requested_name and name != requested_name:
+                return "Tool-call verifier: selected tool name did not match the user request."
+            if requested_args is not None and args != requested_args:
+                return "Tool-call verifier: selected arguments did not match the user request."
+    except Exception as exc:
+        # Exception type is safe/useful; avoid serializing full hidden-test payloads.
+        return f"Deterministic verifier raised {type(exc).__name__}; revise the selected candidate."
+
+    return ""
+
+
 def _consensus_key(text: str) -> str:
     cleaned = clean_output(text).strip()
     boxed = re.findall(r"\\boxed\{([^}]+)\}", text)
@@ -528,9 +657,11 @@ def _run_rsi_self_improvement(self, splits, cache) -> int:
 
         original_user = _task_user_prompt(split_name, item)
         previous = ""
+        verifier_feedback = ""
         success = False
 
         for round_idx in (1, 2):
+            _assert_same_model(self, model_identity, f"RSI round {round_idx}")
             if round_idx == 1:
                 rsi_user = (
                     original_user
@@ -543,7 +674,14 @@ def _run_rsi_self_improvement(self, splits, cache) -> int:
                     original_user
                     + "\n\nRecursive Self-Improvement round 2. Your previous self-generated attempt was:\n"
                     + previous
-                    + "\n\nCritique your own attempt, identify what may be wrong without access to any hidden answer, "
+                )
+                if verifier_feedback:
+                    rsi_user += (
+                        "\n\nAnswer-blind deterministic verifier feedback from that attempt:\n"
+                        + verifier_feedback
+                    )
+                rsi_user += (
+                    "\n\nCritique your own attempt, identify what may be wrong without access to any hidden answer, "
                     "and produce a materially improved final response in the requested format."
                 )
 
@@ -562,11 +700,24 @@ def _run_rsi_self_improvement(self, splits, cache) -> int:
             )
             previous = candidate
 
+            # Only the selected candidate is needed from here on. Release the other
+            # potentially long branch strings before verification / recursive round 2.
+            branches.clear()
+            branches = None
+            gc.collect(1)
+
             # Ground truth/test is used only as a reward AFTER the model has generated
             # and an answer-blind policy has selected its candidate.
             passed = _hidden_reward_only_after_selection(
                 self, split_name, item, candidate
             )
+            if not passed and round_idx == 1:
+                verifier_feedback = _answer_blind_failure_feedback(
+                    self,
+                    split_name,
+                    item,
+                    candidate,
+                )
             _append_rsi_log(
                 self,
                 split_name,
