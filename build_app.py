@@ -46,7 +46,7 @@ end run
     os.makedirs(app_code_dir, exist_ok=True)
 
     # 2. Copy application source trees & icons
-    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "AppIcon.icns"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "AppIcon.icns"]:
         src = os.path.abspath(item)
         dst = os.path.join(app_code_dir, item)
         if os.path.isdir(src):
@@ -171,7 +171,7 @@ def create_windows_bundle(dist_dir: str, app_name: str):
     os.makedirs(win_dir, exist_ok=True)
 
     # Copy application source trees
-    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "requirements.txt", "pyproject.toml"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(win_dir, item)
         if os.path.isdir(src):
@@ -226,7 +226,7 @@ def create_linux_bundle(dist_dir: str, app_name: str):
     os.makedirs(usr_bin, exist_ok=True)
 
     # Copy application code into AppDir
-    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "requirements.txt", "pyproject.toml"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(usr_bin, item)
         if os.path.isdir(src):
