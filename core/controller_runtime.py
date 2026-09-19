@@ -343,7 +343,12 @@ class UniversalControllerBackend:
             from config.paths import get_portable_data_dir
             import hashlib
             key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
-            self.adapter_path = os.path.join(get_portable_data_dir(), "controller_lora", key)
+            eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
+            self.adapter_path = (
+                os.path.join(os.path.abspath(eval_root), key)
+                if eval_root
+                else os.path.join(get_portable_data_dir(), "controller_lora", key)
+            )
             adapter_cfg = os.path.join(self.adapter_path, "adapter_config.json")
             if os.path.isfile(adapter_cfg):
                 from peft import PeftModel
