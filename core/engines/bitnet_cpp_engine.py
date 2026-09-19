@@ -67,7 +67,12 @@ class BitNetCppReasoningBackend:
         self.threads = int(threads or max(1, (os.cpu_count() or 4) // 2))
         key_src = self.hf_repo_id or self.original_model_path
         key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:16]
-        self.training_root = Path(get_portable_data_dir()) / "bitnet_learning" / key
+        eval_training_root = str(os.getenv("SMARTAI_BITNET_TRAINING_ROOT", "") or "").strip()
+        self.training_root = (
+            Path(eval_training_root)
+            if eval_training_root
+            else Path(get_portable_data_dir()) / "bitnet_learning" / key
+        )
         self.learned_model_path = self.training_root / "learned-i2_s.gguf"
         self.adapter_path = str(self.learned_model_path)
         self.adapters: Dict[str, Any] = {}
