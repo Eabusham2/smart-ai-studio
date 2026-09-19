@@ -376,6 +376,19 @@ class GGUFLoRATrainer:
 
             model.save_pretrained(tmp_peft, safe_serialization=True)
             tokenizer.save_pretrained(tmp_peft)
+
+            # Conversion is file-based. Do not keep the 27B QLoRA graph resident
+            # while the converter allocates its own buffers.
+            try:
+                optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            before.clear()
+            del optimizer
+            del model
+            model = None
+            release_training_memory()
+
             self._convert_to_gguf(tmp_peft, tmp_gguf)
 
             # Do not make a new state live until both the PEFT checkpoint and converted
@@ -426,7 +439,8 @@ class GGUFLoRATrainer:
             except Exception:
                 pass
             try:
-                del model
+                if model is not None:
+                    del model
             except Exception:
                 pass
             release_training_memory()
