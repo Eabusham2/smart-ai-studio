@@ -179,3 +179,36 @@ def test_end_to_end_call_chain_is_wired_through_existing_components():
     assert "▶ RSI: RECURSIVE SELF-IMPROVEMENT ON PHASE-1 MISSES" in phase
     assert "▶ PHASE 3: LEARN + RSI PARAMETRIC CONSOLIDATION" in phase
     assert "Phase 4: Post-Consolidation" in phase
+
+def test_real_benchmark_repair_cannot_fall_back_to_legacy_synthetic_rows():
+    suite = _src("master_4000_eval_suite.py")
+    real = _src("eval/real_benchmark_runtime.py")
+    assert "runtime_module._repair_suite = repair_real_suite" in real
+    install = suite.index(
+        "real_benchmark_runtime.install(BenchmarkDatasetProvider, master_runtime, phase4_pro_rsi, Master4000EvaluationEngine)"
+    )
+    capture = suite.index("_real_repair_suite = master_runtime._repair_suite")
+    assert install < capture
+    assert 'if not item.get("real_source"):' in real
+    assert "refusing to fall back to synthetic data" in real
+
+
+def test_mlx_phase3b_conversation_teach_uses_bounded_completion_only_lora_path():
+    teach = _src("eval/conversation_teach_hardening.py")
+    mlx_branch = teach.index(
+        'if str(getattr(self.engine, "backend_key", "mlx") or "mlx").lower() == "mlx":',
+        teach.index("teach_started = time.perf_counter()"),
+    )
+    non_mlx = teach.index("else:", mlx_branch)
+    mlx_body = teach[mlx_branch:non_mlx]
+    assert "p4._phase3_bounded_gradients(" in mlx_body
+    assert "with p4.METAL_STREAM_LOCK:" in mlx_body
+    assert "p4.optim.AdamW(learning_rate=1e-4)" in mlx_body
+    assert "completion_loss_start" in mlx_body
+    assert "p4._save_rsi_adapter(self)" in mlx_body
+    assert "_run_shadow_consolidation(" not in mlx_body
+
+    non_mlx_body = teach[non_mlx:]
+    assert "AwakeOnlineConsolidator(" in non_mlx_body
+    assert "consolidator._run_shadow_consolidation(_chat_history())" in non_mlx_body
+
