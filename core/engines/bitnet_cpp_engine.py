@@ -1,9 +1,10 @@
-"""Real Microsoft bitnet.cpp inference backend.
+"""Real Microsoft bitnet.cpp inference and persistent-learning backend.
 
 This replaces the old synthetic BitNet placeholder in ProReasoningEngine routing.
-It talks to bitnet.cpp's llama-server and never fabricates output. Parameter training
-is intentionally fail-closed until bitnet.cpp exposes a compatible persistent adapter
-training path.
+It talks to bitnet.cpp's llama-server and never fabricates output. Learning is
+fail-closed unless metadata provides a compatible BF16 training lineage; when it
+does, the backend performs a real PEFT update, rebuilds I2_S deployment weights,
+hot-reloads them, and rolls back atomically on failure or cancellation.
 """
 from __future__ import annotations
 
