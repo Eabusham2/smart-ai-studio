@@ -20,7 +20,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from config.paths import get_custom_models_file, get_portable_data_dir, inspect_mlx_model_folder, terminate_existing_app_instances
+from config.paths import get_bundled_model_path, get_custom_models_file, get_portable_data_dir, inspect_mlx_model_folder, terminate_existing_app_instances
 from config.settings import Settings, get_settings
 from consolidation.daemon import SleepConsolidationDaemon
 from core.autonomous_learner import AutonomousLearner
@@ -301,7 +301,7 @@ class SmartAIChatbotApp:
                 "name": "Bonsai 2 27B Ternary Multimodal",
                 "short_name": "Bonsai 2 27B Ternary",
                 "repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
-                "model_path": None,
+                "model_path": get_bundled_model_path("prism-ml/Ternary-Bonsai-2-27B-mlx-2bit") if is_apple_silicon else None,
                 "gguf_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
                 "gguf_preference": None if is_apple_silicon else "PTQ1_0",
                 "mmproj_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
@@ -325,7 +325,7 @@ class SmartAIChatbotApp:
                 "name": "Bonsai 2 27B Ternary CRACK (Abliterated/Uncensored)",
                 "short_name": "Bonsai 2 27B CRACK",
                 "repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG" if is_apple_silicon else "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF",
-                "model_path": None,
+                "model_path": get_bundled_model_path("dealignai/Bonsai-2-27B-CRACK-Ternary-JANG") if is_apple_silicon else None,
                 "gguf_file": None if is_apple_silicon else "Bonsai-2-27B-PTQ1_0-CRACK.gguf",
                 "gguf_preference": None if is_apple_silicon else "PTQ1_0",
                 "mmproj_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
