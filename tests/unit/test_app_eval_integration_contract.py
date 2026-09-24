@@ -82,7 +82,7 @@ def test_bonsai2_is_the_default_eval_model_and_current_model_is_reported():
     report = _src("eval/_master_4000_base.py")
     assert 'mlx_model_path: str="prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"' in runtime
     assert "_eval_target_model_label" in report
-    assert "Bonsai 2 27B Ternary Multimodal" in report
+    assert "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" in report
 
 
 def test_top_app_controls_explicitly_include_context_limit_and_memory_watcher():
