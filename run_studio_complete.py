@@ -34,7 +34,7 @@ def compute_auto_kv_budget(total_ram_gb: float)->int:
 @dataclass
 class EngineSettings:
     total_ram_gb: float=field(default_factory=lambda: psutil.virtual_memory().total/(1024**3))
-    mlx_model_path: str="penkia/TernaryQuench-Qwen3.8-27B-MLX"
+    mlx_model_path: str="prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
     max_kv_tokens: int=field(init=False)
     h2o_sink_tokens:int=4; h2o_heavy_tokens:int=64; h2o_max_budget:int=128
     lora_rank:int=4; lora_alpha:float=8.0; lora_chunk_size:int=6; total_layers:int=60
