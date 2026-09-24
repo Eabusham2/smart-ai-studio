@@ -197,11 +197,38 @@ class GitWorktreeScratchpad:
 
 class UnifiedMasterEngine:
     def __init__(self,settings:Optional[EngineSettings]=None):
-        self.settings=settings or EngineSettings(); self.kg=RelationalKnowledgeGraph(self.settings.db_path); self.sandbox=POSIXHardenedSandbox(self.settings.sandbox_timeout_seconds,self.settings.sandbox_max_memory_mb); self.mcp=FastMCPDispatcher(self.sandbox,self.kg); self.lif=NeuromorphicLIFController(); self.drafter=ASTPrefixTrieDrafter(); self.h2o=H2OKVCacheArena(self.settings.h2o_sink_tokens,self.settings.h2o_heavy_tokens,self.settings.h2o_max_budget); self.ogp_projector=GramSchmidtOGPProjector(self.settings.ogp_ortho_tolerance); self.mcts=SymbolicMCTSSearchEngine(self.sandbox); self.model=self.tokenizer=self.moe_manager=self.moe_router=self.grpo_trainer=self.ogp_daemon=None; self._initialize_runtime()
+        self.settings=settings or EngineSettings(); self.kg=RelationalKnowledgeGraph(self.settings.db_path); self.sandbox=POSIXHardenedSandbox(self.settings.sandbox_timeout_seconds,self.settings.sandbox_max_memory_mb); self.mcp=FastMCPDispatcher(self.sandbox,self.kg); self.lif=NeuromorphicLIFController(); self.drafter=ASTPrefixTrieDrafter(); self.h2o=H2OKVCacheArena(self.settings.h2o_sink_tokens,self.settings.h2o_heavy_tokens,self.settings.h2o_max_budget); self.ogp_projector=GramSchmidtOGPProjector(self.settings.ogp_ortho_tolerance); self.mcts=SymbolicMCTSSearchEngine(self.sandbox); self.model=self.tokenizer=self.moe_manager=self.moe_router=self.grpo_trainer=self.ogp_daemon=None; self._runtime_backend=None; self._initialize_runtime()
+    def _load_primary_model(self):
+        path=str(self.settings.mlx_model_path or "")
+        if "Ternary-Bonsai-2-27B-mlx-2bit" in path:
+            # Prism Bonsai-2 requires the runtime bundled in the HF pack. Plain
+            # mlx_lm.load() skips its Hadamard activation transform and can emit
+            # incorrect text without raising, so reuse the app's proven loader.
+            from huggingface_hub import snapshot_download
+            from core.mlx_engine import MLXReasoningBackend
+            source=path if os.path.exists(path) else snapshot_download(repo_id=path)
+            backend=MLXReasoningBackend(
+                model_path=source,
+                model_info={
+                    "name":"Bonsai 2 27B Ternary Multimodal",
+                    "repo_id":path,
+                    "runtime_family":"bonsai2_hadamard",
+                    "input_modalities":["text","image","video"],
+                },
+            )
+            if not backend.load_model():
+                raise RuntimeError("Bonsai-2 bundled MLX runtime failed to load")
+            model=backend.get_training_model()
+            tokenizer=backend.tokenizer
+            if model is None or tokenizer is None:
+                raise RuntimeError("Bonsai-2 bundled runtime exposed no trainable language model/tokenizer")
+            self._runtime_backend=backend
+            return model,tokenizer
+        return load(path)
     def _initialize_runtime(self):
         if not MLX_AVAILABLE:return
         try:
-            self.model,self.tokenizer=load(self.settings.mlx_model_path)
+            self.model,self.tokenizer=self._load_primary_model()
             self.moe_manager=MoEDualBufferManager(self.model,self.settings); self.moe_router=HierarchicalMoERouter(self.model); self.grpo_trainer=GRPOTrainingEngine(self.model,self.tokenizer,self.sandbox)
             if self.settings.enable_awake_ogp_daemon:
                 self.ogp_daemon=ProjectedSleepConsolidationDaemon(self.moe_manager,self.ogp_projector,self.kg,self.tokenizer,self.settings,METAL_STREAM_LOCK); self.ogp_daemon.start()
