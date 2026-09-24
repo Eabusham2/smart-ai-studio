@@ -5,8 +5,15 @@ on:
     branches: [fix/real-benchmarks-final-32k]
     paths:
       - .github/workflows/feature-audit.yml
-      - tools/feature_audit.py
-      - tests/audit/**
+      - app_gui.py
+      - master_4000_eval_suite.py
+      - run_studio_complete.py
+      - core/**
+      - eval/**
+      - consolidation/**
+      - tests/unit/test_*contract.py
+      - requirements.txt
+      - pyproject.toml
   workflow_dispatch:
 
 permissions:
@@ -89,6 +96,11 @@ jobs:
             tests/unit/test_app_eval_integration_contract.py \
             tests/unit/test_diverged_branch_reconciliation_contract.py \
             tests/unit/test_full_branch_audit_contract.py \
+            tests/unit/test_custom_backend_metadata_contract.py \
+            tests/unit/test_prism_gguf_and_bitnet_contract.py \
+            tests/unit/test_non_mlx_learning_contract.py \
+            tests/unit/test_memory_limit_control_contract.py \
+            tests/unit/test_temperature_policy_contract.py \
             --junitxml="$AUDIT_OUTPUT/contracts.xml" 2>&1 | tee "$AUDIT_OUTPUT/contracts.log"
       - name: Upload audit evidence even on failure
         if: always()
