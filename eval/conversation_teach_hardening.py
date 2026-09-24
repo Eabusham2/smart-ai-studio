@@ -99,21 +99,118 @@ def install(p4, cls) -> None:
             backend.is_mlx_available = True
         backend.adapter_path = p4.RSI_ADAPTER_PATH
 
-        consolidator = AwakeOnlineConsolidator(
-            mlx_engine=backend,
-            memory_db=None,
-            max_context=8192,
-        )
         train_tokens = _training_tokens(self.engine.tokenizer)
         teach_started = time.perf_counter()
-        consolidator._run_shadow_consolidation(_chat_history())
+
+        if str(getattr(self.engine, "backend_key", "mlx") or "mlx").lower() == "mlx":
+            # Reuse the same bounded-memory LoRA gradient path that Phase 3 already
+            # uses successfully. Never fall back to full-model value_and_grad here:
+            # Qwen3.5 inference CustomKernel has no VJP and can explode unified RAM.
+            trainable = dict(
+                p4.mlx.utils.tree_flatten(
+                    self.engine.model.trainable_parameters()
+                )
+            )
+            before = {}
+            for key, value in trainable.items():
+                try:
+                    before[key] = p4.mx.copy(value)
+                except Exception:
+                    before[key] = value + p4.mx.zeros_like(value)
+            if before:
+                p4.mx.eval(*before.values())
+
+            opt = p4.optim.AdamW(learning_rate=1e-4)
+            total_targets = 0
+            prepared = []
+            for user, assistant, _ in CONVERSATION_TEACH_EXAMPLES:
+                prefix = (
+                    f"<|im_start|>user\n{user}<|im_end|>\n"
+                    f"<|im_start|>assistant\n"
+                )
+                text = prefix + assistant + "<|im_end|>"
+                ids = self.engine.tokenizer.encode(text)
+                prefix_ids = self.engine.tokenizer.encode(prefix)
+                if len(ids) <= 1:
+                    continue
+                completion_loss_start = max(0, len(prefix_ids) - 1)
+                selected_start = max(0, len(ids) - 16_384)
+                row_targets = max(
+                    0,
+                    min(len(ids), 16_384) - 1
+                    - max(0, completion_loss_start - selected_start),
+                )
+                if row_targets <= 0:
+                    continue
+                prepared.append((ids, completion_loss_start, row_targets))
+                total_targets += row_targets
+
+            if not prepared or total_targets <= 0:
+                raise RuntimeError("Phase 3B conversational teach found no trainable completion targets")
+
+            completed_targets = 0
+            for _step in range(3):
+                for item_index, (ids, completion_loss_start, row_targets) in enumerate(prepared, 1):
+                    with p4.METAL_STREAM_LOCK:
+                        _loss, grads, trained_targets = p4._phase3_bounded_gradients(
+                            self,
+                            ids,
+                            completion_loss_start,
+                            item_index,
+                            len(prepared),
+                            completed_targets,
+                            total_targets * 3,
+                            teach_started,
+                        )
+                        opt.update(self.engine.model, grads)
+                        p4.mx.eval(self.engine.model.parameters(), opt.state)
+                        completed_targets += int(trained_targets)
+                        _loss = None
+                        grads = None
+                        try:
+                            p4.mx.clear_cache()
+                        except Exception:
+                            pass
+
+            after = dict(
+                p4.mlx.utils.tree_flatten(
+                    self.engine.model.trainable_parameters()
+                )
+            )
+            delta_sq = p4.mx.array(0.0)
+            matched = 0
+            for key, old_value in before.items():
+                new_value = after.get(key)
+                if new_value is None:
+                    continue
+                diff = new_value - old_value
+                delta_sq = delta_sq + p4.mx.sum(
+                    diff.astype(p4.mx.float32) * diff.astype(p4.mx.float32)
+                )
+                matched += 1
+            if matched <= 0:
+                raise RuntimeError("Phase 3B could not match post-update LoRA trainables")
+            p4.mx.eval(delta_sq)
+            delta = float(p4.mx.sqrt(delta_sq).item())
+            persisted = bool(p4._save_rsi_adapter(self))
+        else:
+            # Preserve the existing non-MLX production path unchanged.
+            consolidator = AwakeOnlineConsolidator(
+                mlx_engine=backend,
+                memory_db=None,
+                max_context=8192,
+            )
+            consolidator._run_shadow_consolidation(_chat_history())
+            delta = float(consolidator.total_param_shift or 0.0)
+            persisted = bool(os.path.exists(p4.RSI_ADAPTER_PATH))
+            if consolidator.consolidation_count != 1:
+                raise RuntimeError("Phase 3B conversational teach produced no real parameter update")
+
         teach_seconds = max(0.001, time.perf_counter() - teach_started)
         teach_tps = train_tokens / teach_seconds
 
         p4._assert_same_model(self, model_identity, "after conversational teach")
-        delta = float(consolidator.total_param_shift or 0.0)
-        persisted = bool(os.path.exists(p4.RSI_ADAPTER_PATH))
-        if consolidator.consolidation_count != 1 or delta <= 0.0:
+        if delta <= 0.0:
             raise RuntimeError("Phase 3B conversational teach produced no real parameter update")
         if not persisted:
             raise RuntimeError("Phase 3B conversational teach did not persist the updated adapter")
