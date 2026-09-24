@@ -1,9 +1,17 @@
 from pathlib import Path
-
-from core.model_policy import derive_runtime_metadata
+import importlib.util
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+_spec = importlib.util.spec_from_file_location(
+    "smartai_model_policy_contract",
+    ROOT / "core" / "model_policy.py",
+)
+_model_policy = importlib.util.module_from_spec(_spec)
+assert _spec is not None and _spec.loader is not None
+_spec.loader.exec_module(_model_policy)
+derive_runtime_metadata = _model_policy.derive_runtime_metadata
 
 
 def _src(path: str) -> str:
