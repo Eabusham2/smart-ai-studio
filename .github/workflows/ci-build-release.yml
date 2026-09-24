@@ -143,7 +143,7 @@ jobs:
       needs.preflight.result == 'success' &&
       (needs.preflight.outputs.reuse_green == 'true' || needs.test.result == 'success')
     runs-on: macos-latest
-    timeout-minutes: 35
+    timeout-minutes: 180
 
     steps:
       - name: Report Release Gate
@@ -169,20 +169,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build Application Packages (macOS, Windows, Linux)
-        run: |
-          python build_app.py
-
-      - name: Upload Build Artifacts to Workflow Run
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartAI-Packages
-          path: |
-            dist/SmartAI-macOS-arm64.zip
-            dist/SmartAI-Windows.zip
-            dist/SmartAI-Linux-x86_64.tar.gz
-            dist/SmartAI-Unix-POSIX.tar.gz
-
       - name: Determine Release Tag & Title
         id: release_info
         shell: bash
@@ -196,6 +182,62 @@ jobs:
           fi
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_title=${TITLE}" >> $GITHUB_OUTPUT
+
+      - name: Prepare GitHub Release for Streamed Model Bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.release_info.outputs.tag_name }}"
+          TITLE="${{ steps.release_info.outputs.release_title }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --draft --notes "Packaging release assets..."
+          fi
+
+          # Remove only the prior multipart macOS model bundle assets. Other release
+          # artifacts remain untouched until the final publish/update step succeeds.
+          gh release view "$TAG" --json assets --jq '.assets[].name' |             grep -E '^(SmartAI-macOS-arm64\.zip\.part[0-9]+|SmartAI-macOS-arm64\.bundle\.json|Reassemble-SmartAI-macOS-arm64\.command)        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          name: ${{ steps.release_info.outputs.release_title }}
+          files: |
+            dist/SmartAI-Windows.zip
+            dist/SmartAI-Linux-x86_64.tar.gz
+            dist/SmartAI-Unix-POSIX.tar.gz
+          draft: false
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ |             while IFS= read -r asset; do
+              [ -n "$asset" ] && gh release delete-asset "$TAG" "$asset" -y || true
+            done
+
+      - name: Build Application Packages (macOS, Windows, Linux)
+        env:
+          SMARTAI_MODEL_BUNDLE_RELEASE: "1"
+        run: |
+          python build_app.py
+
+      - name: Stream Both Bonsai 2 MLX Models into macOS Release ZIP
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python build_bonsai2_bundled_zip.py             --app-bundle dist/SmartAI.app             --output-dir dist             --archive-name SmartAI-macOS-arm64.zip             --upload-tag "${{ steps.release_info.outputs.tag_name }}"
+
+      - name: Upload Build Artifacts to Workflow Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartAI-Packages
+          path: |
+            dist/SmartAI-macOS-arm64.bundle.json
+            dist/Reassemble-SmartAI-macOS-arm64.command
+            dist/SmartAI-Windows.zip
+            dist/SmartAI-Linux-x86_64.tar.gz
+            dist/SmartAI-Unix-POSIX.tar.gz
 
       - name: Publish or Update GitHub Release
         uses: softprops/action-gh-release@v2
