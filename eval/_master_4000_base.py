@@ -501,7 +501,7 @@ class Master4000EvaluationEngine:
             getattr(
                 self,
                 "_eval_target_model_label",
-                "penkia/TernaryQuench-Qwen3.8-27B-MLX",
+                "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
             )
         )
         md.append(f"**Target Model:** `{target_label}`  ")
