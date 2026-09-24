@@ -194,25 +194,12 @@ jobs:
             gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --draft --notes "Packaging release assets..."
           fi
 
-          # Remove only the prior multipart macOS model bundle assets. Other release
-          # artifacts remain untouched until the final publish/update step succeeds.
-          gh release view "$TAG" --json assets --jq '.assets[].name' |             grep -E '^(SmartAI-macOS-arm64\.zip\.part[0-9]+|SmartAI-macOS-arm64\.bundle\.json|Reassemble-SmartAI-macOS-arm64\.command)        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: ${{ steps.release_info.outputs.release_title }}
-          files: |
-            dist/SmartAI-Windows.zip
-            dist/SmartAI-Linux-x86_64.tar.gz
-            dist/SmartAI-Unix-POSIX.tar.gz
-          draft: false
-          prerelease: false
-          make_latest: true
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
- |             while IFS= read -r asset; do
-              [ -n "$asset" ] && gh release delete-asset "$TAG" "$asset" -y || true
-            done
+          while IFS= read -r asset; do
+            [ -n "$asset" ] && gh release delete-asset "$TAG" "$asset" -y || true
+          done < <(
+            gh release view "$TAG" --json assets --jq '.assets[].name' |
+              grep -E '^(SmartAI-macOS-arm64\.zip\.part[0-9]+|SmartAI-macOS-arm64\.bundle\.json|Reassemble-SmartAI-macOS-arm64\.command)$' || true
+          )
 
       - name: Build Application Packages (macOS, Windows, Linux)
         env:
@@ -226,7 +213,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python build_bonsai2_bundled_zip.py             --app-bundle dist/SmartAI.app             --output-dir dist             --archive-name SmartAI-macOS-arm64.zip             --upload-tag "${{ steps.release_info.outputs.tag_name }}"
+          python build_bonsai2_bundled_zip.py \
+            --app-bundle dist/SmartAI.app \
+            --output-dir dist \
+            --archive-name SmartAI-macOS-arm64.zip \
+            --upload-tag "${{ steps.release_info.outputs.tag_name }}"
 
       - name: Upload Build Artifacts to Workflow Run
         uses: actions/upload-artifact@v4
@@ -245,7 +236,6 @@ jobs:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
           name: ${{ steps.release_info.outputs.release_title }}
           files: |
-            dist/SmartAI-macOS-arm64.zip
             dist/SmartAI-Windows.zip
             dist/SmartAI-Linux-x86_64.tar.gz
             dist/SmartAI-Unix-POSIX.tar.gz
