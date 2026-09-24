@@ -212,13 +212,13 @@ def test_mlx_phase3b_conversation_teach_uses_bounded_completion_only_lora_path()
     assert "AwakeOnlineConsolidator(" in non_mlx_body
     assert "consolidator._run_shadow_consolidation(_chat_history())" in non_mlx_body
 
-def test_standalone_eval_keeps_qwen38_while_app_eval_uses_selected_model():
+def test_standalone_eval_keeps_bonsai2_while_app_eval_uses_selected_model():
     runtime = _src("run_studio_complete.py")
     report = _src("eval/_master_4000_base.py")
     bridge = _src("eval/app_cross_platform_bridge.py")
-    qwen = "penkia/TernaryQuench-Qwen3.8-27B-MLX"
-    assert f'mlx_model_path: str="{qwen}"' in runtime
-    assert f'"{qwen}"' in report
+    bonsai = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+    assert f'mlx_model_path: str="{bonsai}"' in runtime
+    assert f'"{bonsai}"' in report
     # Desktop Eval remains model-aware and loads the app-selected model metadata.
     assert 'info = dict(config.get("model_info") or {})' in bridge
     assert "self.pro.load_model(" in bridge
