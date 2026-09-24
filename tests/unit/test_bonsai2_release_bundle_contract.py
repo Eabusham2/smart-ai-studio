@@ -34,6 +34,11 @@ def test_app_prefers_packaged_bonsai2_snapshots_when_present():
     assert '"preloaded_models"' in paths
     assert "if get_bundled_model_path(repo_id):" in cache
 
+    eval_runtime = _src("run_studio_complete.py")
+    assert "from config.paths import get_bundled_model_path" in eval_runtime
+    assert '"prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"' in eval_runtime
+    assert "get_bundled_model_path(" in eval_runtime
+
 
 def test_release_workflow_streams_oversized_macos_bundle():
     workflow = _src(".github/workflows/ci-build-release.yml")
