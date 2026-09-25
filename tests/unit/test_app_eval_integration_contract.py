@@ -102,3 +102,21 @@ def test_top_app_controls_explicitly_include_context_limit_and_memory_watcher():
     assert "self.entry_memory_limit.pack(" in app
     assert 'text="GB"' in app
     assert "tk.Toplevel(self.root)" in eval_ui
+
+
+def test_app_eval_uses_canonical_suite_and_restores_saved_console():
+    panel = _src("core/gui_eval_panel.py")
+    runner = _src("eval/app_eval_runner.py")
+
+    # The app subprocess imports the canonical suite; there is no copied Eval runner.
+    assert "import master_4000_eval_suite as suite" in runner
+    assert '"-m", "eval.app_eval_runner"' in panel
+
+    # Raw realtime output is persisted per run and the newest saved console is
+    # restored into the Eval window after a relaunch/reopen.
+    assert 'run_dir / "live_console.log"' in panel
+    assert 'with logfile.open("a", encoding="utf-8")' in panel
+    assert 'base.glob("*/live_console.log")' in panel
+    assert "max(logs, key=lambda p: p.stat().st_mtime)" in panel
+    assert "handle.read(64 * 1024)" in panel
+    assert "restored = _restore_saved_eval_log(self)" in panel
