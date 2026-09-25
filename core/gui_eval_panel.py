@@ -162,13 +162,15 @@ def install_gui_eval_panel() -> None:
                 + ("-" * 72)
                 + "\n",
             )
+            last_char = ""
             with latest.open("r", encoding="utf-8", errors="replace") as handle:
                 while True:
                     chunk = handle.read(64 * 1024)
                     if not chunk:
                         break
+                    last_char = chunk[-1:]
                     _append_eval_log(self, chunk)
-            if not str(latest.read_text(encoding="utf-8", errors="replace")[-1:]).endswith("\n"):
+            if last_char and last_char != "\n":
                 _append_eval_log(self, "\n")
             _append_eval_log(self, ("-" * 72) + "\n")
             return True
