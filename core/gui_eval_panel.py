@@ -147,6 +147,38 @@ def install_gui_eval_panel() -> None:
         except Exception:
             pass
 
+    def _restore_saved_eval_log(self):
+        """Reload the newest persisted Eval console into a newly opened window."""
+        try:
+            base = Path(getattr(mod, "get_portable_data_dir")()) / "eval_runs"
+            logs = [p for p in base.glob("*/live_console.log") if p.is_file()]
+            if not logs:
+                return False
+            latest = max(logs, key=lambda p: p.stat().st_mtime)
+            self._eval_run_dir = str(latest.parent)
+            _append_eval_log(
+                self,
+                f"[UI] Restored saved Eval console: {latest}\n"
+                + ("-" * 72)
+                + "\n",
+            )
+            with latest.open("r", encoding="utf-8", errors="replace") as handle:
+                while True:
+                    chunk = handle.read(64 * 1024)
+                    if not chunk:
+                        break
+                    _append_eval_log(self, chunk)
+            if not str(latest.read_text(encoding="utf-8", errors="replace")[-1:]).endswith("\n"):
+                _append_eval_log(self, "\n")
+            _append_eval_log(self, ("-" * 72) + "\n")
+            return True
+        except Exception as exc:
+            _append_eval_log(
+                self,
+                f"[UI] Could not restore the previous Eval console: {type(exc).__name__}: {exc}\n",
+            )
+            return False
+
     def _process_tree_metrics(self):
         proc = getattr(self, "_eval_proc", None)
         if proc is None or proc.poll() is not None:
@@ -693,9 +725,11 @@ def install_gui_eval_panel() -> None:
         )
         self._eval_log_widget.pack(fill="both", expand=True)
         scroll.configure(command=self._eval_log_widget.yview)
+        restored = _restore_saved_eval_log(self)
         _append_eval_log(
             self,
-            "Ready. Start Eval runs the canonical suite in a separate process.\n"
+            ("\n" if restored else "")
+            + "Ready. Start Eval runs the canonical suite in a separate process.\n"
             "Pause waits for a safe item/phase boundary. Cancel always asks for confirmation.\n",
         )
         _poll_eval(self)
