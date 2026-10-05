@@ -23,15 +23,7 @@
 
 ## 📚 Project Documentation
 
-The canonical technical documentation is **[docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md)**. It covers the current architecture and runtime behavior in one place, including:
-
-- model/backend routing across MLX, GGUF/Prism, BitNet, and controller runtimes;
-- the canonical desktop/CLI Eval runner and standalone Bonsai 2 Eval path;
-- benchmark, scoring, Context/KV, memory, and temperature policies;
-- Learn vs RSI semantics, Phase 3/3B consolidation, persistence, and rollback;
-- packaged Bonsai 2 model handling;
-- media generation, media Learn, and capability-gated media RSI;
-- verification boundaries, external prerequisites, and maintenance invariants.
+For detailed architecture, backend behavior, Eval, learning, media tools, packaging, and platform notes, see **[docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md)**.
 
 Media commands documented there include:
 
@@ -70,8 +62,8 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
   - **Sequential Task Queue (`Enter`)**: Enqueue prompts while generation is running with automatic sequential runner.
 * **💭 Interactive Thinking Dropdowns**:
   Collapsible reasoning pill cards (`[▶ 💭 Reasoning Process (153 tokens)]`) keeping chat clean while preserving complete chain-of-thought traces.
-* **🧪 Ground-Truth RLVR Sandbox Verification**:
-  Deterministic AST validation, unit test execution, and strict memory/timeout sandbox controls to guarantee verified code outputs before saving to memory.
+* **🧪 RLVR & Sandbox Verification**:
+  Supports deterministic AST validation, unit-test execution, and resource-limited sandbox checks before eligible results are used by learning and memory workflows.
 * **💤 Biological Synaptic Sleep Consolidation (EWC-LoRA)**:
   Consolidates high-reward interaction traces during offline sleep cycles using Elastic Weight Consolidation (EWC) to prevent catastrophic forgetting.
 * **🛡️ System RAM & VRAM Memory Watchdog**:
@@ -152,12 +144,14 @@ python3 main.py --live
 
 ---
 
-## 🧪 Comprehensive Verification Suite
+## 🧪 Testing
 
-Run the full end-to-end test suite across all 80 unit and integration tests:
+Run the repository test suite with:
 ```bash
 python3 -m pytest tests/ -v
 ```
+
+Test coverage and platform-specific verification may vary by branch and environment; see the project documentation and CI results for technical details.
 
 ---
 
