@@ -136,6 +136,13 @@ def is_model_cached_locally(repo_id: str) -> bool:
     if is_model_registered_loaded(repo_id):
         return True
 
+    try:
+        from config.paths import get_bundled_model_path
+        if get_bundled_model_path(repo_id):
+            return True
+    except Exception:
+        pass
+
     expanded = os.path.abspath(os.path.expanduser(repo_id))
     if os.path.exists(expanded):
         return _snapshot_looks_installed(expanded)

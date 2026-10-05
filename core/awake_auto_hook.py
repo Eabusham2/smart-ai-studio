@@ -54,19 +54,19 @@ def _model_context_limit(engine) -> Optional[int]:
     tokenizer = getattr(backend, "tokenizer", None)
     values = []
 
-    # llama.cpp exposes the physical context directly.
-    if backend is not None and backend is getattr(engine, "gguf_backend", None):
-        try:
-            value = int(model.n_ctx())
+    # Native backends may expose context either on the backend or tokenizer/model
+    # facade. Treat it uniformly so the single GUI Context control is backend-neutral.
+    if backend is not None:
+        for candidate in (
+            getattr(backend, "n_ctx", None),
+            getattr(model, "n_ctx", None),
+        ):
+            try:
+                value = int(candidate() if callable(candidate) else candidate)
+            except Exception:
+                continue
             if 1024 <= value <= 10_000_000:
                 values.append(value)
-        except Exception:
-            try:
-                value = int(getattr(backend, "n_ctx"))
-                if 1024 <= value <= 10_000_000:
-                    values.append(value)
-            except Exception:
-                pass
 
     for obj in (getattr(model, "args", None), getattr(model, "config", None), tokenizer):
         if obj is None:
@@ -105,6 +105,51 @@ def _selected_context_budget(engine) -> int:
         # against the physical model window when calculating generation room.
         backend.context_budget_tokens = max(1024, int(requested))
     return effective
+
+
+def _formatted_token_count(engine, formatted_prompt: str) -> int:
+    backend = _active_trainable_backend(engine)
+    tokenizer = getattr(backend, "tokenizer", None) if backend is not None else None
+
+    encode = getattr(tokenizer, "encode", None)
+    if callable(encode):
+        try:
+            return max(0, len(encode(formatted_prompt)))
+        except Exception:
+            pass
+
+    tokenize = getattr(tokenizer, "tokenize", None)
+    if callable(tokenize):
+        try:
+            return max(0, len(tokenize(formatted_prompt.encode("utf-8"))))
+        except Exception:
+            pass
+
+    counter = getattr(backend, "count_tokens", None) if backend is not None else None
+    if callable(counter):
+        try:
+            return max(
+                0,
+                int(counter([{"role": "user", "content": formatted_prompt}])),
+            )
+        except Exception:
+            pass
+
+    # Conservative final estimate only when a real tokenizer facade is unavailable.
+    return max(1, len(str(formatted_prompt)) // 4)
+
+
+def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
+    """One Context budget = packed prompt/history + generated output for every backend."""
+    context_budget = _selected_context_budget(engine)
+    prompt_tokens = _formatted_token_count(engine, formatted_prompt)
+    remaining = int(context_budget) - int(prompt_tokens)
+    if remaining <= 0:
+        raise RuntimeError(
+            f"Packed prompt requires {prompt_tokens:,} tokens but active Context is "
+            f"{context_budget:,}; refusing truncation."
+        )
+    return int(remaining)
 
 
 def _oldest_completed_chunk(history: List[Dict[str, str]], ratio: float) -> tuple[list, list]:
@@ -255,14 +300,21 @@ def install_awake_auto_learning(cls) -> None:
         mode, branch_count = self.router.route(entropy, has_test_cases=False)
 
         if int(branch_count) <= 1:
-            yield from original_stream_solve(
-                self,
-                prompt,
-                history=history,
-                temperature=CHAT_N1_TEMPERATURE,
-                top_p=top_p,
-                cancel_event=cancel_event,
-            )
+            formatted = self._format_prompt_with_history(prompt, history)
+            remaining = _remaining_generation_tokens(self, formatted)
+            previous_max = getattr(self.settings, "max_new_tokens", None)
+            self.settings.max_new_tokens = int(remaining)
+            try:
+                yield from original_stream_solve(
+                    self,
+                    prompt,
+                    history=history,
+                    temperature=CHAT_N1_TEMPERATURE,
+                    top_p=top_p,
+                    cancel_event=cancel_event,
+                )
+            finally:
+                self.settings.max_new_tokens = previous_max
             return
 
         # N>1 delegates to the original Pro engine: same entropy router, branch
@@ -309,15 +361,23 @@ def install_awake_auto_learning(cls) -> None:
             history = _apply_awake_learning(self, history, prompt)
         else:
             _selected_context_budget(self)
-        return original_solve(
-            self,
-            prompt,
-            test_cases=test_cases,
-            history=history,
-            cancel_event=cancel_event,
-            force_branch_count=force_branch_count,
-            temperature=temperature,
-        )
+
+        formatted = self._format_prompt_with_history(prompt, history)
+        remaining = _remaining_generation_tokens(self, formatted)
+        previous_max = getattr(self.settings, "max_new_tokens", None)
+        self.settings.max_new_tokens = int(remaining)
+        try:
+            return original_solve(
+                self,
+                prompt,
+                test_cases=test_cases,
+                history=history,
+                cancel_event=cancel_event,
+                force_branch_count=force_branch_count,
+                temperature=temperature,
+            )
+        finally:
+            self.settings.max_new_tokens = previous_max
 
     cls.stream_solve = stream_solve_with_awake_learning
     cls.solve = solve_with_awake_learning

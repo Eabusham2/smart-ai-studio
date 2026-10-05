@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 
 import psutil
 
+from core.training_memory import process_memory_bytes
+
 from run_studio_complete import *
 
 if MLX_AVAILABLE:
@@ -222,7 +224,8 @@ def _benchmark_ceiling(self) -> int:
 
 
 def _real_ram_gb() -> float:
-    return psutil.virtual_memory().used / (1024 ** 3)
+    """Actual eval-process footprint, not unrelated whole-system used RAM."""
+    return process_memory_bytes() / (1024 ** 3)
 
 
 def _repair_suite(splits):

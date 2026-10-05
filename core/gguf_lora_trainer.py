@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from core.training_memory import release_training_memory
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -375,6 +376,25 @@ class GGUFLoRATrainer:
 
             model.save_pretrained(tmp_peft, safe_serialization=True)
             tokenizer.save_pretrained(tmp_peft)
+
+            # Conversion is file-based. Do not keep the 27B QLoRA graph resident
+            # while the converter allocates its own buffers.
+            try:
+                optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            before.clear()
+            encoded = None
+            prefix_ids = None
+            labels = None
+            out = None
+            loss = None
+            del optimizer
+            del model
+            model = None
+            tokenizer = None
+            release_training_memory()
+
             self._convert_to_gguf(tmp_peft, tmp_gguf)
 
             # Do not make a new state live until both the PEFT checkpoint and converted
@@ -396,7 +416,7 @@ class GGUFLoRATrainer:
                 "base_model_id": self.base_model_id,
                 "adapter_format": "gguf-lora",
             }, float(drift), touched, self.gguf_adapter_path
-        except Exception:
+        except BaseException:
             if os.path.isdir(backup_peft) and not os.path.isdir(self.peft_dir):
                 os.replace(backup_peft, self.peft_dir)
             raise
@@ -408,9 +428,25 @@ class GGUFLoRATrainer:
                     os.remove(tmp_gguf)
             except OSError:
                 pass
-            del model
-            gc.collect()
             try:
-                torch.cuda.empty_cache()
+                optimizer.zero_grad(set_to_none=True)
             except Exception:
                 pass
+            try:
+                before.clear()
+            except Exception:
+                pass
+            try:
+                del optimizer
+            except Exception:
+                pass
+            try:
+                del tokenizer
+            except Exception:
+                pass
+            try:
+                if model is not None:
+                    del model
+            except Exception:
+                pass
+            release_training_memory()

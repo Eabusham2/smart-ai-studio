@@ -58,7 +58,8 @@ def test_bitnet_backend_is_real_and_training_rebuilds_deployment_weights():
     trainer = _src("core/bitnet_rebuild_trainer.py")
     assert '"https://github.com/microsoft/BitNet.git"' in src
     assert '"setup_env.py"' in src
-    assert '"llama-server"' in src
+    assert '"build/bin/llama-server"' in src
+    assert '"build/bin/Release/llama-server.exe"' in src
     assert "def training_ready(self) -> bool:" in src
     assert "BitNetRebuildTrainer" in src
     assert "def train_mini_batch(" in src

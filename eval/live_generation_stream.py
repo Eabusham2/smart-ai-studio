@@ -19,7 +19,13 @@ import psutil
 from datetime import datetime
 from typing import Any, Dict, List
 
-from mlx_lm.models.cache import make_prompt_cache
+try:
+    from mlx_lm.models.cache import make_prompt_cache
+except Exception:
+    # Non-MLX app evals must be able to import the canonical suite before the
+    # cross-platform bridge selects GGUF/Prism/BitNet/controller.
+    make_prompt_cache = None
+
 from core.mlx_engine import _adaptive_prefill_step_size
 
 
@@ -270,8 +276,13 @@ def install_phase4_stream(phase4_module) -> None:
     ) -> List[str]:
         mlx_lm = phase4_module.mlx_lm
         mx = phase4_module.mx
-        if not phase4_module.MLX_AVAILABLE or self.engine.model is None or self.engine.tokenizer is None:
-            raise RuntimeError("MLX model/tokenizer unavailable for RSI/Pro branching")
+        if (
+            not phase4_module.MLX_AVAILABLE
+            or make_prompt_cache is None
+            or self.engine.model is None
+            or self.engine.tokenizer is None
+        ):
+            raise RuntimeError("MLX model/tokenizer/cache unavailable for RSI/Pro branching")
 
         stream_generate = getattr(mlx_lm, "stream_generate", None)
         if not callable(stream_generate):

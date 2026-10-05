@@ -68,38 +68,78 @@ def _install_one(cls, result_cls, *, use_git_apply: bool = False) -> None:
             configured = float(getattr(self, "timeout", 4.0) or 4.0)
             patch_timeout = max(4.0, configured)
 
-            if use_git_apply:
+            # Windows does not normally ship the POSIX `patch` utility.
+            # Keep the historical Unix path when present, otherwise use Git's
+            # cross-platform unified-diff parser.
+            git_bin = shutil.which("git")
+            patch_bin = shutil.which("patch")
+            use_git = bool(
+                use_git_apply
+                or platform.system() == "Windows"
+                or not patch_bin
+            )
+
+            if use_git:
+                if not git_bin:
+                    return result_cls(
+                        False,
+                        (time.perf_counter() - started) * 1000.0,
+                        "",
+                        "SWE patch verification requires Git (or POSIX patch on Unix).",
+                        0.0,
+                    )
                 subprocess.run(
-                    ["git", "init", "-q"], cwd=root, capture_output=True,
-                    text=True, timeout=patch_timeout,
+                    [git_bin, "init", "-q"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=patch_timeout,
                 )
                 check = subprocess.run(
-                    ["git", "apply", "--check", "task.patch"], cwd=root,
-                    capture_output=True, text=True, timeout=patch_timeout,
+                    [git_bin, "apply", "--check", "task.patch"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=patch_timeout,
                 )
                 if check.returncode:
                     return result_cls(
-                        False, (time.perf_counter() - started) * 1000.0,
-                        check.stdout, check.stderr[-2000:], 0.0,
+                        False,
+                        (time.perf_counter() - started) * 1000.0,
+                        check.stdout,
+                        check.stderr[-2000:],
+                        0.0,
                     )
                 applied = subprocess.run(
-                    ["git", "apply", "task.patch"], cwd=root,
-                    capture_output=True, text=True, timeout=patch_timeout,
+                    [git_bin, "apply", "task.patch"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=patch_timeout,
                 )
             else:
                 strip = _patch_strip_level(patch)
                 check = subprocess.run(
-                    ["patch", "--dry-run", f"-p{strip}", "-i", "task.patch"],
-                    cwd=root, capture_output=True, text=True, timeout=patch_timeout,
+                    [patch_bin, "--dry-run", f"-p{strip}", "-i", "task.patch"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=patch_timeout,
                 )
                 if check.returncode:
                     return result_cls(
-                        False, (time.perf_counter() - started) * 1000.0,
-                        check.stdout, check.stderr[-2000:], 0.0,
+                        False,
+                        (time.perf_counter() - started) * 1000.0,
+                        check.stdout,
+                        check.stderr[-2000:],
+                        0.0,
                     )
                 applied = subprocess.run(
-                    ["patch", f"-p{strip}", "-i", "task.patch"], cwd=root,
-                    capture_output=True, text=True, timeout=patch_timeout,
+                    [patch_bin, f"-p{strip}", "-i", "task.patch"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=patch_timeout,
                 )
 
             if applied.returncode:

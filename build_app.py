@@ -46,7 +46,7 @@ end run
     os.makedirs(app_code_dir, exist_ok=True)
 
     # 2. Copy application source trees & icons
-    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "AppIcon.icns"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "AppIcon.icns"]:
         src = os.path.abspath(item)
         dst = os.path.join(app_code_dir, item)
         if os.path.isdir(src):
@@ -150,18 +150,23 @@ end run
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
 
-        # Create portable macOS zip archive from staging
+        # Create the ordinary portable zip unless CI will replace it with the
+        # streamed Bonsai-2 bundled archive (which is too large for one GitHub asset).
         zip_path = os.path.join(dist_dir, f"{app_name}-macOS-arm64.zip")
-        if os.path.exists(zip_path):
-            try:
-                os.remove(zip_path)
-            except Exception:
-                pass
-        shutil.make_archive(os.path.join(dist_dir, f"{app_name}-macOS-arm64"), 'zip', dmg_temp)
+        bundle_release = os.getenv("SMARTAI_MODEL_BUNDLE_RELEASE", "0") == "1"
+        if not bundle_release:
+            if os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except Exception:
+                    pass
+            shutil.make_archive(os.path.join(dist_dir, f"{app_name}-macOS-arm64"), "zip", dmg_temp)
+            if os.path.exists(zip_path):
+                zsize = os.path.getsize(zip_path) / (1024 * 1024)
+                print(f"[✓] SUCCESS: macOS Portable Zip Bundle generated: {zip_path} ({zsize:.2f} MB)")
+        else:
+            print("[*] CI model-bundle mode: normal macOS zip deferred to streamed multipart builder.")
         shutil.rmtree(dmg_temp, ignore_errors=True)
-        if os.path.exists(zip_path):
-            zsize = os.path.getsize(zip_path) / (1024 * 1024)
-            print(f"[✓] SUCCESS: macOS Portable Zip Bundle generated: {zip_path} ({zsize:.2f} MB)")
 
 
 def create_windows_bundle(dist_dir: str, app_name: str):
@@ -171,7 +176,7 @@ def create_windows_bundle(dist_dir: str, app_name: str):
     os.makedirs(win_dir, exist_ok=True)
 
     # Copy application source trees
-    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "requirements.txt", "pyproject.toml"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(win_dir, item)
         if os.path.isdir(src):
@@ -226,7 +231,7 @@ def create_linux_bundle(dist_dir: str, app_name: str):
     os.makedirs(usr_bin, exist_ok=True)
 
     # Copy application code into AppDir
-    for item in ["app_gui.py", "main.py", "config", "core", "memory", "consolidation", "app_icon.png", "requirements.txt", "pyproject.toml"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(usr_bin, item)
         if os.path.isdir(src):

@@ -35,8 +35,11 @@ class GGUFReasoningBackend:
         self.n_ctx = n_ctx
         self.verbose = verbose
         self.training_base_model_id = str(training_base_model_id or "").strip()
+        eval_adapter_root = str(os.getenv("SMARTAI_GGUF_ADAPTER_ROOT", "") or "").strip()
         if adapter_root:
             self.adapter_root = os.path.abspath(adapter_root)
+        elif eval_adapter_root:
+            self.adapter_root = os.path.abspath(eval_adapter_root)
         else:
             from config.paths import get_portable_data_dir
             stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.basename(self.model_path) or "gguf")
@@ -167,6 +170,7 @@ class GGUFReasoningBackend:
         if had_peft:
             shutil.copytree(peft_dir, peft_backup)
 
+        success = False
         self.unload_model()
         trainer = GGUFLoRATrainer(
             model_path=self.model_path,
@@ -183,15 +187,13 @@ class GGUFReasoningBackend:
             self.adapters = dict(meta or {})
             if not self.load_model():
                 raise RuntimeError("GGUF LoRA trained successfully but llama.cpp failed to reload it")
-            try:
-                os.remove(backup_path)
-            except OSError:
-                pass
-            if os.path.isdir(peft_backup):
-                shutil.rmtree(peft_backup, ignore_errors=True)
-            return dict(self.adapters), float(drift)
-        except Exception:
-            # Roll back the adapter atomically and restore inference. Never leave a
+            result = (dict(self.adapters), float(drift))
+            success = True
+            return result
+        except BaseException:
+            success = False
+            # Roll back the adapter atomically and restore inference. Cancellation
+            # (KeyboardInterrupt) is a transaction failure too.
             # failed consolidation as the live parameter state.
             if os.path.isfile(backup_path):
                 os.replace(backup_path, self.adapter_path)
@@ -210,6 +212,14 @@ class GGUFReasoningBackend:
 
             self.load_model()
             raise
+        finally:
+            if success:
+                try:
+                    os.remove(backup_path)
+                except OSError:
+                    pass
+                if os.path.isdir(peft_backup):
+                    shutil.rmtree(peft_backup, ignore_errors=True)
 
     def supports_media_input(self, kind: str) -> bool:
         """Bonsai GGUF accepts images and sampled-video frames when its projector is loaded."""

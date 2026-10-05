@@ -63,6 +63,31 @@ def get_custom_models_file() -> str:
     return os.path.join(data_dir, "custom_models.json")
 
 
+def get_bundled_model_path(repo_id: str) -> Optional[str]:
+    """Returns a packaged model snapshot when the release ZIP bundled it locally."""
+    if not repo_id:
+        return None
+    safe_repo = str(repo_id).strip().replace("/", "--")
+    candidate = os.path.join(get_base_dir(), "preloaded_models", safe_repo)
+    if not os.path.isdir(candidate):
+        return None
+
+    has_config = os.path.isfile(os.path.join(candidate, "config.json"))
+    has_weights = False
+    try:
+        for root, _, files in os.walk(candidate):
+            if any(
+                name.lower().endswith((".safetensors", ".gguf", ".bin", ".npz", ".pt"))
+                for name in files
+            ):
+                has_weights = True
+                break
+    except Exception:
+        return None
+
+    return candidate if has_config and has_weights else None
+
+
 def inspect_mlx_model_folder(folder_path: str) -> Dict[str, Any]:
     """
     Inspects a local MLX or SafeTensors model directory.

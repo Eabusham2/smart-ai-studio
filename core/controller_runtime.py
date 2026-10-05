@@ -19,6 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
+from core.training_memory import release_training_memory
 
 
 _RUNTIME_FAMILY_RESOLVERS: Dict[str, Any] = {}
@@ -342,7 +343,12 @@ class UniversalControllerBackend:
             from config.paths import get_portable_data_dir
             import hashlib
             key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
-            self.adapter_path = os.path.join(get_portable_data_dir(), "controller_lora", key)
+            eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
+            self.adapter_path = (
+                os.path.join(os.path.abspath(eval_root), key)
+                if eval_root
+                else os.path.join(get_portable_data_dir(), "controller_lora", key)
+            )
             adapter_cfg = os.path.join(self.adapter_path, "adapter_config.json")
             if os.path.isfile(adapter_cfg):
                 from peft import PeftModel
@@ -450,7 +456,7 @@ class UniversalControllerBackend:
         save_path: Optional[str] = None,
         **_kwargs,
     ):
-        """Real completion-only PEFT update for non-MLX Transformers controllers."""
+        """Real transactional completion-only PEFT update for Transformers controllers."""
         del adapters, fisher_matrix, lambda_ewc, save_path
         import math
         import shutil
@@ -460,7 +466,8 @@ class UniversalControllerBackend:
         tok = self.tokenizer
         rows = [
             item for item in (data or [])
-            if str(item.get("prompt") or "").strip() and str(item.get("completion") or "").strip()
+            if str(item.get("prompt") or "").strip()
+            and str(item.get("completion") or "").strip()
         ]
         if not rows:
             raise RuntimeError("Controller trainer received no prompt/completion pairs")
@@ -473,10 +480,16 @@ class UniversalControllerBackend:
         params = [param for param in model.parameters() if param.requires_grad]
         if not params:
             raise RuntimeError("Controller LoRA exposes no trainable parameters")
+
         optimizer = torch.optim.AdamW(params, lr=float(learning_rate))
         model.train()
+        tmp = ""
+        backup = ""
+        success = False
+        had_adapter = bool(self.adapter_path and os.path.isdir(self.adapter_path))
 
         try:
+            trained_rows = 0
             for _ in range(max(1, int(steps))):
                 for item in rows:
                     prompt = str(item["prompt"]).strip()
@@ -486,11 +499,18 @@ class UniversalControllerBackend:
                     apply_template = getattr(tok, "apply_chat_template", None)
                     if callable(apply_template):
                         try:
-                            prefix = apply_template(messages, tokenize=False, add_generation_prompt=True)
+                            prefix = apply_template(
+                                messages,
+                                tokenize=False,
+                                add_generation_prompt=True,
+                            )
                         except Exception:
                             prefix = None
                     if not prefix:
-                        prefix = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+                        prefix = (
+                            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+                            f"<|im_start|>assistant\n"
+                        )
                     full = prefix + completion
                     if "<|im_start|>" in prefix:
                         full += "<|im_end|>"
@@ -511,7 +531,8 @@ class UniversalControllerBackend:
                         device = next(param.device for param in params)
                     except StopIteration:
                         raise RuntimeError("Controller LoRA lost its trainable parameters")
-                    encoded = {k: v.to(device) for k, v in encoded.items()}
+
+                    encoded = {key: value.to(device) for key, value in encoded.items()}
                     labels = encoded["input_ids"].clone()
                     prompt_len = min(int(prefix_ids.shape[1]), int(labels.shape[1]))
                     labels[:, :prompt_len] = -100
@@ -523,6 +544,10 @@ class UniversalControllerBackend:
                         raise RuntimeError("Controller LoRA training produced a non-finite loss")
                     loss.backward()
                     optimizer.step()
+                    trained_rows += 1
+
+            if trained_rows <= 0:
+                raise RuntimeError("Controller LoRA found no trainable prompt/completion rows")
 
             total = 0.0
             touched = 0
@@ -543,19 +568,84 @@ class UniversalControllerBackend:
             backup = self.adapter_path + ".previous"
             shutil.rmtree(tmp, ignore_errors=True)
             shutil.rmtree(backup, ignore_errors=True)
+
             model.save_pretrained(tmp, safe_serialization=True)
-            if os.path.isdir(self.adapter_path):
+            if had_adapter:
                 os.replace(self.adapter_path, backup)
             os.replace(tmp, self.adapter_path)
-            shutil.rmtree(backup, ignore_errors=True)
+            tmp = ""
 
             self.adapters = {
                 "trainable_parameters_touched": touched,
                 "adapter_format": "peft-lora",
             }
-            return dict(self.adapters), float(drift)
+            result = (dict(self.adapters), float(drift))
+            success = True
+            return result
+
+        except BaseException:
+            success = False
+            # Restore live trainable tensors first, then restore the persisted
+            # adapter directory if the filesystem transaction had started.
+            try:
+                with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        snapshot = before.get(name)
+                        if snapshot is None or not param.requires_grad:
+                            continue
+                        param.copy_(
+                            snapshot.to(device=param.device, dtype=param.dtype)
+                        )
+            except Exception:
+                pass
+
+            if tmp and os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+
+            if backup and os.path.isdir(backup):
+                if os.path.isdir(self.adapter_path):
+                    shutil.rmtree(self.adapter_path, ignore_errors=True)
+                os.replace(backup, self.adapter_path)
+                backup = ""
+            elif not had_adapter and self.adapter_path and os.path.isdir(self.adapter_path):
+                # A brand-new failed transaction must not leave an unaccepted
+                # persisted adapter behind.
+                shutil.rmtree(self.adapter_path, ignore_errors=True)
+            raise
+
         finally:
+            if tmp and os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            if success and backup and os.path.isdir(backup):
+                shutil.rmtree(backup, ignore_errors=True)
+                backup = ""
+            elif backup and os.path.isdir(backup):
+                # Failure/cancellation keeps the previous adapter authoritative.
+                if os.path.isdir(self.adapter_path):
+                    shutil.rmtree(self.adapter_path, ignore_errors=True)
+                try:
+                    os.replace(backup, self.adapter_path)
+                    backup = ""
+                except Exception:
+                    pass
+
+            try:
+                optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            before.clear()
+            params.clear()
+            encoded = None
+            prefix_ids = None
+            labels = None
+            output = None
+            loss = None
+            try:
+                del optimizer
+            except Exception:
+                pass
             model.eval()
+            release_training_memory(self)
 
     @staticmethod
     def _text_from_generation(value: Any) -> str:

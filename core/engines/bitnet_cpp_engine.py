@@ -1,9 +1,10 @@
-"""Real Microsoft bitnet.cpp inference backend.
+"""Real Microsoft bitnet.cpp inference and persistent-learning backend.
 
 This replaces the old synthetic BitNet placeholder in ProReasoningEngine routing.
-It talks to bitnet.cpp's llama-server and never fabricates output. Parameter training
-is intentionally fail-closed until bitnet.cpp exposes a compatible persistent adapter
-training path.
+It talks to bitnet.cpp's llama-server and never fabricates output. Learning is
+fail-closed unless metadata provides a compatible BF16 training lineage; when it
+does, the backend performs a real PEFT update, rebuilds I2_S deployment weights,
+hot-reloads them, and rolls back atomically on failure or cancellation.
 """
 from __future__ import annotations
 
@@ -67,7 +68,12 @@ class BitNetCppReasoningBackend:
         self.threads = int(threads or max(1, (os.cpu_count() or 4) // 2))
         key_src = self.hf_repo_id or self.original_model_path
         key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:16]
-        self.training_root = Path(get_portable_data_dir()) / "bitnet_learning" / key
+        eval_training_root = str(os.getenv("SMARTAI_BITNET_TRAINING_ROOT", "") or "").strip()
+        self.training_root = (
+            Path(eval_training_root)
+            if eval_training_root
+            else Path(get_portable_data_dir()) / "bitnet_learning" / key
+        )
         self.learned_model_path = self.training_root / "learned-i2_s.gguf"
         self.adapter_path = str(self.learned_model_path)
         self.adapters: Dict[str, Any] = {}
@@ -387,6 +393,7 @@ class BitNetCppReasoningBackend:
         if had_learned:
             shutil.copy2(str(self.learned_model_path), backup)
 
+        success = False
         self.unload_model()
         try:
             meta, drift, _touched, learned_path = trainer.train(
@@ -398,12 +405,11 @@ class BitNetCppReasoningBackend:
             self.adapters = dict(meta or {})
             if not self.load_model():
                 raise RuntimeError("BitNet training succeeded but bitnet.cpp failed to reload learned weights")
-            try:
-                os.remove(backup)
-            except OSError:
-                pass
-            return dict(self.adapters), float(drift)
-        except Exception:
+            result = (dict(self.adapters), float(drift))
+            success = True
+            return result
+        except BaseException:
+            success = False
             if os.path.isfile(backup):
                 os.replace(backup, str(self.learned_model_path))
             elif not had_learned:
@@ -411,9 +417,19 @@ class BitNetCppReasoningBackend:
                     os.remove(str(self.learned_model_path))
                 except OSError:
                     pass
-            self.model_path = str(self.learned_model_path if self.learned_model_path.is_file() else self.original_model_path)
+            self.model_path = str(
+                self.learned_model_path
+                if self.learned_model_path.is_file()
+                else self.original_model_path
+            )
             self.load_model()
             raise
+        finally:
+            if success:
+                try:
+                    os.remove(backup)
+                except OSError:
+                    pass
 
     def supports_media_input(self, kind: str) -> bool:
         del kind

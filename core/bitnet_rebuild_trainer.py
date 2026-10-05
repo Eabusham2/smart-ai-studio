@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from core.training_memory import release_training_memory
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -444,6 +445,27 @@ class BitNetRebuildTrainer:
                 max_shard_size="100GB",
             )
             tokenizer.save_pretrained(tmp_merged)
+
+            # Microsoft's converter is file-based. Release both the PEFT graph and
+            # merged BF16 model before conversion so their memory cannot overlap.
+            try:
+                optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            before.clear()
+            params.clear()
+            encoded = None
+            prefix_ids = None
+            labels = None
+            out = None
+            loss = None
+            del optimizer
+            del merged
+            del model
+            model = None
+            tokenizer = None
+            release_training_memory()
+
             self._convert_merged_checkpoint(tmp_merged, tmp_deploy)
 
             if os.path.isdir(peft_backup):
@@ -462,7 +484,7 @@ class BitNetRebuildTrainer:
                 "base_model_id": self.base_model_id,
                 "adapter_format": "peft-merged-bitnet-i2_s",
             }, float(drift), int(touched), str(self.learned_model_path)
-        except Exception:
+        except BaseException:
             if os.path.isdir(peft_backup) and not self.peft_dir.is_dir():
                 os.replace(peft_backup, str(self.peft_dir))
             raise
@@ -475,10 +497,25 @@ class BitNetRebuildTrainer:
                     os.remove(tmp_deploy)
             except OSError:
                 pass
-            del model
-            gc.collect()
             try:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                optimizer.zero_grad(set_to_none=True)
             except Exception:
                 pass
+            try:
+                before.clear()
+            except Exception:
+                pass
+            try:
+                del optimizer
+            except Exception:
+                pass
+            try:
+                del tokenizer
+            except Exception:
+                pass
+            try:
+                if model is not None:
+                    del model
+            except Exception:
+                pass
+            release_training_memory()

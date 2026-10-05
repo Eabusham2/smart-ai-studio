@@ -308,15 +308,28 @@ def install(p4, cls) -> None:
     def phase3_with_integrity(self) -> Dict[str, Any]:
         queued = list(p4._fetch_benchmark_training_memories(self))
         target_learn = len({(str(q), str(a)) for q, a in p4.LEARN_EXAMPLES})
-        learn_rows = [r for r in queued if str(r.get("session_id", "")) == str(p4.LEARN_SESSION_ID)]
-        rsi_rows = [r for r in queued if str(r.get("session_id", "")) == str(p4.RSI_SESSION_ID)]
+        learn_rows = [
+            r for r in queued
+            if str(r.get("memory_kind") or "") == "learn"
+            or str(r.get("session_id", "")) == str(p4.LEARN_SESSION_ID)
+        ]
+        rsi_rows = [
+            r for r in queued
+            if str(r.get("memory_kind") or "") == "rsi_self"
+            or str(r.get("session_id", "")) == str(p4.RSI_SESSION_ID)
+        ]
 
         if len(learn_rows) != target_learn:
             raise RuntimeError(
                 f"Phase 3 integrity failure: queued {len(learn_rows)}/{target_learn} supplied LearningFacts"
             )
 
-        queued_ids = [int(r["id"]) for r in queued if r.get("id") is not None]
+        learn_ids = [
+            int(r["id"]) for r in learn_rows if r.get("id") is not None
+        ]
+        rsi_ids = [
+            int(r["id"]) for r in rsi_rows if r.get("id") is not None
+        ]
         _emit(
             "Phase 3 Consolidation",
             "start",
@@ -342,17 +355,40 @@ def install(p4, cls) -> None:
         if queued and (not persisted or not os.path.exists(p4.RSI_ADAPTER_PATH)):
             raise RuntimeError("Phase 3 updated weights but the RSI adapter was not persisted")
 
-        if queued_ids:
+        if learn_ids or rsi_ids:
             path = _db_path(self)
             if path:
+                not_marked = []
                 with sqlite3.connect(path) as conn:
-                    marks = conn.execute(
-                        f"SELECT id, consolidated FROM episodic_interactions WHERE id IN ({','.join('?' for _ in queued_ids)})",
-                        queued_ids,
-                    ).fetchall()
-                not_marked = [row[0] for row in marks if int(row[1] or 0) != 1]
+                    if learn_ids:
+                        learn_marks = conn.execute(
+                            f"SELECT id, consolidated FROM episodic_interactions "
+                            f"WHERE id IN ({','.join('?' for _ in learn_ids)})",
+                            learn_ids,
+                        ).fetchall()
+                        learn_state = {int(row[0]): int(row[1] or 0) for row in learn_marks}
+                        not_marked.extend(
+                            f"learn:{mid}"
+                            for mid in learn_ids
+                            if learn_state.get(mid) != 1
+                        )
+                    if rsi_ids:
+                        rsi_marks = conn.execute(
+                            f"SELECT id, consolidated FROM rsi_self_memories "
+                            f"WHERE id IN ({','.join('?' for _ in rsi_ids)})",
+                            rsi_ids,
+                        ).fetchall()
+                        rsi_state = {int(row[0]): int(row[1] or 0) for row in rsi_marks}
+                        not_marked.extend(
+                            f"rsi:{mid}"
+                            for mid in rsi_ids
+                            if rsi_state.get(mid) != 1
+                        )
                 if not_marked:
-                    raise RuntimeError(f"Phase 3 left {len(not_marked)} trained memories unconsolidated")
+                    raise RuntimeError(
+                        f"Phase 3 left {len(not_marked)} trained memories unconsolidated: "
+                        + ", ".join(not_marked[:8])
+                    )
 
         _emit(
             "Phase 3 Consolidation",

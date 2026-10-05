@@ -52,6 +52,62 @@ def _atomic_json(path, data):
         temporary.unlink(missing_ok=True)
 
 
+def _persisted_lora_delta_proven(directory: Path) -> bool:
+    """Prove an external LoRA artifact contains a learned nonzero update factor.
+
+    Standard LoRA initializes one factor (usually B/up) at zero. A successful
+    optimization must move that output/update factor away from zero. If the
+    artifact format does not expose a recognizable LoRA update tensor, fail
+    closed rather than claiming a parameter update that cannot be verified.
+    """
+    files = list(Path(directory).rglob("*.safetensors"))
+    if not files:
+        return False
+
+    output_markers = (
+        "lora_b",
+        "lora.b",
+        "lora_up",
+        "lora.up",
+        "lora_out",
+        "lora.out",
+        "adapter_b",
+        "adapter.b",
+    )
+    try:
+        import torch
+        from safetensors import safe_open
+    except Exception:
+        return False
+
+    saw_output_factor = False
+    for file in files:
+        try:
+            with safe_open(str(file), framework="pt", device="cpu") as handle:
+                for key in handle.keys():
+                    lowered = str(key).lower()
+                    if not any(marker in lowered for marker in output_markers):
+                        continue
+                    saw_output_factor = True
+                    tensor = handle.get_tensor(key)
+                    if tensor.numel() <= 0:
+                        continue
+                    if not bool(torch.isfinite(tensor).all().item()):
+                        raise RuntimeError(
+                            f"Persisted media LoRA contains non-finite tensor: {key}"
+                        )
+                    if float(tensor.detach().abs().max().item()) > 0.0:
+                        return True
+        except RuntimeError:
+            raise
+        except Exception:
+            continue
+
+    if saw_output_factor:
+        return False
+    return False
+
+
 class MediaLearningService:
     def __init__(self, directory):
         self.directory = Path(directory)
@@ -374,6 +430,11 @@ class MediaLearningService:
             verifier = session.get("verify_saved")
             if callable(verifier) and not verifier(directory):
                 raise RuntimeError("Saved media adapter/checkpoint failed verification")
+            if not _persisted_lora_delta_proven(directory):
+                raise RuntimeError(
+                    "External media trainer produced an artifact, but a real nonzero "
+                    "LoRA update factor could not be proven; refusing weights_updated=True"
+                )
             _atomic_json(
                 self.directory / _key(repo) / "current.json",
                 {
@@ -391,7 +452,7 @@ class MediaLearningService:
                 "trainer_backend": session.get("backend"),
             })
             return payload
-        except Exception:
+        except BaseException:
             shutil.rmtree(directory, ignore_errors=True)
             raise
 
@@ -410,6 +471,7 @@ class MediaLearningService:
         optimizer = torch.optim.AdamW([p for _,p in named],lr=1e-4,weight_decay=0.0)
         ewc = EWCLossCalculator(lambda_ewc=400.0,device=str(named[0][1].device))
         losses = []
+        directory = None
         try:
             module.train()
             for sample in samples:
@@ -452,10 +514,13 @@ class MediaLearningService:
             return {"status":"success","weights_updated":True,"parameter_delta_l2":math.sqrt(delta_sq),
                     "trained_parameters":count,"training_examples":len(samples),"losses":losses,
                     "adapter_path":str(directory),"quality_improvement_verified":False}
-        except Exception:
+        except BaseException:
             with torch.no_grad():
                 for name,param in named:
                     param.copy_(before[name])
+            if directory is not None:
+                import shutil
+                shutil.rmtree(directory, ignore_errors=True)
             raise
         finally:
             optimizer.zero_grad(set_to_none=True)
