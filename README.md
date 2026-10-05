@@ -15,11 +15,37 @@
 
 ---
 
-[Key Features](#-key-features) • [Model Architectures](#-model-matrix--architectures) • [Hardware Context Scaling](#-hardware-adaptive-context-scaling) • [Agent Tools & MCP](#-agent-tool-suite--mcp) • [Installation](#-installation--quickstart) • [Packaging](#-multi-platform-packaging) • [Licensing](#-commercial-licensing)
+[Documentation](#-project-documentation) • [Key Features](#-key-features) • [Model Architectures](#-model-matrix--architectures) • [Hardware Context Scaling](#-hardware-adaptive-context-scaling) • [Agent Tools & MCP](#-agent-tool-suite--mcp) • [Installation](#-installation--quickstart) • [Packaging](#-multi-platform-packaging) • [Licensing](#-commercial-licensing)
 
 ---
 
 </div>
+
+## 📚 Project Documentation
+
+The canonical technical documentation is **[docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md)**. It covers the current architecture and runtime behavior in one place, including:
+
+- model/backend routing across MLX, GGUF/Prism, BitNet, and controller runtimes;
+- the canonical desktop/CLI Eval runner and standalone Bonsai 2 Eval path;
+- benchmark, scoring, Context/KV, memory, and temperature policies;
+- Learn vs RSI semantics, Phase 3/3B consolidation, persistence, and rollback;
+- packaged Bonsai 2 model handling;
+- media generation, media Learn, and capability-gated media RSI;
+- verification boundaries, external prerequisites, and maintenance invariants.
+
+Media commands documented there include:
+
+```text
+/media image <prompt>
+/media video <prompt>
+/media audio <prompt>
+/learn media MODEL_ID SOURCE
+/rsi media MODEL_ID <prompt>
+```
+
+The project document is the authoritative reference for implementation details; this README remains the quick-start/project overview.
+
+---
 
 ## 🏷️ Repository Tags & Topics
 
