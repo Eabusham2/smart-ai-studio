@@ -6,9 +6,7 @@
 **Latest implementation head documented:** `622481b918a5bc80f0860d9729444184fbb5934b`  
 **Documentation consolidation:** 2026-10-04
 
-This is the single canonical project document for the current Smart AI Studio feature line. It replaces the old split audit/diff and Gemini-postmortem documents.
-
-The old giant raw master→feature diff, per-line diff annotations, and Gemini criticism/postmortem are intentionally **not** carried into this document. The useful project architecture, behavior, invariants, runtime call chains, fixes, verification boundaries, packaging state, and operational requirements are preserved here.
+This is the single canonical project document for the current Smart AI Studio feature line. It preserves the useful project architecture, behavior, invariants, runtime call chains, fixes, verification boundaries, packaging state, and operational requirements in one place.
 
 ## 1. Project purpose and operating rules
 
