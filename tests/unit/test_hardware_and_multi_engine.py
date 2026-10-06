@@ -6,12 +6,9 @@ and Streaming Downloader Cache Management.
 import os
 import tempfile
 import unittest
-import torch
-import torch.nn as nn
-
 from config.settings import get_settings, MODEL_PRESETS
 from core.downloader import ensure_model_available, is_model_available_locally, get_models_cache_dir
-from core.engines.bitnet_engine import BitLinear158, BitNetReasoningBackend
+from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
 from core.hardware import detect_system_hardware, resolve_optimal_backend, SystemHardwareProfile
 from core.pro_engine import ProReasoningEngine
@@ -45,36 +42,21 @@ class TestHardwareAndMultiEngine(unittest.TestCase):
         vision_backend, vision_device = resolve_optimal_backend("multimodal_vision")
         self.assertIn(vision_backend, ["mlx", "gguf", "torch"])
 
-    def test_03_bitnet_bitlinear_ternary_quantization(self):
-        """Verify BitLinear quantizes weights strictly to {-1, 0, +1} and activations to 8-bit."""
-        layer = BitLinear158(in_features=32, out_features=16)
-        x = torch.randn(2, 32)
+    def test_03_bitnet_cpp_backend_fails_closed_without_real_runtime(self):
+        """Verify BitNet does not fabricate a model or output when real artifacts are absent."""
+        backend = BitNetCppReasoningBackend(model_path="definitely_missing_bitnet_model.gguf")
+        self.assertIsNone(backend._resolve_model_file())
+        self.assertFalse(backend.is_loaded)
+        with self.assertRaises(RuntimeError):
+            backend.generate_branches("Test BitNet prompt", branch_count=1)
+        self.assertGreaterEqual(backend.calculate_token_entropy("Test prompt"), 0.0)
 
-        w_quant, gamma = layer.quantize_weights()
-        self.assertTrue(torch.all((w_quant == -1) | (w_quant == 0) | (w_quant == 1)))
-        self.assertGreater(gamma.item(), 0.0)
-
-        out = layer(x)
-        self.assertEqual(out.shape, (2, 16))
-        self.assertFalse(torch.isnan(out).any())
-
-    def test_04_bitnet_reasoning_backend_execution(self):
-        """Verify BitNet reasoning backend loads architecture, generates branches, and streams tokens."""
-        backend = BitNetReasoningBackend(model_path="dummy_bitnet_path", vocab_size=500, hidden_dim=64, num_layers=2)
-        loaded = backend.load_model()
-        self.assertTrue(loaded)
-        self.assertTrue(backend.is_loaded)
-
-        branches = backend.generate_branches("Test BitNet prompt", branch_count=2)
-        self.assertEqual(len(branches), 2)
-        self.assertIn("BitNet", branches[0])
-
-        tokens = list(backend.stream_generate_tokens("Test stream"))
-        self.assertGreater(len(tokens), 0)
-
-        ent = backend.calculate_token_entropy("Test prompt")
-        self.assertGreater(ent, 0.0)
-
+    def test_04_bitnet_learning_requires_real_training_lineage(self):
+        """Verify BitNet learning is fail-closed without a declared BF16 training lineage."""
+        backend = BitNetCppReasoningBackend(model_path="definitely_missing_bitnet_model.gguf")
+        self.assertFalse(backend.training_ready())
+        with self.assertRaises(RuntimeError):
+            backend.train_mini_batch({}, [{"prompt": "x", "completion": "y"}])
         backend.unload_model()
         self.assertFalse(backend.is_loaded)
 
