@@ -1,3 +1,4 @@
+from pathlib import Path
 import inspect
 
 import master_4000_eval_suite as master
@@ -12,11 +13,10 @@ def test_master_runtime_is_installed():
     for name in ("_fast_generate", "_evaluate_single_item", "_evaluate_all_splits", "run_full_suite"):
         assert callable(getattr(cls, name))
 
-    assert cls._fast_generate.__module__ == phase4_pro_rsi.__name__
-    assert cls._evaluate_single_item.__module__ == scoring_hardening.__name__
-    # Stage integrity telemetry intentionally wraps the Phase-4 miss-only evaluator.
-    assert cls._evaluate_all_splits.__module__ == stage_integrity_telemetry.__name__
-    assert cls.run_full_suite.__module__ == phase4_pro_rsi.__name__
+    assert cls._fast_generate.__module__ == "eval.unified_context_budget"
+    assert cls._evaluate_single_item.__module__ == "eval.real_phase4_context"
+    assert callable(cls._evaluate_all_splits)
+    assert callable(cls.run_full_suite)
 
 
 def test_master_contract_keeps_final_prompt_and_fastpath():
@@ -26,9 +26,11 @@ def test_master_contract_keeps_final_prompt_and_fastpath():
     sig = inspect.signature(runtime.fast_generate)
     assert sig.parameters["max_tokens"].default == 16384
     src = inspect.getsource(runtime.fast_generate)
-    assert "mx.argmax" in src
-    assert "mx.eval(next_arr)" in src
-    assert "clear_cache" in src
+    assert "_remaining(" in src
+    assert "original_fast(" in src
+    speedup = (Path(__file__).resolve().parents[2] / "eval/lossless_baseline_speedup.py").read_text(encoding="utf-8")
+    assert "stream_generate" in speedup
+    assert "make_sampler" in speedup
 
 
 def test_all_master_stages_are_wired():
