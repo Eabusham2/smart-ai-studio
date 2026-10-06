@@ -80,7 +80,8 @@ def test_canonical_suite_order_and_standalone_packaging_are_preserved():
 def test_bonsai2_is_the_default_eval_model_and_current_model_is_reported():
     runtime = _src("run_studio_complete.py")
     report = _src("eval/_master_4000_base.py")
-    assert 'mlx_model_path: str="prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"' in runtime
+    assert 'get_bundled_model_path(' in runtime
+    assert '"prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"' in runtime
     assert "_eval_target_model_label" in report
     assert "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" in report
 
