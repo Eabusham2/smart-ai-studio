@@ -44,7 +44,8 @@ def test_gguf_always_on_consolidation_and_learning_are_real():
     gguf = _src("core/engines/gguf_engine.py")
 
     assert "def _active_trainable_backend" in awake
-    assert 'str(getattr(engine, "active_backend", "") or "").lower() == "gguf"' in awake
+    assert '"gguf": getattr(engine, "gguf_backend", None)' in awake
+    assert "backend = named.get(active)" in awake
     assert "consolidator.consolidate_chunk_sync(chunk)" in awake
     assert "if not learned:" in awake
 
@@ -52,7 +53,8 @@ def test_gguf_always_on_consolidation_and_learning_are_real():
     assert "success = self.consolidate_chunk_sync(evicted_chunk)" in online
     assert "(retained_history, True) if success else (conversation_history, False)" in online
 
-    assert 'str(getattr(self.engine, "active_backend", "") or "").lower() == "gguf"' in learner
+    assert "_require_live_trainable_backend" in learner
+    assert "backend.train_mini_batch(" in learner
     assert "backend.train_mini_batch(" in learner
 
     assert "def train_mini_batch(" in gguf
