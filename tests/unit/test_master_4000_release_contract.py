@@ -172,7 +172,8 @@ def test_awake_learning_is_wired_real_and_serialized():
     lock = _src("core/mlx_runtime_lock.py")
     init = _src("core/__init__.py")
     assert "consolidator.consolidate_chunk_sync(chunk)" in hook
-    assert "target_prompt_tokens" in hook
+    assert "def _selected_context_budget" in hook
+    assert "def _remaining_generation_tokens" in hook
     assert "Never remove dialogue that was not successfully consolidated" in hook
     assert "stream_solve_with_awake_learning" in hook
     assert "solve_with_awake_learning" in hook
