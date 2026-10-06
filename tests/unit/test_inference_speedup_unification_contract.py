@@ -73,7 +73,8 @@ def test_lossy_shortcuts_remain_disabled_outside_app_turboquant_exception():
     assert 'self.mode = "none"' in speculative
     assert "return []" in speculative
     assert "root_prefix_cache" not in core_init
-    assert "no longer drops legitimate history" in full_context
+    assert "Preserve complete requested chat history" in full_context
+    assert "return \"\".join(packed)" in full_context
     # Legacy H2O compatibility object is neutralized: it keeps every token index.
     assert "return list(range(max(0,int(n))))" in compat
 
