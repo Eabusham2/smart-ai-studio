@@ -91,7 +91,7 @@ def test_exact_controller_modality_matrix_is_locked():
 
 def test_text_only_controller_can_generate_and_learn_but_not_grade_or_rsi():
     src = _src("core/media_orchestrator.py")
-    assert "This controller is text-only for media: it may generate media and use explicit media Learn" in src
+    assert "Controller is text-only for this modality; candidate intentionally left ungraded." in src
     assert '"media_generate"' in src
     assert '"media_learn"' in src
     assert "cannot directly ingest" in src
