@@ -104,5 +104,6 @@ def test_gemini_base_plus_global_anti_loop_rule_is_shared_across_every_model_sta
 def test_strict_scoring_is_installed_after_pro_layer():
     cls = master.Master4000EvaluationEngine
     assert getattr(cls, "_strict_scoring_installed", False) is True
-    assert cls._evaluate_single_item.__module__ == scoring.__name__
+    assert cls._evaluate_single_item.__module__ == "eval.real_phase4_context"
+    assert getattr(cls, "_strict_scoring_installed", False) is True
     assert phase4_pro_rsi._hidden_reward_only_after_selection.__module__ == scoring.__name__
