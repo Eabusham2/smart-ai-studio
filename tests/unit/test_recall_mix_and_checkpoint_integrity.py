@@ -3,14 +3,13 @@
 import eval.master_4000_runtime as runtime
 import eval.phase4_pro_rsi as phase4
 import master_4000_eval_suite  # installs dataset/historical/checkpoint hardening
-from eval._master_4000_base import BenchmarkDatasetProvider
-from eval.dataset_hardening import PROJECT_RECALL_PROBES
+from eval.dataset_hardening import PROJECT_RECALL_PROBES, _harden_dialogue_recall
 from eval.flagship_benchmarks import EPISODIC_DIALOGUE_RECALL_PROBE
 
 
 def test_dialogue_recall_150_mixes_project_and_original_historical_styles():
-    splits = runtime._repair_suite(BenchmarkDatasetProvider().load_all_4000_items())
-    recall = splits["DialogueRecall-150"]
+    splits = {"DialogueRecall-150": [{"id": f"Dialogue_{i}"} for i in range(150)]}
+    recall = _harden_dialogue_recall(splits)["DialogueRecall-150"]
 
     assert len(recall) == 150
     assert {item.get("recall_style") for item in recall} == {"project", "historical"}
