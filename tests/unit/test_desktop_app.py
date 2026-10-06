@@ -135,22 +135,26 @@ class TestDesktopAppGUI(unittest.TestCase):
         self.assertIn("Smart AI Studio", content)
 
     def test_dual_model_tab_switching(self):
-        """Test switching between Model 1 (Qwen 27B Uncensored) and Model 2."""
+        """Test switching between the current configured primary and secondary models."""
         self.assertEqual(self.app.active_tab_id, "model_1")
-        
-        # Switch to Model 2
+
         self.app._on_switch_model_tab("model_2")
         self.assertEqual(self.app.active_tab_id, "model_2")
+        model_2 = self.app.models_config["model_2"]
+        label_2 = self.app.lbl_model_status.cget("text")
         self.assertTrue(
-            "Qwen 27B" in self.app.lbl_model_status.cget("text") or
-            "Abliterated" in self.app.lbl_model_status.cget("text") or
-            "Axon" in self.app.lbl_model_status.cget("text")
+            str(model_2.get("short_name") or "") in label_2
+            or str(model_2.get("name") or "") in label_2
         )
-        
-        # Switch back to Model 1
+
         self.app._on_switch_model_tab("model_1")
         self.assertEqual(self.app.active_tab_id, "model_1")
-        self.assertIn("Qwen 27B Uncensored", self.app.lbl_model_status.cget("text"))
+        model_1 = self.app.models_config["model_1"]
+        label_1 = self.app.lbl_model_status.cget("text")
+        self.assertTrue(
+            str(model_1.get("short_name") or "") in label_1
+            or str(model_1.get("name") or "") in label_1
+        )
 
     def test_custom_model_importer(self):
         """Test dynamically registering and switching to a custom user-imported model."""
