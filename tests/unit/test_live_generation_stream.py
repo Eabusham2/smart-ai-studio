@@ -24,6 +24,7 @@ def test_live_file_contains_exact_full_prompt_and_raw_thinking(tmp_path, monkeyp
 
     live._write_live_header(DummyEval(), prompt)
     live._append_live_text("<think>2+2=4</think>\\boxed{4}")
+    live._flush_live_pending()
 
     text = log.read_text(encoding="utf-8")
     assert prompt in text
