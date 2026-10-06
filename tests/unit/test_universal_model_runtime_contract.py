@@ -49,7 +49,8 @@ def test_controller_perception_supports_image_video_audio_families():
     policy = _src("core/model_policy.py")
     assert 'kind in {"image", "video"}' in runtime
     assert '"audio" in media' in runtime
-    assert '"videos" in kwargs' in runtime
+    assert 'kind == "video"' in runtime
+    assert "media = {kind: path}" in runtime
     assert '"automatic-speech-recognition"' in policy
     assert '"video-to-text"' in policy
     assert '"image-to-text"' in policy
