@@ -49,15 +49,14 @@ class TestSpeculativeAcceleration(unittest.TestCase):
         """Tests lossless rejection sampling verification and telemetry calculation."""
         context = [10, 20, 30, 40, 50, 99, 100, 10, 20, 30]
         draft = self.spec_engine.propose_draft_tokens(context)
-        self.assertEqual(len(draft), 4)
+        self.assertEqual(draft, [])
 
         accepted, bonus = self.spec_engine.verify_draft_tokens_rejection_sampling(context, draft)
-        self.assertIsInstance(accepted, list)
-        
+        self.assertEqual(accepted, [])
         telemetry = self.spec_engine.get_telemetry()
-        self.assertEqual(telemetry["mode"], "PLD")
-        self.assertGreater(telemetry["draft_tokens_proposed"], 0)
-        self.assertEqual(telemetry["vram_overhead_mb"], 0.0)  # Zero VRAM
+        self.assertEqual(telemetry["mode"], "DISABLED_LOSSLESS_ONLY")
+        self.assertEqual(telemetry["draft_tokens_proposed"], 0)
+        self.assertEqual(telemetry["vram_overhead_mb"], 0.0)
 
     def test_pro_engine_speculative_telemetry_integration(self):
         """Tests ProReasoningEngine returns speculative metrics in metadata."""
@@ -72,7 +71,7 @@ class TestSpeculativeAcceleration(unittest.TestCase):
             test_cases="assert is_palindrome('aba') == True"
         )
         self.assertIn("speculative", meta)
-        self.assertEqual(meta["speculative"]["mode"], "PLD")
+        self.assertEqual(meta["speculative"]["mode"], "DISABLED_LOSSLESS_ONLY")
         self.assertEqual(meta["speculative"]["vram_overhead_mb"], 0.0)
 
 
