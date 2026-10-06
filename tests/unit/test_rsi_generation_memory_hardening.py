@@ -17,31 +17,22 @@ def _src(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_memory_policy_quantizes_kv_without_sliding_context_or_shortening_output():
+def test_memory_policy_keeps_full_precision_kv_and_changes_only_prefill():
     normal = hard._memory_policy(aggressive=False)
     retry = hard._memory_policy(aggressive=True)
 
-    assert normal == {
-        "prefill_step_size": 256,
-        "kv_bits": 4,
-        "kv_group_size": 64,
-        "quantized_kv_start": 2048,
-    }
-    assert retry == {
-        "prefill_step_size": 128,
-        "kv_bits": 4,
-        "kv_group_size": 64,
-        "quantized_kv_start": 128,
-    }
-    assert "max_kv_size" not in normal
-    assert "max_kv_size" not in retry
+    assert set(normal) == {"prefill_step_size"}
+    assert set(retry) == {"prefill_step_size"}
+    assert retry["prefill_step_size"] <= normal["prefill_step_size"]
 
     source = _src("eval/rsi_generation_memory_hardening.py")
+    assert "KV=full" in source
+    assert "full-precision KV" in source
+    assert "max_kv_size" not in source
+    assert "kv_bits" not in source
+    assert "quantized_kv_start" not in source
     assert '"max_tokens": max(1, int(max_tokens))' in source
-    assert "16,384-token allowance" in source
-    assert "full context" in source
-    assert "max_tokens=min" not in source
-
+    assert "token allowance are unchanged" in source
 
 def test_metal_oom_detection_is_specific():
     assert hard._is_metal_oom(RuntimeError("[METAL] Command buffer execution failed: Insufficient Memory"))
@@ -90,12 +81,14 @@ def _fake_modules(monkeypatch, *, oom_first=False):
         _write_live_header=lambda *args, **kwargs: None,
         _append_live_text=lambda *args, **kwargs: None,
     )
-    runner = SimpleNamespace(engine=SimpleNamespace(model=object(), tokenizer=object()))
+    tokenizer = SimpleNamespace(encode=lambda text: str(text).split())
+    runner = SimpleNamespace(engine=SimpleNamespace(model=object(), tokenizer=tokenizer))
+    monkeypatch.setattr(hard, "make_prompt_cache", lambda model: object())
     return p4, live, runner, calls, clear_calls
 
 
-def test_streamed_rsi_keeps_full_16384_allowance_and_tears_down_each_branch(monkeypatch):
-    p4, live, runner, calls, clear_calls = _fake_modules(monkeypatch)
+def test_streamed_rsi_keeps_full_allowance_and_full_precision_kv(monkeypatch):
+    p4, live, runner, calls, _ = _fake_modules(monkeypatch)
     legacy = p4._generate_branches_same_model
 
     hard.install(p4, live, legacy)
@@ -111,14 +104,14 @@ def test_streamed_rsi_keeps_full_16384_allowance_and_tears_down_each_branch(monk
     assert len(calls) == 2
     assert all(call["max_tokens"] == 16384 for call in calls)
     assert all("max_kv_size" not in call for call in calls)
-    assert all(call["prefill_step_size"] == 256 for call in calls)
-    assert all(call["kv_bits"] == 4 for call in calls)
-    assert all(call["quantized_kv_start"] == 2048 for call in calls)
-    # Old implementation's important behavior: pre + post clear per branch.
-    assert len(clear_calls) >= 4
+    assert all("kv_bits" not in call for call in calls)
+    assert all("quantized_kv_start" not in call for call in calls)
+    assert all(
+        call["prefill_step_size"] == hard._memory_policy(aggressive=False)["prefill_step_size"]
+        for call in calls
+    )
 
-
-def test_only_failed_branch_retries_on_metal_oom_with_earlier_quantization_not_fewer_tokens(monkeypatch):
+def test_only_failed_branch_retries_on_metal_oom_with_smaller_prefill(monkeypatch):
     p4, live, runner, calls, _ = _fake_modules(monkeypatch, oom_first=True)
     legacy = p4._generate_branches_same_model
 
@@ -134,12 +127,11 @@ def test_only_failed_branch_retries_on_metal_oom_with_earlier_quantization_not_f
     assert out == ["branch-2"]
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == calls[1]["max_tokens"] == 16384
+    assert "kv_bits" not in calls[0] and "kv_bits" not in calls[1]
     assert "max_kv_size" not in calls[0] and "max_kv_size" not in calls[1]
-    assert calls[0]["quantized_kv_start"] == 2048
-    assert calls[1]["quantized_kv_start"] == 128
-    assert calls[0]["prefill_step_size"] == 256
-    assert calls[1]["prefill_step_size"] == 128
-
+    assert calls[0]["prefill_step_size"] == hard._memory_policy(aggressive=False)["prefill_step_size"]
+    assert calls[1]["prefill_step_size"] == hard._memory_policy(aggressive=True)["prefill_step_size"]
+    assert calls[1]["prefill_step_size"] <= calls[0]["prefill_step_size"]
 
 def test_current_rsi_search_reward_semantics_are_not_rewritten():
     phase = _src("eval/phase4_pro_rsi.py")
