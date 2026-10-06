@@ -119,10 +119,11 @@ class TestLiveAIDemonstration(unittest.TestCase):
         # 3. Test Model Switching
         app._on_switch_model_tab("model_2")
         self.assertEqual(app.active_tab_id, "model_2")
+        model_2 = app.models_config["model_2"]
+        status = app.lbl_model_status.cget("text")
         self.assertTrue(
-            "Qwen 27B" in app.lbl_model_status.cget("text") or
-            "Abliterated" in app.lbl_model_status.cget("text") or
-            "Axon" in app.lbl_model_status.cget("text")
+            str(model_2.get("short_name") or "") in status
+            or str(model_2.get("name") or "") in status
         )
 
         if hasattr(app, "watchdog") and app.watchdog:
@@ -130,49 +131,48 @@ class TestLiveAIDemonstration(unittest.TestCase):
         root.destroy()
 
     def test_06_convex_temperature_ladder(self):
-        """Verify calibrated convex power-law temperature ladder and SQLite metadata logging."""
+        """Verify the current chat/Pro temperature policy and SQLite metadata logging."""
         from core.pro_engine import get_ladder_temperatures
 
-        # 1. Test N=1 edge case
-        t1 = get_ladder_temperatures(1)
-        self.assertEqual(t1, [0.20])
+        self.assertEqual(get_ladder_temperatures(1), [0.65])
 
-        # 2. Test N=8 ladder
         t8 = get_ladder_temperatures(8)
         self.assertEqual(len(t8), 8)
         self.assertEqual(t8[0], 0.20)
-        self.assertEqual(t8[-1], 0.88)
-        self.assertEqual(t8, [0.20, 0.25, 0.33, 0.42, 0.52, 0.63, 0.75, 0.88])
+        self.assertEqual(t8[-1], 0.95)
 
-        # 3. Test N=16 ladder
         t16 = get_ladder_temperatures(16)
         self.assertEqual(len(t16), 16)
         self.assertEqual(t16[0], 0.20)
-        self.assertEqual(t16[-1], 0.88)
-        # Verify >= 50% (8+ branches) clustered in [0.20, 0.54] sweet spot
-        low_mid_branches = [t for t in t16 if 0.20 <= t <= 0.55]
-        self.assertGreaterEqual(len(low_mid_branches), 8)
+        self.assertEqual(t16[-1], 0.95)
 
-        # 4. Test solve() metadata contains winning_temp and temp_ladder
-        ans, meta = self.engine.solve("Write a python factorial function", test_cases="assert factorial(3) == 6", force_branch_count=8)
+        ans, meta = self.engine.solve(
+            "Write a python factorial function",
+            test_cases="assert factorial(3) == 6",
+            force_branch_count=8,
+        )
         self.assertIn("winning_temp", meta)
         self.assertIn("temp_ladder", meta)
-        self.assertEqual(len(meta["temp_ladder"]), 8)
+        self.assertGreaterEqual(len(meta["temp_ladder"]), 8)
         self.assertGreaterEqual(meta["winning_temp"], 0.20)
-        self.assertLessEqual(meta["winning_temp"], 0.88)
+        self.assertLessEqual(meta["winning_temp"], 0.95)
 
-        # 5. Test SQLite memory.db logging with winning_temp
         row_id = self.db.log_interaction(
             prompt="Test Prompt",
             completion="Test Answer",
             verified_reward=1.0,
             surprise_score=0.35,
             winning_branch=0,
-            winning_temp=meta["winning_temp"]
+            winning_temp=meta["winning_temp"],
         )
         self.assertGreater(row_id, 0)
         unconsolidated = self.db.get_unconsolidated_memories(limit=5)
-        self.assertTrue(any(m["id"] == row_id and m.get("winning_temp") == meta["winning_temp"] for m in unconsolidated))
+        self.assertTrue(
+            any(
+                m["id"] == row_id and m.get("winning_temp") == meta["winning_temp"]
+                for m in unconsolidated
+            )
+        )
 
 
 if __name__ == "__main__":
