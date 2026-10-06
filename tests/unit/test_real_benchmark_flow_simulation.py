@@ -202,6 +202,12 @@ class RealFlowSimulation(unittest.TestCase):
                 events.append(("verify", stage, task.name))
                 return stage != "baseline"
 
+            def fake_blind_select(p4, owner, patches):
+                selected, idx, _verified, selection = p4._choose_without_ground_truth(
+                    owner, "FlagshipSWE-BlindSelection", {"prompt": ""}, patches
+                )
+                return selected, idx, selection
+
             with patch.object(deep, "DEEPSWE_TASK_COUNT", 2), \
                  patch.object(deep, "_ask_enabled", return_value=True), \
                  patch.object(deep, "_ensure_tools", return_value="pier"), \
@@ -210,6 +216,7 @@ class RealFlowSimulation(unittest.TestCase):
                  patch.object(deep, "_save_state", return_value=None), \
                  patch.object(deep, "_LocalModelBridge", Bridge), \
                  patch.object(deep, "_generate_patch", side_effect=fake_generate), \
+                 patch.object(deep, "_blind_select", side_effect=fake_blind_select), \
                  patch.object(deep, "_verify_selected_patch", side_effect=fake_verify):
                 deep.install(runtime, phase4, prompt, C)
                 obj = C()
@@ -229,7 +236,7 @@ class RealFlowSimulation(unittest.TestCase):
 
     def test_deepswe_context_policy(self):
         self.assertEqual(deep.DEEPSWE_CONTEXT_TOKENS, 226000)
-        self.assertEqual(deep.DEEPSWE_MAX_OUTPUT_TOKENS, 8192)
+        self.assertEqual(deep.DEEPSWE_MAX_OUTPUT_TOKENS, deep.DEEPSWE_CONTEXT_TOKENS)
 
 
 if __name__ == "__main__":
