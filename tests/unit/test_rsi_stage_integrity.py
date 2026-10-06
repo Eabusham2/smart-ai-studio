@@ -85,7 +85,7 @@ def test_dialogue_recall_is_still_deferred_from_rsi():
 def test_real_weight_update_path_remains_intact():
     phase = _src("eval/phase4_pro_rsi.py")
     hist = _src("eval/historical_good_merge.py")
-    assert "nn.value_and_grad" in phase
+    assert "mx.value_and_grad" in phase
     assert "opt.update(self.engine.model" in phase
     assert "rsi_post_phase3.safetensors" in phase
     assert "real_trainable_delta_l2" in hist
