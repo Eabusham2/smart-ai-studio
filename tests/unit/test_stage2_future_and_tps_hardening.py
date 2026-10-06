@@ -66,7 +66,8 @@ def test_rsi_streaming_publishes_inflight_decode_tps_before_branch_completion():
     assert "decode_started = now" in source
     assert "float(streamed_tokens - 1) / elapsed" in source
     assert "_publish_inflight_tps(" in source
-    assert "branch is alive instead of waiting for branch completion" in source
+    assert "if decode_started is None:" in source
+    assert "self.last_tok_per_sec = float(tps)" in source
 
 
 def test_phase3_training_tps_counts_the_actual_256_token_training_window():
