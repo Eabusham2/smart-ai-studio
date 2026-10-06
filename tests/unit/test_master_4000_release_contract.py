@@ -101,7 +101,7 @@ def test_learn_and_rsi_are_separate_and_rsi_is_self_generated():
 def test_phase3_really_updates_and_measures_trainable_weights():
     phase = _src("eval/phase4_pro_rsi.py")
     merge = _src("eval/historical_good_merge.py")
-    assert "nn.value_and_grad" in phase
+    assert "mx.value_and_grad" in phase
     assert "optim.AdamW" in phase
     assert "opt.update(self.engine.model" in phase
     assert "rsi_post_phase3.safetensors" in phase
