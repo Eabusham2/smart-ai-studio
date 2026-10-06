@@ -62,7 +62,7 @@ def test_training_wrapper_preserves_current_optimizer_math_and_restores_real_old
     phase = _src("eval/phase4_pro_rsi.py")
 
     # Current real trainer remains the implementation being wrapped.
-    assert "nn.value_and_grad" in phase
+    assert "mx.value_and_grad" in phase
     assert "optim.AdamW" in phase
     assert "ogp_projector.project_gradient" in phase
     assert "opt.update(self.engine.model, grads)" in phase
