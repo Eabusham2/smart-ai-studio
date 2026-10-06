@@ -131,8 +131,8 @@ def test_dataset_requires_real_captioned_workspace_media(env):
     c,_,_,tmp=env
     (tmp/'a.bin').write_bytes(b'actual media fixture')
     (tmp/'data.jsonl').write_text(json.dumps({'path':'a.bin','caption':'caption'})+'\n')
-    assert len(c.learning.read_samples('data.jsonl',tmp))==1
-    with pytest.raises(ValueError):c.learning.read_samples('../escape.jsonl',tmp)
+    assert len(c.learning.read_samples('data.jsonl',tmp,'image'))==1
+    with pytest.raises(ValueError):c.learning.read_samples('../escape.jsonl',tmp,'image')
 
 def test_no_perception_is_not_a_grade(env):
     c,a,mods,tmp=env;p=tmp/'bad.png';p.write_bytes(b'not an image')
