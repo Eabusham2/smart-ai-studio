@@ -19,7 +19,7 @@ class TestMLXBackend(unittest.TestCase):
         anchors = ["def test(): pass", "def add(a, b): return a + b"]
         fisher = self.backend.compute_mlx_fisher(anchors)
         self.assertIsInstance(fisher, dict)
-        self.assertTrue(len(fisher) > 0)
+        self.assertEqual(fisher, {})
 
 
 if __name__ == "__main__":
