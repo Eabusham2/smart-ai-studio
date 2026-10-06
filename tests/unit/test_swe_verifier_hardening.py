@@ -1,6 +1,7 @@
 """Regression tests for DeepSWE patch verifier hardening."""
 
 from types import SimpleNamespace
+from pathlib import Path
 
 import eval.swe_verifier_hardening as hardening
 import master_4000_eval_suite  # installs the hardening layer
@@ -37,7 +38,7 @@ def test_plain_model_diff_uses_p0_and_configured_timeout(monkeypatch):
 ```""",
     )
     assert result.passed is True
-    patch_calls = [(cmd, timeout) for cmd, timeout in calls if isinstance(cmd, list) and cmd and cmd[0] == "patch"]
+    patch_calls = [(cmd, timeout) for cmd, timeout in calls if isinstance(cmd, list) and cmd and Path(cmd[0]).name == "patch"]
     assert patch_calls
     assert any("-p0" in cmd for cmd, _ in patch_calls)
     assert all(timeout >= 4.0 for _, timeout in patch_calls)
@@ -57,7 +58,7 @@ def test_git_style_diff_uses_p1(monkeypatch):
 ```""",
     )
     assert result.passed is True
-    patch_calls = [(cmd, timeout) for cmd, timeout in calls if isinstance(cmd, list) and cmd and cmd[0] == "patch"]
+    patch_calls = [(cmd, timeout) for cmd, timeout in calls if isinstance(cmd, list) and cmd and Path(cmd[0]).name == "patch"]
     assert patch_calls
     assert any("-p1" in cmd for cmd, _ in patch_calls)
     assert all(timeout >= 4.0 for _, timeout in patch_calls)
