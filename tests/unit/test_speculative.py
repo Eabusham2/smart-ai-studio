@@ -51,8 +51,8 @@ class TestSpeculativeAcceleration(unittest.TestCase):
         draft = self.spec_engine.propose_draft_tokens(context)
         self.assertEqual(draft, [])
 
-        accepted, bonus = self.spec_engine.verify_draft_tokens_rejection_sampling(context, draft)
-        self.assertEqual(accepted, [])
+        with self.assertRaises(RuntimeError):
+            self.spec_engine.verify_draft_tokens_rejection_sampling(context, draft)
         telemetry = self.spec_engine.get_telemetry()
         self.assertEqual(telemetry["mode"], "DISABLED_LOSSLESS_ONLY")
         self.assertEqual(telemetry["draft_tokens_proposed"], 0)
