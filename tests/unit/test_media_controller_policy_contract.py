@@ -58,7 +58,7 @@ def test_media_training_resolution_is_architecture_driven_and_extensible():
 def test_original_text_phase3_weight_update_path_is_untouched():
     src = _src("eval/phase4_pro_rsi.py")
     assert "optim.AdamW" in src
-    assert "nn.value_and_grad" in src
+    assert "mx.value_and_grad" in src
     assert "project_gradient" in src
     assert "opt.update" in src
 
@@ -95,7 +95,8 @@ def test_text_only_controller_can_generate_and_learn_but_not_grade_or_rsi():
     assert '"media_generate"' in src
     assert '"media_learn"' in src
     assert "cannot directly ingest" in src
-    assert "cannot grade its own generated output or perform genuine media RSI" in src
+    assert "does not accept {kind} input" in src
+    assert "Generation and explicit media Learn remain available." in src
 
 
 def test_media_learn_is_independent_of_controller_perception():
