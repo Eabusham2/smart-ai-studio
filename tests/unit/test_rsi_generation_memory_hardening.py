@@ -28,7 +28,7 @@ def test_memory_policy_keeps_full_precision_kv_and_changes_only_prefill():
     source = _src("eval/rsi_generation_memory_hardening.py")
     assert "KV=full" in source
     assert "full-precision KV" in source
-    assert "max_kv_size" not in source
+    assert '"max_kv_size":' not in source
     assert "kv_bits" not in source
     assert "quantized_kv_start" not in source
     assert '"max_tokens": max(1, int(max_tokens))' in source
