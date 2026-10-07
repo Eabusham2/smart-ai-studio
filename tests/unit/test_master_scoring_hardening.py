@@ -1,3 +1,4 @@
+from pathlib import Path
 import inspect
 
 import master_4000_eval_suite as master
@@ -106,4 +107,6 @@ def test_strict_scoring_is_installed_after_pro_layer():
     assert getattr(cls, "_strict_scoring_installed", False) is True
     assert cls._evaluate_single_item.__module__ == "eval.real_phase4_context"
     assert getattr(cls, "_strict_scoring_installed", False) is True
-    assert phase4_pro_rsi._hidden_reward_only_after_selection.__module__ == scoring.__name__
+    assert phase4_pro_rsi._hidden_reward_only_after_selection.__module__ == "eval.deepswe_dataset_override"
+    deepswe = (Path(__file__).resolve().parents[2] / "eval/deepswe_dataset_override.py").read_text(encoding="utf-8")
+    assert "return original_hidden(self, split, item, candidate)" in deepswe
