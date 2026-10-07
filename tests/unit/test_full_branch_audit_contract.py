@@ -217,7 +217,8 @@ def test_standalone_eval_keeps_bonsai2_while_app_eval_uses_selected_model():
     report = _src("eval/_master_4000_base.py")
     bridge = _src("eval/app_cross_platform_bridge.py")
     bonsai = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
-    assert f'mlx_model_path: str="{bonsai}"' in runtime
+    assert "get_bundled_model_path(" in runtime
+    assert f'"{bonsai}"' in runtime
     assert f'"{bonsai}"' in report
     # Desktop Eval remains model-aware and loads the app-selected model metadata.
     assert 'info = dict(config.get("model_info") or {})' in bridge
