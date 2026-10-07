@@ -137,14 +137,16 @@ class TestLiveAIDemonstration(unittest.TestCase):
         self.assertEqual(get_ladder_temperatures(1), [0.65])
 
         t8 = get_ladder_temperatures(8)
-        self.assertEqual(len(t8), 8)
+        self.assertEqual(len(t8), 9)
         self.assertEqual(t8[0], 0.20)
-        self.assertEqual(t8[-1], 0.95)
+        self.assertEqual(t8[-2], 0.95)
+        self.assertEqual(t8[-1], 0.65)
 
         t16 = get_ladder_temperatures(16)
-        self.assertEqual(len(t16), 16)
+        self.assertEqual(len(t16), 17)
         self.assertEqual(t16[0], 0.20)
-        self.assertEqual(t16[-1], 0.95)
+        self.assertEqual(t16[-2], 0.95)
+        self.assertEqual(t16[-1], 0.65)
 
         ans, meta = self.engine.solve(
             "Write a python factorial function",
@@ -153,7 +155,7 @@ class TestLiveAIDemonstration(unittest.TestCase):
         )
         self.assertIn("winning_temp", meta)
         self.assertIn("temp_ladder", meta)
-        self.assertGreaterEqual(len(meta["temp_ladder"]), 8)
+        self.assertEqual(len(meta["temp_ladder"]), 9)
         self.assertGreaterEqual(meta["winning_temp"], 0.20)
         self.assertLessEqual(meta["winning_temp"], 0.95)
 
