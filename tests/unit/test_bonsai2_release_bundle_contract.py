@@ -15,6 +15,11 @@ def test_bonsai2_release_bundle_contains_both_mlx_repositories():
     assert "preloaded_models/" in bundler
     assert "DEFAULT_PART_BYTES = 1_900_000_000" in bundler
     assert '"gh", "release", "upload"' in bundler
+    assert "REMOTE_RANGE_BYTES" in bundler
+    assert 'headers["Range"]' in bundler
+    assert '"Content-Range"' in bundler
+    assert "while expected_size <= 0 or written < expected_size:" in bundler
+    assert "_validate_range_response(response, range_start, expected_size)" in bundler
 
 
 def test_app_prefers_packaged_bonsai2_snapshots_when_present():
