@@ -105,7 +105,7 @@ def test_phase3_really_updates_and_measures_trainable_weights():
     assert "optim.AdamW" in phase
     assert "opt.update(self.engine.model" in phase
     assert "rsi_post_phase3.safetensors" in phase
-    assert "Refresh B from the trained" in phase
+    assert "ogp_projector.project_gradient" in phase
     assert "real_trainable_delta_l2" in merge
     assert "real_layer_deltas" in merge
     assert "Phase 3 claimed parameter updates but real trainable-weight delta is zero" in merge
