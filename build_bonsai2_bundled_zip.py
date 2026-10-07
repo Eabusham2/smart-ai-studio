@@ -27,6 +27,7 @@ MODEL_REPOS = (
     "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG",
 )
 DEFAULT_PART_BYTES = 1_900_000_000  # safely below GitHub's 2 GiB per-release-asset cap
+REMOTE_RANGE_BYTES = 512 * 1024 * 1024  # bound each HF transfer; resume large files by byte range
 
 
 class MultipartWriter:
@@ -163,12 +164,55 @@ def _repo_files(api: HfApi, repo_id: str):
     return str(info.sha or "main"), files
 
 
-def _request(url: str):
-    headers = {"User-Agent": "SmartAI-Studio-CI-Bundler/1.0"}
+def _request(url: str, *, start: Optional[int] = None, end: Optional[int] = None):
+    headers = {
+        "User-Agent": "SmartAI-Studio-CI-Bundler/1.0",
+        "Accept-Encoding": "identity",
+    }
     token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if start is not None:
+        if end is None:
+            headers["Range"] = f"bytes={int(start)}-"
+        else:
+            headers["Range"] = f"bytes={int(start)}-{int(end)}"
     return urllib.request.Request(url, headers=headers)
+
+
+def _validate_range_response(response, requested_start: int, expected_size: int) -> None:
+    """Reject wrong-offset partial responses so a resumed ZIP entry cannot be corrupted."""
+    status = int(getattr(response, "status", response.getcode()) or 0)
+    content_range = str(response.headers.get("Content-Range") or "").strip()
+
+    if status == 206:
+        if not content_range.lower().startswith("bytes "):
+            raise RuntimeError(f"Partial response omitted Content-Range: {content_range!r}")
+        try:
+            span, total_text = content_range[6:].split("/", 1)
+            start_text, _end_text = span.split("-", 1)
+            actual_start = int(start_text)
+            total = None if total_text == "*" else int(total_text)
+        except Exception as exc:
+            raise RuntimeError(f"Malformed Content-Range: {content_range!r}") from exc
+        if actual_start != int(requested_start):
+            raise RuntimeError(
+                f"Range resume mismatch: requested byte {requested_start}, server started at {actual_start}"
+            )
+        if expected_size and total is not None and total != int(expected_size):
+            raise RuntimeError(
+                f"Range total mismatch: metadata says {expected_size}, server says {total}"
+            )
+        return
+
+    # A server may ignore the first Range request and return HTTP 200/full content.
+    # That is safe only at offset zero. Any later 200 would duplicate bytes.
+    if status == 200 and int(requested_start) == 0:
+        return
+    raise RuntimeError(
+        f"Server did not honor resume Range at byte {requested_start}: "
+        f"HTTP {status}, Content-Range={content_range!r}"
+    )
 
 
 def _stream_remote_file(
@@ -192,14 +236,48 @@ def _stream_remote_file(
     url = hf_hub_url(repo_id=repo_id, filename=filename, revision=revision)
     print(f"[bundle] {repo_id}: {filename}")
     written = 0
-    with urllib.request.urlopen(_request(url), timeout=300) as response:
-        with zf.open(zi, "w", force_zip64=True) as dst:
-            while True:
-                chunk = response.read(8 * 1024 * 1024)
-                if not chunk:
-                    break
-                dst.write(chunk)
-                written += len(chunk)
+
+    with zf.open(zi, "w", force_zip64=True) as dst:
+        while expected_size <= 0 or written < expected_size:
+            range_start = written
+            range_end = (
+                min(expected_size - 1, range_start + REMOTE_RANGE_BYTES - 1)
+                if expected_size > 0
+                else range_start + REMOTE_RANGE_BYTES - 1
+            )
+            before = written
+            with urllib.request.urlopen(
+                _request(url, start=range_start, end=range_end),
+                timeout=300,
+            ) as response:
+                _validate_range_response(response, range_start, expected_size)
+                while True:
+                    chunk = response.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    if expected_size > 0:
+                        remaining = expected_size - written
+                        if remaining <= 0:
+                            break
+                        if len(chunk) > remaining:
+                            chunk = chunk[:remaining]
+                    dst.write(chunk)
+                    written += len(chunk)
+
+            if written == before:
+                raise RuntimeError(
+                    f"{repo_id}/{filename}: zero-byte ranged response at offset {written}"
+                )
+
+            if expected_size <= 0:
+                # Unknown-size files use one response; model metadata normally supplies size.
+                break
+
+            if written < expected_size:
+                print(
+                    f"[bundle] resume {repo_id}/{filename}: "
+                    f"{written}/{expected_size} bytes"
+                )
 
     if expected_size and written != expected_size:
         raise RuntimeError(
