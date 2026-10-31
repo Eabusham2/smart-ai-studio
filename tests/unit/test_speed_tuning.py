@@ -350,10 +350,18 @@ class TestProfiles(unittest.TestCase):
     def test_unresolved_model_identity_cannot_reuse_a_saved_profile(self):
         import types
         module = types.SimpleNamespace(snapshot_download=lambda **kwargs: (_ for _ in ()).throw(FileNotFoundError()))
-        with patch.dict(sys.modules, {"huggingface_hub": module}):
+        # Nanosecond units do not imply a nanosecond clock resolution. Both
+        # calls may occur in one Windows clock tick without any test pollution.
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.dict(sys.modules, {"huggingface_hub": module}), \
+             patch.object(speed.time, "monotonic_ns", return_value=123456789):
+            store = speed.SpeedProfileStore(str(Path(folder) / "profiles.json"))
             first = speed.speed_fingerprint("mlx", "missing/model", context=4096)
+            self.assertTrue(store.put(first, improved_result()))
             second = speed.speed_fingerprint("mlx", "missing/model", context=4096)
             self.assertNotEqual(first, second)
+            self.assertIsNone(store.get(second))
+            self.assertIsNotNone(store.get(first))
 
 
 if __name__ == "__main__":

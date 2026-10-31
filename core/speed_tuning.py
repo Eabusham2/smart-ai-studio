@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import secrets
 import shutil
 import subprocess
 import sys
@@ -457,7 +458,8 @@ def speed_fingerprint(
     model_identity = _artifact_identity(resolved_model)
     if isinstance(model_identity, dict) and model_identity.get("local") is False:
         # Unknown model bytes must never match a saved profile on the next call.
-        model_identity["unresolved_nonce"] = time.monotonic_ns()
+        # Clock reads can repeat within one tick, including monotonic_ns().
+        model_identity["unresolved_nonce"] = secrets.token_hex(16)
     identity = {
         "schema": _SCHEMA, "backend": str(backend), "context": context,
         "platform": {"system": platform.system(), "release": platform.release(),

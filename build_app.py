@@ -158,7 +158,7 @@ end run
 </dict>
 </plist>
 """
-    with open(os.path.join(contents_dir, "Info.plist"), "w") as f:
+    with open(os.path.join(contents_dir, "Info.plist"), "w", encoding="utf-8", newline="\n") as f:
         f.write(plist_content)
 
     # 4. Clear macOS quarantine attributes

@@ -1,4 +1,5 @@
 """The Mac package carries usable, explicit setup and launch entry points."""
+import builtins
 import os
 from pathlib import Path
 import plistlib
@@ -22,13 +23,21 @@ def test_stock_gguf_dependency_is_available_to_apple_source_installs():
     assert '"llama-cpp-python>=0.3.0",' in project
 
 
-def test_macos_bundle_carries_manifests_explicit_installer_and_correct_launch_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize("default_encoding", ["utf-8", "cp1252"])
+def test_macos_bundle_carries_manifests_explicit_installer_and_correct_launch_path(tmp_path, monkeypatch, default_encoding):
     source = tmp_path / "source with spaces"
     source.mkdir()
     for name in ("app_gui.py", "requirements.txt", "pyproject.toml"):
         (source / name).write_text("# fixture " + name)
     monkeypatch.chdir(source)
     monkeypatch.delenv("SMARTAI_MODEL_BUNDLE_RELEASE", raising=False)
+    def host_open(path, mode="r", *args, **kwargs):
+        # Reproduce Windows' legacy default code page on every CI platform.
+        # Explicit encodings must win over the host's default.
+        if "b" not in mode and kwargs.get("encoding") is None:
+            kwargs["encoding"] = default_encoding
+        return builtins.open(path, mode, *args, **kwargs)
+    monkeypatch.setattr(build_app, "open", host_open, raising=False)
     monkeypatch.setattr(build_app.shutil, "which", lambda name: name if name in {"osacompile", "hdiutil"} else None)
     native_commands = []
 
@@ -53,7 +62,9 @@ def test_macos_bundle_carries_manifests_explicit_installer_and_correct_launch_pa
     applescript = next(command[-1] for command in native_commands if command[0] == "osacompile")
     assert 'quoted form of (resDir & "/launch_studio.sh")' in applescript
     with (app / "Contents/Info.plist").open("rb") as handle:
-        assert plistlib.load(handle)["CFBundleExecutable"] == "applet"
+        plist = plistlib.load(handle)
+    assert plist["CFBundleExecutable"] == "applet"
+    assert plist["NSHumanReadableCopyright"].startswith("Copyright © 2026")
     with zipfile.ZipFile(dist / "SmartAI-macOS-arm64.zip") as archive:
         for name, target in (("Launch_SmartAI_macOS.command", "launch_studio.sh"),
                              ("Install_Dependencies.command", "Install_Dependencies.command")):
