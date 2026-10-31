@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import socket
+import struct
 import sys
 import threading
 import types
@@ -101,6 +103,10 @@ class LocalService:
                     try:
                         if self.connection.recv(1) == b"":
                             owner.disconnected.set()
+                    except ConnectionResetError:
+                        # Winsock can report a reset instead of EOF when the
+                        # cancelling client closes with unread response bytes.
+                        owner.disconnected.set()
                     except OSError:
                         pass
                     return
@@ -408,6 +414,21 @@ class TestStrataHTTPBackend(unittest.TestCase):
         self._blocked_request(unload=True)
         self.assertFalse(self.backend.is_loaded)
         self.assertTrue(self.managers[-1].stopped)
+
+    def test_disconnect_observer_recognizes_a_real_tcp_reset(self):
+        self.service.hang = True
+        with socket.create_connection(("127.0.0.1", self.service.server.server_port), timeout=2) as client:
+            request = (
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                f"Authorization: Bearer {KEY}\r\nContent-Length: 2\r\n\r\n{{}}"
+            ).encode("ascii")
+            client.sendall(request)
+            self.assertTrue(self.service.arrived.wait(1))
+            # Windows uses u_short fields for linger; POSIX uses ints. A zero
+            # linger timeout produces an actual peer reset on either platform.
+            linger_format = "hh" if sys.platform == "win32" else "ii"
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack(linger_format, 1, 0))
+        self.assertTrue(self.service.disconnected.wait(1), "a reset socket was mistaken for a connected peer")
 
     def test_preexisting_cancel_sends_no_generation_and_generator_close_cleans_transport(self):
         self.load()

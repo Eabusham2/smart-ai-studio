@@ -192,7 +192,41 @@ def test_archive_supports_internal_python_symlink_and_permissions(tmp_path):
     binary = tmp_path / "out/python/bin/python3"
     assert binary.read_text() == "runtime"
     assert binary.is_symlink()
-    assert binary.stat().st_mode & 0o100
+    assert os.readlink(binary) == "python3.12"
+    mode = binary.stat().st_mode
+    assert mode & 0o400 and mode & 0o200
+    # Windows chmod only controls the read-only flag; it does not implement
+    # POSIX execute bits for the extensionless Unix interpreter in this fixture.
+    if os.name != "nt":
+        assert mode & 0o100
+
+
+def test_archive_supports_native_windows_zip_layout(tmp_path):
+    archive = tmp_path / "terminal.zip"
+    files = {
+        "strata.py": b"# terminal entry point\n",
+        "setup.py": b"# native preparation\n",
+        "python/python.exe": b"MZ fixture interpreter; never executed",
+        "bin/strata.cmd": b"@echo off\r\n",
+    }
+    with zipfile.ZipFile(archive, "w") as output:
+        for name, content in files.items():
+            entry = zipfile.ZipInfo(name)
+            entry.external_attr = 0o100755 << 16
+            output.writestr(entry, content)
+    destination = tmp_path / "out"
+    extract_terminal(archive, destination, lambda: None)
+    windows = StrataRuntime.__new__(StrataRuntime)
+    windows.platform = "windows-x86_64"
+    binary = windows._python(destination)
+    assert binary == destination / "python/python.exe"
+    for name, content in files.items():
+        assert (destination / name).read_bytes() == content
+        assert not (destination / name).is_symlink()
+    # The Windows package needs ordinary writable files, not symlink privileges.
+    with binary.open("ab") as stream:
+        stream.write(b"\n")
+    assert binary.read_bytes() == files["python/python.exe"] + b"\n"
 
 
 def test_archive_rejects_duplicate_paths_and_zip_symlinks(tmp_path):
