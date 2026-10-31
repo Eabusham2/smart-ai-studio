@@ -216,10 +216,13 @@ def download_model_from_hf(
     cancel_event: Optional[threading.Event] = None,
     allow_patterns: Optional[List[str]] = None,
     required_files: Optional[List[str]] = None,
+    revision: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Downloads model weights from HuggingFace Hub with real-time status updates."""
     if not repo_id:
         return {"status": "error", "error": "No model repository ID specified"}
+    if cancel_event is not None and cancel_event.is_set():
+        return {"status": "cancelled", "repo_id": repo_id, "error": "Download cancelled."}
 
     if progress_callback:
         progress_callback(f"Connecting to HuggingFace Hub for `{repo_id}`...", 5.0)
@@ -234,7 +237,11 @@ def download_model_from_hf(
             repo_id=repo_id,
             max_workers=4,
             allow_patterns=list(allow_patterns) if allow_patterns else None,
+            **({"revision": revision} if revision else {}),
         )
+        if cancel_event is not None and cancel_event.is_set():
+            return {"status": "cancelled", "repo_id": repo_id, "local_dir": local_dir,
+                    "error": "Download cancelled; completed cache files are kept."}
 
         if required_files:
             missing = [

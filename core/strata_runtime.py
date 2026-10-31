@@ -78,8 +78,8 @@ def host_platform() -> str:
     result = f"{key}-{machine}"
     if result == "linux-aarch64":
         raise StrataRuntimeError(
-            "Strata Gyro-S and Q2_0 do not run on Linux ARM64, including DGX Spark: "
-            "these packs require x86 CPU kernels on Linux. No model download was started."
+            "This managed Strata integration does not support Linux ARM64, including DGX Spark. "
+            "Use the model's native backend. No model download was started."
         )
     if result not in ARTIFACTS:
         raise StrataRuntimeError(
@@ -211,9 +211,125 @@ def extract_terminal(archive: Path, destination: Path, check: Callable[[], None]
                 os.link(source, target)
 
 
+# Shared by the two small, version-pinned subprocess adapters. The source list
+# is written by Studio in its private session, never supplied as executable code.
+_SOURCE_CHECKS = r'''
+import json, os, stat
+from pathlib import Path
+def source_key(path):
+    return os.path.normcase(str(Path(path).resolve()))
+def checked_source(record):
+    files = record.get("files")
+    if not isinstance(files, list) or not 1 <= len(files) <= 256:
+        raise RuntimeError("The local Strata selection has no complete file identity")
+    seen = set()
+    for item in files:
+        path = Path(item["path"])
+        info = path.stat()
+        key = source_key(path)
+        if (key in seen or not stat.S_ISREG(info.st_mode)
+                or info.st_size != item["size"] or info.st_mtime_ns != item["mtime_ns"]
+                or ("ctime_ns" in item and info.st_ctime_ns != item["ctime_ns"])
+                or ("realpath" in item and key != source_key(item["realpath"]))):
+            raise RuntimeError("The chosen model files changed. Import the current files again before loading.")
+        seen.add(key)
+    return seen
+def inspect_source(record, catalog):
+    from strata_control import models
+    expected = checked_source(record)
+    preview = models.plan_import(str(record["path"]))
+    candidate = preview.get("candidate_selection") or {}
+    if (preview.get("issues") or preview.get("file_set_status") != "plausible"
+            or not candidate.get("family") or not candidate.get("model")):
+        words = preview.get("plain_issues") or preview.get("issues") or ["unsupported model layout"]
+        raise RuntimeError("Strata cannot prepare the selected files: " + "; ".join(str(x) for x in words))
+    companions = {source_key(p) for p in record.get("companions", [])}
+    found = {source_key(item["path"]) for item in preview.get("files") or []}
+    if not expected - companions <= found or not found <= expected:
+        raise RuntimeError("Strata's inspection selected different files from the chosen model")
+    setup = catalog.strata.setup_module()
+    family, model = candidate["family"], candidate["model"]
+    definition = getattr(setup, "FAMILIES", {}).get(family, {})
+    if definition.get("ready"):
+        raise RuntimeError("This Strata recipe uses a separate ready-made pack and would discard the chosen GGUF. Use its native backend.")
+    if family == "deepseek41":
+        definition = getattr(setup, "MULTI_FILE_FAMILIES", {}).get(family, {})
+        recipe = definition.get("models", {}).get(model, {})
+        aliases = getattr(setup, "DSV41_LEGACY_NAMES", {})
+        missing = []
+        paths = [Path(item["path"]) for item in record["files"]]
+        for name in recipe.get("shared", []):
+            allowed = {name, aliases.get(name)}
+            match = next((p for p in paths if p.name in allowed), None)
+            pin = getattr(setup, "DSV41_ALL_FILES", {}).get(match.name) if match else None
+            if match is None or not pin or match.stat().st_size != pin[0]:
+                missing.append(name)
+        if missing:
+            raise RuntimeError("The local Strata model needs these companion files before loading: " + ", ".join(missing)
+                               + ". Studio will not download replacement model weights.")
+    elif not definition or family in getattr(setup, "OWN_PATH_FAMILIES", {}):
+        raise RuntimeError("This Strata architecture has no supported local preparation path in this integration. Use its native backend.")
+    result = dict(record)
+    result["recipe"] = {"family": family, "model": model, "basis": candidate.get("basis")}
+    result["messages"] = list(preview.get("messages") or [])
+    return result
+'''
+
+
+_LOCAL_SETUP_ADAPTER = _SOURCE_CHECKS + r'''
+import importlib.util, sys
+root, record_path = Path(sys.argv[1]), Path(sys.argv[2])
+sys.path.insert(0, str(root))
+import strata_cli
+if strata_cli.PRODUCT_VERSION != "0.2.8" or strata_cli.version() != "0.1.54":
+    raise RuntimeError("Local-model preparation requires the pinned Strata Terminal")
+record = json.loads(record_path.read_text(encoding="utf-8"))
+checked_source(record)
+spec = importlib.util.spec_from_file_location("studio_strata_setup", root / "setup.py")
+setup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(setup)
+recipe = record["recipe"]
+companions = {source_key(p) for p in record.get("companions", [])}
+shards = [Path(item["path"]) for item in record["files"] if source_key(item["path"]) not in companions]
+family = getattr(setup, "FAMILIES", {}).get(recipe["family"], {})
+if family.get("ready"):
+    raise RuntimeError("A ready-made Strata pack cannot replace the chosen local model")
+if recipe["family"] == "deepseek41":
+    aliases = getattr(setup, "DSV41_LEGACY_NAMES", {})
+    shared = [Path(item["path"]) for item in record["files"] if source_key(item["path"]) in companions]
+    def exact_named(paths, name):
+        checked_source(record)
+        for allowed in (name, aliases.get(name)):
+            match = next((path for path in paths if path.name == allowed), None)
+            if match is not None:
+                return match
+        raise RuntimeError("A required DeepSeek file is not part of the selected local model: " + name)
+    # DeepSeek has separate selectors: do not prefer a canonical neighbour over
+    # a selected legacy shard or discover unselected companions in parent dirs.
+    setup.dsv41_pick = lambda folder, name: exact_named(shards, name)
+    setup.dsv41_find_shared = lambda args, name, folder, shared_dir: exact_named(shared, name)
+else:
+    if not family:
+        raise RuntimeError("The selected local Strata preparation recipe is unavailable")
+    def exact_shards(folder, selected_family, selected_model):
+        checked_source(record)
+        if selected_model != recipe["model"] or selected_family != family:
+            raise RuntimeError("Strata setup changed the selected model recipe")
+        return list(shards)
+    # Official launch reduces --model-path FILE to --gguf-dir PARENT. Preserve
+    # its exact inspected shard set even when a canonical neighbour is present.
+    setup.gguf_dir_shards = exact_shards
+def no_model_download(*args, **kwargs):
+    raise RuntimeError("A required local model companion is missing. Studio will not download replacement model weights.")
+setup.download = no_model_download
+sys.argv = [str(root / "setup.py"), *sys.argv[3:]]
+raise SystemExit(setup.main())
+'''
+
+
 # Runs only with the hash-verified bundled interpreter and source. Keeping this
 # adapter out of the installed tree lets the official Terminal remain unedited.
-_ADAPTER = r'''
+_ADAPTER = _SOURCE_CHECKS + r'''
 import base64, json, os, signal, sys, threading
 from pathlib import Path
 root, mode = Path(sys.argv[1]), sys.argv[2]
@@ -248,11 +364,41 @@ elif mode == "prepare":
     for note in notes:
         if note.level == "error":
             raise RuntimeError(note.line())
+    local = None
+    source_file = os.environ.get("SMARTAI_STRATA_SOURCE_FILE")
+    if getattr(args, "model_path", None):
+        if not source_file or getattr(args, "family", None) or getattr(args, "model", None):
+            raise RuntimeError("A local Strata launch must preserve its chosen files without forcing a catalog model")
+        local = inspect_source(json.loads(Path(source_file).read_text(encoding="utf-8")), catalog)
+        if source_key(args.model_path) != source_key(local["path"]):
+            raise RuntimeError("Strata launch changed the chosen source path")
+        if local["recipe"]["family"] == "deepseek41":
+            # This comes only from the successful exact-file preflight above.
+            # DeepSeek's folder scan otherwise prefers the first neighbouring
+            # variant in its catalog, even when --model-path names one file.
+            settings.family = local["recipe"]["family"]
+            settings.model = local["recipe"]["model"]
+            settings.speed = "full"
+            settings.kv = None  # this separate engine uses its native KV representation
+            settings.extra = {**settings.extra, "--dspark": "none"}
+            settings.extra.pop("--spec", None)  # the separate DeepSeek engine has no Qwen --spec flag
+        Path(source_file).write_text(json.dumps(local), encoding="utf-8")
     def progress(event):
         emit({"event":"progress", "stage":event.stage, "message":event.text, "percent":event.pct})
     def unsupported(title, detail):
         raise LaunchError(detail, "A supported native engine is required before downloading this model.", 6)
     class StudioRunner(Runner):
+        def deepseek_files(self):
+            if local and local["recipe"]["family"] != "deepseek41":
+                # A DeepSeek neighbour must not intercept an inspected Qwen file.
+                return False
+            return super().deepseek_files()
+        def _spawn(self, argv, **kwargs):
+            if local and len(argv) > 1 and source_key(argv[1]) == source_key(root / "setup.py"):
+                checked_source(local)
+                argv = [argv[0], str(Path(source_file).with_name("prepare-local.py")),
+                        str(root), source_file, *argv[2:]]
+            return super()._spawn(argv, **kwargs)
         def setup_args(self):
             forwarded = super().setup_args()
             # Control 0.1.54's Mac filter drops --mtp although mac_control_setup
@@ -277,6 +423,18 @@ elif mode == "prepare":
     threading.Thread(target=follow_owner, name="studio-strata-owner", daemon=True).start()
     try:
         plan = runner.plan()
+        if local:
+            selected = plan.get("model") or {}
+            recipe = local["recipe"]
+            if (selected.get("family") != recipe["family"] or selected.get("model") != recipe["model"]
+                    or selected.get("own_files") is not True):
+                raise RuntimeError("Strata's launch plan substituted a different model")
+            parts = (plan.get("download") or {}).get("parts") or []
+            if any(p.get("kind") != "engine" and float(p.get("gb") or 0) > 0 for p in parts):
+                raise RuntimeError("The chosen local model is incomplete; Strata would download additional model weights. "
+                                   "Provide its companion files before loading.")
+            checked_source(local)
+            plan["source_identity"] = local
         plan["warnings"] = list(plan.get("warnings") or []) + [n.line() for n in notes]
         emit({"event":"plan", "plan":plan})
         result = runner.run(start=False)
@@ -292,9 +450,17 @@ elif mode == "prepare":
         raise RuntimeError("Prepared Strata model files are missing")
     if not cfg.get("model_name"):
         raise RuntimeError("Prepared Strata model has no model identity")
+    if local:
+        checked_source(local)
+        if local["recipe"]["family"] == "deepseek41":
+            argv = cfg.get("args") or []
+            def value(flag):
+                return argv[argv.index(flag) + 1] if flag in argv and argv.index(flag) + 1 < len(argv) else None
+            if value("--dspark") != "none" or str(value("--experts")) != "6":
+                raise RuntimeError("This DeepSeek engine did not retain full experts and disabled drafting")
     store.save(settings, settings.name)
     emit({"event":"result", "ok":True, "profile":result.profile, "config":result.config,
-          "model_id":cfg["model_name"], "plan":plan, "notices":result.notices})
+          "model_id":cfg["model_name"], "plan":plan, "source_identity":local, "notices":result.notices})
 else:
     raise RuntimeError("Unknown Studio Strata adapter operation")
 '''
@@ -309,11 +475,17 @@ class StrataRuntime:
     STOP_TIMEOUT = 25
 
     def __init__(self, model_key: str, model_info: dict | None = None):
-        chosen = get_strata_preset(model_key)
-        self.model_info = validate_strata_selection(model_info or chosen)
-        if self.model_info["model_key"] != chosen["model_key"]:
-            raise ValueError("The Strata runtime model key conflicts with its model information.")
-        self.model_key = chosen["model_key"]
+        self._local = (model_info or {}).get("source_kind") == "strata_local"
+        if self._local:
+            self.model_info = validate_strata_selection(model_info)
+            if model_key != self.model_info["model_key"]:
+                raise ValueError("The local Strata model key conflicts with its source identity.")
+        else:
+            chosen = get_strata_preset(model_key)
+            self.model_info = validate_strata_selection(model_info or chosen)
+            if self.model_info["model_key"] != chosen["model_key"]:
+                raise ValueError("The Strata runtime model key conflicts with its model information.")
+        self.model_key = self.model_info["model_key"]
         self.speed_memory_limit_gb = (model_info or {}).get("memory_limit_gb")
         strata_memory_policy(self.speed_memory_limit_gb)
         self.root = Path(get_portable_data_dir()).resolve() / "runtime" / "strata"
@@ -324,6 +496,12 @@ class StrataRuntime:
             )
         self.artifact = ARTIFACTS[self.platform]
         self.terminal = self.root / "terminal" / f"{CONTROL_VERSION}-{self.platform}"
+        # Upstream keys prepared packs by recipe name, not by the user's source.
+        # Give every local artifact its own install/discovery/data roots so two
+        # same-layout fine-tunes never share tokenizer or expert-cache files.
+        self._model_home = (self.root / "local-models" / self.model_info["strata_source_id"]
+                            if self._local else self.root)
+        self._data_dir = self._model_home / "data" if self._local else self.root / "models"
         self.preset = f"smartai-{uuid.uuid4().hex}"
         self.profile = f"launch-{self.preset}"
         self.session = self.root / "sessions" / self.preset
@@ -370,13 +548,13 @@ class StrataRuntime:
         env = dict(os.environ)
         # Ambient Strata knobs may alter quality, trust or someone else's state.
         for name in list(env):
-            if name.startswith("STRATA_") or name in {"PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"}:
+            if name.startswith(("STRATA_", "SMARTAI_STRATA_")) or name in {"PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"}:
                 env.pop(name, None)
         env.update({
-            "STRATA_INSTALL_DIR": str(terminal or self.terminal),
-            "STRATA_DATA_DIR": str(self.root / "models"),
-            "STRATA_SETTINGS_FILE": str(self.root / "settings.json"),
-            "STRATA_DOCUMENTS_DIR": str(self.root / "documents"),
+            "STRATA_INSTALL_DIR": str(self._model_home / "install" if self._local else terminal or self.terminal),
+            "STRATA_DATA_DIR": str(self._data_dir),
+            "STRATA_SETTINGS_FILE": str(self._model_home / "settings.json"),
+            "STRATA_DOCUMENTS_DIR": str(self._model_home / "documents"),
             "STRATA_PROFILE_DIR": str(self.session / "profiles"),
             "STRATA_RUNTIME_DIR": str(self.session / "runtime"),
             "STRATA_LAUNCH_PRESET_DIR": str(self.session / "launch-presets"),
@@ -386,14 +564,16 @@ class StrataRuntime:
             "SMARTAI_STRATA_API_KEY": self._api_key,
             "SMARTAI_STRATA_OWNER_PID": str(os.getpid()),
             "XDG_STATE_HOME": str(self.session / "state"),
-            "XDG_CACHE_HOME": str(self.root / "cache"),
-            "XDG_DATA_HOME": str(self.root / "data"),
-            "XDG_CONFIG_HOME": str(self.root / "config"),
+            "XDG_CACHE_HOME": str(self._model_home / "cache"),
+            "XDG_DATA_HOME": str(self._model_home / "xdg-data" if self._local else self.root / "data"),
+            "XDG_CONFIG_HOME": str(self._model_home / "config"),
             "PYTHONNOUSERSITE": "1", "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
         })
         if os.name == "nt":
             env["LOCALAPPDATA"] = str(self.session / "localappdata")
-            env["APPDATA"] = str(self.root / "roaming")
+            env["APPDATA"] = str(self._model_home / "roaming")
+        if self._local:
+            env["SMARTAI_STRATA_SOURCE_FILE"] = str(self.session / "source.json")
         return env
 
     def _feed_name(self) -> str:
@@ -412,6 +592,24 @@ class StrataRuntime:
             and (self.terminal / "setup.py").is_file()
         )
 
+    def _source_record(self) -> dict | None:
+        if not self._local:
+            return None
+        current = validate_strata_selection(self.model_info)
+        if current["strata_source_id"] != self.model_info["strata_source_id"]:
+            raise StrataRuntimeError("The chosen model files changed. Import the current files again before loading.")
+        companions = current.get("strata_companion_files") or []
+        return {
+            "id": current["strata_source_id"], "path": current["strata_model_path"],
+            "files": current["strata_source_files"],
+            "companions": [item["path"] if isinstance(item, dict) else str(item) for item in companions],
+        }
+
+    def _same_source(self, record: dict | None) -> bool:
+        expected = self._source_record()
+        return (isinstance(record, dict) and expected is not None
+                and all(record.get(key) == value for key, value in expected.items()))
+
     def is_prepared(self) -> bool:
         """Cheap offline hint; start still asks upstream to check all prepared files."""
         if not self._installed():
@@ -419,6 +617,14 @@ class StrataRuntime:
         record = _read_json(self.root / "prepared" / f"{self.model_key}.json")
         if record.get("release") != RELEASE or record.get("model_key") != self.model_key:
             return False
+        source_paths = set()
+        if self._local:
+            try:
+                if not self._same_source(record.get("source_identity")):
+                    return False
+                source_paths = {Path(item["path"]).resolve() for item in self.model_info["strata_source_files"]}
+            except (OSError, ValueError, StrataRuntimeError):
+                return False
         config = Path(record.get("config") or "")
         if not _inside(config, self.root) or not config.is_file():
             return False
@@ -431,7 +637,8 @@ class StrataRuntime:
         try:
             return all(
                 isinstance(item, dict) and isinstance(item.get("path"), str)
-                and _inside(Path(item["path"]), self.root) and Path(item["path"]).exists()
+                and (_inside(Path(item["path"]), self.root) or Path(item["path"]).resolve() in source_paths)
+                and Path(item["path"]).exists()
                 and ("size" not in item or Path(item["path"]).stat().st_size == item["size"] > 0)
                 for item in files
             )
@@ -697,14 +904,34 @@ class StrataRuntime:
         if not _inside(config, self.session) or not config.is_file():
             raise StrataRuntimeError("Strata did not create this instance's private model configuration.")
         cfg = _read_json(config)
-        if (cfg.get("model_name") != prepared.get("model_id")
-                or prepared.get("model_id") != self.model_info["strata_api_model"]):
+        if (not prepared.get("model_id") or cfg.get("model_name") != prepared.get("model_id")
+                or (not self._local and prepared.get("model_id") != self.model_info["strata_api_model"])):
             raise StrataRuntimeError("Strata's prepared model identity is inconsistent.")
         selected = (prepared.get("plan") or {}).get("model") or {}
-        if (selected.get("family") != self.model_info["strata_family"]
+        files = []
+        source = prepared.get("source_identity")
+        if self._local:
+            if not self._same_source(source):
+                raise StrataRuntimeError("Strata's prepared model no longer matches the chosen local files.")
+            recipe = source.get("recipe") or {}
+            if (selected.get("family") != recipe.get("family") or selected.get("model") != recipe.get("model")
+                    or selected.get("own_files") is not True):
+                raise StrataRuntimeError("Strata's launch plan substituted a different local model.")
+            allowed = {Path(item["path"]).resolve() for item in source["files"]}
+            argv = cfg.get("args") or []
+            ggufs = [Path(value).resolve() for value in argv if isinstance(value, str) and value.lower().endswith(".gguf")]
+            if any(path not in allowed for path in ggufs) or (not ggufs and recipe.get("family") != "deepseek41"):
+                raise StrataRuntimeError("Strata's prepared configuration selected different model weights.")
+            for index, value in enumerate(argv[:-1]):
+                if value == "--pack" and not _inside(Path(argv[index + 1]), self._data_dir):
+                    raise StrataRuntimeError("Strata's prepared pack is not isolated to the chosen model.")
+            tokenizer = cfg.get("tokenizer")
+            if tokenizer and not _inside(Path(tokenizer), self._data_dir):
+                raise StrataRuntimeError("Strata's tokenizer is not isolated to the chosen model.")
+            files.extend(dict(item) for item in source["files"])
+        elif (selected.get("family") != self.model_info["strata_family"]
                 or selected.get("model") != self.model_info["native_strata_model"]):
             raise StrataRuntimeError("Strata's launch plan selected a different model.")
-        files = []
         for value in cfg.get("args") or []:
             if isinstance(value, str) and Path(value).is_absolute() and _inside(Path(value), self.root) and Path(value).exists():
                 candidate = Path(value)
@@ -720,7 +947,7 @@ class StrataRuntime:
             raise StrataRuntimeError("Strata did not report any prepared local model files.")
         _write_json(self.root / "prepared" / f"{self.model_key}.json", {
             "release": RELEASE, "model_key": self.model_key, "model_id": prepared["model_id"],
-            "config": str(config), "files": files,
+            "config": str(config), "files": files, "source_identity": source,
         })
 
     def _http_json(self, path: str) -> dict:
@@ -770,21 +997,27 @@ class StrataRuntime:
                 return dict(self._result)
             self._check(cancelled)
             _private_dir(self.session)
+            if self._local:
+                _write_json(self.session / "source.json", self._source_record())
+                (self.session / "prepare-local.py").write_text(_LOCAL_SETUP_ADAPTER, encoding="utf-8")
             self._api_key = secrets.token_urlsafe(32)
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 self._port = reservation.getsockname()[1]
             self._ensure_terminal(progress, cancelled)
-            launch = ["launch", *options, "--data-dir", str(self.root / "models"), "--access", "local",
+            launch = ["launch", *options, "--data-dir", str(self._data_dir), "--access", "local",
                       "--port", str(self._port), "--api-key-env", "SMARTAI_STRATA_API_KEY", "--tune", "skip",
                       "--save-preset", self.preset, "--no-tui", "--output", "json", "--feed", RELEASE_URL + "/" + self._feed_name()]
-            self._emit(progress, "Strata is checking the engine, model download and automatic GPU/RAM/SSD placement")
+            self._emit(progress, "Strata is checking the chosen model and automatic GPU/RAM/SSD placement" if self._local else
+                       "Strata is checking the engine, model download and automatic GPU/RAM/SSD placement")
             prepared = self._run([str(self._python()), "-c", _ADAPTER, str(self.terminal), "prepare", *launch],
                                  timeout=self.PREPARE_TIMEOUT, progress=progress, cancelled=cancelled)
             if prepared.get("ok") is not True or prepared.get("profile") != self.profile:
                 raise StrataRuntimeError("Strata did not prepare the owned model profile.")
             self._remember_prepared(prepared)
             self._check(cancelled)
+            if self._local and not self._same_source(prepared.get("source_identity")):
+                raise StrataRuntimeError("The chosen local model changed before loading.")
             self._owner_requested, self._launch_epoch = True, time.time()
             self._emit(progress, "Loading Strata's native engine with automatic GPU/RAM/SSD placement")
             owner = self._run(self._cli("runtime", "start", "--profile", self.profile, "--die-with-pid", str(os.getpid()),
@@ -803,6 +1036,7 @@ class StrataRuntime:
                 "requested_context": context_tokens, "plan": prepared.get("plan") or self._plan,
                 "profile": self.profile, "owner_pid": owner.get("host_pid"), "release": RELEASE,
                 "memory_policy": strata_memory_policy(self.speed_memory_limit_gb),
+                "source_identity": prepared.get("source_identity"),
             }
             self._emit(progress, "Strata is loaded; automatic GPU/RAM/SSD placement is active")
             return dict(self._result)

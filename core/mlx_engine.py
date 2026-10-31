@@ -127,6 +127,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self._vlm_loader = None
         self._speed_prefill_step_size = None
         self._speed_profile_context = None
+        self.last_error = ""
 
         # The GUI class is already defined when its ProReasoningEngine is constructed.
         # Install the optional top-row generation-cap control without rewriting app_gui.py.
@@ -203,10 +204,13 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
     def load_model(self) -> bool:
         """Load native model weights with the model's required Apple-Silicon runtime."""
+        self.last_error = ""
         if platform.system() != "Darwin" or platform.machine() != "arm64":
+            self.last_error = "This MLX checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."
             self.is_mlx_available = False
             return False
         if not os.path.exists(self.model_path) and os.getenv("OFFLINE", "0") == "1":
+            self.last_error = "The selected MLX checkpoint is not available locally in offline mode."
             self.is_mlx_available = False
             return False
 
@@ -246,6 +250,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.is_mlx_available = self.model is not None and self.tokenizer is not None
         except Exception as exc:
             _base.logger.error("MLX model load failed: %s", exc)
+            self.last_error = str(exc)
             self.is_mlx_available = False
             return False
 

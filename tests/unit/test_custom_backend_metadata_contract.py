@@ -63,13 +63,16 @@ def test_multiple_ambiguous_generic_ggufs_are_never_guessed_as_ternary():
 
 def test_custom_fetch_uses_detected_exact_files_and_persists_runtime_metadata():
     app = _src("app_gui.py")
-    assert 'gguf_file = str(verified_policy_meta.get("gguf_file")' in app
-    assert "allow_patterns=patterns" in app
-    assert "required_files=required" in app
-    assert '"backend_family": str(verified_policy_meta.get("backend_family")' in app
-    assert '"runtime_family": str(verified_policy_meta.get("runtime_family")' in app
-    assert '"prism_llama_fork": bool(verified_policy_meta.get("prism_llama_fork"' in app
-    assert '"bitnet_training_base_model_id": verified_policy_meta.get("bitnet_training_base_model_id")' in app
+    assert "download_imported_model(repo_id, policy_meta" in app
+    assert "make_imported_model_entry(" in app
+    from core.model_import_entry import make_imported_model_entry
+    capabilities = {"task": "text", "controller_runtime": "gguf", "backend_family": "prism_gguf",
+                    "runtime_family": "custom", "prism_llama_fork": True,
+                    "bitnet_training_base_model_id": "owner/training-source",
+                    "gguf_file": "selected/model.gguf", "gguf_files": ["selected/model.gguf"]}
+    entry = make_imported_model_entry(capabilities, repo_id="owner/model", runtime_preference="native")
+    for key, value in capabilities.items():
+        assert entry[key] == value
 
 
 def test_custom_gguf_training_never_assumes_qwen_when_lineage_is_missing():

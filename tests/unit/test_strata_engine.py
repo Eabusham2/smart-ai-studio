@@ -10,6 +10,7 @@ from pathlib import Path
 import socket
 import struct
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -205,6 +206,72 @@ class TestStrataHTTPBackend(unittest.TestCase):
         self.assertTrue(self.managers[0].stopped)
         self.assertFalse(self.backend.is_loaded)
         self.assertEqual(self.posts(), [])
+
+    def local_selection(self, directory, name="chosen.gguf"):
+        from config.strata_models import make_local_strata_selection
+        path = Path(directory) / name
+        path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 0))
+        info = make_local_strata_selection(str(path))
+        identity = {
+            "id": info["strata_source_id"], "path": info["strata_model_path"],
+            "files": copy.deepcopy(info["strata_source_files"]), "companions": [],
+            "recipe": {"family": "qwen", "model": "Q2_0", "basis": "same_layout_other_build"},
+        }
+        return path, info, identity
+
+    def test_custom_load_retains_and_releases_verified_source_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, info, identity = self.local_selection(directory)
+            self.backend = backend_module.StrataReasoningBackend(str(path), info)
+            self.runtime_record["source_identity"] = identity
+            self.load()
+            self.assertEqual(self.backend.source_identity, identity)
+            identity["files"][0]["size"] += 1
+            self.assertNotEqual(self.backend.source_identity, identity)
+            self.assertEqual(self.backend.model_id, MODEL)
+            self.backend.unload_model()
+            self.assertEqual(self.backend.source_identity, {})
+
+    def test_same_recipe_and_api_identity_do_not_accept_different_local_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, info, _ = self.local_selection(directory)
+            _, _, other_identity = self.local_selection(directory, "other-finetune.gguf")
+            self.backend = backend_module.StrataReasoningBackend(str(path), info)
+            self.runtime_record["source_identity"] = other_identity
+            with self.assertRaisesRegex(backend_module.StrataError, "does not match the chosen local model files"):
+                self.backend.load_model()
+            self.assertFalse(self.backend.is_loaded)
+            self.assertTrue(self.managers[-1].stopped)
+            self.assertEqual(self.service.requests, [])
+
+    def test_custom_runtime_record_requires_all_exact_source_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, info, original = self.local_selection(directory)
+            mutations = [None, {}, {**original, "id": "other"}, {**original, "path": str(path.parent)},
+                         {**original, "files": []}, {**original, "companions": [str(path)]}]
+            changed_stat = copy.deepcopy(original)
+            changed_stat["files"][0]["mtime_ns"] += 1
+            mutations.append(changed_stat)
+            for identity in mutations:
+                with self.subTest(identity=identity):
+                    self.backend = backend_module.StrataReasoningBackend(str(path), info)
+                    self.runtime_record["source_identity"] = identity
+                    with self.assertRaisesRegex(backend_module.StrataError, "chosen local model files"):
+                        self.backend.load_model()
+                    self.assertFalse(self.backend.is_loaded)
+                    self.assertTrue(self.managers[-1].stopped)
+                    self.assertEqual(self.service.requests, [])
+
+    def test_local_source_is_revalidated_after_runtime_preparation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, info, identity = self.local_selection(directory)
+            self.backend = backend_module.StrataReasoningBackend(str(path), info)
+            self.runtime_record["source_identity"] = identity
+            path.write_bytes(path.read_bytes() + b"changed")
+            with self.assertRaisesRegex(backend_module.StrataError, "source changed before loading"):
+                self.backend.load_model()
+            self.assertTrue(self.managers[-1].stopped)
+            self.assertEqual(self.service.requests, [])
 
     def test_structured_messages_literals_reasoning_usage_and_sampling_are_preserved(self):
         self.load()

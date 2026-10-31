@@ -109,6 +109,7 @@ class StrataReasoningBackend:
         self.model_id = ""
         self.health: dict[str, Any] = {}
         self.plan: dict[str, Any] = {}
+        self.source_identity: dict[str, Any] = {}
         self.last_usage: dict[str, Any] = {}
         self.last_branch_usage: dict[str, int] = {}
         self.last_generation: dict[str, Any] = {}
@@ -282,6 +283,21 @@ class StrataReasoningBackend:
             launched = self._manager.start(requested, progress=progress, cancelled=cancelled)
             if not isinstance(launched, dict):
                 raise StrataError("Strata did not return a managed runtime record.")
+            source_identity = {}
+            if self.model_info.get("source_kind") == "strata_local":
+                from config.strata_models import validate_strata_selection
+                try:
+                    selected = validate_strata_selection(self.model_info)
+                except (OSError, ValueError, TypeError) as exc:
+                    raise StrataError("The chosen local Strata source changed before loading: " + str(exc)) from None
+                expected_source = {
+                    "id": selected["strata_source_id"], "path": selected["strata_model_path"],
+                    "files": selected["strata_source_files"], "companions": selected["strata_companion_files"],
+                }
+                source_identity = launched.get("source_identity")
+                if (not isinstance(source_identity, dict)
+                        or any(source_identity.get(key) != value for key, value in expected_source.items())):
+                    raise StrataError("The managed Strata source does not match the chosen local model files.")
             self._endpoint = self._local_endpoint(launched.get("base_url"))
             key = launched.get("api_key")
             if not isinstance(key, str) or not key or len(key) > 4096 or any(not 33 <= ord(c) <= 126 for c in key):
@@ -318,6 +334,7 @@ class StrataReasoningBackend:
             self.model_id = model_id
             self.health = copy.deepcopy(health)
             self.plan = copy.deepcopy(launched.get("plan") or {})
+            self.source_identity = copy.deepcopy(source_identity)
             self._loaded_context = health["max_context"]
             self.context_budget_tokens = self._loaded_context
             self.last_usage = {}
@@ -578,3 +595,4 @@ class StrataReasoningBackend:
         self._loaded_context = 0
         self.health = {}
         self.plan = {}
+        self.source_identity = {}

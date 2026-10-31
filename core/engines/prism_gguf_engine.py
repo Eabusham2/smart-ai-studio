@@ -231,8 +231,17 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
 
     def load_model(self) -> bool:
         if not os.path.isfile(self.model_path):
+            self.last_error = "The selected Prism GGUF file does not exist."
             return False
         self.unload_model()
+        self.last_error = ""
+        try:
+            from core.gguf_metadata import inspect_gguf
+            metadata = inspect_gguf(self.model_path)
+            self.model_path = metadata["model_path"]
+        except (OSError, ValueError) as exc:
+            self.last_error = str(exc)
+            return False
         os.makedirs(self.adapter_root, exist_ok=True)
         config = {
             "model_path": self.model_path,
@@ -243,12 +252,16 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             "verbose": self.verbose,
             "n_threads": self.n_threads,
             "n_threads_batch": self.n_threads_batch,
+            "auto_memory_placement": self.auto_memory_placement,
+            "memory_limit_gb": self.memory_limit_gb,
+            "memory_owner_pid": os.getpid(),
         }
         config_path = os.path.join(self.adapter_root, "prism-worker-config.json")
         with open(config_path, "w", encoding="utf-8") as handle:
             json.dump(config, handle)
 
         err = open(self._worker_error_log, "a", encoding="utf-8")
+        error_start = err.tell()
         try:
             self._worker = subprocess.Popen(
                 [sys.executable, "-m", "core.engines.prism_gguf_worker", config_path],
@@ -268,7 +281,10 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             if self._worker.poll() is not None:
                 break
             try:
-                self._call({"op": "ping"})
+                ready = self._call({"op": "ping"})
+                self.memory_placement = dict(ready.get("memory_placement") or {})
+                if "n_gpu_layers" in self.memory_placement:
+                    self.n_gpu_layers = int(self.memory_placement["n_gpu_layers"])
                 self.model = _PrismModelProxy(self)
                 self.chat_handler = object() if self.mmproj_path else None
                 self.is_gguf_available = True
@@ -278,7 +294,20 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                 time.sleep(0.25)
 
         self.unload_model()
-        raise RuntimeError(f"Prism GGUF worker failed to start: {last_error or 'worker exited'}")
+        detail = str(last_error or "worker exited")
+        try:
+            # Keep the native encoding/allocation error visible without reading
+            # an unbounded log or reporting an unrelated previous launch.
+            with open(self._worker_error_log, "rb") as log:
+                log.seek(0, os.SEEK_END)
+                log.seek(max(error_start, log.tell() - 4096))
+                native_error = log.read(4096).decode("utf-8", errors="replace").strip()
+            if native_error:
+                detail += ": " + native_error
+        except OSError:
+            pass
+        self.last_error = f"Prism GGUF worker failed to start: {detail}"
+        raise RuntimeError(self.last_error)
 
     def generate_branches(
         self,

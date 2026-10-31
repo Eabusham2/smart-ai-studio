@@ -12,6 +12,7 @@ import threading
 import types
 import unittest
 from unittest.mock import patch
+from tests.unit.gguf_fixtures import write_gguf
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -382,6 +383,7 @@ class TestLlamaSpeedAdapter(unittest.TestCase):
         self.assertEqual(self.model.calls, [])
 
     def test_optional_tuner_failure_does_not_break_model_load_or_manual_threads(self):
+        write_gguf(self.model_path)
         llama = types.ModuleType("llama_cpp")
         received = []
         llama.Llama = lambda **kwargs: received.append(kwargs) or self.model
@@ -389,7 +391,7 @@ class TestLlamaSpeedAdapter(unittest.TestCase):
              patch.object(adapter, "LlamaSpeedTuner", side_effect=ImportError("optional helper missing")):
             backend = gguf.GGUFReasoningBackend(
                 str(self.model_path), adapter_root=self.directory.name,
-                n_threads=3, n_threads_batch=6,
+                n_threads=3, n_threads_batch=6, auto_memory_placement=False,
             )
             self.assertTrue(backend.load_model())
             self.assertIs(backend.model, self.model)
@@ -485,7 +487,10 @@ class TestPrismTuningTransport(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             cfg = Path(directory) / "worker.json"
-            cfg.write_text(json.dumps({"model_path": "model.gguf", "n_ctx": 4096}))
+            model_path = Path(directory) / "model.gguf"
+            write_gguf(model_path)
+            cfg.write_text(json.dumps({"model_path": str(model_path), "n_ctx": 4096,
+                                       "auto_memory_placement": False}))
             marker = Path(directory) / "cancel"
             marker.touch()
             requests = "\n".join(json.dumps(value) for value in (

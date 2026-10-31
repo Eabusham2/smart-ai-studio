@@ -290,6 +290,10 @@ class ProReasoningEngine:
                         model_path=target_path,
                         model_info=info,
                     )
+                    self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
+                    self.controller_backend.context_tokens = int(
+                        getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768
+                    )
                     load_options = {}
                     if controller_runtime == "strata":
                         self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
@@ -316,6 +320,7 @@ class ProReasoningEngine:
                             "path": target_path,
                             "input_modalities": sorted(self.active_input_modalities),
                             "trainable": bool(getattr(self.controller_backend, "can_train", False)),
+                            "memory_placement": dict(getattr(self.controller_backend, "memory_placement", {}) or {}),
                         }
                     if controller_runtime == "strata":
                         return {
@@ -323,6 +328,8 @@ class ProReasoningEngine:
                             "model": model_name, "backend": "strata", "path": target_path,
                             "error": self.controller_backend.last_error or "Strata could not prepare the selected model.",
                         }
+                    return {"status": "error", "model": model_name, "backend": controller_runtime,
+                            "path": target_path, "error": "The selected runtime did not load a usable model."}
 
                 # 1. Native Apple Silicon MLX
                 if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -345,7 +352,12 @@ class ProReasoningEngine:
                             "trainable": callable(getattr(self.mlx_backend, "train_mini_batch", None)),
                         }
                     else:
-                        return {"status": "not_downloaded", "model": model_name, "backend": "mlx", "path": target_path}
+                        return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
+                                "error": getattr(self.mlx_backend, "last_error", "") or "The selected checkpoint could not load with its MLX runtime."}
+
+                if target_backend == "mlx":
+                    return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
+                            "error": "This checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."}
 
                 # 2. GGUF / Llama.cpp Cross-Platform
                 if target_backend == "gguf":
@@ -361,6 +373,9 @@ class ProReasoningEngine:
                         model_path=target_path,
                         mmproj_path=mmproj_path,
                         training_base_model_id=info.get("gguf_training_base_model_id"),
+                        n_ctx=int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
+                        auto_memory_placement=bool(info.get("auto_memory_placement", True)),
+                        memory_limit_gb=getattr(self, "speed_memory_limit_gb", None),
                     )
                     if self.gguf_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -371,7 +386,12 @@ class ProReasoningEngine:
                             "backend": "gguf",
                             "path": target_path,
                             "trainable": bool(self.gguf_backend.training_ready()),
+                            "memory_placement": dict(getattr(self.gguf_backend, "memory_placement", {}) or {}),
                         }
+                    return {
+                        "status": "error", "model": model_name, "backend": "gguf", "path": target_path,
+                        "error": getattr(self.gguf_backend, "last_error", "") or "The native runtime could not load this GGUF model.",
+                    }
 
                 # 3. Microsoft bitnet.cpp — real 1.58-bit inference runtime.
                 # Fail closed if the official runtime/model cannot be prepared; never
@@ -436,6 +456,15 @@ class ProReasoningEngine:
         old_model = self.active_model_name
 
         controller = getattr(self, "controller_backend", None)
+        if getattr(controller, "_offload_directory", None):
+            try:
+                controller.unload_model()
+                if getattr(controller, "_offload_directory", None):
+                    raise RuntimeError("The private Transformers offload files are still in use. Retry unloading before loading or deleting model files.")
+            except Exception as exc:
+                return {"status": "error", "unloaded": False, "model": old_model,
+                        "backend": getattr(controller, "runtime", "transformers"), "error": str(exc)}
+            self.controller_backend = None
         if getattr(controller, "runtime", None) == "strata":
             try:
                 controller.unload_model()

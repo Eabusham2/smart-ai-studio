@@ -104,6 +104,15 @@ def test_custom_metadata_drives_gguf_bitnet_and_multimodal_routing():
     policy = _src("core/model_policy.py")
     runtime = _src("core/controller_runtime.py")
     app = _src("app_gui.py")
+    from core.model_import_entry import make_imported_model_entry
+    metadata = {
+        "task": "text", "backend_family": "gguf", "controller_runtime": "gguf",
+        "runtime_family": "custom", "prism_llama_fork": False,
+        "gguf_training_base_model_id": "owner/gguf-master",
+        "bitnet_training_base_model_id": "owner/bitnet-master",
+    }
+    entry = make_imported_model_entry(metadata, repo_id="owner/custom", runtime_preference="native")
+    assert "make_imported_model_entry(" in app
 
     for key in (
         "backend_family",
@@ -114,7 +123,7 @@ def test_custom_metadata_drives_gguf_bitnet_and_multimodal_routing():
         "bitnet_training_base_model_id",
     ):
         assert key in policy
-        assert key in app
+        assert entry[key] == metadata[key]
 
     assert "supports_media_input" in runtime
     assert "review_media_input" in runtime

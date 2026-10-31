@@ -30,7 +30,9 @@ from core.audio_engine import AudioGenerationEngine
 from core.media_engine import MediaGenerationEngine
 from core.media_orchestrator import MediaController
 from core.hf_downloader import is_model_cached_locally, purge_local_model_cache, download_model_from_hf
-from core.model_policy import enforce_hf_text_ternary, enforce_local_text_ternary
+from core.model_policy import admit_hf_model, admit_local_model
+from core.model_import_entry import make_imported_model_entry
+from core.model_import_download import download_imported_model
 from core.memory_watchdog import SystemMemoryWatchdog
 from core.learning_sources import inspect_learning_source
 from core.platform import get_auto_context_window_size
@@ -1229,6 +1231,8 @@ class SmartAIChatbotApp:
                 self.watchdog.stop_monitoring()
             if hasattr(self, "cancel_event"):
                 self.cancel_event.set()
+            for event in getattr(self, "_hf_download_events", {}).values():
+                event.set()
             if hasattr(self, "engine") and self.engine:
                 self.engine.unload_model()
         except Exception:
@@ -1551,7 +1555,7 @@ class SmartAIChatbotApp:
         self.btn_theme_toggle.pack(side="left", padx=2)
 
         # Status Label
-        cached = is_model_cached_locally(curr_info["repo_id"]) if curr_info.get("repo_id") else (os.path.exists(curr_info.get("model_path") or "") if curr_info.get("model_path") else False)
+        cached = self._model_is_cached(curr_info)
         status_txt = f"⚡ Ready ({curr_info['short_name']})" if cached else f"○ Not Downloaded ({curr_info['short_name']})"
         self.lbl_model_status = tk.Label(
             right_box, text=status_txt, font=_FONT_TINY_BOLD,
@@ -1573,7 +1577,7 @@ class SmartAIChatbotApp:
                 label=f"{info['tag']}  ({info['base_params']})",
                 command=lambda t=tid: self._on_switch_model_tab(t),
             )
-            if tid.startswith("custom_") and info.get("source_kind") == "hf_fetch":
+            if tid.startswith("custom_") and (info.get("source_kind") == "hf_fetch" or info.get("source_origin") == "hf_fetch"):
                 menu.add_command(
                     label=f"   ➖ Remove {info.get('short_name', 'fetched model')}",
                     command=lambda t=tid: self._remove_hf_fetched_model(t),
@@ -1596,77 +1600,79 @@ class SmartAIChatbotApp:
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
         info = self.models_config.get(model_id)
-        if not info or not model_id.startswith("custom_") or info.get("source_kind") != "hf_fetch":
+        if (not info or not model_id.startswith("custom_")
+                or (info.get("source_kind") != "hf_fetch" and info.get("source_origin") != "hf_fetch")):
+            return
+        if getattr(self, "_model_load_in_progress", False) or model_id in getattr(self, "_hf_download_in_progress", set()):
+            self._append_ai_message("Finish or cancel model setup before removing its downloaded files.")
             return
 
         short_name = str(info.get("short_name") or info.get("name") or "Hugging Face model")
-        repo_id = str(info.get("repo_id") or "").strip()
+        repo_id = str(info.get("source_repo_id") or info.get("repo_id") or "").strip()
 
         confirm = messagebox.askyesno(
             "Remove Hugging Face Model",
             f"Remove {short_name}?\n\n"
-            "This deletes it from the selector and removes its downloaded Hugging Face cache.",
+            "This removes its selector entry and deletes its Hugging Face cache if no other saved model uses it.",
         )
         if not confirm:
             return
 
         was_active = (self.active_tab_id == model_id)
+
+        def _finish_removal():
+            cache_note = ""
+            if repo_id:
+                repo_still_used = any(
+                    mid != model_id and str(other.get("source_repo_id") or other.get("repo_id") or "").strip() == repo_id
+                    for mid, other in self.models_config.items() if isinstance(other, dict)
+                )
+                if repo_still_used:
+                    cache_note = " Its shared Hugging Face cache was kept for the other saved model."
+                else:
+                    try:
+                        removed = purge_local_model_cache(repo_id)
+                        cache_note = (" Its Hugging Face cache was removed." if removed
+                                      else " No Hugging Face cache was removed.")
+                    except Exception as error:
+                        cache_note = f" The cache could not be removed: {error}"
+            self.models_config.pop(model_id, None)
+            self.chat_history.pop(model_id, None)
+            self.tab_buttons.pop(model_id, None)
+            self.thinking_cache.pop(model_id, None)
+            self.thinking_expanded.pop(model_id, None)
+            self.thinking_meta.pop(model_id, None)
+            self._save_custom_models()
+            self._refresh_model_menu()
+            if was_active or self.active_tab_id not in self.models_config:
+                fallback_id = "model_1" if "model_1" in self.models_config else next(iter(self.models_config), None)
+                if fallback_id:
+                    self._on_switch_model_tab(fallback_id)
+            self._append_ai_message(f"➖ **Removed model entry**: `{short_name}`.{cache_note}")
+
         if was_active:
+            if self._unload_strata_async(on_complete=_finish_removal):
+                return
             try:
-                self.engine.unload_model()
-            except Exception:
-                pass
-            try:
+                result = self.engine.unload_model()
+                if isinstance(result, dict) and result.get("status") not in {None, "unloaded"}:
+                    raise RuntimeError(result.get("error") or "Model unload did not complete.")
                 self.audio_engine.unload_model()
-            except Exception:
-                pass
-            try:
                 self.media_engine.unload_model()
-            except Exception:
-                pass
+            except Exception as error:
+                self._append_ai_message(f"Model files were kept because unload failed: {error}")
+                return
             self.is_model_loaded = False
             self._sync_memory_watchdog(force_stop=True)
-
-        if repo_id:
-            repo_still_used = any(
-                mid != model_id and str(other.get("repo_id") or "").strip() == repo_id
-                for mid, other in self.models_config.items()
-                if isinstance(other, dict)
-            )
-            if not repo_still_used:
-                try:
-                    purge_local_model_cache(repo_id)
-                except Exception:
-                    pass
-
-        self.models_config.pop(model_id, None)
-        self.chat_history.pop(model_id, None)
-        self.tab_buttons.pop(model_id, None)
-        self.thinking_cache.pop(model_id, None)
-        self.thinking_expanded.pop(model_id, None)
-        self.thinking_meta.pop(model_id, None)
-
-        self._save_custom_models()
-        self._refresh_model_menu()
-
-        if was_active or self.active_tab_id not in self.models_config:
-            fallback_id = "model_1" if "model_1" in self.models_config else next(iter(self.models_config), None)
-            if fallback_id:
-                self._on_switch_model_tab(fallback_id)
-
-        self._append_ai_message(
-            f"➖ **Removed Hugging Face model**: `{short_name}`"
-            + (f" (`{repo_id}`)" if repo_id else "")
-            + ". Its saved selector entry and downloaded cache were deleted."
-        )
+        _finish_removal()
 
 
     def _on_fetch_custom_hf_model_dialog(self):
         """Fetch an arbitrary Hugging Face model, register it as a custom model, and select it."""
         modal = tk.Toplevel(self.root)
         modal.title("Fetch Hugging Face Custom Model")
-        modal.geometry("560x230")
-        modal.resizable(False, False)
+        modal.geometry("640x430")
+        modal.minsize(640, 375)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
         modal.grab_set()
@@ -1680,7 +1686,8 @@ class SmartAIChatbotApp:
         ).pack(anchor="w")
         tk.Label(
             body,
-            text="Enter a Hugging Face repo ID. Text repos must explicitly prove native ternary / 1.58-bit weights.",
+            text="Fetch your chosen model. Automatic placement uses a compatible runtime and keeps its quantization.",
+            wraplength=590,
             font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]
         ).pack(anchor="w", pady=(3, 10))
 
@@ -1690,6 +1697,17 @@ class SmartAIChatbotApp:
         )
         ent_repo.pack(fill="x", ipady=5)
         ent_repo.focus_set()
+
+        tk.Label(body, text="GGUF file (choose one if the repository has several quantizations):",
+                 font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(anchor="w", pady=(8, 2))
+        ent_gguf = ttk.Combobox(body, values=[], state="normal")
+        ent_gguf.pack(fill="x")
+
+        tk.Label(body, text="Runtime:", font=_FONT_SMALL, bg=self.C["bg_hud"],
+                 fg=self.C["text_muted"]).pack(anchor="w", pady=(8, 2))
+        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata"], state="readonly")
+        runtime_choice.set("Automatic")
+        runtime_choice.pack(fill="x")
 
         lbl_status = tk.Label(
             body, text="Downloads into the normal Hugging Face cache and adds it to this model dropdown.",
@@ -1708,77 +1726,47 @@ class SmartAIChatbotApp:
                     break
             return value.strip("/")
 
-        verified_policy_meta = {}
+        fetch_cancel = threading.Event()
+        fetching = {"active": False}
 
-        def _register_download(repo_id: str, local_dir: str):
+        def _close():
+            fetch_cancel.set()
+            modal.destroy()
+
+        modal.protocol("WM_DELETE_WINDOW", _close)
+
+        def _post(callback):
+            def _dispatch():
+                if not fetch_cancel.is_set() and modal.winfo_exists():
+                    callback()
+            self._event_queue.put(("model_load_complete", _dispatch))
+
+        def _failed(error, choices=()):
+            fetching["active"] = False
+            if choices:
+                ent_gguf.configure(values=list(choices))
+            lbl_status.configure(text=str(error), fg=self.C["accent_red"], wraplength=590)
+            btn_fetch.configure(state="normal", text="⬇️ Fetch & Add")
+
+        def _register_download(repo_id: str, local_dir: str, verified_policy_meta: dict):
+            short_name = str(verified_policy_meta.get("name") or repo_id.rsplit("/", 1)[-1])
+            custom_id = f"custom_{time.time_ns()}"
             try:
-                info = inspect_mlx_model_folder(local_dir) or {}
-            except Exception:
-                info = {}
-
-            fallback_name = repo_id.rsplit("/", 1)[-1] or "Hugging Face Model"
-            short_name = str(info.get("name") or fallback_name)
-            param_str = str(info.get("param_str") or "Custom")
-            precision = str(info.get("precision") or "Auto-detected")
-            max_context = int(info.get("context_window") or 65_536)
-
-            raw_param = 0
-            try:
-                m = re.search(r"([\d.]+)\s*([MB])?", param_str, re.IGNORECASE)
-                if m:
-                    val = float(m.group(1))
-                    suffix = (m.group(2) or "B").upper()
-                    raw_param = int(val * (1_000_000 if suffix == "M" else 1_000_000_000))
-            except Exception:
-                raw_param = 0
-
-            pipeline_tag = str(verified_policy_meta.get("pipeline_tag", "") or "").lower()
-            if verified_policy_meta.get("task") == "text":
-                model_type = "text"
-            elif "audio" in pipeline_tag or "speech" in pipeline_tag:
-                model_type = "audio"
-            elif "video" in pipeline_tag:
-                model_type = "video"
-            elif "image" in pipeline_tag:
-                model_type = "image"
-            else:
-                model_type = "media"
-
-            custom_id = f"custom_{int(time.time() * 1000)}"
-            self.models_config[custom_id] = {
-                "name": f"{short_name} (HF Custom)",
-                "short_name": short_name,
-                "repo_id": repo_id,
-                "model_path": local_dir,
-                "model_type": model_type,
-                "source_kind": "hf_fetch",
-                "real_media_engine": model_type in ("image", "video"),
-                "input_modalities": list(verified_policy_meta.get("input_modalities") or ["text"]) if model_type == "text" else [],
-                "controller_runtime": str(verified_policy_meta.get("controller_runtime") or "auto") if model_type == "text" else "",
-                "backend_family": str(verified_policy_meta.get("backend_family") or "auto") if model_type == "text" else "",
-                "runtime_family": str(verified_policy_meta.get("runtime_family") or "") if model_type == "text" else "",
-                "prism_llama_fork": bool(verified_policy_meta.get("prism_llama_fork", False)) if model_type == "text" else False,
-                "gguf_file": verified_policy_meta.get("gguf_file") if model_type == "text" else None,
-                "gguf_preference": verified_policy_meta.get("gguf_preference") if model_type == "text" else None,
-                "mmproj_file": verified_policy_meta.get("mmproj_file") if model_type == "text" else None,
-                "mmproj_repo_id": verified_policy_meta.get("mmproj_repo_id") if model_type == "text" else None,
-                "gguf_training_base_model_id": verified_policy_meta.get("gguf_training_base_model_id") if model_type == "text" else None,
-                "bitnet_training_base_model_id": verified_policy_meta.get("bitnet_training_base_model_id") if model_type == "text" else None,
-                "ternary": bool(verified_policy_meta.get("ternary", False)) if model_type == "text" else False,
-                "precision": precision,
-                "raw_params": raw_param,
-                "base_params": param_str,
-                "est_speed": "⚡ Auto",
-                "max_context": max_context if model_type == "text" else 0,
-                "vram": "Auto",
-                "tag": f"🌐 {short_name}",
-                "accent": self.C["accent_cyan"],
-            }
+                entry = make_imported_model_entry(
+                    verified_policy_meta, display_name=short_name,
+                    local_path=local_dir, repo_id=repo_id, fetched=True,
+                    runtime_preference=verified_policy_meta.get("runtime_preference", "auto"),
+                )
+            except (ValueError, RuntimeError, OSError) as error:
+                _failed(str(error))
+                return
+            entry["accent"] = self.C["accent_cyan"]
+            self.models_config[custom_id] = entry
             self.chat_history[custom_id] = []
             self.tab_buttons[custom_id] = self.btn_model_menu
             self._save_custom_models()
             self._refresh_model_menu()
-            modal.destroy()
+            _close()
             self._on_switch_model_tab(custom_id)
             self._append_ai_message(
                 f"✓ **Hugging Face Custom Model Fetched**: `{repo_id}`\n\n"
@@ -1789,76 +1777,37 @@ class SmartAIChatbotApp:
             self._update_model_action_buttons()
 
         def _fetch():
+            if fetching["active"] or fetch_cancel.is_set():
+                return
             repo_id = _normalize_repo_id(ent_repo.get())
             if not repo_id or "/" not in repo_id:
                 messagebox.showerror("Invalid Hugging Face Repo", "Enter a repo ID like owner/model.")
                 return
 
-            allowed, policy_reason, policy_meta = enforce_hf_text_ternary(repo_id)
-            if not allowed:
-                messagebox.showerror("Text Model Rejected", policy_reason)
-                return
-            verified_policy_meta.clear()
-            verified_policy_meta.update(policy_meta)
-
+            selected_file = ent_gguf.get().strip() or None
+            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata"}[runtime_choice.get()]
+            fetching["active"] = True
             btn_fetch.configure(state="disabled", text="⏳ Fetching...")
             lbl_status.configure(text=f"Connecting to Hugging Face: {repo_id}", fg=self.C["accent_yellow"])
 
             def _worker():
                 def _progress(msg: str, pct: float):
-                    self.root.after(
-                        0,
-                        lambda m=msg, p=pct: lbl_status.configure(
-                            text=f"{p:.0f}% — {m}", fg=self.C["accent_yellow"]
-                        )
-                    )
-
-                gguf_file = str(verified_policy_meta.get("gguf_file") or "").strip()
-                mmproj_file = str(verified_policy_meta.get("mmproj_file") or "").strip()
-                mmproj_repo_id = str(verified_policy_meta.get("mmproj_repo_id") or "").strip()
-
-                # Metadata-driven GGUF/BitNet imports fetch only the selected native
-                # ternary artifact and its projector. This prevents a multi-quant repo
-                # from silently pulling/using an unrelated Q4/Q5/Q8 checkpoint.
-                if gguf_file:
-                    patterns = [gguf_file]
-                    required = [gguf_file]
-                    if mmproj_file and (not mmproj_repo_id or mmproj_repo_id == repo_id):
-                        patterns.append(mmproj_file)
-                        required.append(mmproj_file)
-                    result = download_model_from_hf(
-                        repo_id,
-                        progress_callback=lambda msg, pct: _progress(msg, pct * 0.80),
-                        cancel_event=self.cancel_event,
-                        allow_patterns=patterns,
-                        required_files=required,
-                    )
-                    if result.get("status") == "success" and mmproj_file and mmproj_repo_id and mmproj_repo_id != repo_id:
-                        projector_result = download_model_from_hf(
-                            mmproj_repo_id,
-                            progress_callback=lambda msg, pct: _progress(msg, 80.0 + pct * 0.20),
-                            cancel_event=self.cancel_event,
-                            allow_patterns=[mmproj_file],
-                            required_files=[mmproj_file],
-                        )
-                        if projector_result.get("status") != "success":
-                            result = projector_result
-                else:
-                    result = download_model_from_hf(
-                        repo_id,
-                        progress_callback=_progress,
-                        cancel_event=self.cancel_event,
-                    )
-
-                if result.get("status") == "success":
-                    local_dir = str(result.get("local_dir") or "")
-                    self.root.after(0, lambda: _register_download(repo_id, local_dir))
-                else:
-                    error = str(result.get("error") or "Unknown Hugging Face download error")
-                    def _failed():
-                        lbl_status.configure(text=f"✗ {error}", fg=self.C["accent_red"])
-                        btn_fetch.configure(state="normal", text="⬇️ Fetch & Add")
-                    self.root.after(0, _failed)
+                    _post(lambda: lbl_status.configure(text=f"{pct:.0f}% — {msg}",
+                                                       fg=self.C["accent_yellow"], wraplength=590))
+                try:
+                    allowed, reason, policy_meta = admit_hf_model(repo_id, gguf_file=selected_file)
+                    if not allowed:
+                        _post(lambda: _failed(reason, policy_meta.get("gguf_choices", ())))
+                        return
+                    policy_meta["runtime_preference"] = selected_runtime
+                    result = download_imported_model(repo_id, policy_meta, progress_callback=_progress,
+                                                     cancel_event=fetch_cancel)
+                    if result.get("status") == "success":
+                        _post(lambda: _register_download(repo_id, str(result["local_dir"]), result["metadata"]))
+                    else:
+                        _post(lambda: _failed(result.get("error") or "Hugging Face download failed."))
+                except Exception as error:
+                    _post(lambda message=str(error): _failed(message))
 
             threading.Thread(target=_worker, daemon=True).start()
 
@@ -1867,7 +1816,7 @@ class SmartAIChatbotApp:
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
-            highlightthickness=0, command=modal.destroy
+            highlightthickness=0, command=_close
         )
         btn_cancel.pack(side="right")
 
@@ -1899,8 +1848,8 @@ class SmartAIChatbotApp:
         """Opens an interactive dialog to import custom local MLX model folders or HuggingFace repositories."""
         modal = tk.Toplevel(self.root)
         modal.title("Import Custom AI Model")
-        modal.geometry("600x480")
-        modal.minsize(540, 420)
+        modal.geometry("680x625")
+        modal.minsize(620, 585)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
         modal.grab_set()
@@ -1936,7 +1885,7 @@ class SmartAIChatbotApp:
         tk.Label(body, text="Model Display Name:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
         ent_name = tk.Entry(body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_name.pack(fill="x", pady=(2, 8), ipady=4)
-        ent_name.insert(0, "Qwen3.8 27B Ternary")
+        ent_name.insert(0, "Custom model")
 
         # 2. Source Type (HuggingFace vs Local Path)
         source_var = tk.StringVar(value="hf")
@@ -1945,7 +1894,7 @@ class SmartAIChatbotApp:
         radio_frame.pack(fill="x", pady=(0, 6))
 
         tk.Radiobutton(radio_frame, text="HuggingFace Repo ID", variable=source_var, value="hf", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left", padx=(0, 16))
-        tk.Radiobutton(radio_frame, text="Local MLX Model Folder / File", variable=source_var, value="local", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left")
+        tk.Radiobutton(radio_frame, text="Local Model Folder / GGUF File", variable=source_var, value="local", bg=self.C["bg_hud"], fg=self.C["text_main"], selectcolor=self.C["bg_card"], activebackground=self.C["bg_hud"]).pack(side="left")
 
         # 3. Path / Repo ID
         tk.Label(body, text="Repository ID or Local Path:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
@@ -1954,7 +1903,18 @@ class SmartAIChatbotApp:
 
         ent_path = tk.Entry(path_frame, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_path.pack(side="left", fill="x", expand=True, ipady=4)
-        ent_path.insert(0, "penkia/TernaryQuench-Qwen3.8-27B-MLX")
+        ent_path.insert(0, "")
+
+        tk.Label(body, text="GGUF file within folder/repository (optional; choose if ambiguous):",
+                 font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(anchor="w")
+        ent_gguf = ttk.Combobox(body, values=[], state="normal")
+        ent_gguf.pack(fill="x", pady=(2, 8))
+
+        tk.Label(body, text="Runtime:", font=_FONT_SMALL, bg=self.C["bg_hud"],
+                 fg=self.C["text_muted"]).pack(anchor="w")
+        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata"], state="readonly")
+        runtime_choice.set("Automatic")
+        runtime_choice.pack(fill="x", pady=(2, 8))
 
         # 4. Parameters scale & Precision
         param_frame = tk.Frame(body, bg=self.C["bg_hud"])
@@ -1963,42 +1923,56 @@ class SmartAIChatbotApp:
         tk.Label(param_frame, text="Parameters:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
         ent_param = tk.Entry(param_frame, width=8, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_param.pack(side="left", padx=(6, 16), ipady=3)
-        ent_param.insert(0, "27.36B")
+        ent_param.insert(0, "Auto")
+        ent_param.configure(state="readonly")
 
         tk.Label(param_frame, text="Precision:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
         ent_prec = tk.Entry(param_frame, width=14, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_prec.pack(side="left", padx=6, ipady=3)
-        ent_prec.insert(0, "Native ternary 1.58-bit")
+        ent_prec.insert(0, "From model")
+        ent_prec.configure(state="readonly")
 
         def _on_folder_selected(selected_dir: str):
             if not selected_dir:
                 return
             source_var.set("local")
+            ent_path.delete(0, "end")
+            ent_path.insert(0, selected_dir)
+            ent_gguf.set("")
+            if os.path.isfile(selected_dir):
+                ent_name.delete(0, "end")
+                ent_name.insert(0, os.path.basename(selected_dir))
+                lbl_status_inspect.configure(text="The selected GGUF will be structurally checked before import.")
+                return
             info = inspect_mlx_model_folder(selected_dir)
             if info.get("valid"):
                 ent_name.delete(0, "end")
                 ent_name.insert(0, info["name"])
                 ent_path.delete(0, "end")
                 ent_path.insert(0, info["path"])
+                ent_param.configure(state="normal")
                 ent_param.delete(0, "end")
                 ent_param.insert(0, info["param_str"])
+                ent_param.configure(state="readonly")
+                ent_prec.configure(state="normal")
                 ent_prec.delete(0, "end")
                 ent_prec.insert(0, info["precision"])
+                ent_prec.configure(state="readonly")
                 lbl_status_inspect.configure(
                     text=f"✓ Detected {info['model_type']} ({info['param_str']}, {info['precision']}, {info['context_window']:,} max context)",
                     fg=self.C["accent_green"]
                 )
 
         def _browse_local():
-            d = filedialog.askdirectory(title="Select Local MLX Model Weights Directory")
+            d = filedialog.askdirectory(title="Select Local Model Weights Directory")
             if d:
                 _on_folder_selected(d)
 
-        btn_browse = tk.Button(path_frame, text="📁 Browse MLX...", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, cursor="hand2", highlightthickness=0, command=_browse_local)
+        btn_browse = tk.Button(path_frame, text="📁 Browse Folder...", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, cursor="hand2", highlightthickness=0, command=_browse_local)
         btn_browse.pack(side="right", padx=(6, 0))
 
         btn_quick_mlx = tk.Button(
-            top_btn_bar, text="📁 Select Local MLX Folder...", font=_FONT_TINY_BOLD,
+            top_btn_bar, text="📁 Select Local Model Folder...", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
             activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"],
             relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
@@ -2006,100 +1980,92 @@ class SmartAIChatbotApp:
             command=_browse_local
         )
         btn_quick_mlx.pack(side="left")
+        tk.Button(
+            top_btn_bar, text="Select GGUF File...", font=_FONT_TINY_BOLD,
+            bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat", bd=0,
+            padx=10, pady=4,
+            command=lambda: _on_folder_selected(filedialog.askopenfilename(
+                title="Select the GGUF model to run", filetypes=[("GGUF model", "*.gguf")]
+            )),
+        ).pack(side="left", padx=(8, 0))
 
         # Action Buttons
         btn_bar = tk.Frame(modal, bg=self.C["bg_hud"])
         btn_bar.pack(fill="x", padx=20, pady=(4, 16))
 
-        def _save_imported_model():
-            m_name = ent_name.get().strip() or "Custom Model"
-            m_path_or_id = ent_path.get().strip()
-            m_param_str = ent_param.get().strip() or "7B"
-            m_prec_str = ent_prec.get().strip() or "4-bit MLX"
+        import_closed = threading.Event()
+        import_busy = {"active": False}
 
-            if not m_path_or_id:
-                messagebox.showerror("Error", "Please specify a HuggingFace Repository ID or Local Path.")
-                return
+        def _close_import():
+            import_closed.set()
+            modal.destroy()
 
-            custom_id = f"custom_{int(time.time())}"
-            raw_param = 7_000_000_000
-            try:
-                num_match = re.search(r"([\d\.]+)", m_param_str)
-                if num_match:
-                    val = float(num_match.group(1))
-                    if "m" in m_param_str.lower():
-                        raw_param = int(val * 1_000_000)
-                    else:
-                        raw_param = int(val * 1_000_000_000)
-            except Exception:
-                pass
+        modal.protocol("WM_DELETE_WINDOW", _close_import)
 
-            is_local = os.path.exists(m_path_or_id)
-            if is_local:
-                allowed, policy_reason, policy_meta = enforce_local_text_ternary(m_path_or_id)
-            else:
-                allowed, policy_reason, policy_meta = enforce_hf_text_ternary(m_path_or_id)
-            if not allowed:
-                messagebox.showerror("Text Model Rejected", policy_reason)
-                return
-
-            pipeline_tag = str(policy_meta.get("pipeline_tag", "") or "").lower()
-            if policy_meta.get("task") == "text":
-                model_type = "text"
-            elif "audio" in pipeline_tag or "speech" in pipeline_tag:
-                model_type = "audio"
-            elif "video" in pipeline_tag:
-                model_type = "video"
-            elif "image" in pipeline_tag:
-                model_type = "image"
-            else:
-                model_type = "text" if policy_meta.get("ternary") else "media"
-
-            new_model = {
-                "name": f"{m_name} (Custom)",
-                "short_name": m_name,
-                "repo_id": m_path_or_id if not is_local else None,
-                "model_path": m_path_or_id if is_local else None,
-                "model_type": model_type,
-                "real_media_engine": model_type in ("image", "video"),
-                "input_modalities": list(policy_meta.get("input_modalities") or ["text"]) if model_type == "text" else [],
-                "controller_runtime": str(policy_meta.get("controller_runtime") or "auto") if model_type == "text" else "",
-                "backend_family": str(policy_meta.get("backend_family") or "auto") if model_type == "text" else "",
-                "runtime_family": str(policy_meta.get("runtime_family") or "") if model_type == "text" else "",
-                "prism_llama_fork": bool(policy_meta.get("prism_llama_fork", False)) if model_type == "text" else False,
-                "gguf_file": policy_meta.get("gguf_file") if model_type == "text" else None,
-                "gguf_preference": policy_meta.get("gguf_preference") if model_type == "text" else None,
-                "mmproj_file": policy_meta.get("mmproj_file") if model_type == "text" else None,
-                "mmproj_repo_id": policy_meta.get("mmproj_repo_id") if model_type == "text" else None,
-                "gguf_training_base_model_id": policy_meta.get("gguf_training_base_model_id") if model_type == "text" else None,
-                "bitnet_training_base_model_id": policy_meta.get("bitnet_training_base_model_id") if model_type == "text" else None,
-                "ternary": bool(policy_meta.get("ternary", False)) if model_type == "text" else False,
-                "precision": m_prec_str,
-                "raw_params": raw_param,
-                "base_params": m_param_str,
-                "max_context": 65_536 if model_type == "text" else 0,
-                "vram": "Auto",
-                "tag": f"🧩 {m_name}",
-                "accent": self.C["accent_purple"]
-            }
-
+        def _finish_import(new_model, source):
+            custom_id = f"custom_{time.time_ns()}"
+            new_model["accent"] = self.C["accent_purple"]
             self.models_config[custom_id] = new_model
             self.chat_history[custom_id] = []
             self.tab_buttons[custom_id] = self.btn_model_menu
             self._save_custom_models()
             self._refresh_model_menu()
-            modal.destroy()
-
-            # Switch to newly imported model
+            _close_import()
             self._on_switch_model_tab(custom_id)
             self._append_ai_message(
-                f"🧩 **Custom Model Imported**: Successfully registered `{m_name}`.\n\n"
-                f"• **Source**: `{m_path_or_id}`\n"
-                f"• **Scale**: {m_param_str} Parameters ({m_prec_str})\n"
-                f"• Click **'⚡ Load Model'** to initialize."
+                f"🧩 **Custom Model Imported**: Registered `{new_model['short_name']}`.\n\n"
+                f"• **Source**: `{source}`\n"
+                f"• **Precision**: {new_model['precision']}\n"
+                f"• Use **Install** or **Load** to initialize the selected model."
             )
 
-        btn_cancel = tk.Button(btn_bar, text="Cancel", font=_FONT_SMALL, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=14, pady=6, cursor="hand2", highlightthickness=0, command=modal.destroy)
+        def _save_imported_model():
+            if import_busy["active"] or import_closed.is_set():
+                return
+            m_name = ent_name.get().strip()
+            m_path_or_id = ent_path.get().strip()
+            if not m_path_or_id:
+                messagebox.showerror("Error", "Please specify a Hugging Face repository or local model path.")
+                return
+            is_local = source_var.get() == "local" or os.path.exists(os.path.expanduser(m_path_or_id))
+            chosen_file = ent_gguf.get().strip() or None
+            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata"}[runtime_choice.get()]
+            import_busy["active"] = True
+            btn_import.configure(state="disabled", text="Inspecting…")
+
+            def _worker():
+                policy_meta = {}
+                try:
+                    admit = admit_local_model if is_local else admit_hf_model
+                    allowed, reason, policy_meta = admit(m_path_or_id, gguf_file=chosen_file)
+                    if allowed:
+                        name = m_name if m_name and m_name != "Custom model" else str(
+                            policy_meta.get("name") or os.path.basename(m_path_or_id.rstrip("/")))
+                        new_model = make_imported_model_entry(
+                            policy_meta, display_name=name,
+                            local_path=str(policy_meta.get("path") or m_path_or_id) if is_local else "",
+                            repo_id=None if is_local else str(policy_meta.get("repo_id") or m_path_or_id),
+                            runtime_preference=selected_runtime,
+                        )
+                    else:
+                        new_model = None
+                except Exception as error:
+                    reason, new_model = str(error), None
+
+                def _done():
+                    if import_closed.is_set() or not modal.winfo_exists():
+                        return
+                    import_busy["active"] = False
+                    btn_import.configure(state="normal", text="➕ Import & Select")
+                    if new_model is not None:
+                        _finish_import(new_model, m_path_or_id)
+                    else:
+                        ent_gguf.configure(values=policy_meta.get("gguf_choices") or [])
+                        messagebox.showerror("Model Cannot Be Imported", reason)
+                self._event_queue.put(("model_load_complete", _done))
+            threading.Thread(target=_worker, name="studio-model-inspection", daemon=True).start()
+
+        btn_cancel = tk.Button(btn_bar, text="Cancel", font=_FONT_SMALL, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=14, pady=6, cursor="hand2", highlightthickness=0, command=_close_import)
         btn_cancel.pack(side="right", padx=(8, 0))
 
         btn_import = tk.Button(btn_bar, text="➕ Import & Select", font=_FONT_BOLD, bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"], activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"], relief="flat", bd=0, padx=16, pady=6, cursor="hand2", highlightthickness=0, command=_save_imported_model)
@@ -2224,8 +2190,9 @@ class SmartAIChatbotApp:
             folder_disp = os.path.basename(self.workspace_dir) if self.workspace_dir else "None (No Folder Selected)"
             self.lbl_res_folder.configure(text=f"• Target Folder: {folder_disp}")
             return
-        vram_text = f"{proc_rss:.1f} GB (Allocated)" if self.is_model_loaded and proc_rss > 0 else (f"{info['vram']} (Allocated)" if self.is_model_loaded else "0.0 GB (Unloaded)")
-        self.lbl_res_vram.configure(text=f"• VRAM Usage: {vram_text}")
+        placement = getattr(self, "_active_memory_placement", {}) if self.is_model_loaded else {}
+        placement_text = placement.get("message") or ("Accelerator allocation is not reported by this runtime." if self.is_model_loaded else "Model unloaded.")
+        self.lbl_res_vram.configure(text=f"• {placement_text}", wraplength=650, justify="left")
         folder_disp = os.path.basename(self.workspace_dir) if self.workspace_dir else "None (No Folder Selected)"
         self.lbl_res_folder.configure(text=f"• Target Folder: {folder_disp}")
 
@@ -3111,6 +3078,9 @@ class SmartAIChatbotApp:
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
         target_info = self.models_config[self.active_tab_id]
+        if getattr(self, "_model_load_in_progress", False) or self.active_tab_id in getattr(self, "_hf_download_in_progress", set()):
+            self._append_ai_message("Finish or cancel model setup before resetting its files.")
+            return
         if target_info.get("controller_runtime") == "strata":
             self._show_strata_model_info()
             return
@@ -3120,12 +3090,18 @@ class SmartAIChatbotApp:
             messagebox.showinfo("Reset", f"{target_info['name']} is a local model. No HuggingFace cache to purge.")
             return
 
+        shared = any(
+            mid != self.active_tab_id and str(other.get("source_repo_id") or other.get("repo_id") or "") == repo_id
+            for mid, other in self.models_config.items() if isinstance(other, dict)
+        )
+
         confirm = messagebox.askyesno(
             "Reset & Reinstall Model",
             f"Are you sure you want to reset and reinstall {target_info['name']}?\n\n"
             f"• Repository: {repo_id}\n"
-            f"• Action: Purges local cache and pulls fresh neural weights from HuggingFace.\n\n"
-            f"Proceed with reinstall?"
+            + ("• Shared cached files will be verified and reused.\n\n" if shared
+               else "• The selected model cache will be removed and downloaded again.\n\n")
+            + "Proceed with reinstall?"
         )
         if not confirm:
             return
@@ -3134,20 +3110,27 @@ class SmartAIChatbotApp:
             model_type = str(target_info.get("model_type", "text") or "text").lower()
             try:
                 if model_type == "text":
-                    self.engine.unload_model()
+                    result = self.engine.unload_model()
+                    if isinstance(result, dict) and result.get("status") not in {None, "unloaded"}:
+                        raise RuntimeError(result.get("error") or "Model unload did not complete.")
                 elif model_type == "audio":
                     self.audio_engine.unload_model()
                 else:
                     self.media_engine.unload_model()
-            except Exception:
-                pass
+            except Exception as error:
+                self._append_ai_message(f"Model files were kept because unload failed: {error}")
+                return
             self.is_model_loaded = False
             self._sync_memory_watchdog(force_stop=True)
 
-        purge_local_model_cache(repo_id)
+        if not shared:
+            purge_local_model_cache(repo_id)
         self._on_download_hf_model()
 
     def _on_download_hf_model(self):
+        target_id = self.active_tab_id
+        if target_id in getattr(self, "_hf_download_in_progress", set()):
+            return
         target_info = self.models_config[self.active_tab_id]
         if target_info.get("controller_runtime") == "strata":
             self._on_toggle_load_unload()
@@ -3159,8 +3142,73 @@ class SmartAIChatbotApp:
 
         self._append_ai_message(f"⬇️ **HuggingFace Downloader**: Initializing download for `{repo_id}` ({target_info['name']})...")
         self.lbl_model_status.configure(text=f"⬇️ Connecting to HF: {target_info['short_name']}...", fg=self.C["accent_yellow"])
-        self.btn_reset_reinstall.configure(state="disabled", text="⏳ Downloading...")
 
+        if target_info.get("requires_local_validation") or (
+            target_info.get("download_required_files") and (target_info.get("repo_revision") or target_info.get("source_revision"))
+        ):
+            pending = getattr(self, "_hf_download_in_progress", set())
+            self._hf_download_in_progress = pending
+            if target_id in pending:
+                return
+            pending.add(target_id)
+            selected_info = dict(target_info)
+            download_cancel = threading.Event()
+            events = getattr(self, "_hf_download_events", {})
+            self._hf_download_events = events
+            events[target_id] = download_cancel
+            self._update_model_action_buttons()
+
+            def _selected_worker():
+                def _progress(message, percent):
+                    def _show():
+                        if self.active_tab_id == target_id:
+                            self.lbl_model_status.configure(
+                                text=f"⬇️ {percent:.0f}% {selected_info['short_name']}",
+                                fg=self.C["accent_yellow"],
+                            )
+                    self._event_queue.put(("model_load_complete", _show))
+                try:
+                    result = download_imported_model(repo_id, selected_info, progress_callback=_progress,
+                                                     cancel_event=download_cancel)
+                    if result.get("status") == "success":
+                        entry = make_imported_model_entry(
+                            result["metadata"], display_name=selected_info["short_name"],
+                            local_path=str(result["local_dir"]), repo_id=repo_id, fetched=True,
+                            runtime_preference=selected_info.get("runtime_preference", "auto"),
+                        )
+                        entry["accent"] = selected_info.get("accent", self.C["accent_purple"])
+                    else:
+                        entry = None
+                except Exception as error:
+                    result, entry = {"status": "error", "error": str(error)}, None
+
+                def _finish():
+                    pending.discard(target_id)
+                    events.pop(target_id, None)
+                    # A removed/replaced selector entry must not be resurrected.
+                    if self.models_config.get(target_id) is not target_info:
+                        return
+                    if download_cancel.is_set():
+                        if self.active_tab_id == target_id:
+                            self._append_ai_message("Model import cancelled. Completed cache files were kept; no new selection was registered.")
+                            self.lbl_model_status.configure(text="○ Import cancelled", fg=self.C["accent_yellow"])
+                            self._update_model_action_buttons()
+                        return
+                    if entry is not None:
+                        target_info.clear()
+                        target_info.update(entry)
+                        self._save_custom_models()
+                        self._refresh_model_menu()
+                        if self.active_tab_id == target_id:
+                            self._on_download_hf_completed(target_info)
+                    elif self.active_tab_id == target_id:
+                        self._on_download_hf_failed(target_info, str(result.get("error") or "Download failed."))
+                self._event_queue.put(("model_load_complete", _finish))
+
+            threading.Thread(target=_selected_worker, name="studio-model-download", daemon=True).start()
+            return
+
+        self.btn_reset_reinstall.configure(state="disabled", text="⏳ Downloading...")
         def _worker():
             def _progress(msg: str, pct: float):
                 self.root.after(0, lambda p=pct: self.lbl_model_status.configure(
@@ -3223,7 +3271,7 @@ class SmartAIChatbotApp:
     def _on_download_hf_completed(self, target_info: Dict[str, Any]):
         self._append_ai_message(
             f"✓ **Download Complete**: `{target_info['name']}` is ready.\n\n"
-            f"• Click **'⚡ Load'** to load weights into Apple Silicon unified memory."
+            f"• Click **'⚡ Load'** to initialize the selected model with its compatible runtime."
         )
         self.lbl_model_status.configure(text=f"⚡ Ready to Load ({target_info['short_name']})", fg=self.C["accent_cyan"])
         self._update_model_action_buttons()
@@ -3296,6 +3344,9 @@ class SmartAIChatbotApp:
         return popup, _update_status
 
     def _model_is_cached(self, info):
+        if info.get("requires_local_validation"):
+            # A different cached revision/quantization does not validate this selection.
+            return False
         if info.get("controller_runtime") == "strata":
             from core.strata_runtime import StrataRuntime, StrataRuntimeError
             try:
@@ -3304,6 +3355,11 @@ class SmartAIChatbotApp:
                 # A cache hint must not crash Tk on an unsupported platform.
                 # The background Load action reports the actual reason.
                 return False
+        if info.get("download_required_files") and (info.get("repo_revision") or info.get("source_revision")):
+            root = info.get("path")
+            return bool(root and os.path.isdir(root) and all(
+                os.path.isfile(os.path.join(root, name)) for name in info["download_required_files"]
+            ))
         path = info.get("model_path") or info.get("repo_id")
         return (is_model_cached_locally(info["repo_id"]) if info.get("repo_id")
                 else bool(path and os.path.exists(path)))
@@ -3335,6 +3391,26 @@ class SmartAIChatbotApp:
             return
 
         target_info = self.models_config[self.active_tab_id]
+        download_cancel = getattr(self, "_hf_download_events", {}).get(self.active_tab_id)
+        previous = getattr(self, "_hf_download_button_state", None)
+        if previous is not None and (previous[0] != self.active_tab_id or download_cancel is None):
+            if previous[1] is self.btn_reset_reinstall:
+                self.btn_reset_reinstall.configure(state=previous[2])
+            self._hf_download_button_state = None
+        if download_cancel is not None:
+            if getattr(self, "_hf_download_button_state", None) is None:
+                self._hf_download_button_state = (self.active_tab_id, self.btn_reset_reinstall,
+                                                  self.btn_reset_reinstall.cget("state"))
+            def _cancel_download():
+                download_cancel.set()
+                self.btn_reset_reinstall.configure(state="disabled", text="Cancelling…")
+                self.lbl_model_status.configure(text="Cancelling import; current file transfer may finish into cache.",
+                                                fg=self.C["accent_yellow"])
+            self.btn_reset_reinstall.configure(state="normal" if not download_cancel.is_set() else "disabled",
+                                              text="Cancel download" if not download_cancel.is_set() else "Cancelling…",
+                                              command=_cancel_download)
+            self.btn_load_unload.configure(text="⏳ Downloading…", command=self._on_download_hf_model)
+            return
         cached = self._model_is_cached(target_info)
 
         if target_info.get("controller_runtime") == "strata":
@@ -3406,7 +3482,7 @@ class SmartAIChatbotApp:
                 pass
 
     def _on_toggle_load_unload(self, *, _skip_download: bool = False):
-        if getattr(self, "_model_load_in_progress", False):
+        if getattr(self, "_model_load_in_progress", False) or self.active_tab_id in getattr(self, "_hf_download_in_progress", set()):
             return
         if getattr(getattr(self, "multimodal", None), "busy", False):
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
@@ -3492,6 +3568,7 @@ class SmartAIChatbotApp:
 
                 if load_res.get("status") == "loaded":
                     self.is_model_loaded = True
+                    self._active_memory_placement = dict(load_res.get("memory_placement") or {})
                     if model_type == "text":
                         self.engine.active_input_modalities = set(
                             target_info.get("input_modalities") or ["text"]
@@ -3503,6 +3580,7 @@ class SmartAIChatbotApp:
                     )
                     self._append_ai_message(
                         f"⚡ **{label}**: `{target_info['name']}` is ready."
+                        + (f"\n\n{self._active_memory_placement['message']}" if self._active_memory_placement.get("message") else "")
                     )
                 elif load_res.get("status") == "cancelled":
                     self.is_model_loaded = False
@@ -3689,7 +3767,7 @@ class SmartAIChatbotApp:
 
         load_text_after_switch = False
         if model_type == "text":
-            # Ternary admission is enforced only when a custom text model is imported.
+            # Custom model format and exact source are inspected during import.
             # Reuse the loader's worker thread so automatic calibration cannot
             # block Tk, progress updates, or cancellation when switching tabs.
             self.is_model_loaded = False

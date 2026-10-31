@@ -1,175 +1,290 @@
-# Strata integration and native automatic speed tuning
+# Chosen-model placement, Strata, and native automatic speed tuning
 
-Smart AI Studio offers two explicit models served by the actual open-source
-[Niko1221/Strata](https://github.com/Niko1221/Strata) runtime, alongside measured
-execution tuning for existing native MLX and llama.cpp models. Strata manages
-large model experts across GPU memory, RAM and SSD. Native auto speed adjusts
-execution settings on the already loaded native model. The existing default
-model is unchanged; selecting a Strata preset is an explicit choice.
+Smart AI Studio keeps the model and quantization you choose. You can import a
+local model or fetch an exact Hugging Face artifact, then use the compatible
+runtime's memory placement. Large files are not rejected solely because their
+total size exceeds graphics memory. Whether they can execute depends on the
+architecture, tensor format, working memory, context and backend.
 
-The managed integration is pinned to **Strata v0.2.8**, whose bundled Terminal
-Control version is **0.1.54**. Its source was inspected at
-[`870aedd9e1ebe1c91f94da93b59af17729f6c5c0`](https://github.com/Niko1221/Strata/tree/870aedd9e1ebe1c91f94da93b59af17729f6c5c0).
-Model identities and quality settings are a narrow registry in
-[`config/strata_models.py`](../config/strata_models.py); arbitrary custom GGUFs
-cannot acquire Strata support merely by changing their backend label.
+The managed [Strata](https://github.com/Niko1221/Strata) engine is one path for
+supported large MoE GGUF models. Other compatible GGUFs use native GPU/CPU
+placement and memory-mapped weights; supported Transformers checkpoints can use
+Accelerate CPU/disk dispatch. MLX checkpoints retain their existing MLX loader.
+**Gyro-S and Q2_0 are optional examples, not the scope of the feature or a
+replacement for your chosen model.** The existing default model is unchanged.
 
-## The two Strata models
+Memory placement and measured **Auto speed** are separate. Placement makes a
+compatible model usable within estimated resource budgets. Auto speed measures
+a few execution settings on the loaded model. Neither promises the fastest
+possible configuration, a fixed token rate, or support for every custom runtime.
 
-Both choices are text-only inference presets for Qwen3.8-Flash-Next: approximately
-125 billion language-model parameters plus a separate 51 billion parameter
-n-gram embedding table. They are much larger than Studio's existing small Qwen
-preset. The n-gram table is accessed from disk a few rows at a time; its file size
-is not a requirement to keep the whole table resident in RAM. These quantizations
-are **nonternary**, including Gyro-S despite the `TQ1_0` suffix in its filename.
-The publisher cards and upstream model guide describe their quality tradeoffs.
+## Import the model you chose
 
-| Studio choice | Official family / model | Publisher and pinned revision | Model download | Additional preparation estimate | Free SSD planning estimate |
+Use the custom model import or **Fetch Hugging Face Custom** dialog. Choose a
+local directory/file or enter a Hugging Face repository ID. If a source contains
+multiple GGUF quantizations, select the exact **GGUF file**; Studio does not rank
+them and pick one for you. Selecting any shard selects its complete matching
+shard group, without fetching another quantization.
+
+The **Runtime** choice has three modes:
+
+- **Automatic** uses the inspected format and supported architecture to choose
+  a candidate backend. Known compatible Strata encodings can use managed Strata;
+  other artifacts retain their native route. Real preflight and loading still
+  determine compatibility.
+- **Native** keeps the existing compatible GGUF/Prism, MLX or Transformers route.
+- **Strata** requests the managed engine for the selected GGUF. A model format,
+  architecture or preparation path that it cannot handle produces a clear error.
+
+Admission examines bounded GGUF metadata and tensor directories, or checkpoint
+configuration, weight indexes and SafeTensors headers. It does not infer ternary
+precision from a filename or repository name. A successful structural check is
+not an inference test. A config alone, incomplete shard group or known custom
+format requiring an unavailable loader is not accepted as a usable model.
+
+Hugging Face selection is pinned to the repository's immutable commit. The
+fetcher downloads the chosen weight group and required metadata, then performs
+local inspection before registration. Supported repository loaders retain their
+same-revision Python/kernel sources and declared assets. Media pipeline
+components retain their own indexes and required weight files. Local model paths, selected filenames,
+source revision and observed precision are retained. A failed load does not
+switch to Gyro, Q2, a different quantization or a smaller context. Implementation:
+[`core/model_admission.py`](../core/model_admission.py),
+[`core/model_import_entry.py`](../core/model_import_entry.py), and
+[`config/strata_models.py`](../config/strata_models.py).
+
+## Placement by format
+
+| Selected artifact | Placement behavior | Practical boundary |
+| --- | --- | --- |
+| Native-compatible GGUF, including dense and MoE models | Inspect the complete selected shard group, estimate layer/KV/workspace memory, and place the largest estimated fitting layer count on the GPU. Keep remaining weights on CPU with `mmap` where supported. | OS paging can let the file exceed resident RAM, but it is not Strata's selective expert streaming. The required working set still must fit; heavy paging can be very slow. |
+| Prism-compatible GGUF | The same planner operates inside the isolated native worker, with the GUI process included in application memory accounting. | The private runtime must support both the actual tensor encoding and model architecture. A PTQ label alone cannot establish that. |
+| Strata-compatible local GGUF | The pinned official importer/planner validates the selected files, then its native engine chooses supported expert caches and RAM/SSD tiers. | This is a supported architecture/encoding path, not a general loader for arbitrary GGUF, MLX or Transformers weights. |
+| Supported MLX checkpoint | Retain its actual MLX-LM, MLX-VLM or existing repository-specific loader and memory policy. Where exposed, Auto speed measures prompt chunk size. | No general expert-to-SSD loader is added to stock MLX. A format needing a different publisher runtime requires that integration. |
+| Supported Transformers checkpoint | Pass live GPU/CPU budgets and a private disk-offload directory to Accelerate's automatic dispatch. Keep the selected checkpoint precision. Report the actual dispatch map. | Offloaded execution is inference only. Compatibility, disk space and sufficient execution memory are still required; disk dispatch can be slow. |
+| Existing image, audio and video models | Preserve the existing media route and capability checks. | The text-only Strata route does not claim their modalities. |
+
+Native GGUF planning reserves memory for the unchanged context, full-precision
+KV cache, logits, execution workspaces and any projector. Apple unified memory
+is counted once. A recognized allocation failure permits one more conservative
+GPU-placement attempt; a format/architecture error is not treated as an OOM.
+Adapters that require resident weights disable the `mmap` assumption. The
+planner chooses placement before loading; short thread calibration does not
+reload the model repeatedly to sweep GPU layers. See
+[`core/gguf_placement.py`](../core/gguf_placement.py).
+
+Transformers dispatch reserves OS/runtime headroom and an estimated KV budget.
+It does not enable a smaller quantization to fit the checkpoint. Weight updates
+are disabled when CPU/disk dispatch is active; a saved adapter is not silently
+omitted if it cannot be restored. These are planning budgets rather than hard
+allocation ceilings. See
+[`core/transformers_placement.py`](../core/transformers_placement.py),
+[`core/controller_runtime.py`](../core/controller_runtime.py), and
+[Accelerate's big-model inference documentation](https://huggingface.co/docs/accelerate/usage_guides/big_modeling).
+
+## Qwen3.8-Flash-Next ternary on a Mac
+
+The exact published artifact matters. Qwen3.8-Flash-Next is an architecture; its
+GGUF, MLX, APR trellis and custom ternary exports are not interchangeable. The
+managed Strata release is pinned to **v0.2.8 / Terminal Control 0.1.54**, inspected
+at [`870aedd9e1ebe1c91f94da93b59af17729f6c5c0`](https://github.com/Niko1221/Strata/tree/870aedd9e1ebe1c91f94da93b59af17729f6c5c0).
+Its Metal expert kernels support Gyro's trellis formats; this does not establish
+support for actual `TQ1_0`, `TQ2_0` or `PTQ1_0` ternary tensors.
+
+| Observed format | Meaning and routing |
+| --- | --- |
+| GGUF types **34 / 35**, `TQ1_0` / `TQ2_0` | True ggml ternary formats. Keep a compatible native GGUF route; do not promote these to pinned Strata merely because the architecture is Qwen. |
+| GGUF type **143**, `PTQ1_0` | A distinct packed ternary format. Admission selects the private Prism route; that runtime must still support the exact model. It is not supported by the pinned Strata expert kernels. |
+| GGUF types **144 / 145 / 146**, `TQ2_T` / `TQK6` / `TQK7` | APR trellis formats used by Gyro. These are **nonternary**, even when a published filename ends in `TQ1_0`. Supported layouts can be inspected by Strata. |
+| Custom MLX ternary layouts | Require the publisher's matching loader and kernels. A generic `mlx` tag or an affine default in `config.json` does not make the custom expert representation loadable by stock MLX. |
+
+These distinctions come from the pinned
+[GGUF type reader](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/tools/gguf_reader.py),
+[Metal expert capability tables](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/metal/src/engine/iq_host.cpp), and
+[Metal quantization kernels](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/metal/kernels/quant.metal).
+Mixed models containing an unsupported ternary tensor type are also excluded
+from automatic Strata promotion; checking only a whole-model ternary label
+would miss that case.
+
+Two concrete publisher examples illustrate the current boundary:
+
+- **Jakevin/Qwen3.8-Flash-Next-ternary-mlx**, inspected at
+  [`e5f8a6bbb1546dab7f3cd0d6e1d243535e1049ba`](https://huggingface.co/Jakevin/Qwen3.8-Flash-Next-ternary-mlx/tree/e5f8a6bbb1546dab7f3cd0d6e1d243535e1049ba),
+  stores custom per-layer binary codes plus a skeleton. Its
+  [publisher runtime](https://huggingface.co/Jakevin/Qwen3.8-Flash-Next-ternary-mlx/blob/e5f8a6bbb1546dab7f3cd0d6e1d243535e1049ba/runtime.py)
+  needs oMLX's Qwen4 patch, `mlx-ternary` kernels, and additional tensors from a
+  local original FP8 checkpoint. It is a mixed ternary/affine model, not a normal
+  self-contained checkpoint for `mlx_lm.load`. Studio has not added this custom
+  loader or downloaded the missing FP8 source for it.
+- **fuutott/Qwen3.8-Flash-Next-MLX-t5-imatrix-q3down-ple8**, inspected at
+  [`15ec9e857b55f19cfadf53e9bf9da7e793175612`](https://huggingface.co/fuutott/Qwen3.8-Flash-Next-MLX-t5-imatrix-q3down-ple8/tree/15ec9e857b55f19cfadf53e9bf9da7e793175612),
+  declares custom `omlx_t5` packed experts. Its
+  [publisher instructions](https://huggingface.co/fuutott/Qwen3.8-Flash-Next-MLX-t5-imatrix-q3down-ple8/blob/15ec9e857b55f19cfadf53e9bf9da7e793175612/README.md)
+  require the Qwen48 oMLX fork and native Bonsai Metal kernel, full Xcode and
+  macOS 15+, with the model-specific verification tool. Stock oMLX, MLX-LM and
+  MLX-VLM are explicitly unsupported by that publisher. Studio rejects this
+  marker with the required-runtime explanation before downloading its weights.
+
+Those custom runtimes are separate engineering work. Selecting a true ternary
+model does not authorize substituting a trellis or Q2 model. No MacBook memory
+size or token rate is promised for an unsupported artifact.
+
+## Example Strata presets
+
+**Strata Gyro-S** and **Strata Q2_0** remain convenient optional examples of
+Qwen3.8-Flash-Next: approximately 125 billion language-model parameters plus a
+separate 51 billion parameter n-gram table. The n-gram file is read in small
+pieces rather than requiring the entire table resident. Both choices are
+**nonternary, text-only and inference only**. Training-capable native backends
+retain their own learning behavior.
+
+| Example | Official family / model | Publisher and pinned revision | Model download | Additional preparation estimate | Free SSD planning estimate |
 | --- | --- | --- | --- | --- | --- |
-| **Strata Gyro-S** (`strata_gyro_s`) | `gyro` / `Gyro-S` | [agentionai/Qwen3.8-Flash-Next-Gyro-GGUF](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/tree/1ada08422e404aca51ab9df665f089f34c419c6b) | 58,487,015,808 bytes (**58.5 GB**), one file including n-gram data | About **25.8 GB** for an extracted expert arena where needed | About **94.3 GB**, including 10 GB preparation headroom |
-| **Strata Q2_0** (`strata_q2_0`) | `qwen` / `Q2_0` | [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09) | 66,423,878,624 bytes (**66.4 GB**), two shards | About **34–40 GB**, depending on low-RAM and CPU preparation | About **116.4 GB**, using the larger estimate and 10 GB headroom |
+| **Strata Gyro-S** (`strata_gyro_s`) | `gyro` / `Gyro-S` | [agentionai/Qwen3.8-Flash-Next-Gyro-GGUF](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/tree/1ada08422e404aca51ab9df665f089f34c419c6b) | 58,487,015,808 bytes (**58.5 GB**), one file | About **25.8 GB** where an extracted expert arena is needed | About **94.3 GB**, including 10 GB preparation headroom |
+| **Strata Q2_0** (`strata_q2_0`) | `qwen` / `Q2_0` | [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09) | 66,423,878,624 bytes (**66.4 GB**), two shards | About **34–40 GB**, depending on preparation | About **116.4 GB**, using the larger estimate and 10 GB headroom |
 
-Storage figures in this table use decimal GB. They exclude the Terminal, native
-engine, logs and other application data. Existing complete downloads can be
-reused. Preparation requirements vary by backend and hardware; Strata's plan and
-disk-space checks are authoritative, rather than these rounded estimates.
-Download sizes and digests come from the pinned upstream
+Storage figures use decimal GB and exclude the Terminal, native engine, logs
+and other app data. Existing complete downloads can be reused. Actual disk
+requirements depend on the selected model/backend; the official preparation
+checks determine them. Custom imports do not inherit these two presets' sizes.
+Download sizes and digests come from the pinned
 [`setup.py` catalog](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/setup.py).
 
-Gyro-S uses agentionai's APR trellis quantization and is the smaller choice, with
-a quality tradeoff. Q2_0 uses ISTA-DASLab's GSQ-RCO mixed quantization, advertised
-as 2.40 bits per weight for the transformer portion. Neither label describes the
-precision of every tensor or changes Studio's existing ternary models. See the
-[Gyro publisher card](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF),
-[ISTA publisher card](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF),
-and [upstream model guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/MODELS.md).
+Gyro-S uses APR trellis quantization. Q2_0 uses ISTA-DASLab's GSQ-RCO mixed
+quantization, advertised as 2.40 bits per weight for the transformer portion.
+Neither label describes every tensor's precision. See the
+[upstream model guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/MODELS.md)
+and the linked publisher cards for their respective quality tradeoffs.
 
-These presets expose **inference only**. They do not support persistent weight
-updates, LoRA training or a pretend successful sleep-training step. Conversation
-history and ordinary inference remain available; training-capable native
-backends retain their own learning behavior.
+## Managed Strata load, cancel and close
 
-## Load, cancel and close
+For a selected local Strata model, Studio records the complete exact GGUF set
+and verifies it again before preparation and serving. The official importer
+checks architecture, tokenizer, tensor layout and quantization. It can identify
+a compatible same-layout build without requiring a particular publisher name;
+this remains an unverified engine candidate until actual loading succeeds.
+Studio preserves its warnings and never replaces a custom fine-tune with the
+catalog model used as a preparation recipe. See the upstream
+[`models.plan_import` implementation](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/strata_control/models.py).
 
-Select **Strata Gyro-S** or **Strata Q2_0** in the desktop model selector and start
-loading. The loading worker performs these steps:
+The local path currently covers supported native-GGUF preparation recipes for
+Qwen3.8-Flash-Next and supported DeepSeek V4.1-Flash file sets. Recipes that would
+replace the chosen file with a separate ready-made pack are refused. Qwen3.6's
+separate own-path engine is not integrated into this managed local path; native
+backends retain their own compatibility checks. Local DeepSeek sets must include
+the exact required companions, such as Engram or metadata files where that
+recipe requires them. Missing dependencies are reported rather than silently
+starting a large additional model download.
 
-1. Install the pinned official Terminal privately under Studio's portable data
-   directory. Check the archive's exact SHA-256 and byte count, then use the
-   checksum-verified bundle's official verifier to validate the release feed
-   against a public Ed25519 key pinned in Studio. Publish the installation only
-   after verification succeeds.
-2. Ask the official launch planner to inspect the computer and obtain a
-   compatible engine. A missing engine fails before starting a new large model
-   download. Studio does not install GPU drivers or build toolchains.
-3. Download and prepare the selected, registered pack using the official launch
-   runner. Model preparation can take substantially longer than a normal cached
-   model load; progress reports the current stage.
-4. Start one owned profile on a loopback address with a generated API key and
-   verify that the expected model is loaded. Studio submits complete structured
-   conversations to the local `/v1/chat/completions` endpoint.
+The loading worker then:
 
-The Terminal, engines and model data are kept beneath `runtime/strata/` in
-Studio's portable data directory. Each serving session gets private runtime,
-profile and tuning-state directories. Studio does not change shell profiles,
-take over an existing global Strata service, or issue a global stop command.
-The ownership mechanism uses upstream's `runtime start --profile …
---die-with-pid …`; stopping or closing Studio targets only its own session.
-The official lifecycle contract is documented in
-[Strata Terminal](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/TERMINAL.md).
+1. Installs the pinned official Terminal privately. It checks exact archive
+   SHA-256 and byte count, then uses that verified bundle's official verifier to
+   validate the signed release feed against Studio's pinned Ed25519 public key.
+2. Asks the official planner for the compatible engine. A missing engine fails
+   before a new built-in model download. Drivers and compiler toolchains are not
+   installed by this integration.
+3. Prepares the exact selected local files. For an explicitly selected built-in
+   example, the official runner downloads and verifies that preset's pinned
+   files. Local-source preparation is prevented from downloading replacement
+   model weights.
+4. Starts one owned profile on loopback with a generated API key, then verifies
+   the expected served model identity. Complete structured conversations go to
+   its local `/v1/chat/completions` endpoint.
 
-**Cancel** stops a load or preparation attempt and keeps downloaded model data
-and completed preparation files. A subsequent load lets upstream verify what is
-usable and resume the remaining work. Stopping a generated response closes the
-active request; model unloading or app closing stops the owned service. Native
-work already in progress can take time to exit, and cleanup may wait for that
-process to finish. No fixed first-load or cancellation time is promised.
+Managed files live beneath `runtime/strata/` in Studio's portable data directory.
+Custom prepared data and discovery/settings roots are isolated by the source's
+absolute paths and file identity, so two fine-tunes using the same recipe cannot
+reuse each other's prepared experts. A source change requires re-import. Session
+runtime/profile directories are private, and `runtime start --profile …
+--die-with-pid …` ties the owned service to Studio's lifetime. An existing global
+Strata service is not stopped or reconfigured. See
+[`core/strata_runtime.py`](../core/strata_runtime.py) and upstream
+[Terminal lifecycle documentation](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/TERMINAL.md).
+
+**Cancel** stops a load/preparation attempt while retaining downloaded source
+files and completed preparation files. A later attempt lets upstream verify
+and reuse usable files. Stopping a response closes the active request; unloading
+or closing Studio stops its owned service. A native operation in progress can
+take time to exit, so no fixed first-load or cancellation time is promised.
 
 ## Platforms and memory
 
-The relevant hardware case is a supported **8 GB GPU, 32 GB system RAM and a fast
-SSD**. Strata can keep hot experts in GPU memory, use a fitting RAM complement,
-and read other experts from SSD. Consequently a 58–66 GB download is not rejected
-just because it exceeds either VRAM or system RAM. The exact tier layout depends
-on the engine, free memory, context and selected pack. Automatic cache sizing and
-prompt processing remain upstream's responsibility. See the
-[official low-memory implementation](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/setup.py)
-and [engine details](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/DETAILS.md).
+A supported **8 GB GPU + 32 GB RAM + fast SSD** is a relevant Strata configuration
+for some large MoE packs: hot experts can reside on the GPU, a fitting complement
+can stay in RAM, and other expert data can be read from SSD. A 58–66 GB download
+therefore need not fit wholly in VRAM or RAM. That property depends on the exact
+native engine and pack; it cannot be applied to an arbitrary dense checkpoint or
+a custom MLX layout. See upstream
+[engine details](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/DETAILS.md).
 
 The [community RTX 5060 Laptop report](https://www.reddit.com/r/LocalLLaMA/comments/1xft2ae/have_8_gb_of_vram_and_32_gb_of_ram_you_can_run/)
-describes that class of machine. It is evidence of an upstream user run, not a
-benchmark of this integration. GPU model, drivers, SSD latency, free RAM,
-quantization, drafting, KV precision and routing options all affect the result.
-Studio's conservative quality settings differ from some fast community setups.
-The 8 GB / 32 GB combination does not establish a universal minimum or speed.
+is an upstream user run, not a benchmark of this integration. Drivers, free RAM,
+SSD latency, context and quality settings all affect the result. Studio's
+conservative defaults differ from some fast community configurations. Neither
+that hardware combination nor the model's file size establishes a universal
+minimum, a guaranteed fit or a token rate.
 
-| Platform | Managed Terminal package | Important engine qualification |
+For native GGUF on Apple Silicon, the source dependency manifests include stock
+`llama-cpp-python`. Packaged Mac builds carry both dependency manifests and an
+explicit **Install_Dependencies.command**, which creates a user environment and
+requests a Metal build. It needs native Python with Tkinter and Xcode Command
+Line Tools. In the multipart model bundle, open **SmartAI.app → Show Package
+Contents → Contents/Resources/app** to find it; the regular package also exposes
+it beside the app. Launchers use that same environment. Launching the app does
+not automatically install packages or models. This native binding is distinct
+from the separately managed Strata engine and the private Prism runtime.
+
+| Platform | Managed integration | Important qualification |
 | --- | --- | --- |
-| Windows x86-64 | Official `windows-x86_64` package | A supported NVIDIA or AMD engine and working driver are required; capacity alone does not establish compatibility. |
-| Linux x86-64 | Official `linux-x86_64` package | Upstream supports specified NVIDIA and AMD GPUs. Intel Arc has a Linux engine, but model preparation has additional requirements that Studio does not install. |
-| Apple Silicon | Official `macos-arm64` package | **macOS 15 or newer** and the Metal engine. Unified memory is one pool. Intel Macs are unsupported. |
-| Linux ARM64, including DGX Spark / GB10 | Unavailable for these two presets | Upstream's ARM engine supports other packs. **Q2_0 and Gyro require x86 CPU kernels on Linux**, so Studio rejects them before installation or model download. Apple Silicon uses a separate Metal path. |
+| Windows x86-64 | Official `windows-x86_64` Terminal | Requires a compatible native engine and driver for the selected model. |
+| Linux x86-64 | Official `linux-x86_64` Terminal | NVIDIA/AMD compatibility is model and GPU specific. Intel Arc preparation can require tools Studio does not install. |
+| Apple Silicon | Official `macos-arm64` Terminal, **macOS 15+** | Separate Metal engines, unified memory counted once, and encoding-specific kernels. Qwen/Gyro support does not imply support for true ternary or custom MLX formats. |
+| Intel Mac / Linux ARM64 | No managed installation in this version | Upstream's support for some other ARM packs does not establish this integration's support. Linux Gyro/Q2_0 specifically require x86 CPU kernels. |
 
-Consult the pinned upstream [installation guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/INSTALL.md),
-[Mac guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/MAC.md),
-[Intel Arc guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/INTEL_ARC.md),
-and [DGX Spark guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/DGX_SPARK_LINUX.md)
-for GPU-specific limits. The Mac guide reports SSD-streaming tests on 32–34 GB
-machines and recommends 64 GB for Q2_0 held in memory. It does not establish that
-a 16 GB Mac suitable for Studio's existing MLX models can run these packs well.
-An internal fast SSD is the documented Mac streaming path.
+Consult the pinned [installation guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/INSTALL.md),
+[Mac guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/MAC.md), and
+[DeepSeek Mac guide](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/DEEPSEEK_MAC.md).
+Mac SSD-streaming reports for Qwen use larger-memory machines than a 16 GB
+MacBook; DeepSeek's Mac guide recommends at least 64 GB and reports testing on
+128 GB. These are upstream cases, not Studio hardware validation.
 
-Strata presets default to **32,768 tokens** of context. Larger context requires
-an explicit setting and enough runtime memory; Studio does not silently reduce
-the requested context or change the model to make a load succeed. The pack's
-registered maximum is 262,144 tokens, not a fit guarantee on every machine.
-To change Context for a loaded Strata model, unload it, apply the new value, and
-load it again. Editing the field while it is loaded keeps the existing value and
-shows that instruction. The server uses its native tokenizer to account for the
-complete prompt and output; Studio does not subtract its conservative display
-estimate from the output allowance. A genuinely oversized prompt is rejected by
-the server with its context error, without a truncated retry.
+The two example presets start at **32,768 tokens** of context. Custom entries use
+their inspected context limit and selected default; local DeepSeek defaults to
+8,192. Studio does not reduce a requested context to make a load pass. Unload a
+Strata model before applying a different Context, then reload it. Its server
+accounts for the complete prompt with its native tokenizer; a genuinely
+oversized prompt produces the server's context error without a truncated retry.
 
-Studio's application memory cap includes its own process and the tracked Strata
-process tree. It is monitored, not a hard allocation ceiling: transient usage
-can exceed it between checks, and GPU allocation and memory-mapped file behavior
-vary by OS. Upstream's `--memory-limit-mib` describes system/container capacity,
-while `--resident-budget-gib` limits only a subset of expert storage. Neither is
-misrepresented as an application-wide RSS limit. Close other large workloads
-when assessing whether a selected pack fits.
+The application memory cap includes Studio and the tracked Strata process tree.
+It is monitored, not a hard allocation ceiling. Transient allocations, native
+workspaces and mapped pages vary by OS. Upstream capacity and expert-residency
+budgets are not application-wide RSS guarantees. A fit estimate can become
+outdated when other workloads consume memory.
 
 ## Strata quality and automatic placement policy
 
-The managed launch explicitly requests the following settings:
+| Setting | Managed policy |
+| --- | --- |
+| KV cache | Explicit `fp16` on the Qwen Flash-Next path; alternate modes require an explicit supported selection. Metal rejects unsupported modes. Family-specific engines keep their native full-precision policy instead of receiving another engine's incompatible flags. |
+| MTP / drafting / speculative tokens | Off. Qwen uses `spec=0`; DeepSeek explicitly uses `dspark none`. |
+| Cached-expert routing prior | `STRATA_ROUTE_PRIOR=0`; no cache-biased approximate routing. |
+| Route tail skipping | `STRATA_ROUTE_TAIL_SKIP=0`; no expert-tail shortcut. |
+| Approximate KV attention | `STRATA_KVA=0`. |
+| DeepSeek active experts | Full quality: six experts, not the lower-expert speed mode. |
+| Vision / concurrency | Text-only managed sessions, one request at a time. Existing multimodal native models keep their own routes. |
+| Expert cache and prefill | Official engine automatic sizing and supported SSD placement. |
 
-| Setting | Studio's default | Purpose |
-| --- | --- | --- |
-| KV cache | `fp16` | Avoid automatic KV quantization. Other registered Strata KV modes require an explicit selection on a supported engine; the pinned Metal engine accepts fp16 only. |
-| MTP layer | `off` | Do not download/load the draft layer as an implicit speed choice. |
-| Drafting | `off` | Do not substitute a speculative drafter. |
-| Speculative tokens | `spec=0` | Disable speculative token generation. |
-| Cached-expert routing prior | `STRATA_ROUTE_PRIOR=0` | Do not prefer experts merely because they are already cached. |
-| Route tail skipping | `STRATA_ROUTE_TAIL_SKIP=0` | Do not omit low-ranked expert work to gain speed. |
-| Approximate KV attention | `STRATA_KVA=0` | Keep this approximate attention shortcut off. |
-| Vision | `off` | These are text-only presets; no vision projector download. |
-| Concurrent requests | `1` | Keep one interactive request active in the owned model. |
-| Expert cache and prefill | Upstream automatic configuration | Let the real engine fit execution to the computer and SSD tier. |
+This preserves the selected quantized artifact; it does not make lossy weights
+equivalent to full-precision weights or promise bitwise identity between GPUs.
+Upstream [engine details](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/DETAILS.md)
+and [issue #4402](https://github.com/Niko1221/Strata/issues/4402) explain why
+approximate routing defaults matter to long-session quality.
 
-The policy preserves the chosen quantized model; it does not make a lossy model
-pack equivalent to full-precision weights. It also does not promise bitwise
-identical results between GPU architectures. Upstream explains its approximate
-speed controls in [engine details](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/docs/DETAILS.md).
-[Issue #4402](https://github.com/Niko1221/Strata/issues/4402) and the v0.2.8 notes
-record why cached-expert routing became opt-in again after long-session quality
-reports. An approximate routing option is therefore not quietly re-enabled to
-match a published tokens-per-second figure.
-
-For Strata, **Check placement** reports the loaded native configuration. It
-does **not** run upstream `tune auto`, compare candidates, or claim a measured
-gain. The upstream quick and thorough tuners can take many minutes and reload
-engines; they are not wired into Studio's short native calibration control in
-this version. Turning **Auto speed** off does not disable Strata's necessary
-memory placement or remove its SSD tier.
+**Check placement** reports the loaded Strata configuration. It does not run
+upstream `tune auto`, compare candidate settings or claim a measured gain. Those
+quick/thorough tuners can take many minutes and reload engines. Turning **Auto
+speed** off does not disable the memory placement needed to load the model.
 
 ## Native Auto speed: use it
 
@@ -201,7 +316,7 @@ checkbox preference takes precedence over that initial environment default.
 | Supported MLX-VLM text paths, including the Bonsai loaders | Prompt prefill chunk size when the installed runtime exposes a verifiable native control | Uses the existing model, processor, prompt formatter, and native VLM cache path. Vision weights remain loaded; the comparison measures text serving. |
 | Standard GGUF / llama.cpp | Decode threads and prompt-processing threads | Changes one thread setting at a time using the native live setter; retains GPU placement, context, and cache types. |
 | Prism GGUF / Bonsai private kernels | The same native thread settings | Measurements run inside the actual isolated Prism worker. Progress and cancellation cross the worker boundary. |
-| Managed Strata Gyro-S / Q2_0 | No short native calibration | The real Strata engine manages placement; Check placement reports configuration without a measured gain. |
+| Managed Strata, including supported custom GGUFs | No short native calibration | The real Strata engine manages placement; Check placement reports configuration without a measured gain. |
 | BitNet server, Transformers, image/audio/video generation, or incompatible library versions | Existing native configuration retained | The UI reports unsupported tuning rather than treating a connected or loaded model as measured. |
 
 Tuning does not switch to another model, download a different quantization,
@@ -213,9 +328,9 @@ It measures the library's unchanged prefill default by omitting the override. If
 there is too little headroom to measure that baseline, tuning is deferred; the
 baseline is never silently reduced to make a comparison pass.
 
-The GGUF comparison does not reload large models to sweep GPU-layer placement.
-It does not claim to implement Strata's custom expert-cache kernels or reproduce
-its published throughput on arbitrary models.
+The GGUF comparison operates after native memory placement. It does not reload
+large models to sweep GPU layers, implement Strata's custom expert-cache
+kernels, or reproduce its published throughput on arbitrary models.
 
 ## How a native setting wins
 
@@ -315,22 +430,28 @@ The managed runtime uses the official
 Terminal archive checksums are pinned in
 [`core/strata_runtime.py`](../core/strata_runtime.py); the official signed release
 feed must authorize the selected platform package. Engine acquisition remains
-inside the official Terminal with the pinned release feed. Model repository
-revisions, file sizes and SHA-256 identities are recorded in the catalog and
-checked by upstream preparation. These integrity checks establish which files
-were selected; they do not establish model quality or performance.
+inside the official Terminal with the pinned release feed. Built-in examples'
+model revisions, file sizes and SHA-256 identities are recorded in the catalog
+and checked by upstream preparation. Imported Hugging Face sources retain their
+immutable revision; local Strata sources retain paths and file metadata and are
+checked for changes before use. Local identity checks do not hash every byte of
+an arbitrary large model. None of these checks establishes model quality or
+performance.
 
 Strata's source is [MIT-licensed](https://github.com/Niko1221/Strata/blob/870aedd9e1ebe1c91f94da93b59af17729f6c5c0/LICENSE).
 Its runtime components and the publisher model weights have their own applicable
-licenses. The selected weights reference the Qwen Community License; consult
-their linked model cards. Studio's existing license applies to Studio and does
-not replace those upstream terms. Studio's distribution does not embed the large
-model weights: the explicit Strata selection downloads the official components
-and chosen pack separately.
+licenses. The two Qwen example presets reference the Qwen Community License;
+other chosen artifacts retain their publisher's terms. Studio's existing
+license applies to Studio and does not replace those terms. Studio's
+distribution does not embed large model weights. A built-in Strata selection
+downloads its chosen pack separately; a custom local selection uses the files
+already selected by the user.
 
 ## Verification and limits
 
-Behavioral tests exercise registered Strata identities and quality flags,
+Behavioral tests exercise exact custom artifact/shard selection, immutable
+downloads, companion assets, source changes, cancelled GUI callbacks, model
+switch/removal races, registered Strata identities and quality flags,
 release verification and private lifecycle handling, full conversation transport,
 SSE framing, model identity checks and request cancellation. Local HTTP fixtures
 and fake process/native streams allow these contracts to be checked without
@@ -343,8 +464,8 @@ and rollback. Existing prompt, sampling, cache, learning, model-routing, and GUI
 contracts remain part of regression verification.
 
 These checks are not hardware performance results. This implementation has not
-been benchmarked here with the full Gyro-S or Q2_0 pack on an 8 GB GPU / 32 GB RAM
-machine. Actual speed measurements require the installed engine and model on the
+been benchmarked here with full-size custom Qwen/DeepSeek weights, true ternary
+Qwen on a MacBook, or the Gyro-S/Q2_0 examples on an 8 GB GPU / 32 GB RAM machine. Actual speed measurements require the installed engine and model on the
 target computer. Platform builds and live Metal/CUDA/HIP/Prism inference must be
 verified separately from a source/unit-test result. A successful startup check
 establishes that a request can run, not sustained throughput, long-context answer

@@ -69,7 +69,12 @@ def main() -> int:
         cfg = json.load(handle)
 
     # These imports happen only after the parent has injected Prism native-library paths.
+    import llama_cpp
     from llama_cpp import Llama
+    from core.gguf_metadata import inspect_gguf
+    from core.gguf_placement import last_token_logits, load_gguf_with_placement
+
+    metadata = inspect_gguf(str(cfg["model_path"]))
 
     chat_handler = None
     mmproj = cfg.get("mmproj_path")
@@ -94,14 +99,23 @@ def main() -> int:
                     verbose=bool(cfg.get("verbose", False)),
                 )
 
-    model = Llama(
+    model, memory_placement = load_gguf_with_placement(
+        Llama,
         model_path=str(cfg["model_path"]),
         n_gpu_layers=int(cfg.get("n_gpu_layers", -1)),
         n_ctx=int(cfg.get("n_ctx", 32768)),
         chat_handler=chat_handler,
         lora_path=cfg.get("adapter_path") if cfg.get("adapter_path") and os.path.isfile(cfg["adapter_path"]) else None,
         **{name: cfg[name] for name in ("n_threads", "n_threads_batch") if cfg.get(name) is not None},
-        logits_all=True,
+        metadata=metadata,
+        auto_memory_placement=bool(cfg.get("auto_memory_placement", True)),
+        memory_limit_gb=cfg.get("memory_limit_gb"),
+        owner_pid=cfg.get("memory_owner_pid"),
+        gpu_offload_supported=bool(getattr(llama_cpp, "llama_supports_gpu_offload", lambda: False)()),
+        placement_projector_bytes=(os.path.getsize(mmproj) if chat_handler is not None else 0),
+        # Entropy needs the final token only. Keep the legacy matrix solely for
+        # old bindings that cannot expose the native last-token logits.
+        logits_all=not callable(getattr(llama_cpp, "llama_get_logits_ith", None)),
         no_perf=True,
         verbose=bool(cfg.get("verbose", False)),
     )
@@ -111,7 +125,7 @@ def main() -> int:
         from core.gguf_speed_tuning import LlamaSpeedTuner
         speed_tuner = LlamaSpeedTuner(
             model, backend="prism_gguf", model_path=str(cfg["model_path"]),
-            context=int(model.n_ctx()), n_gpu_layers=int(cfg.get("n_gpu_layers", -1)),
+            context=int(model.n_ctx()), n_gpu_layers=int(memory_placement["n_gpu_layers"]),
             adapter_path=cfg.get("adapter_path") if cfg.get("adapter_path") and os.path.isfile(cfg["adapter_path"]) else None,
             projector_path=mmproj if chat_handler is not None else None,
         )
@@ -128,7 +142,7 @@ def main() -> int:
                 _emit({"status": "ok"})
                 return 0
             if op == "ping":
-                _emit({"status": "ok"})
+                _emit({"status": "ok", "memory_placement": memory_placement})
                 continue
             if op == "tune_speed":
                 if speed_tuner is None:
@@ -187,7 +201,7 @@ def main() -> int:
                     _emit({"status": "ok", "entropy": 0.35})
                     continue
                 model.eval(tokens[-32:])
-                logits = model._scores[-1]
+                logits = last_token_logits(model)
                 max_l = max(logits)
                 exp_l = [math.exp(float(x) - float(max_l)) for x in logits]
                 total = sum(exp_l)

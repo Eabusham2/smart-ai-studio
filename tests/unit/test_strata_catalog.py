@@ -1,9 +1,12 @@
 """Registered Strata identities and launch policy without acquiring models."""
 import pytest
+import os
+import struct
 
 from config.strata_models import (
     STRATA_PRESETS, get_strata_preset, strata_launch_options,
     strata_memory_policy, validate_strata_selection,
+    make_local_strata_selection,
 )
 
 
@@ -114,3 +117,83 @@ def test_small_ram_budget_does_not_reject_oversized_weights_or_promise_hard_cap(
     assert policy["requires_process_tree_watchdog"] is True
     assert policy["hard_rss_cap"] is False
     assert strata_memory_policy()["requires_process_tree_watchdog"] is False
+
+
+def local_file(path):
+    path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 0))
+    return path
+
+
+def test_local_model_keeps_exact_identity_without_a_builtin_recipe(tmp_path):
+    path = local_file(tmp_path / "my-finetune.gguf")
+    chosen = make_local_strata_selection(str(path), metadata={"architecture": "qwen4exp", "precision": "GGUF PTQ1_0", "ternary": True, "ternary_verified": True})
+    assert chosen["source_kind"] == "strata_local"
+    assert chosen["model_path"] == chosen["strata_model_path"] == str(path)
+    assert chosen["gguf_files"] == [str(path)]
+    assert chosen["ternary"] is True and chosen["precision"] == "GGUF PTQ1_0"
+    assert "strata_api_model" not in chosen and "strata_family" not in chosen
+    assert chosen["execution_compatibility"] == "unverified"
+    assert validate_strata_selection(chosen) == chosen
+    options = strata_launch_options(chosen, context_tokens=32768)
+    assert options[:2] == ["--model-path", str(path)]
+    assert "--family" not in options and "--model" not in options
+
+
+def test_local_artifact_change_invalidates_prepared_identity(tmp_path):
+    path = local_file(tmp_path / "same-name.gguf")
+    chosen = make_local_strata_selection(str(path))
+    details = path.stat()
+    os.utime(path, ns=(details.st_atime_ns, details.st_mtime_ns + 1_000_000))
+    with pytest.raises(ValueError, match="changed|conflicts"):
+        validate_strata_selection(chosen)
+    changed = make_local_strata_selection(str(path))
+    assert changed["model_key"] != chosen["model_key"]
+
+
+def test_local_ambiguity_is_not_resolved_by_quantization_ranking(tmp_path):
+    first = local_file(tmp_path / "one.gguf")
+    local_file(tmp_path / "two.gguf")
+    with pytest.raises(ValueError, match="unambiguous"):
+        make_local_strata_selection(str(tmp_path))
+    assert make_local_strata_selection(str(first))["gguf_files"] == [str(first)]
+
+
+def test_local_shard_identity_requires_complete_exact_group(tmp_path):
+    first = local_file(tmp_path / "custom-00001-of-00002.gguf")
+    with pytest.raises(ValueError, match="missing"):
+        make_local_strata_selection(str(first))
+    second = local_file(tmp_path / "custom-00002-of-00002.gguf")
+    chosen = make_local_strata_selection(str(second))
+    assert chosen["gguf_files"] == [str(first), str(second)]
+    with pytest.raises(ValueError, match="shard group"):
+        make_local_strata_selection(str(first), gguf_files=[str(first)])
+
+
+def test_local_hf_provenance_is_separate_from_execution_source(tmp_path):
+    path = local_file(tmp_path / "chosen.gguf")
+    chosen = make_local_strata_selection(str(path), metadata={"repo_id": "owner/chosen", "repo_revision": "a" * 40,
+                                                           "source_kind": "hf_fetch"})
+    assert chosen["source_kind"] == "strata_local"
+    assert chosen["source_origin"] == "hf_fetch"
+    assert chosen["source_repo_id"] == "owner/chosen" and chosen["source_revision"] == "a" * 40
+    assert validate_strata_selection(chosen) == chosen
+
+
+def test_local_label_does_not_invent_ternary_proof(tmp_path):
+    path = local_file(tmp_path / "Ternary-TQ1_0.gguf")
+    chosen = make_local_strata_selection(str(path), metadata={"ternary": True, "ternary_verified": False})
+    assert chosen["ternary"] is False and chosen["ternary_verified"] is False
+
+
+def test_deepseek_required_companions_join_source_identity_without_becoming_models(tmp_path):
+    shards = [local_file(tmp_path / f"model-2.00bpw-{i:05d}-of-00004.gguf") for i in range(1, 5)]
+    companion_names = ["engram-IQ4_NL.gguf", "DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf",
+                       "dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf"]
+    companions = [local_file(tmp_path / name) for name in companion_names]
+    chosen = make_local_strata_selection(str(tmp_path), metadata={"architecture": "deepseek41"})
+    assert chosen["gguf_files"] == [str(p) for p in shards]
+    assert chosen["strata_companion_files"] == [str(p) for p in companions]
+    assert len(chosen["strata_source_files"]) == 7
+    assert chosen["default_context"] == 8192
+    assert "--full-quality" in strata_launch_options(chosen, context_tokens=8192)
+    assert validate_strata_selection(chosen) == chosen

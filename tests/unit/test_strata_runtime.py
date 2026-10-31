@@ -20,6 +20,7 @@ import pytest
 
 from core import strata_runtime as runtime_module
 from core.strata_runtime import StrataCancelled, StrataRuntime, StrataRuntimeError, extract_terminal
+from config.strata_models import make_local_strata_selection
 
 
 @pytest.fixture
@@ -114,7 +115,7 @@ def test_linux_arm_rejects_incompatible_packs_before_any_download(tmp_path, monk
     monkeypatch.setattr(runtime_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(runtime_module, "urlopen", lambda *a, **kw: pytest.fail("network used"))
     monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *a, **kw: pytest.fail("process started"))
-    with pytest.raises(StrataRuntimeError, match="do not run on Linux ARM64"):
+    with pytest.raises(StrataRuntimeError, match="does not support Linux ARM64"):
         StrataRuntime(model_key)
     assert not (tmp_path / "runtime").exists()
 
@@ -612,3 +613,374 @@ def test_http_verification_uses_authenticated_loopback_without_proxies(runtime, 
         server.shutdown()
         server.server_close()
         thread.join(2)
+
+
+@pytest.fixture
+def local_runtime(tmp_path, monkeypatch):
+    chosen = tmp_path / "user-models" / "my-own-finetune.gguf"
+    chosen.parent.mkdir()
+    chosen.write_bytes(b"GGUF\x03\0\0\0chosen model payload")
+    monkeypatch.setattr(runtime_module, "get_portable_data_dir", lambda: str(tmp_path / "studio"))
+    monkeypatch.setattr(runtime_module, "host_platform", lambda: "linux-x86_64")
+    info = make_local_strata_selection(str(chosen))
+    return StrataRuntime(info["model_key"], info)
+
+
+def local_prepared(runtime):
+    pack = runtime._data_dir / "packs" / "q2_0"
+    (pack / "tokenizer").mkdir(parents=True)
+    (pack / "native_experts.txt").write_text("chosen source only")
+    source = runtime._source_record()
+    source["recipe"] = {"family": "qwen", "model": "Q2_0", "basis": "same_layout_other_build"}
+    config = runtime.session / "state" / "strata" / "launch" / f"{runtime.preset}.json"
+    runtime_module._write_json(config, {
+        "model_name": "own-model-api-id", "tokenizer": str(pack / "tokenizer"),
+        "args": ["--native", source["files"][0]["path"], "--pack", str(pack)],
+    })
+    return {
+        "ok": True, "profile": runtime.profile, "config": str(config), "model_id": "own-model-api-id",
+        "source_identity": source,
+        "plan": {"model": {"family": "qwen", "model": "Q2_0", "own_files": True}},
+    }
+
+
+def test_custom_launch_preserves_source_and_uses_owned_runtime(local_runtime, monkeypatch):
+    runtime = local_runtime
+    install_marker(runtime)
+    prepared = local_prepared(runtime)
+    commands = []
+    def run(command, **_kwargs):
+        commands.append(command)
+        if "prepare" in command:
+            assert "--family" not in command and "--model" not in command
+            assert command[command.index("--model-path") + 1] == runtime.model_info["model_path"]
+            return prepared
+        if "start" in command:
+            return ready_owner(runtime)
+        assert "stop" in command
+        return {"ok": True, "state": "stopped"}
+    monkeypatch.setattr(runtime, "_run", run)
+    monkeypatch.setattr(runtime, "_http_json", lambda path: {
+        "service": "strata", "loaded": True, "api_key": True,
+        "model": prepared["model_id"], "max_context": 32768,
+    } if path == "/health" else {"data": [{"id": prepared["model_id"], "status": {"value": "loaded"}}]})
+    result = runtime.start(32768)
+    assert result["source_identity"] == prepared["source_identity"]
+    assert result["model_id"] == "own-model-api-id"
+    assert runtime.is_prepared()
+    assert "--die-with-pid" in commands[-1]
+    runtime.stop()
+    assert "--profile" in commands[-1]
+    assert Path(runtime.model_info["model_path"]).read_bytes().endswith(b"chosen model payload")
+
+
+def test_custom_source_change_rejects_before_install_or_process(local_runtime, monkeypatch):
+    Path(local_runtime.model_info["model_path"]).write_bytes(b"GGUF\x03\0\0\0a different model")
+    monkeypatch.setattr(local_runtime, "_ensure_terminal", lambda *a: pytest.fail("runtime installation started"))
+    monkeypatch.setattr(local_runtime, "_run", lambda *a, **kw: pytest.fail("process started"))
+    with pytest.raises(ValueError, match="changed|conflicts"):
+        local_runtime.start(32768)
+
+
+def test_same_recipe_local_models_have_separate_prepared_data_and_discovery(local_runtime):
+    original = Path(local_runtime.model_info["model_path"])
+    other = original.with_name("another-finetune.gguf")
+    other.write_bytes(original.read_bytes())
+    info = make_local_strata_selection(str(other))
+    second = StrataRuntime(info["model_key"], info)
+    first_env, second_env = local_runtime._env(), second._env()
+    assert local_runtime._data_dir != second._data_dir
+    for field in ("STRATA_INSTALL_DIR", "STRATA_DATA_DIR", "STRATA_SETTINGS_FILE", "STRATA_DOCUMENTS_DIR", "XDG_CONFIG_HOME"):
+        assert first_env[field] != second_env[field]
+    assert first_env["STRATA_COMPONENTS_DIR"] == second_env["STRATA_COMPONENTS_DIR"]
+    assert first_env["STRATA_INSTALL_DIR"] != str(local_runtime.terminal)
+
+
+@pytest.mark.parametrize("substitute", ["weights", "pack", "tokenizer"])
+def test_custom_prepared_config_cannot_substitute_neighbor_or_shared_pack(local_runtime, substitute):
+    prepared = local_prepared(local_runtime)
+    config = Path(prepared["config"])
+    data = runtime_module._read_json(config)
+    if substitute == "weights":
+        other = Path(local_runtime.model_info["model_path"]).with_name("canonical.gguf")
+        other.write_bytes(b"GGUF\x03\0\0\0different canonical weights")
+        data["args"][1] = str(other)
+    elif substitute == "pack":
+        data["args"][3] = str(local_runtime.root / "models" / "packs" / "q2_0")
+    else:
+        data["tokenizer"] = str(local_runtime.root / "models" / "packs" / "q2_0" / "tokenizer")
+    runtime_module._write_json(config, data)
+    with pytest.raises(StrataRuntimeError, match="different model weights|isolated"):
+        local_runtime._remember_prepared(prepared)
+
+
+def test_custom_prepared_hint_checks_chosen_source_without_writes(local_runtime, monkeypatch):
+    install_marker(local_runtime)
+    local_runtime._remember_prepared(local_prepared(local_runtime))
+    assert local_runtime.is_prepared()
+    Path(local_runtime.model_info["model_path"]).write_bytes(b"GGUF\x03\0\0\0changed")
+    monkeypatch.setattr(runtime_module, "_write_json", lambda *a: pytest.fail("cache hint wrote files"))
+    assert not local_runtime.is_prepared()
+
+
+def source_checks():
+    namespace = {}
+    exec(compile(runtime_module._SOURCE_CHECKS, "strata-source-checks", "exec"), namespace)
+    return namespace
+
+
+def preview_for(runtime, **changes):
+    return {
+        "candidate_selection": {"family": "qwen", "model": "Q2_0", "basis": "same_layout_other_build"},
+        "file_set_status": "plausible", "issues": [], "messages": ["A compatible custom layout"],
+        "files": [{"path": item["path"]} for item in runtime.model_info["strata_source_files"]],
+        **changes,
+    }
+
+
+def fake_source_catalog(monkeypatch, preview, **setup_fields):
+    control = ModuleType("strata_control")
+    control.models = SimpleNamespace(plan_import=lambda path: preview)
+    monkeypatch.setitem(sys.modules, "strata_control", control)
+    setup = SimpleNamespace(FAMILIES={"qwen": {"name": "qwen"}}, **setup_fields)
+    return SimpleNamespace(strata=SimpleNamespace(setup_module=lambda: setup))
+
+
+def test_official_same_layout_other_build_is_not_mistaken_for_canonical_weights(local_runtime, monkeypatch):
+    preview = preview_for(local_runtime)
+    catalog = fake_source_catalog(monkeypatch, preview)
+    result = source_checks()["inspect_source"](local_runtime._source_record(), catalog)
+    assert result["recipe"]["basis"] == "same_layout_other_build"
+    assert result["files"] == local_runtime.model_info["strata_source_files"]
+    assert result["path"] == local_runtime.model_info["model_path"]
+    assert result["messages"] == ["A compatible custom layout"]
+
+
+@pytest.mark.parametrize("bad", ["unsupported", "neighbor", "ready_pack", "missing_companion"])
+def test_local_preflight_rejects_unsafe_or_incomplete_selection_before_acquisition(local_runtime, monkeypatch, bad):
+    preview = preview_for(local_runtime)
+    catalog = fake_source_catalog(monkeypatch, preview)
+    setup = catalog.strata.setup_module()
+    if bad == "unsupported":
+        preview["issues"] = ["unsupported_architecture"]
+    elif bad == "neighbor":
+        preview["files"] = [{"path": str(Path(local_runtime.model_info["model_path"]).with_name("canonical.gguf"))}]
+    elif bad == "ready_pack":
+        setup.FAMILIES["qwen"]["ready"] = True
+    else:
+        preview["candidate_selection"] = {"family": "deepseek41", "model": "local-set"}
+        setup.MULTI_FILE_FAMILIES = {"deepseek41": {"models": {"local-set": {"shared": ["required-engram.gguf"]}}}}
+    monkeypatch.setattr(runtime_module, "urlopen", lambda *a, **kw: pytest.fail("weights download started"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("engine acquisition started"))
+    with pytest.raises(RuntimeError, match="cannot prepare|different files|discard|companion files"):
+        source_checks()["inspect_source"](local_runtime._source_record(), catalog)
+
+
+@pytest.mark.parametrize("attempt_download", [False, True])
+def test_pinned_setup_adapter_preserves_noncanonical_file_with_canonical_neighbor(local_runtime, monkeypatch, capsys, attempt_download):
+    runtime = local_runtime
+    chosen = Path(runtime.model_info["model_path"])
+    neighbor = chosen.with_name("canonical.gguf")
+    neighbor.write_bytes(b"GGUF\x03\0\0\0wrong neighbor")
+    source = runtime._source_record()
+    source["recipe"] = {"family": "qwen", "model": "Q2_0", "basis": "same_layout_other_build"}
+    record_path = runtime.session / "source.json"
+    runtime_module._write_json(record_path, source)
+    runtime.terminal.mkdir(parents=True)
+    (runtime.terminal / "setup.py").write_text('''
+import json
+from pathlib import Path
+FAMILIES = {"qwen": {"name": "qwen"}}
+def gguf_dir_shards(folder, family, model):
+    return [Path(folder) / "canonical.gguf"]
+def download(*args):
+    raise AssertionError("unwanted weight acquisition reached upstream")
+def main():
+    import sys
+    selected = gguf_dir_shards(Path(sys.argv[1]), FAMILIES["qwen"], "Q2_0")
+    print(json.dumps({"selected": [str(p) for p in selected], "bytes": selected[0].read_bytes().decode()}))
+    if "download" in sys.argv:
+        download("a model companion")
+    return 0
+''', encoding="utf-8")
+    fake_cli = ModuleType("strata_cli")
+    fake_cli.PRODUCT_VERSION = "0.2.8"
+    fake_cli.version = lambda: "0.1.54"
+    monkeypatch.setitem(sys.modules, "strata_cli", fake_cli)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "argv", ["prepare-local", str(runtime.terminal), str(record_path), str(chosen.parent)]
+                        + (["download"] if attempt_download else []))
+    if attempt_download:
+        with pytest.raises(RuntimeError, match="will not download replacement model weights"):
+            exec(compile(runtime_module._LOCAL_SETUP_ADAPTER, "local-setup-adapter", "exec"), {})
+    else:
+        with pytest.raises(SystemExit) as exit_status:
+            exec(compile(runtime_module._LOCAL_SETUP_ADAPTER, "local-setup-adapter", "exec"), {})
+        assert exit_status.value.code == 0
+    observed = json.loads(capsys.readouterr().out)
+    assert observed["selected"] == [str(chosen)]
+    assert "chosen model payload" in observed["bytes"]
+    assert "wrong neighbor" not in observed["bytes"]
+    assert neighbor.read_bytes().endswith(b"wrong neighbor")
+
+
+def test_deepseek_setup_uses_selected_legacy_shards_and_companions_not_neighbors(local_runtime, monkeypatch, capsys):
+    runtime = local_runtime
+    chosen = Path(runtime.model_info["model_path"])
+    shared = chosen.with_name("legacy-engram.gguf")
+    shared.write_bytes(b"GGUF\x03\0\0\0selected companion payload")
+    for name in ("canonical.gguf", "canonical-engram.gguf"):
+        chosen.with_name(name).write_bytes(b"GGUF\x03\0\0\0wrong canonical neighbor")
+    source = runtime._source_record()
+    details = shared.stat()
+    source["files"].append({"path": str(shared), "realpath": str(shared.resolve()), "size": details.st_size,
+                            "mtime_ns": details.st_mtime_ns, "ctime_ns": details.st_ctime_ns})
+    source["companions"] = [str(shared)]
+    source["recipe"] = {"family": "deepseek41", "model": "own-model"}
+    record_path = runtime.session / "source.json"
+    runtime_module._write_json(record_path, source)
+    runtime.terminal.mkdir(parents=True)
+    (runtime.terminal / "setup.py").write_text('''
+import json
+from pathlib import Path
+FAMILIES = {}
+DSV41_LEGACY_NAMES = {"canonical.gguf": "my-own-finetune.gguf", "canonical-engram.gguf": "legacy-engram.gguf"}
+def dsv41_pick(folder, name):
+    return Path(folder) / name
+def dsv41_find_shared(args, name, folder, shared_dir):
+    return Path(folder) / name
+def download(*args):
+    raise AssertionError("unexpected model download")
+def main():
+    import sys
+    root = Path(sys.argv[1])
+    selected = [dsv41_pick(root, "canonical.gguf"),
+                dsv41_find_shared(None, "canonical-engram.gguf", root, root)]
+    print(json.dumps({"selected": [str(p) for p in selected], "bytes": [p.read_bytes().decode() for p in selected]}))
+    return 0
+''', encoding="utf-8")
+    fake_cli = ModuleType("strata_cli")
+    fake_cli.PRODUCT_VERSION = "0.2.8"
+    fake_cli.version = lambda: "0.1.54"
+    monkeypatch.setitem(sys.modules, "strata_cli", fake_cli)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "argv", ["prepare-local", str(runtime.terminal), str(record_path), str(chosen.parent)])
+    with pytest.raises(SystemExit) as status:
+        exec(compile(runtime_module._LOCAL_SETUP_ADAPTER, "local-setup-adapter", "exec"), {})
+    assert status.value.code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["selected"] == [str(chosen), str(shared)]
+    assert "chosen model payload" in result["bytes"][0]
+    assert "selected companion payload" in result["bytes"][1]
+    assert all("wrong canonical neighbor" not in value for value in result["bytes"])
+
+
+@pytest.mark.parametrize("case", ["accepted", "invalid_source", "wrong_recipe", "weight_download",
+                                  "deepseek_full", "deepseek_neighbors", "qwen_with_deepseek_neighbor"])
+def test_local_adapter_checks_plan_before_acquisition_and_preserves_quality(local_runtime, monkeypatch, capsys, case):
+    runtime = local_runtime
+    prepared = local_prepared(runtime)
+    cfg = runtime_module._read_json(Path(prepared["config"]))
+    source = runtime._source_record()
+    record_path = runtime.session / "source.json"
+    runtime_module._write_json(record_path, source)
+    preview = preview_for(runtime)
+    plan = prepared["plan"]
+    plan["download"] = {"parts": []}
+    setup = SimpleNamespace(FAMILIES={"qwen": {"name": "qwen"}}, MULTI_FILE_FAMILIES={})
+    if case == "invalid_source":
+        preview["issues"] = ["unsupported_architecture"]
+    elif case == "wrong_recipe":
+        plan["model"]["model"] = "another-size"
+    elif case == "weight_download":
+        plan["download"]["parts"] = [{"kind": "weights", "gb": 111.0}]
+    elif case in {"deepseek_full", "deepseek_neighbors"}:
+        preview["candidate_selection"].update(family="deepseek41", model="local-set")
+        plan["model"].update(family="deepseek41", model="local-set")
+        setup.MULTI_FILE_FAMILIES = {"deepseek41": {"models": {"local-set": {"shared": []}}}}
+        cfg["args"] += ["--experts", "6", "--dspark", "none"]
+    if case in {"deepseek_neighbors", "qwen_with_deepseek_neighbor"}:
+        neighbour = Path(runtime.model_info["model_path"]).with_name("canonical-other-variant.gguf")
+        neighbour.write_bytes(b"GGUF\x03\0\0\0another model variant")
+        setup.MULTI_FILE_FAMILIES = {"deepseek41": {"models": {
+            "first-catalog-variant": {"shards": [neighbour.name], "shared": []},
+            "local-set": {"shards": [Path(runtime.model_info["model_path"]).name], "shared": []},
+        }}}
+    settings = SimpleNamespace(name=runtime.preset, mtp="off", extra={"--spec": "0"}, kv="fp16", speed=None,
+                               family=None, model=None, model_path=runtime.model_info["model_path"])
+    args = SimpleNamespace(feed="pinned-feed", model_path=runtime.model_info["model_path"], model=None, family=None)
+    calls = []
+    class Runner:
+        engine_problem = None
+        def __init__(self, chosen, **kwargs):
+            self.s = chosen
+        def setup_args(self):
+            return ["--yes", "--mtp", "off"]
+        def deepseek_files(self):
+            # The pinned Runner scans the selected file's whole parent and
+            # prefers catalog order unless a validated model preference exists.
+            models = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]
+            order = ([self.s.model] if self.s.model in models else []) + [key for key in models if key != self.s.model]
+            folder = Path(self.s.model_path).parent
+            selected = next((key for key in order if any((folder / name).exists() for name in models[key]["shards"])), None)
+            if selected is None:
+                return False
+            self.s.family, self.s.model = "deepseek41", selected
+            return True
+        def plan(self):
+            calls.append("plan")
+            if case in {"deepseek_neighbors", "qwen_with_deepseek_neighbor"}:
+                if not self.deepseek_files():
+                    self.s.family = preview["candidate_selection"]["family"]
+                    self.s.model = preview["candidate_selection"]["model"]
+                plan["model"].update(family=self.s.family, model=self.s.model)
+            return plan
+        def _spawn(self, argv, **kwargs):
+            calls.append("spawn")
+            assert argv[1] == str(record_path.with_name("prepare-local.py"))
+            assert argv[3] == str(record_path)
+        def run(self, *, start):
+            calls.append("acquire-engine-and-prepare")
+            assert start is False
+            self._spawn([str(runtime._python()), str(runtime.terminal / "setup.py"), *self.setup_args()])
+            return SimpleNamespace(serving=True, config=prepared["config"], profile=runtime.profile, notices=[])
+        def _stop_children(self):
+            calls.append("cleanup")
+    def module(name, **values):
+        result = ModuleType(name)
+        result.__dict__.update(values)
+        monkeypatch.setitem(sys.modules, name, result)
+        return result
+    module("strata_cli", PRODUCT_VERSION="0.2.8", version=lambda: "0.1.54")
+    module("strata_cli.cli", parser=lambda: SimpleNamespace(parse_args=lambda _: args))
+    module("strata_cli.launch", cmd=SimpleNamespace(settings_from_args=lambda a, c: (settings, []),
+           apply_defaults=lambda s, c: (s, [])), store=SimpleNamespace(save=lambda s, n: calls.append("save")))
+    module("strata_cli.launch.catalog", Catalog=lambda: SimpleNamespace(strata=SimpleNamespace(setup_module=lambda: setup)))
+    module("strata_cli.launch.runner", Runner=Runner, read_config=lambda _: cfg,
+           files_present=lambda _: [], LaunchError=RuntimeError)
+    module("strata_control", procs=SimpleNamespace(start_token=lambda _: "parent-start-token"),
+           models=SimpleNamespace(plan_import=lambda _: preview))
+    monkeypatch.setenv("STRATA_COMPONENTS_DIR", str(runtime.root / "components"))
+    monkeypatch.setenv("SMARTAI_STRATA_OWNER_PID", str(os.getpid()))
+    monkeypatch.setenv("SMARTAI_STRATA_SOURCE_FILE", str(record_path))
+    monkeypatch.setattr(sys, "argv", ["adapter", str(runtime.terminal), "prepare", "launch"])
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    import signal
+    monkeypatch.setattr(signal, "signal", lambda *a: None)
+    if case in {"invalid_source", "wrong_recipe", "weight_download"}:
+        with pytest.raises(RuntimeError):
+            exec(compile(runtime_module._ADAPTER, "strata-adapter", "exec"), {})
+        assert "acquire-engine-and-prepare" not in calls
+        assert "spawn" not in calls
+    else:
+        exec(compile(runtime_module._ADAPTER, "strata-adapter", "exec"), {})
+        assert calls == ["plan", "acquire-engine-and-prepare", "spawn", "save"]
+        output = [json.loads(line[len(runtime_module._EVENT_PREFIX):]) for line in capsys.readouterr().out.splitlines()]
+        assert output[-1]["source_identity"]["files"] == source["files"]
+        assert args.family is None and args.model is None
+        if case in {"deepseek_full", "deepseek_neighbors"}:
+            assert settings.family == "deepseek41" and settings.model == "local-set"
+            assert settings.speed == "full" and settings.kv is None
+            assert settings.extra["--dspark"] == "none" and "--spec" not in settings.extra
+        if case == "qwen_with_deepseek_neighbor":
+            assert settings.family == "qwen" and settings.model == "Q2_0"

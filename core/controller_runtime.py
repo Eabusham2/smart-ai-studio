@@ -15,9 +15,10 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Generator, List, Optional, Tuple
 from core.training_memory import release_training_memory
 
@@ -98,9 +99,26 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
     explicit_mmproj = str(info.get("mmproj_file") or "").strip()
     mmproj_repo_id = str(info.get("mmproj_repo_id") or "").strip()
 
+    def exact_artifact(directory, relative_name):
+        relative = PurePosixPath(relative_name)
+        if relative.is_absolute() or ".." in relative.parts or "\\" in relative_name or ":" in relative_name:
+            raise RuntimeError(f"Invalid selected GGUF artifact path: {relative_name}")
+        candidate = Path(directory).joinpath(*relative.parts)
+        if candidate.is_file():
+            return candidate
+        # Legacy catalog entries store a basename. A unique match is required;
+        # a relative path is never resolved as a different nested file.
+        if len(relative.parts) == 1:
+            matches = [p for p in Path(directory).rglob(relative.name) if p.is_file()]
+            if len(matches) > 1:
+                raise RuntimeError(f"Ambiguous GGUF artifact: {relative_name}. Select its full relative path.")
+            if matches:
+                return matches[0]
+        return None
+
     if os.path.isfile(root):
         model_file = Path(root)
-        if explicit_model and model_file.name != explicit_model:
+        if explicit_model and model_file.name != PurePosixPath(explicit_model).name:
             raise RuntimeError(
                 f"Pinned GGUF mismatch: expected {explicit_model}, got {model_file.name}"
             )
@@ -110,13 +128,16 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
             raise RuntimeError(f"No GGUF files found in cached snapshot for {identifier}")
 
         if explicit_model:
-            candidates = [p for p in ggufs if p.name == explicit_model]
-            if not candidates:
+            selected = exact_artifact(root, explicit_model)
+            if selected is None:
                 raise RuntimeError(
-                    f"Pinned ternary GGUF is missing: {explicit_model}. "
+                    f"Selected GGUF is missing: {explicit_model}. "
                     "Refusing to substitute another quant."
                 )
-            model_file = candidates[0]
+            model_file = selected
+            for required in info.get("gguf_files") or ():
+                if exact_artifact(root, required) is None:
+                    raise RuntimeError(f"Selected GGUF shard is missing: {required}")
         else:
             projectors = [
                 p for p in ggufs
@@ -138,24 +159,22 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
     mmproj: Optional[Path] = None
     if explicit_mmproj:
         projector_root_id = mmproj_repo_id or identifier
-        projector_root = resolve_local_snapshot(projector_root_id)
+        if not mmproj_repo_id:
+            projector_root = str(info.get("path") or (Path(root).parent if os.path.isfile(root) else root))
+        else:
+            projector_root = resolve_local_snapshot(projector_root_id)
         if os.path.isfile(projector_root):
             candidate = Path(projector_root)
-            if candidate.name == explicit_mmproj:
+            if candidate.name == PurePosixPath(explicit_mmproj).name:
                 mmproj = candidate
         elif os.path.isdir(projector_root):
-            candidates = [
-                p for p in Path(projector_root).rglob("*.gguf")
-                if p.is_file() and p.name == explicit_mmproj
-            ]
-            if candidates:
-                mmproj = candidates[0]
+            mmproj = exact_artifact(projector_root, explicit_mmproj)
         if mmproj is None:
             raise RuntimeError(
                 f"Pinned multimodal projector is missing: {explicit_mmproj} "
                 f"from {projector_root_id}. Refusing a mismatched projector."
             )
-    else:
+    elif not info.get("gguf_files"):
         search_root = Path(root).parent if os.path.isfile(root) else Path(root)
         projectors = [
             p for p in search_root.rglob("*.gguf")
@@ -190,6 +209,8 @@ class UniversalControllerBackend:
         self._generator = None
         self._apply_chat_template = None
         self._chat_config = None
+        self.memory_placement: Dict[str, Any] = {}
+        self._offload_directory: Optional[str] = None
 
     def load_model(self) -> bool:
         if self.runtime in ("mlx_vlm", "mlx-vlm"):
@@ -199,7 +220,19 @@ class UniversalControllerBackend:
         if self.runtime in ("mlx_repo_vlm", "mlx-repo-vlm", "repo_mlx_vlm"):
             return self._load_repo_mlx_vlm()
         if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
-            return self._load_transformers_auto()
+            if self.model is not None or self._offload_directory:
+                self.unload_model()
+                if self._offload_directory:
+                    raise RuntimeError("Previous Transformers offload files are still in use; retry unloading before loading another model.")
+            try:
+                return self._load_transformers_auto()
+            except Exception as exc:
+                failure = str(exc)
+            # Leave the exception scope first: its traceback can retain the model
+            # and Accelerate hook cycles. Release those before deleting mapped
+            # files, especially on Windows, and reset partial processor state.
+            self.unload_model()
+            raise RuntimeError(failure) from None
         raise RuntimeError(f"Unsupported specialized controller runtime: {self.runtime}")
 
     def _load_mlx_vlm(self) -> bool:
@@ -291,8 +324,20 @@ class UniversalControllerBackend:
     def _load_transformers_auto(self) -> bool:
         import torch
         import transformers
+        from core.transformers_placement import (
+            describe_transformers_placement, estimate_transformers_kv_bytes, transformers_memory_limits,
+        )
+        from config.paths import get_portable_data_dir
+        import hashlib
 
         source = resolve_local_snapshot(self.model_path)
+        context_tokens = int(getattr(self, "context_tokens", 0) or self.model_info.get("default_context") or 32768)
+        kv_bytes = estimate_transformers_kv_bytes(source, context_tokens)
+        budgets = transformers_memory_limits(torch, getattr(self, "speed_memory_limit_gb", None), kv_bytes=kv_bytes)
+        offload_root = Path(get_portable_data_dir()) / "runtime" / "transformers-offload"
+        offload_root.mkdir(parents=True, exist_ok=True)
+        source_key = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:16]
+        self._offload_directory = tempfile.mkdtemp(prefix=f"{source_key}-", dir=offload_root)
         processor = None
         try:
             processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True)
@@ -323,8 +368,12 @@ class UniversalControllerBackend:
             try:
                 model = cls.from_pretrained(
                     source,
-                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else "auto",
+                    torch_dtype="auto",
                     device_map="auto",
+                    max_memory=budgets,
+                    offload_folder=self._offload_directory,
+                    offload_state_dict=True,
+                    low_cpu_mem_usage=True,
                     trust_remote_code=True,
                 )
                 break
@@ -336,27 +385,34 @@ class UniversalControllerBackend:
         self.processor = processor
         self.tokenizer = getattr(processor, "tokenizer", processor)
         self.config = getattr(model, "config", None)
+        self.memory_placement = describe_transformers_placement(model, budgets)
+        self.memory_placement.update({"context_tokens": context_tokens, "kv_bytes_estimate": kv_bytes})
 
         # Persistent controller LoRA lives beside other portable app state. Reload it
         # transactionally on every model load so learned chat state survives restarts.
-        try:
-            from config.paths import get_portable_data_dir
-            import hashlib
-            key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
-            eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
-            self.adapter_path = (
-                os.path.join(os.path.abspath(eval_root), key)
-                if eval_root
-                else os.path.join(get_portable_data_dir(), "controller_lora", key)
-            )
-            adapter_cfg = os.path.join(self.adapter_path, "adapter_config.json")
-            if os.path.isfile(adapter_cfg):
+        key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
+        eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
+        self.adapter_path = (
+            os.path.join(os.path.abspath(eval_root), key)
+            if eval_root
+            else os.path.join(get_portable_data_dir(), "controller_lora", key)
+        )
+        adapter_cfg = os.path.join(self.adapter_path, "adapter_config.json")
+        if os.path.isfile(adapter_cfg):
+            try:
                 from peft import PeftModel
-                model = PeftModel.from_pretrained(model, self.adapter_path, is_trainable=True)
-        except Exception:
-            # Inference remains available if the optional PEFT runtime is unavailable;
-            # training_ready() will correctly report False.
-            pass
+                model = PeftModel.from_pretrained(
+                    model, self.adapter_path,
+                    is_trainable=not self.memory_placement["inference_only"],
+                    device_map="auto", max_memory=budgets,
+                    offload_folder=self._offload_directory,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"The saved adapter could not be restored; refusing to omit it: {exc}") from exc
+            # PEFT may dispatch again after adding adapter tensors. Report its
+            # actual final map and retain inference-only protection if it spills.
+            self.memory_placement = describe_transformers_placement(model, budgets)
+            self.memory_placement.update({"context_tokens": context_tokens, "kv_bytes_estimate": kv_bytes})
 
         model.eval()
         self.model = model
@@ -368,6 +424,8 @@ class UniversalControllerBackend:
     def training_ready(self) -> bool:
         """True only when this loaded controller has a real persistent update path."""
         if self.model is None or self.tokenizer is None:
+            return False
+        if getattr(self, "memory_placement", {}).get("inference_only"):
             return False
         if self.runtime not in ("transformers_auto", "transformers", "hf_transformers"):
             return bool(self.can_train)
@@ -771,7 +829,8 @@ class UniversalControllerBackend:
             if videos:
                 kwargs["images"] = videos[0]
             inputs = self.processor(**kwargs)
-        device = getattr(self.model, "device", None)
+        from core.transformers_placement import transformers_input_device
+        device = transformers_input_device(self.model)
         if device is not None and hasattr(inputs, "to"):
             inputs = inputs.to(device)
         do_sample = float(temperature) > 0.0
@@ -895,6 +954,20 @@ class UniversalControllerBackend:
             result["reason"] = "Model inspected the media but did not return a numeric self-grade."
         return result
 
+    def _clear_offload_files(self) -> None:
+        directory = getattr(self, "_offload_directory", None)
+        if not directory:
+            return
+        try:
+            shutil.rmtree(directory)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # A mapped file can still be closing on Windows. Retain the owned
+            # directory so a later unload can retry; never remove model sources.
+            return
+        self._offload_directory = None
+
     def unload_model(self) -> None:
         self.model = None
         self.processor = None
@@ -903,6 +976,7 @@ class UniversalControllerBackend:
         self.runtime_module = None
         self.is_loaded = False
         self.is_mlx_available = False
+        self.can_train = False
         try:
             import mlx.core as mx
             if hasattr(mx, "clear_cache"):
@@ -911,6 +985,10 @@ class UniversalControllerBackend:
                 mx.metal.clear_cache()
         except Exception:
             pass
+        if getattr(self, "_offload_directory", None):
+            release_training_memory()
+            self._clear_offload_files()
+        self.memory_placement = {}
         try:
             import torch
             if torch.cuda.is_available():

@@ -67,7 +67,7 @@ def test_generators_remain_separate_from_controller_models():
 def test_gui_passes_full_model_capabilities_into_pro_engine():
     app = _src("app_gui.py")
     assert 'model_info=target_info' in app
-    assert '"controller_runtime": str(policy_meta.get("controller_runtime")' in app
+    assert "make_imported_model_entry(" in app
     assert '"runtime_family": "bonsai2_hadamard"' in app
     assert '"input_modalities": ["text", "image", "video"]' in app
     assert '"model_16"' not in app
