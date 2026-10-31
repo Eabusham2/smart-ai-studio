@@ -125,6 +125,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.processor = None
         self._vlm_runtime = None
         self._vlm_loader = None
+        self._speed_prefill_step_size = None
+        self._speed_profile_context = None
 
         # The GUI class is already defined when its ProReasoningEngine is constructed.
         # Install the optional top-row generation-cap control without rewriting app_gui.py.
@@ -133,6 +135,28 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             install_gui_generation_cap()
         except Exception:
             pass
+
+    def configure_auto_speed(self, enabled=True, force=False, progress=None, cancelled=None):
+        from core.mlx_speed_tuning import configure_mlx_speed
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            return configure_mlx_speed(self, enabled, force, progress, cancelled)
+
+    def _speed_prefill_size(self) -> int:
+        safe = _adaptive_prefill_step_size()
+        preferred = getattr(self, "_speed_prefill_step_size", None)
+        current_context = int(getattr(self, "context_budget_tokens", 0) or 32768)
+        if getattr(self, "_speed_profile_context", None) != current_context:
+            return safe
+        return min(safe, int(preferred)) if preferred else safe
+
+    def _speed_vlm_prefill_kwargs(self) -> Dict[str, int]:
+        """Preserve the VLM library's own default until a profile is measured."""
+        current_context = int(getattr(self, "context_budget_tokens", 0) or 32768)
+        preferred = getattr(self, "_speed_prefill_step_size", None)
+        if not preferred or getattr(self, "_speed_profile_context", None) != current_context:
+            return {}
+        return {"prefill_step_size": min(int(preferred), _adaptive_prefill_step_size())}
 
     def _effective_generation_cap(
         self,
@@ -346,6 +370,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     max_tokens=effective_max,
                     temperature=temp_value,
                     top_p=top_p,
+                    **self._speed_vlm_prefill_kwargs(),
                 ):
                     last = response
                     generated += 1
@@ -425,7 +450,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             _reclaim_if_needed(mx)
             temp_value = float(temps[idx % len(temps)])
             try:
-                branches.append(_one(temp_value, _adaptive_prefill_step_size()))
+                branches.append(_one(temp_value, self._speed_prefill_size()))
             except RuntimeError as exc:
                 if not _is_metal_oom(exc):
                     raise
@@ -472,6 +497,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     max_tokens=effective_max,
                     temperature=temperature,
                     top_p=top_p,
+                    **self._speed_vlm_prefill_kwargs(),
                 ):
                     last = response
                     generated += 1
@@ -561,7 +587,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         try:
             iterator = None
             try:
-                iterator = _run_stream(_adaptive_prefill_step_size())
+                iterator = _run_stream(self._speed_prefill_size())
                 for response in iterator:
                     generated += 1
                     yield _yield_response(response)

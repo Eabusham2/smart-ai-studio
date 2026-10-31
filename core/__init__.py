@@ -21,6 +21,17 @@ install_awake_auto_learning(ProReasoningEngine)
 install_full_context_hardening(ProReasoningEngine)
 install_pro_runtime_hardening(ProReasoningEngine)
 
+# Native speed measurements share the same exclusion as real inference/learning.
+from core.native_speed import install_native_runtime_lock
+from core.speed_control import install_speed_control
+from core.engines.gguf_engine import GGUFReasoningBackend
+from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
+from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
+
+for _backend in (MLXReasoningBackend, GGUFReasoningBackend, PrismGGUFReasoningBackend, BitNetCppReasoningBackend):
+    install_native_runtime_lock(_backend)
+install_speed_control(ProReasoningEngine)
+
 __all__ = [
     "EntropyRouter",
     "GroundTruthVerifier",

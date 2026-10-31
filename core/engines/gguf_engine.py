@@ -28,12 +28,18 @@ class GGUFReasoningBackend:
         verbose: bool = False,
         adapter_root: Optional[str] = None,
         training_base_model_id: Optional[str] = None,
+        n_threads: Optional[int] = None,
+        n_threads_batch: Optional[int] = None,
     ):
         self.model_path = model_path
         self.mmproj_path = mmproj_path
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
         self.verbose = verbose
+        self.n_threads = n_threads
+        self.n_threads_batch = n_threads_batch
+        self._speed_tuner = None
+        self.auto_speed_result: Dict[str, Any] = {}
         self.training_base_model_id = str(training_base_model_id or "").strip()
         eval_adapter_root = str(os.getenv("SMARTAI_GGUF_ADAPTER_ROOT", "") or "").strip()
         if adapter_root:
@@ -104,13 +110,50 @@ class GGUFReasoningBackend:
                 n_ctx=self.n_ctx,
                 chat_handler=self.chat_handler,
                 lora_path=self.adapter_path if os.path.isfile(self.adapter_path) else None,
+                **{name: value for name, value in (
+                    ("n_threads", self.n_threads), ("n_threads_batch", self.n_threads_batch)
+                ) if value is not None},
                 no_perf=True,
                 verbose=self.verbose
             )
+            self._speed_tuner = None
+            try:
+                from core.gguf_speed_tuning import LlamaSpeedTuner
+                self._speed_tuner = LlamaSpeedTuner(
+                    self.model, backend="gguf", model_path=self.model_path,
+                    context=self.n_ctx, n_gpu_layers=self.n_gpu_layers,
+                    adapter_path=self.adapter_path if os.path.isfile(self.adapter_path) else None,
+                    projector_path=self.mmproj_path if self.chat_handler is not None else None,
+                )
+            except Exception as exc:
+                # Optional tuning cannot make a working model fail to load.
+                self.auto_speed_result = {"status": "unsupported", "settings": {},
+                                          "message": f"GGUF speed tuning is unavailable: {str(exc)[:250]}"}
             return True
         except Exception:
             self.model = None
             return False
+
+    def configure_auto_speed(self, enabled=True, force=False, progress=None, cancelled=None) -> Dict[str, Any]:
+        """Tune execution threads while the owner holds the native runtime lock."""
+        if self.model is None:
+            self.auto_speed_result = {"status": "unsupported", "settings": {},
+                                      "message": "Load a GGUF model before tuning its speed."}
+        elif self._speed_tuner is None:
+            self.auto_speed_result = self.auto_speed_result or {
+                "status": "unsupported", "settings": {},
+                "message": "This loaded runtime cannot tune its execution threads.",
+            }
+        else:
+            # Studio sends the complete history-packed prompt on each request.
+            # This prefix cache is disposable; conversation/training records live
+            # outside llama.cpp. Do not copy a potentially multi-GB KV snapshot.
+            self.auto_speed_result = self._speed_tuner.configure(
+                enabled, force, progress, cancelled,
+                max_process_gb=getattr(self, "speed_memory_limit_gb", None),
+                allow_cache_reset=True,
+            )
+        return dict(self.auto_speed_result)
 
     def training_ready(self) -> bool:
         """Return True only when the exact-GGUF LoRA trainer can be prepared."""
@@ -420,6 +463,7 @@ class GGUFReasoningBackend:
 
     def unload_model(self):
         """Releases all GGUF weights and context memory."""
+        self._speed_tuner = None
         if self.model is not None:
             try:
                 del self.model

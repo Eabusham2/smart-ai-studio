@@ -215,22 +215,27 @@ class MediaController:
 
     @contextmanager
     def _pause_guard(self, engine, backend):
-        consolidator = getattr(engine, "awake_consolidator", None) if backend is not None else None
-        lock = getattr(consolidator, "lock", None)
-        acquired = False
-        try:
-            if lock is not None:
-                acquired = lock.acquire(blocking=False)
-                if not acquired:
-                    raise RuntimeError("Text consolidation is changing state; media pause postponed")
-                if getattr(consolidator, "is_consolidating", False):
-                    raise RuntimeError("Text consolidation is active; media pause postponed")
-            runtime_lock = getattr(backend, "_runtime_model_lock", None)
-            with runtime_lock if runtime_lock is not None else nullcontext():
-                yield
-        finally:
-            if acquired:
-                lock.release()
+        # A media lease calls unload/load while holding the native runtime lock.
+        # Take the same lifecycle -> runtime order as speed tuning and unloading
+        # so a concurrent watchdog cannot form an inverse-order deadlock.
+        lifecycle = getattr(engine, "_model_lock", None)
+        with lifecycle if lifecycle is not None else nullcontext():
+            consolidator = getattr(engine, "awake_consolidator", None) if backend is not None else None
+            lock = getattr(consolidator, "lock", None)
+            acquired = False
+            try:
+                if lock is not None:
+                    acquired = lock.acquire(blocking=False)
+                    if not acquired:
+                        raise RuntimeError("Text consolidation is changing state; media pause postponed")
+                    if getattr(consolidator, "is_consolidating", False):
+                        raise RuntimeError("Text consolidation is active; media pause postponed")
+                runtime_lock = getattr(backend, "_runtime_model_lock", None)
+                with runtime_lock if runtime_lock is not None else nullcontext():
+                    yield
+            finally:
+                if acquired:
+                    lock.release()
 
     @contextmanager
     def _lease(self, needed_gb):

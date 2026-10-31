@@ -100,10 +100,24 @@ def main() -> int:
         n_ctx=int(cfg.get("n_ctx", 32768)),
         chat_handler=chat_handler,
         lora_path=cfg.get("adapter_path") if cfg.get("adapter_path") and os.path.isfile(cfg["adapter_path"]) else None,
+        **{name: cfg[name] for name in ("n_threads", "n_threads_batch") if cfg.get(name) is not None},
         logits_all=True,
         no_perf=True,
         verbose=bool(cfg.get("verbose", False)),
     )
+    speed_tuner = None
+    tuning_error = ""
+    try:
+        from core.gguf_speed_tuning import LlamaSpeedTuner
+        speed_tuner = LlamaSpeedTuner(
+            model, backend="prism_gguf", model_path=str(cfg["model_path"]),
+            context=int(model.n_ctx()), n_gpu_layers=int(cfg.get("n_gpu_layers", -1)),
+            adapter_path=cfg.get("adapter_path") if cfg.get("adapter_path") and os.path.isfile(cfg["adapter_path"]) else None,
+            projector_path=mmproj if chat_handler is not None else None,
+        )
+    except Exception as exc:
+        # A missing optional tuning component must not stop an installed model.
+        tuning_error = str(exc)[:250]
 
     stops = ["<|im_end|>", "</s>", "\nuser", "\nHuman:"]
     for raw_line in sys.stdin:
@@ -115,6 +129,24 @@ def main() -> int:
                 return 0
             if op == "ping":
                 _emit({"status": "ok"})
+                continue
+            if op == "tune_speed":
+                if speed_tuner is None:
+                    _emit({"status": "ok", "result": {"status": "unsupported", "settings": {},
+                           "message": "Prism speed tuning is unavailable: " + tuning_error}})
+                    continue
+                cancel_path = str(request.get("cancel_path") or "")
+                result = speed_tuner.configure(
+                    enabled=bool(request.get("enabled", True)), force=bool(request.get("force", False)),
+                    cancelled=lambda: bool(cancel_path and os.path.exists(cancel_path)),
+                    progress=lambda message: _emit({"event": "speed_progress", "message": message}),
+                    max_process_gb=request.get("max_process_gb"),
+                    memory_owner_pid=request.get("memory_owner_pid"),
+                    # Each Studio generate/stream request replays its full prompt;
+                    # no persisted chat or learned adapter lives in this KV cache.
+                    allow_cache_reset=True,
+                )
+                _emit({"status": "ok", "result": result})
                 continue
             if op == "n_ctx":
                 _emit({"status": "ok", "n_ctx": int(model.n_ctx())})

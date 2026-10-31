@@ -423,6 +423,12 @@ def install_gui_eval_panel() -> None:
     def _start_eval(self):
         if _eval_alive(self):
             return
+        if (
+            getattr(self, "_speed_ui_running", False)
+            or getattr(getattr(self, "engine", None), "speed_tuning_active", False)
+        ):
+            messagebox.showinfo("Speed Test Running", "Finish or cancel speed tuning before starting evaluation.")
+            return
         info = _active_text_info(self)
         if info is None:
             messagebox.showinfo("Text Models Only", "The evaluation suite is available only for text models.")

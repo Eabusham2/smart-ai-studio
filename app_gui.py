@@ -3332,7 +3332,9 @@ class SmartAIChatbotApp:
             except Exception:
                 pass
 
-    def _on_toggle_load_unload(self):
+    def _on_toggle_load_unload(self, *, _skip_download: bool = False):
+        if getattr(self, "_model_load_in_progress", False):
+            return
         if getattr(getattr(self, "multimodal", None), "busy", False):
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
@@ -3363,13 +3365,17 @@ class SmartAIChatbotApp:
             self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}`.")
             return
 
-        if not cached and repo_id:
+        if not cached and repo_id and not _skip_download:
             self._on_download_hf_model()
             return
 
+        if getattr(self, "_memory_limit_enabled", False):
+            self._prepare_memory_limit_for_model(target_info)
+            self.engine.speed_memory_limit_gb = float(self._memory_limit_gb)
         popup, _update_cb = self._show_model_loading_popup(
             target_info["name"], target_info.get("vram", "Auto")
         )
+        self._model_load_in_progress = True
 
         def _do_load():
             try:
@@ -3386,6 +3392,7 @@ class SmartAIChatbotApp:
                 load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
             def _done():
+                self._model_load_in_progress = False
                 if popup:
                     try:
                         popup.destroy()
@@ -3503,30 +3510,18 @@ class SmartAIChatbotApp:
             os.path.exists(m_path or "") if m_path else False
         )
 
+        load_text_after_switch = False
         if model_type == "text":
             # Ternary admission is enforced only when a custom text model is imported.
-            # Built-ins and already-registered models are loaded normally here.
-            try:
-                load_res = self.engine.load_model(target_info["name"], model_path=m_path, model_info=target_info)
-            except Exception as exc:
-                load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
-            self.is_model_loaded = bool(load_res.get("status") == "loaded")
-            if self.is_model_loaded:
-                self.engine.active_input_modalities = set(
-                    target_info.get("input_modalities") or ["text"]
-                )
-                self.lbl_model_status.configure(
-                    text=f"● Loaded: {target_info['short_name']}", fg=self.C["accent_green"]
-                )
-            else:
-                status_txt = (
-                    f"⚡ Ready to Load ({target_info['short_name']})"
-                    if cached else f"○ Not Downloaded ({target_info['short_name']})"
-                )
-                self.lbl_model_status.configure(
-                    text=status_txt,
-                    fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"],
-                )
+            # Reuse the loader's worker thread so automatic calibration cannot
+            # block Tk, progress updates, or cancellation when switching tabs.
+            self.is_model_loaded = False
+            load_text_after_switch = bool(cached or (m_path and os.path.exists(m_path)))
+            self.lbl_model_status.configure(
+                text=(f"⚡ Ready to Load ({target_info['short_name']})" if load_text_after_switch
+                      else f"○ Not Downloaded ({target_info['short_name']})"),
+                fg=self.C["accent_cyan"] if load_text_after_switch else self.C["accent_yellow"],
+            )
         elif model_type == "audio":
             if cached:
                 try:
@@ -3574,6 +3569,11 @@ class SmartAIChatbotApp:
             )
         self._update_resource_view_metrics()
         self._update_input_lock_state()
+
+        if load_text_after_switch:
+            # A registered local artifact can be present without a matching HF
+            # cache entry. Switching never starts a new download implicitly.
+            self._on_toggle_load_unload(_skip_download=True)
 
     def _on_reset_chat_confirm(self):
         confirm = messagebox.askyesno("Clear Chat", "Are you sure you want to clear this conversation stream?\n\nThis cannot be undone.")
@@ -5129,29 +5129,46 @@ assert glyph_res["invariants_passed"] == True
         btn_trigger.pack(side="left")
 
         def _run_daemon():
+            if (
+                getattr(self, "_speed_ui_running", False)
+                or getattr(self.engine, "speed_tuning_active", False)
+                or getattr(self, "_sleep_consolidating", False)
+            ):
+                txt_cons_log.insert("end", "\nWait for the active speed test or consolidation to finish.\n")
+                return
+            self._sleep_consolidating = True
             btn_trigger.configure(state="disabled", text="⏳ Consolidating Weights...")
             txt_cons_log.insert("end", "\n[*] Initiating EWC Consolidation Cycle...\n")
             txt_cons_log.see("end")
 
             def _worker():
-                daemon = SleepConsolidationDaemon(settings=self.settings, use_mock=self.settings.use_mock)
-                res = daemon.run_consolidation_cycle()
-                mem_count = res.get("memories_consolidated", 0)
-                task_loss = res.get("avg_task_loss", 0.0)
-                ewc_loss = res.get("avg_ewc_loss", 0.0)
-                saved_to = res.get("adapter_saved_to", self.settings.lora_adapter_path or "LoRA adapter")
-                exec_time = res.get("execution_time_seconds", 0.0)
+                try:
+                    daemon = SleepConsolidationDaemon(settings=self.settings, use_mock=self.settings.use_mock)
+                    res = daemon.run_consolidation_cycle()
+                    mem_count = res.get("memories_consolidated", 0)
+                    task_loss = res.get("avg_task_loss", 0.0)
+                    ewc_loss = res.get("avg_ewc_loss", 0.0)
+                    saved_to = res.get("adapter_saved_to", self.settings.lora_adapter_path or "LoRA adapter")
+                    exec_time = res.get("execution_time_seconds", 0.0)
 
-                self.root.after(0, lambda: [
-                    self._update_telemetry(),
-                    txt_cons_log.insert("end", f"[✓] Cycle Complete! Memories Consolidated: {mem_count} ({exec_time:.2f}s)\n"),
-                    txt_cons_log.insert("end", f"• Average Task Loss: {task_loss:.4f}\n"),
-                    txt_cons_log.insert("end", f"• Average EWC Penalty: {ewc_loss:.4f}\n"),
-                    txt_cons_log.insert("end", f"• Adapter Checkpoint: Saved to {saved_to}\n"),
-                    txt_cons_log.see("end"),
-                    btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now"),
-                    lbl_uncons.configure(text="📬 High-Surprise Memories: 0")
-                ])
+                    self.root.after(0, lambda: [
+                        self._update_telemetry(),
+                        txt_cons_log.insert("end", f"[✓] Cycle Complete! Memories Consolidated: {mem_count} ({exec_time:.2f}s)\n"),
+                        txt_cons_log.insert("end", f"• Average Task Loss: {task_loss:.4f}\n"),
+                        txt_cons_log.insert("end", f"• Average EWC Penalty: {ewc_loss:.4f}\n"),
+                        txt_cons_log.insert("end", f"• Adapter Checkpoint: Saved to {saved_to}\n"),
+                        txt_cons_log.see("end"),
+                        btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now"),
+                        lbl_uncons.configure(text="📬 High-Surprise Memories: 0")
+                    ])
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+                    self.root.after(0, lambda text=error: [
+                        txt_cons_log.insert("end", f"[!] Consolidation failed: {text}\n"),
+                        btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now"),
+                    ])
+                finally:
+                    self._sleep_consolidating = False
 
             threading.Thread(target=_worker, daemon=True).start()
 
@@ -5322,6 +5339,14 @@ except Exception:
 try:
     from core.gui_eval_panel import install_gui_eval_panel
     install_gui_eval_panel()
+except Exception:
+    pass
+
+
+# Speed controls share the native engines' bounded calibration API.
+try:
+    from core.gui_speed_tuning import install_gui_speed_tuning
+    install_gui_speed_tuning()
 except Exception:
     pass
 

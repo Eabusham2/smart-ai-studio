@@ -37,6 +37,20 @@ Media commands documented there include:
 
 The project document is the authoritative reference for implementation details; this README remains the quick-start/project overview.
 
+### Automatic speed tuning
+
+The `feat/strata-auto-speed` branch adds **Auto speed**, **Retune**, and **Cancel**
+to the desktop. Supported native MLX and llama.cpp runtimes compare conservative
+execution settings on the loaded model, measure prompt processing and decoding,
+and reuse a saved profile for matching hardware and model files. The comparison
+keeps existing settings unless a candidate repeatedly clears a noise margin and
+produces the same calibration tokens. Models, quantization, context, sampling,
+and learning prompts remain the user's existing choices.
+
+See **[Strata-inspired auto speed: behavior, research, and limits](docs/STRATA_AUTO_SPEED.md)**
+for supported paths, first-load timing, cancellation, and the difference between
+a measured result and a performance estimate.
+
 ---
 
 ## 🏷️ Repository Tags & Topics

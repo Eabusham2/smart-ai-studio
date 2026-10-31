@@ -65,6 +65,9 @@ def install_gui_generation_cap() -> None:
         return selected
 
     def _apply_context(self, event=None):
+        engine = getattr(self, "engine", None)
+        if getattr(self, "_speed_ui_running", False) or getattr(engine, "speed_tuning_active", False):
+            return "break" if event is not None else None
         raw = str(getattr(self, "generation_cap_var", None).get()).strip()
         try:
             requested = int(raw.replace(",", ""))
