@@ -21,6 +21,8 @@ def load(name, filename):
 
 training = load("_safe_mps_training_tests", "core/training_memory.py")
 watchdog = load("_safe_mps_watchdog_tests", "core/memory_watchdog.py")
+audio = load("_safe_mps_audio_tests", "core/audio_engine.py")
+media = load("_safe_mps_media_tests", "core/media_engine.py")
 
 
 class TorchWithoutMPS:
@@ -36,6 +38,17 @@ class TorchWithoutMPS:
 
 
 class TestMPSAvailability(unittest.TestCase):
+    @staticmethod
+    def media_engines():
+        audio_engine = audio.AudioGenerationEngine()
+        audio_engine.model = object()
+        audio_engine.backend = "test-audio"
+        audio_engine.repo_id = "test/audio"
+        media_engine = media.MediaGenerationEngine()
+        media_engine.active_pipeline = object()
+        media_engine.active_repo_id = "test/media"
+        return audio_engine, media_engine
+
     def test_unavailable_or_missing_backend_never_touches_native_mps_namespace(self):
         for torch in (TorchWithoutMPS(), TorchWithoutMPS(probe=False)):
             with self.subTest(probe=hasattr(torch.backends, "mps")):
@@ -76,6 +89,54 @@ class TestMPSAvailability(unittest.TestCase):
             watchdog.SystemMemoryWatchdog.reclaim_process_memory()
         self.assertEqual(torch.mps_accesses, 0)
         self.assertEqual(result["released_mb"], 0.0)
+
+    def test_audio_and_media_unload_skip_unavailable_or_missing_native_mps(self):
+        for probe in (True, False):
+            for engine in self.media_engines():
+                with self.subTest(engine=type(engine).__name__, probe=probe):
+                    torch = TorchWithoutMPS(probe=probe)
+                    core = types.ModuleType("core")
+                    core.__path__ = [str(ROOT / "core")]
+                    with patch.dict(sys.modules, {"torch": torch, "mlx": None, "mlx.core": None,
+                                                 "core": core, "core.training_memory": training}), \
+                         patch.object(training.gc, "collect"):
+                        engine.unload_model()
+                    self.assertEqual(torch.mps_accesses, 0)
+                    self.assertIsNone(getattr(engine, "model", getattr(engine, "active_pipeline", None)))
+                    self.assertEqual(getattr(engine, "repo_id", getattr(engine, "active_repo_id", None)), "")
+
+    def test_audio_and_media_unload_preserve_available_device_cleanup(self):
+        for cuda_available in (False, True):
+            for engine in self.media_engines():
+                with self.subTest(engine=type(engine).__name__, cuda=cuda_available):
+                    empty_mps, empty_cuda = Mock(), Mock()
+                    torch = types.SimpleNamespace(
+                        cuda=types.SimpleNamespace(is_available=lambda: cuda_available, empty_cache=empty_cuda),
+                        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True)),
+                        mps=types.SimpleNamespace(empty_cache=empty_mps),
+                    )
+                    core = types.ModuleType("core")
+                    core.__path__ = [str(ROOT / "core")]
+                    with patch.dict(sys.modules, {"torch": torch, "mlx": None, "mlx.core": None,
+                                                 "core": core, "core.training_memory": training}), \
+                         patch.object(training.gc, "collect"):
+                        engine.unload_model()
+                    empty_mps.assert_called_once_with()
+                    self.assertEqual(empty_cuda.call_count, int(cuda_available))
+
+    def test_audio_and_media_unload_survive_a_failing_mps_availability_probe(self):
+        for engine in self.media_engines():
+            with self.subTest(engine=type(engine).__name__):
+                torch = TorchWithoutMPS()
+                torch.backends.mps.is_available = Mock(side_effect=RuntimeError("Metal probe unavailable"))
+                core = types.ModuleType("core")
+                core.__path__ = [str(ROOT / "core")]
+                with patch.dict(sys.modules, {"torch": torch, "mlx": None, "mlx.core": None,
+                                             "core": core, "core.training_memory": training}), \
+                     patch.object(training.gc, "collect"):
+                    engine.unload_model()
+                self.assertEqual(torch.mps_accesses, 0)
+                self.assertIsNone(getattr(engine, "model", getattr(engine, "active_pipeline", None)))
 
 
 if __name__ == "__main__":
