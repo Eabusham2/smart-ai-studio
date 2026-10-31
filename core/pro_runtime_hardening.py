@@ -28,6 +28,8 @@ def _normalize_adapter_path(path) -> str:
 
 def _active_backend_name(engine) -> str:
     active = getattr(engine, "active_backend", None)
+    if active == "controller" and getattr(getattr(engine, "controller_backend", None), "runtime", None) == "strata":
+        return "strata"
     if active:
         return str(active)
     mlx = getattr(engine, "mlx_backend", None)
@@ -102,10 +104,16 @@ def install_pro_runtime_hardening(cls) -> None:
         return result
 
     def hardened_unload(self, *args, **kwargs):
+        is_strata = getattr(getattr(self, "controller_backend", None), "runtime", None) == "strata"
+        result = None
         try:
-            return original_unload(self, *args, **kwargs)
+            result = original_unload(self, *args, **kwargs)
+            return result
         finally:
-            unregister_loaded_model()
+            # A failed owned shutdown can leave real model resources resident.
+            # Keep their registration until the retained runtime is stopped.
+            if not is_strata or (isinstance(result, dict) and result.get("status") == "unloaded"):
+                unregister_loaded_model()
 
     def hardened_fallback(self, prompt: str, branch_count: int):
         if getattr(self.settings, "use_mock", False):
@@ -123,16 +131,30 @@ def install_pro_runtime_hardening(cls) -> None:
         elapsed = max(1e-9, time.perf_counter() - started)
         metadata = dict(metadata or {})
         generated = _count_response_tokens(self, response)
+        controller = getattr(self, "controller_backend", None)
+        is_strata = getattr(controller, "runtime", None) == "strata"
+        if is_strata:
+            usage = dict(getattr(controller, "last_branch_usage", {}) or {})
+            generated = usage.get("completion_tokens", 0)
+            metadata["usage"] = usage
+            metadata["token_usage_available"] = "completion_tokens" in usage
         metadata["tokens_generated"] = generated
         # Keep the existing end-to-end number for total Pro/query throughput.
         metadata["tok_speed"] = generated / elapsed if generated else 0.0
         metadata["measured_wall_time_s"] = elapsed
         metadata["memory_rss_mb"] = _rss_mb()
+        if is_strata:
+            # Count only processes whose ownership the managed runtime verified.
+            from core.memory_watchdog import SystemMemoryWatchdog
+            memory = SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=controller.owned_process_ids())
+            metadata["memory_rss_mb"] = memory["total_allocated_gb"] * 1024
+            if not metadata["token_usage_available"]:
+                metadata.pop("tokens_generated", None)
         metadata["backend"] = _active_backend_name(self)
 
         # Raw decoder TPS is a different metric: MLX-LM reports it from the active
         # autoregressive decode loop, excluding the rest of an N-branch Pro request.
-        mlx = getattr(self, "mlx_backend", None)
+        mlx = None if is_strata else getattr(self, "mlx_backend", None)
         try:
             decode_tps = float(getattr(mlx, "last_tok_per_sec", 0.0) or 0.0)
         except Exception:

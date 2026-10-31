@@ -6,6 +6,7 @@ Task Queue, Dynamic Unit Scaling, and a Clean Single-Row Top Navigation Bar.
 
 import ast
 import json
+import math
 import os
 import platform
 import queue
@@ -22,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config.paths import get_bundled_model_path, get_custom_models_file, get_portable_data_dir, inspect_mlx_model_folder, terminate_existing_app_instances
 from config.settings import Settings, get_settings
+from config.strata_models import STRATA_PRESETS, get_strata_preset
 from consolidation.daemon import SleepConsolidationDaemon
 from core.autonomous_learner import AutonomousLearner
 from core.audio_engine import AudioGenerationEngine
@@ -555,6 +557,7 @@ class SmartAIChatbotApp:
                 "accent": "#fb7185"
             }
         }
+        self.models_config.update({key: get_strata_preset(key) for key in STRATA_PRESETS})
         self._load_saved_custom_models()
         self.active_tab_id = "model_1"
 
@@ -626,7 +629,8 @@ class SmartAIChatbotApp:
             max_process_ram_gb=self._memory_limit_gb,
             on_pressure_callback=lambda status: self._event_queue.put(
                 ("memory_pressure", (self._memory_watchdog_epoch, status))
-            )
+            ),
+            additional_processes_provider=self._owned_runtime_pids,
         )
 
         self._init_window()
@@ -636,12 +640,20 @@ class SmartAIChatbotApp:
         self._update_input_lock_state()
         self._start_event_queue_polling()
 
+    def _owned_runtime_pids(self):
+        backend = getattr(getattr(self, "engine", None), "controller_backend", None)
+        if getattr(backend, "runtime", None) == "strata":
+            return backend.owned_process_ids()
+        return []
+
     def _update_memory_hud_badge(self):
         """Updates top HUD memory badge with exactly 2 figures: AI RAM (App + Model) and Total Used System RAM."""
         if not hasattr(self, "lbl_vram"):
             return
         try:
-            mem = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+            owned_pids = self._owned_runtime_pids()
+            mem = (SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owned_pids)
+                   if owned_pids else SystemMemoryWatchdog.get_detailed_memory_breakdown())
             ai_ram = mem.get("total_allocated_gb", 0.0)
             sys_used = mem.get("system_used_gb", 0.0)
             sys_total = mem.get("system_total_gb", 16.0)
@@ -663,7 +675,9 @@ class SmartAIChatbotApp:
             try:
                 while True:
                     evt, data = self._event_queue.get_nowait()
-                    if evt == "memory_pressure":
+                    if evt == "model_load_complete":
+                        data()
+                    elif evt == "memory_pressure":
                         try:
                             event_epoch, status = data
                         except Exception:
@@ -679,6 +693,11 @@ class SmartAIChatbotApp:
             except Exception:
                 pass
 
+            if getattr(self, "_model_load_in_progress", False):
+                update = getattr(self, "_model_loading_update", None)
+                message = (getattr(self.engine, "speed_status", {}) or {}).get("message")
+                if callable(update) and message:
+                    update(0, message)
             self._update_memory_hud_badge()
 
             try:
@@ -763,6 +782,13 @@ class SmartAIChatbotApp:
         return 0.0
 
     def _default_memory_limit_gb(self, model_info: Optional[Dict[str, Any]] = None) -> float:
+        info = model_info or self.models_config.get(self.active_tab_id, {})
+        if info.get("controller_runtime") == "strata":
+            # SSD-backed model size is not resident RAM. Leave OS headroom when
+            # deriving an optional default; an explicit user cap stays authoritative.
+            import psutil
+            total = psutil.virtual_memory().total / (1024 ** 3)
+            return round(max(1.0, total - max(5.0, total * 0.15)), 1)
         model_gb = self._estimate_model_size_gb(model_info)
         return round(max(12.5, model_gb * 1.2), 1)
 
@@ -2184,13 +2210,20 @@ class SmartAIChatbotApp:
     def _update_resource_view_metrics(self):
         if not hasattr(self, "lbl_res_model"):
             return
-        mem = SystemMemoryWatchdog.get_system_memory_status()
+        owned_pids = self._owned_runtime_pids()
+        mem = (SystemMemoryWatchdog.get_system_memory_status(owned_pids=owned_pids)
+               if owned_pids else SystemMemoryWatchdog.get_system_memory_status())
         proc_rss = mem.get("process_rss_gb", 0.0)
         self.lbl_res_ram.configure(
             text=f"• Process RSS: {proc_rss:.1f} GB | Host RAM: {mem['used_gb']:.1f} GB / {mem['total_gb']:.1f} GB ({mem['used_percent']:.0f}%)"
         )
         info = self.models_config[self.active_tab_id]
         self.lbl_res_model.configure(text=f"• Model: {info['name']}")
+        if info.get("controller_runtime") == "strata":
+            self.lbl_res_vram.configure(text="• GPU / RAM / SSD placement: managed by Strata; RAM includes its owned runtime")
+            folder_disp = os.path.basename(self.workspace_dir) if self.workspace_dir else "None (No Folder Selected)"
+            self.lbl_res_folder.configure(text=f"• Target Folder: {folder_disp}")
+            return
         vram_text = f"{proc_rss:.1f} GB (Allocated)" if self.is_model_loaded and proc_rss > 0 else (f"{info['vram']} (Allocated)" if self.is_model_loaded else "0.0 GB (Unloaded)")
         self.lbl_res_vram.configure(text=f"• VRAM Usage: {vram_text}")
         folder_disp = os.path.basename(self.workspace_dir) if self.workspace_dir else "None (No Folder Selected)"
@@ -3078,6 +3111,9 @@ class SmartAIChatbotApp:
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
         target_info = self.models_config[self.active_tab_id]
+        if target_info.get("controller_runtime") == "strata":
+            self._show_strata_model_info()
+            return
         repo_id = target_info.get("repo_id")
 
         if not repo_id:
@@ -3113,6 +3149,9 @@ class SmartAIChatbotApp:
 
     def _on_download_hf_model(self):
         target_info = self.models_config[self.active_tab_id]
+        if target_info.get("controller_runtime") == "strata":
+            self._on_toggle_load_unload()
+            return
         repo_id = target_info.get("repo_id", "")
 
         if not repo_id:
@@ -3194,7 +3233,7 @@ class SmartAIChatbotApp:
         self.lbl_model_status.configure(text=f"✗ Download Failed ({target_info['short_name']})", fg=self.C["accent_red"])
         self._update_model_action_buttons()
 
-    def _show_model_loading_popup(self, model_name: str, vram_str: str) -> Tuple[Optional[tk.Toplevel], Callable[[float, str], None]]:
+    def _show_model_loading_popup(self, model_name: str, vram_str: str, *, details: Optional[str] = None) -> Tuple[Optional[tk.Toplevel], Callable[[float, str], None]]:
         if not self.root.winfo_viewable():
             return None, lambda v, m: None
 
@@ -3213,8 +3252,9 @@ class SmartAIChatbotApp:
         ).pack(anchor="w", pady=(0, 4))
 
         tk.Label(
-            card, text=f"Allocating '{model_name}' ({vram_str}) into Unified Memory...",
-            font=_FONT_MAIN, bg=self.C.get("bg_card", "#18181b"), fg=self.C.get("text_main", "#ffffff")
+            card, text=details or f"Allocating '{model_name}' ({vram_str}) into Unified Memory...",
+            font=_FONT_MAIN, bg=self.C.get("bg_card", "#18181b"), fg=self.C.get("text_main", "#ffffff"),
+            wraplength=560 if details else 0, justify="left",
         ).pack(anchor="w", pady=(0, 10))
 
         try:
@@ -3227,7 +3267,8 @@ class SmartAIChatbotApp:
 
         lbl_step = tk.Label(
             card, text="• Initializing weight matrices & KV cache tensors...",
-            font=_FONT_TINY, bg=self.C.get("bg_card", "#18181b"), fg=self.C.get("text_muted", "#a1a1aa")
+            font=_FONT_TINY, bg=self.C.get("bg_card", "#18181b"), fg=self.C.get("text_muted", "#a1a1aa"),
+            wraplength=560 if details else 0, justify="left",
         )
         lbl_step.pack(anchor="w")
 
@@ -3254,6 +3295,29 @@ class SmartAIChatbotApp:
 
         return popup, _update_status
 
+    def _model_is_cached(self, info):
+        if info.get("controller_runtime") == "strata":
+            from core.strata_runtime import StrataRuntime, StrataRuntimeError
+            try:
+                return StrataRuntime(info["model_key"], info).is_prepared()
+            except (StrataRuntimeError, ValueError):
+                # A cache hint must not crash Tk on an unsupported platform.
+                # The background Load action reports the actual reason.
+                return False
+        path = info.get("model_path") or info.get("repo_id")
+        return (is_model_cached_locally(info["repo_id"]) if info.get("repo_id")
+                else bool(path and os.path.exists(path)))
+
+    def _show_strata_model_info(self):
+        info = self.models_config[self.active_tab_id]
+        messagebox.showinfo(
+            info["short_name"],
+            f"{info['storage_note']}\n\n{info['memory_note']}\n\n"
+            "Install & Load prepares the official Strata runtime and this model. "
+            "Use Cancel to stop setup. Downloads are kept for the next attempt.\n\n"
+            "Text inference only; weight training is unavailable for this model.",
+        )
+
     def _update_model_action_buttons(self):
         """
         Dynamically updates model action buttons according to state:
@@ -3271,8 +3335,17 @@ class SmartAIChatbotApp:
             return
 
         target_info = self.models_config[self.active_tab_id]
-        m_path = target_info.get("model_path") or target_info.get("repo_id")
-        cached = is_model_cached_locally(target_info.get("repo_id", "")) if target_info.get("repo_id") else (os.path.exists(m_path or "") if m_path else False)
+        cached = self._model_is_cached(target_info)
+
+        if target_info.get("controller_runtime") == "strata":
+            unload_pending = bool(getattr(self, "_strata_unload_pending", False))
+            self.btn_load_unload.configure(
+                text="Retry unload" if unload_pending else "⏏ Unload" if self.is_model_loaded else "⚡ Load" if cached else "⬇ Install & Load",
+                fg=self.C.get("accent_orange" if self.is_model_loaded else "accent_cyan", "#38bdf8"),
+                command=self._on_toggle_load_unload,
+            )
+            self.btn_reset_reinstall.configure(text="Model info", command=self._show_strata_model_info)
+            return
 
         if not cached:
             self.btn_load_unload.configure(
@@ -3342,9 +3415,12 @@ class SmartAIChatbotApp:
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
         repo_id = str(target_info.get("repo_id") or "")
-        cached = is_model_cached_locally(repo_id) if repo_id else (
-            os.path.exists(m_path or "") if m_path else False
-        )
+        is_strata = target_info.get("controller_runtime") == "strata"
+        cached = self._model_is_cached(target_info)
+
+        if is_strata and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False)):
+            self._unload_strata_async()
+            return
 
         if self.is_model_loaded:
             if model_type == "text":
@@ -3365,17 +3441,26 @@ class SmartAIChatbotApp:
             self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}`.")
             return
 
-        if not cached and repo_id and not _skip_download:
+        if not cached and repo_id and not _skip_download and not is_strata:
             self._on_download_hf_model()
             return
 
         if getattr(self, "_memory_limit_enabled", False):
             self._prepare_memory_limit_for_model(target_info)
             self.engine.speed_memory_limit_gb = float(self._memory_limit_gb)
+        else:
+            self.engine.speed_memory_limit_gb = None
+        details = ({"details": f"Preparing Strata GPU / RAM / SSD placement.\n{target_info['storage_note']}"}
+                   if is_strata else {})
         popup, _update_cb = self._show_model_loading_popup(
-            target_info["name"], target_info.get("vram", "Auto")
+            target_info["name"], target_info.get("vram", "Auto"), **details,
         )
         self._model_load_in_progress = True
+        self._model_loading_update = _update_cb
+        load_cancel = threading.Event()
+        self._model_load_cancel_event = load_cancel
+        self.engine._model_load_cancelled = load_cancel.is_set
+        asynchronous = is_strata or bool(self.root.winfo_viewable())
 
         def _do_load():
             try:
@@ -3383,6 +3468,10 @@ class SmartAIChatbotApp:
                     # Import-time policy already decided whether custom text models may enter
                     # the catalog; runtime loading itself does not re-apply that restriction.
                     load_res = self.engine.load_model(target_info["name"], model_path=m_path, model_info=target_info)
+                    if is_strata and load_cancel.is_set() and load_res.get("status") == "loaded":
+                        stopped = self.engine.unload_model()
+                        load_res = ({"status": "cancelled"} if stopped.get("status") == "unloaded"
+                                    else {"status": "error", "error": stopped.get("error") or "Strata cleanup is incomplete. Use Retry unload."})
                 elif model_type == "audio":
                     load_res = self.audio_engine.load_model(target_info)
                 else:
@@ -3393,6 +3482,8 @@ class SmartAIChatbotApp:
 
             def _done():
                 self._model_load_in_progress = False
+                self._model_loading_update = None
+                self.engine._model_load_cancelled = None
                 if popup:
                     try:
                         popup.destroy()
@@ -3413,6 +3504,11 @@ class SmartAIChatbotApp:
                     self._append_ai_message(
                         f"⚡ **{label}**: `{target_info['name']}` is ready."
                     )
+                elif load_res.get("status") == "cancelled":
+                    self.is_model_loaded = False
+                    self._sync_memory_watchdog(force_stop=True)
+                    self.lbl_model_status.configure(text=f"○ Setup cancelled ({target_info['short_name']})", fg=self.C["accent_yellow"])
+                    self._append_ai_message("Model setup cancelled. Prepared files are kept for the next load.")
                 else:
                     self.is_model_loaded = False
                     self._sync_memory_watchdog(force_stop=True)
@@ -3422,18 +3518,97 @@ class SmartAIChatbotApp:
                     )
                     self._append_ai_message(f"⚠️ **Load failed**: {error}")
 
+                backend = getattr(self.engine, "controller_backend", None)
+                self._strata_unload_pending = bool(
+                    is_strata and not self.is_model_loaded
+                    and getattr(backend, "runtime", None) == "strata"
+                    and getattr(backend, "_manager", None) is not None
+                )
                 self._update_memory_hud_badge()
                 self._update_model_action_buttons()
                 self._update_resource_view_metrics()
                 self._update_input_lock_state()
+                refresh_context = getattr(self, "_refresh_context_model_note", None)
+                if callable(refresh_context):
+                    refresh_context()
+                if is_strata:
+                    self._update_telemetry()
 
-            if self.root.winfo_exists():
-                self.root.after(0, _done)
+            if asynchronous:
+                self._event_queue.put(("model_load_complete", _done))
+            else:
+                _done()
 
-        if self.root.winfo_viewable():
+        if asynchronous:
             threading.Thread(target=_do_load, daemon=True).start()
         else:
             _do_load()
+
+    def _unload_strata_async(self, on_complete=None):
+        """Drain only the active owned Strata server without blocking Tk."""
+        backend = getattr(self.engine, "controller_backend", None)
+        if getattr(backend, "runtime", None) != "strata":
+            return False
+        if getattr(self, "_model_load_in_progress", False):
+            return True
+        target_info = self.models_config[self.active_tab_id]
+        self._model_load_in_progress = True
+        self._model_unload_in_progress = True
+        self._model_loading_update = None
+        self._sync_memory_watchdog(force_stop=True)
+        self.cancel_event.set()
+        cancel_request = getattr(backend, "cancel_current_request", None)
+        if callable(cancel_request):
+            try:
+                cancel_request()
+            except Exception:
+                # Owned unload still retries transport cancellation and cleanup.
+                pass
+        self.lbl_model_status.configure(
+            text=f"⏳ Unloading {target_info['short_name']}…", fg=self.C["accent_yellow"],
+        )
+
+        def worker():
+            try:
+                # The UI guards model changes while this request is pending.
+                # A replaced backend must never be unloaded by an older request.
+                result = (self.engine.unload_model() if getattr(self.engine, "controller_backend", None) is backend
+                          else {"status": "stale"})
+            except Exception as exc:
+                result = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+            def finish():
+                self._model_load_in_progress = False
+                self._model_unload_in_progress = False
+                if result.get("status") == "stale":
+                    return
+                unloaded = result.get("status") == "unloaded"
+                self._strata_unload_pending = not unloaded
+                # A partial stop cannot remain available for chat. Keep the
+                # cleanup action visible until the owned runtime is gone.
+                self.is_model_loaded = False
+                self._sync_memory_watchdog(force_stop=True)
+                if unloaded:
+                    self.lbl_model_status.configure(
+                        text=f"○ Unloaded ({target_info['short_name']})", fg=self.C["accent_yellow"],
+                    )
+                    self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}`.")
+                else:
+                    self.lbl_model_status.configure(text="⚠ Strata cleanup incomplete — Retry unload", fg=self.C["accent_red"])
+                    error = str(result.get("error") or "The owned Strata runtime has not stopped.")
+                    self._append_ai_message(f"⚠️ **Unload incomplete**: {error}\nUse **Retry unload** before loading another model.")
+                self._update_memory_hud_badge()
+                self._update_model_action_buttons()
+                self._update_resource_view_metrics()
+                self._update_input_lock_state()
+                self._update_telemetry()
+                if unloaded and callable(on_complete) and not getattr(self, "_speed_close_requested", False):
+                    on_complete()
+
+            self._event_queue.put(("model_load_complete", finish))
+
+        threading.Thread(target=worker, name="studio-strata-unload", daemon=True).start()
+        return True
 
     def _append_rendered_user_turn(self, text: str):
         self.chat_stream.insert("end", f"\n👤 You\n", "user_header")
@@ -3459,6 +3634,10 @@ class SmartAIChatbotApp:
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
         if target_tab_id not in self.models_config:
+            return
+        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
+                and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False))):
+            self._unload_strata_async(on_complete=lambda: self._on_switch_model_tab(target_tab_id))
             return
         self.active_tab_id = target_tab_id
         target_info = self.models_config[target_tab_id]
@@ -3506,9 +3685,7 @@ class SmartAIChatbotApp:
             pass
 
         repo_id = str(target_info.get("repo_id") or "")
-        cached = is_model_cached_locally(repo_id) if repo_id else (
-            os.path.exists(m_path or "") if m_path else False
-        )
+        cached = self._model_is_cached(target_info)
 
         load_text_after_switch = False
         if model_type == "text":
@@ -3569,6 +3746,12 @@ class SmartAIChatbotApp:
             )
         self._update_resource_view_metrics()
         self._update_input_lock_state()
+        refresh_context = getattr(self, "_refresh_context_model_note", None)
+        if callable(refresh_context):
+            refresh_context()
+        refresh_telemetry = getattr(self, "_update_telemetry", None)
+        if callable(refresh_telemetry):
+            refresh_telemetry()
 
         if load_text_after_switch:
             # A registered local artifact can be present without a matching HF
@@ -3589,6 +3772,23 @@ class SmartAIChatbotApp:
             self._append_ai_message("⚠️ Could not export chat history.")
 
     def _on_memory_pressure_emergency(self, status: Dict[str, Any]):
+        if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata":
+            # The external native process is counted by the owned-PID provider.
+            # Honor the user's enabled cap while allowing cancellation to unblock
+            # an active HTTP request before the background unload takes its lock.
+            if not self._memory_limit_enabled or not self.is_model_loaded:
+                return
+            process_gb = float(status.get("process_rss_gb", 0.0) or 0.0)
+            cap = float(self._memory_limit_gb)
+            cap_reached = process_gb >= cap
+            critical = status.get("used_percent", 0.0) >= 99.0 and status.get("free_gb", 1.0) < 0.10
+            if cap_reached or critical:
+                if not getattr(self, "_model_unload_in_progress", False):
+                    reason = (f"Studio and its Strata runtime reached the {cap:.1f} GB RAM limit ({process_gb:.1f} GB)."
+                              if cap_reached else "The system reached critical RAM pressure.")
+                    self._append_ai_message(f"🛡️ {reason} Stopping the owned Strata runtime; prepared model files are kept.")
+                self._unload_strata_async()
+            return
         # Proactively trim transient caches without unloading active model
         SystemMemoryWatchdog.reclaim_process_memory()
         self._update_memory_hud_badge()
@@ -3752,6 +3952,13 @@ class SmartAIChatbotApp:
             f"• **Custom Models**: Click **'➕ Import Model'** in the top bar to add your own local or HuggingFace models.\n"
             f"• **Live Steer**: Press `⌘+Enter` (or `Ctrl+Enter`) to steer the model while typing.\n"
         )
+        if info.get("controller_runtime") == "strata":
+            welcome_text += (
+                f"\n• **Strata setup**: {info['storage_note']}\n"
+                f"• **Memory**: {info['memory_note']}\n"
+                "• **Capabilities**: Text inference only. Learn, weight consolidation and the training evaluation suite "
+                "require a trainable model. Use **Install & Load** to prepare this model.\n"
+            )
         self._render_styled_markdown(welcome_text)
         self.chat_stream.configure(state="disabled")
         self._scroll_chat_to_bottom()
@@ -4196,8 +4403,9 @@ class SmartAIChatbotApp:
         self._recompute_input_height(is_focused=True)
         self._append_user_message(raw_text)
 
-        tokens = len(user_msg.split()) * 2
-        self.total_tokens_used += tokens
+        if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata":
+            tokens = len(user_msg.split()) * 2
+            self.total_tokens_used += tokens
         self._update_telemetry()
 
         self._set_generating_state(True)
@@ -4419,7 +4627,11 @@ class SmartAIChatbotApp:
                 has_text = bool(
                     inspection is None or (inspection.get("text_files") or [])
                 )
-                if has_text:
+                if has_text and active_info.get("inference_only"):
+                    self.root.after(0, lambda: self._append_ai_message(
+                        "This Strata model supports text inference only. Select a trainable model to update text weights with Learn."
+                    ))
+                elif has_text:
                     self.learner.run_learning_session(
                         topic=topic,
                         cancel_event=self.cancel_event,
@@ -4532,12 +4744,22 @@ class SmartAIChatbotApp:
                 matched = True
 
             if not matched:
-                if self.cancel_event.is_set():
-                    self.root.after(0, lambda: self._append_ai_message("⏹ Generation stopped."))
-                    return
-
                 curr_history = self.chat_history.get(self.active_tab_id, [])
                 info = self.models_config[self.active_tab_id]
+                strata_backend = getattr(self.engine, "controller_backend", None)
+                is_strata_stream = getattr(strata_backend, "runtime", None) == "strata"
+                if self.cancel_event.is_set():
+                    if is_strata_stream:
+                        def cancelled_before_stream():
+                            self.chat_stream.configure(state="normal")
+                            self.chat_stream.insert("end", "\n⏹ Strata generation stopped.\n\n", "ai_msg")
+                            self.chat_stream.configure(state="disabled")
+                            self._scroll_chat_to_bottom()
+                            self._update_telemetry(0.0)
+                        self.root.after(0, cancelled_before_stream)
+                    else:
+                        self.root.after(0, lambda: self._append_ai_message("⏹ Generation stopped."))
+                    return
 
                 # 1. Initialize streaming container in chat
                 accumulated = []
@@ -4587,14 +4809,33 @@ class SmartAIChatbotApp:
                     ui_pending.clear()
 
                 full_ans = "".join(accumulated).strip()
-                if not full_ans and not self.cancel_event.is_set():
+                if not full_ans and not self.cancel_event.is_set() and not is_strata_stream:
                     ans, meta = self.engine.solve(full_msg, history=curr_history, cancel_event=self.cancel_event)
                     full_ans = ans.strip() if ans else "I am ready. How can I help you today?"
 
                 duration_s = max(0.01, time.perf_counter() - start_time)
-                tokens_count = max(1, len(full_ans.split()) * 2)
-                tok_per_sec = tokens_count / duration_s
-                self.total_tokens_used += tokens_count
+                if is_strata_stream:
+                    # _update_telemetry reads this request's native timings or
+                    # the matching Pro usage/duration, never a word estimate.
+                    tok_per_sec = 0.0
+                else:
+                    tokens_count = max(1, len(full_ans.split()) * 2)
+                    tok_per_sec = tokens_count / duration_s
+                    self.total_tokens_used += tokens_count
+
+                if is_strata_stream and (not full_ans or self.cancel_event.is_set()):
+                    notice = ("⏹ Strata generation stopped." if self.cancel_event.is_set()
+                              else "⚠ Strata completed without response text.")
+                    def finish_without_answer(message=notice):
+                        self.chat_stream.configure(state="normal")
+                        self.chat_stream.insert("end", f"\n{message}\n\n", "ai_msg")
+                        self.chat_stream.configure(state="disabled")
+                        self._scroll_chat_to_bottom()
+                        self._update_telemetry(0.0)
+                    self.root.after(0, finish_without_answer)
+                    # A transport completion without answer text is not a second
+                    # inference request or an assistant reply in saved history.
+                    return
 
                 # 3. Finalize markdown styling and collapsible thinking pill
                 def _finalize_ai_msg(text=full_ans, dur=duration_s, tps=tok_per_sec):
@@ -4736,8 +4977,9 @@ class SmartAIChatbotApp:
         if self.is_generating:
             return
         self._append_user_message(raw_text)
-        tokens = len(user_msg.split()) * 2
-        self.total_tokens_used += tokens
+        if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata":
+            tokens = len(user_msg.split()) * 2
+            self.total_tokens_used += tokens
         self._update_telemetry()
 
         self._set_generating_state(True)
@@ -4752,21 +4994,67 @@ class SmartAIChatbotApp:
         self._set_generating_state(False)
 
     def _update_telemetry(self, tps: float = 0.0):
-        ctx_pct = min(100.0, (self.total_tokens_used / self.max_context_window) * 100)
-        self.lbl_context.configure(text=f"📊 Context: {self.total_tokens_used:,} / {self.max_context_window:,} ({ctx_pct:.0f}%)")
         curr_info = self.models_config.get(self.active_tab_id, {})
-        total_p = curr_info.get("raw_params", 27_400_000_000) + self.synapses_learned_count
+        is_strata = curr_info.get("controller_runtime") == "strata"
+        if is_strata:
+            backend = getattr(self.engine, "controller_backend", None)
+            generation = getattr(backend, "last_generation", None)
+            completed = (isinstance(generation, dict) and generation.get("status") == "completed"
+                         and not self.cancel_event.is_set() and self.is_model_loaded)
+            usage = generation.get("usage") if completed else None
+            total = usage.get("total_tokens") if isinstance(usage, dict) else None
+            available = type(total) is int and total >= 0
+            self.total_tokens_used = total if available else 0
+            context = backend.n_ctx() if backend is not None and self.is_model_loaded else self.max_context_window
+            self.lbl_context.configure(
+                text=(f"📊 Last request: {total:,} / {context:,} tokens" if available
+                      else "📊 Last request: unavailable"),
+            )
+        else:
+            ctx_pct = min(100.0, (self.total_tokens_used / self.max_context_window) * 100)
+            self.lbl_context.configure(text=f"📊 Context: {self.total_tokens_used:,} / {self.max_context_window:,} ({ctx_pct:.0f}%)")
+        inference_only = bool(curr_info.get("inference_only"))
+        total_p = curr_info.get("raw_params", 27_400_000_000) + (0 if inference_only else self.synapses_learned_count)
         param_str = format_parameter_count(total_p)
         if hasattr(self, "lbl_params"):
             self.lbl_params.configure(text=f"🧠 {param_str} Total Params")
         if hasattr(self, "lbl_synapses"):
             syn_str = format_added_synapses(self.synapses_learned_count)
-            self.lbl_synapses.configure(text=f"📈 {syn_str}")
-        if hasattr(self, "lbl_tps") and tps > 0:
-            self.lbl_tps.configure(text=f"⚡ {tps:.1f} tok/s")
+            self.lbl_synapses.configure(text="Inference only" if inference_only else f"📈 {syn_str}")
+        if hasattr(self, "lbl_tps"):
+            if is_strata:
+                rate = None
+                suffix = "decode (last request)"
+                if completed and available:
+                    meta = getattr(self.engine, "_last_stream_pro_meta", None)
+                    branches = meta.get("branch_count") if isinstance(meta, dict) else None
+                    if type(branches) is int and branches > 1:
+                        aggregate = meta.get("usage")
+                        count = aggregate.get("completion_tokens") if isinstance(aggregate, dict) else None
+                        wall = meta.get("measured_wall_time_s")
+                        try:
+                            if (type(count) is int and count >= 0 and type(wall) in (int, float)
+                                    and math.isfinite(wall) and wall > 0):
+                                rate = count / wall
+                        except (OverflowError, ValueError):
+                            pass
+                        suffix = "(Pro requests)"
+                    else:
+                        timings = generation.get("timings")
+                        rate = timings.get("predicted_per_second") if isinstance(timings, dict) else None
+                try:
+                    valid_rate = type(rate) in (int, float) and math.isfinite(rate) and rate > 0
+                except (OverflowError, ValueError):
+                    valid_rate = False
+                self.lbl_tps.configure(
+                    text=f"⚡ {rate:.1f} tok/s {suffix}" if valid_rate else "⚡ Speed: unavailable",
+                )
+            elif tps > 0:
+                self.lbl_tps.configure(text=f"⚡ {tps:.1f} tok/s")
         if hasattr(self, "lbl_res_synapses"):
             syn_str = format_added_synapses(self.synapses_learned_count)
-            self.lbl_res_synapses.configure(text=f"• +Params Learned: {syn_str} (EWC Replay Active)")
+            self.lbl_res_synapses.configure(text="• Weight training: unavailable for this inference model" if inference_only
+                                           else f"• +Params Learned: {syn_str} (EWC Replay Active)")
 
     def _on_clear_chat(self):
         self.chat_stream.configure(state="normal")
@@ -5076,6 +5364,9 @@ assert glyph_res["invariants_passed"] == True
 
     def _on_open_sleep_consolidation_panel(self):
         """Opens live sleep consolidation & parameter update monitor."""
+        if self.models_config.get(self.active_tab_id, {}).get("inference_only"):
+            messagebox.showinfo("Inference Only", "Select a trainable model to consolidate dialogue into weights. Strata keeps your conversation as text.")
+            return
         modal = tk.Toplevel(self.root)
         modal.title("Sleep Consolidation Control Panel (EWC-LoRA)")
         modal.geometry("720x520")

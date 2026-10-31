@@ -37,19 +37,40 @@ Media commands documented there include:
 
 The project document is the authoritative reference for implementation details; this README remains the quick-start/project overview.
 
-### Automatic speed tuning
+### Strata models and automatic speed configuration
 
-The `feat/strata-auto-speed` branch adds **Auto speed**, **Retune**, and **Cancel**
-to the desktop. Supported native MLX and llama.cpp runtimes compare conservative
-execution settings on the loaded model, measure prompt processing and decoding,
-and reuse a saved profile for matching hardware and model files. The comparison
-keeps existing settings unless a candidate repeatedly clears a noise margin and
-produces the same calibration tokens. Models, quantization, context, sampling,
-and learning prompts remain the user's existing choices.
+Choose **Strata Gyro-S** or **Strata Q2_0** to run the actual
+[Strata](https://github.com/Niko1221/Strata) engine. These optional, text-only
+Qwen3.8-Flash-Next presets use Strata's automatic GPU, RAM and SSD placement, so
+the model files do not all have to fit in graphics memory or RAM. The existing
+default model remains selected until you choose a Strata preset.
 
-See **[Strata-inspired auto speed: behavior, research, and limits](docs/STRATA_AUTO_SPEED.md)**
-for supported paths, first-load timing, cancellation, and the difference between
-a measured result and a performance estimate.
+Studio installs a private, verified **Strata v0.2.8 / Terminal Control 0.1.54**,
+prepares the selected model, and starts an authenticated local service whose
+lifetime belongs to Studio. The model downloads are substantial: **58.5 GB for
+Gyro-S** or **66.4 GB for Q2_0**, with additional preparation files. Allow about
+**94.3 GB** or **116.4 GB** of free SSD space respectively, plus room for runtime
+components and other application data. These are planning estimates; the
+upstream preparation checks determine the actual requirement.
+
+An **8 GB GPU + 32 GB RAM + SSD** is a relevant tiered-inference configuration,
+not a promise of a particular speed or compatibility with every 8 GB GPU. The
+[reported RTX 5060 Laptop case](https://www.reddit.com/r/LocalLLaMA/comments/1xft2ae/have_8_gb_of_vram_and_32_gb_of_ram_you_can_run/)
+is a community result, not a Smart AI Studio benchmark. Studio explicitly uses
+fp16 KV and disables drafting, speculative decoding and the listed approximate
+routing shortcuts. These settings can perform differently from that report.
+Both Strata presets are **nonternary and inference only**; learning remains
+available on the existing backends that support weight updates.
+
+The separate **Auto speed** and **Retune** controls compare conservative native
+execution settings on supported MLX and llama.cpp models. They keep working
+settings unless a candidate repeatedly clears a measured noise margin and
+produces the same calibration tokens. For Strata, **Check placement** reports
+its automatic configuration; it does not run the upstream quick/thorough tuner
+or claim a measured speed gain.
+
+See **[Strata integration and native auto speed: setup, behavior, and limits](docs/STRATA_AUTO_SPEED.md)**
+for model identities, storage, platform support, cancellation, and verification.
 
 ---
 
@@ -89,13 +110,20 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
 
 ## 🤖 Model Matrix & Architectures
 
-Smart AI Studio features seamless mutual-exclusion unified memory switching across three specialized local model backends:
+Smart AI Studio switches between its existing local model backends and the
+optional, separately managed Strata engine:
 
 | Model Tab | Parameter Scale | Quantization / Precision | VRAM Footprint | Primary Specialization |
 | :--- | :---: | :---: | :---: | :--- |
 | **✦ Ternary Bonsai** | `27.4B Base` | `1.58-Bit BitLinear (2-bit MLX)` | `~5.8 GB` | Complex reasoning, multi-step math, and software architecture |
 | **⚡ Qwen 3.8 Flash Next** | `3.8B Base` | `1.58-Bit / 4-bit KV Cache` | `~1.8 GB` | High-throughput sub-second coding and concise query answering |
 | **🔓 Dolphin Vision 2.9** | `7.0B Base` | `Abliterated Multimodal Vision` | `~4.8 GB` | Uncensored multimodal comprehension, image analysis, and vector art |
+| **Strata Gyro-S** | `~125B MoE + 51B n-gram` | `Gyro APR trellis; nonternary` | `Automatic GPU / RAM / SSD placement` | Large text-model inference; no weight training |
+| **Strata Q2_0** | `~125B MoE + 51B n-gram` | `ISTA GSQ-RCO Q2_0; nonternary` | `Automatic GPU / RAM / SSD placement` | Large text-model inference; no weight training |
+
+Strata's parameter counts, quantization and file requirements are separate from
+the smaller existing Qwen preset. Its registered choices and publisher links are
+listed in the [Strata guide](docs/STRATA_AUTO_SPEED.md#the-two-strata-models).
 
 ---
 
@@ -109,6 +137,10 @@ The studio auto-detects physical host RAM via `core.platform` to maximize contex
 | **$\ge$ 32 GB RAM** (M-Pro / 32GB GPUs) | **131,072 Tokens (128K)** | Multi-file refactoring, deep dependency mapping |
 | **$\ge$ 15 GB RAM** (16GB Baseline) | **65,536 Tokens (64K)** | Standard multi-turn coding and continuous reasoning |
 | **$<$ 15 GB RAM** (8GB Lean) | **32,768 Tokens (32K)** | Portable laptop execution with minimal memory usage |
+
+The Strata presets start at **32K context** and use their own placement planner.
+The table above is not a Strata memory-fit guarantee. Increasing context reserves
+more runtime memory and can reduce the expert cache or require more SSD reads.
 
 ---
 
@@ -155,6 +187,20 @@ python3 app_gui.py
 ```bash
 python3 main.py --live
 ```
+
+### Optional: load a Strata model
+
+In the desktop model selector, choose **Strata Gyro-S** or **Strata Q2_0** and
+start loading. The first load downloads the verified private Terminal, a
+compatible native engine, and the selected model files, then prepares them on
+disk. Follow the loading progress; **Cancel** stops the active operation while
+keeping downloaded model data for a later attempt. No global Strata install or
+manual local server is required.
+
+Use a supported GPU and a fast SSD with the space described in the
+[Strata setup guide](docs/STRATA_AUTO_SPEED.md#platforms-and-memory). Apple Silicon
+requires **macOS 15 or newer** for this engine; a 16 GB MLX-capable Mac is not
+therefore a verified fit for these much larger Strata packs.
 
 ---
 

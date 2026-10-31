@@ -24,6 +24,7 @@ from core.engines.gguf_engine import GGUFReasoningBackend
 from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
 from core.entropy_router import EntropyRouter
 from core.controller_runtime import UniversalControllerBackend, resolve_controller_runtime, resolve_gguf_artifacts
+from core.engines.strata_engine import StrataCancelled, StrataReasoningBackend
 from core.hardware import resolve_optimal_backend, detect_system_hardware
 from core.hf_downloader import is_model_cached_locally
 from core.mlx_engine import MLXReasoningBackend
@@ -167,7 +168,11 @@ class ProReasoningEngine:
         Supports multi-engine execution (MLX, GGUF, BitNet, PyTorch) across presets and custom models.
         """
         with self._model_lock:
-            self.unload_model()  # Strictly unload previous model first
+            unloaded = self.unload_model()  # Strictly unload previous model first
+            if isinstance(unloaded, dict) and unloaded.get("status") == "error":
+                # Retain a Strata owner whose verified processes could not yet be
+                # stopped; loading another model would violate mutual exclusion.
+                return {**unloaded, "requested_model": model_name}
             self.active_model_name = model_name
             info = dict(model_info or {})
             if info.get("input_modalities"):
@@ -226,7 +231,16 @@ class ProReasoningEngine:
             backend_family = str(info.get("backend_family") or "").strip().lower()
             mlx_controller_runtimes = {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
 
-            if backend_family in ("prism_gguf", "gguf") or controller_runtime == "gguf":
+            if controller_runtime == "strata" or backend_family == "strata" or str(target_path).startswith("strata://"):
+                from config.strata_models import validate_strata_selection
+                try:
+                    info = validate_strata_selection({**info, "model_path": target_path})
+                except ValueError as exc:
+                    return {"status": "error", "model": model_name, "error": str(exc), "path": target_path}
+                controller_runtime = "strata"
+                target_backend = "controller"
+                self.active_input_modalities = {"text"}
+            elif backend_family in ("prism_gguf", "gguf") or controller_runtime == "gguf":
                 target_backend = "gguf"
             elif backend_family == "bitnet" or controller_runtime == "bitnet":
                 target_backend = "bitnet"
@@ -252,7 +266,7 @@ class ProReasoningEngine:
             self.active_model_path = target_path
 
             # Auto-download check if requested
-            if self.settings.auto_download:
+            if self.settings.auto_download and controller_runtime != "strata":
                 ensure_res = ensure_model_available(target_path, backend=target_backend, auto_download=False)
                 if ensure_res.get("status") == "not_downloaded" and not os.path.exists(target_path):
                     return {
@@ -266,11 +280,29 @@ class ProReasoningEngine:
             try:
                 # 0. Architecture-specific controller adapter (VLM/audio-language/etc.)
                 if target_backend == "controller":
-                    self.controller_backend = UniversalControllerBackend(
+                    def load_cancelled():
+                        event = getattr(self, "_speed_cancel_event", None)
+                        external = getattr(self, "_model_load_cancelled", None)
+                        return bool((event and event.is_set()) or (external and external()))
+
+                    controller_cls = StrataReasoningBackend if controller_runtime == "strata" else UniversalControllerBackend
+                    self.controller_backend = controller_cls(
                         model_path=target_path,
                         model_info=info,
                     )
-                    if self.controller_backend.load_model():
+                    load_options = {}
+                    if controller_runtime == "strata":
+                        self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
+
+                        def load_progress(message):
+                            self.speed_status = {"status": "loading", "message": str(message)}
+
+                        load_options = {
+                            "progress": load_progress,
+                            "cancelled": load_cancelled,
+                            "context_tokens": int(getattr(self, "_context_budget_tokens", 0) or info["default_context"]),
+                        }
+                    if self.controller_backend.load_model(**load_options):
                         if getattr(self.controller_backend, "is_mlx_available", False):
                             # Keep MLX-aware routing/telemetry compatible without
                             # pretending this backend supports MLX-LM training.
@@ -284,6 +316,12 @@ class ProReasoningEngine:
                             "path": target_path,
                             "input_modalities": sorted(self.active_input_modalities),
                             "trainable": bool(getattr(self.controller_backend, "can_train", False)),
+                        }
+                    if controller_runtime == "strata":
+                        return {
+                            "status": "cancelled" if load_cancelled() else "error",
+                            "model": model_name, "backend": "strata", "path": target_path,
+                            "error": self.controller_backend.last_error or "Strata could not prepare the selected model.",
                         }
 
                 # 1. Native Apple Silicon MLX
@@ -381,15 +419,32 @@ class ProReasoningEngine:
                 return {"status": "not_downloaded", "model": model_name, "backend": target_backend, "path": target_path}
 
             except Exception as e:
+                if controller_runtime == "strata":
+                    return {
+                        "status": "cancelled" if isinstance(e, StrataCancelled) or load_cancelled() else "error",
+                        "model": model_name, "backend": "strata", "path": target_path,
+                        "error": getattr(self.controller_backend, "last_error", "") or str(e),
+                    }
                 return {"status": "error", "model": model_name, "error": str(e), "path": target_path}
 
     def unload_model(self) -> Dict[str, Any]:
-        """
-        INSTANT & AGGRESSIVE UNLOAD:
-        Completely purges all model instances, tokenizers, and framework caches from memory.
-        Instantly frees 100% of allocated neural weights from host RAM and unified VRAM.
+        """Release the current model before replacement and report stop failures.
+
+        A Strata process owner remains reachable until its scoped shutdown
+        succeeds, so callers can retry and continue accounting for its memory.
         """
         old_model = self.active_model_name
+
+        controller = getattr(self, "controller_backend", None)
+        if getattr(controller, "runtime", None) == "strata":
+            try:
+                controller.unload_model()
+            except Exception as exc:
+                # Keep the owner reachable for a later stop attempt and for RAM
+                # accounting; a partially stopped engine is not an unloaded one.
+                return {"status": "error", "unloaded": False, "model": old_model,
+                        "backend": "strata", "error": str(exc)}
+            self.controller_backend = None
 
         if hasattr(self, "model") and self.model is not None:
             try:
@@ -470,8 +525,8 @@ class ProReasoningEngine:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
-            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-                torch.mps.empty_cache()
+            from core.training_memory import clear_available_mps_cache
+            clear_available_mps_cache(torch)
         except Exception:
             pass
 
@@ -727,22 +782,35 @@ class ProReasoningEngine:
         cancel_event: Optional[Any] = None
     ):
         """Yields live tokens in real time from the active MLX / GGUF / BitNet model."""
+        if (getattr(self.controller_backend, "runtime", None) == "strata"
+                and not getattr(self.controller_backend, "is_loaded", False)):
+            raise RuntimeError("Load the Strata model before generating text.")
         formatted_prompt = self._format_prompt_with_history(prompt, history)
 
         # 0. Specialized controller streaming
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
             has_yielded = False
-            for token in self.controller_backend.stream_generate_tokens(
+            is_strata = getattr(self.controller_backend, "runtime", None) == "strata"
+            cancel_options = {"cancelled": cancel_event.is_set} if is_strata and cancel_event is not None else {}
+            stream = self.controller_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
                 max_tokens=self.settings.max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
-            ):
-                if cancel_event and cancel_event.is_set():
-                    break
-                has_yielded = True
-                yield token
-            if has_yielded:
+                **cancel_options,
+            )
+            try:
+                for token in stream:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    has_yielded = True
+                    yield token
+            finally:
+                if is_strata:
+                    stream.close()
+            # An empty completed or cancelled Strata request must not be sent again
+            # through solve(), nor fall through to a different model backend.
+            if has_yielded or is_strata:
                 return
 
         # 1. MLX Streaming
@@ -808,22 +876,29 @@ class ProReasoningEngine:
         prompt: str,
         branch_count: int = 16,
         history: Optional[List[Dict[str, str]]] = None,
-        temperatures: Optional[List[float]] = None
+        temperatures: Optional[List[float]] = None,
+        cancel_event: Optional[Any] = None,
     ) -> List[str]:
         """Samples candidate reasoning rollouts using calibrated temperature laddering and auto-scaled context window."""
+        if (getattr(self.controller_backend, "runtime", None) == "strata"
+                and not getattr(self.controller_backend, "is_loaded", False)):
+            raise RuntimeError("Load the Strata model before generating text.")
         formatted_prompt = self._format_prompt_with_history(prompt, history)
         ladder = temperatures if temperatures is not None else get_ladder_temperatures(branch_count)
 
         # 0. Architecture-specific controller inference
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
+            is_strata = getattr(self.controller_backend, "runtime", None) == "strata"
+            cancel_options = {"cancelled": cancel_event.is_set} if is_strata and cancel_event is not None else {}
             branches = self.controller_backend.generate_branches(
                 prompt=formatted_prompt,
                 branch_count=branch_count,
                 max_tokens=self.settings.max_new_tokens,
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
                 top_p=self.settings.search_top_p,
+                **cancel_options,
             )
-            if branches:
+            if branches or is_strata:
                 return branches
 
         # 1. Apple Silicon Native MLX Inference
@@ -977,10 +1052,25 @@ class ProReasoningEngine:
         # Generate convex temperature ladder for the active branch count
         temp_ladder = [temperature] if temperature is not None else get_ladder_temperatures(branch_count)
         winning_temp = temp_ladder[0]
+        controller = self.controller_backend
+        is_strata = getattr(controller, "runtime", None) == "strata"
+        branch_options = {"cancel_event": cancel_event} if is_strata else {}
+
+        def cancelled_result(candidates):
+            return "", {"cancelled": True, "mode": mode, "raw_branches": candidates,
+                        "branch_count": len(candidates), "verified": False, "surprise_score": 0.0}
+
+        def strata_cancelled():
+            return is_strata and (
+                bool(cancel_event is not None and cancel_event.is_set())
+                or getattr(controller, "last_generation", {}).get("status") == "cancelled"
+            )
 
         # Path 1: Instant Single-Pass Mode
         if branch_count == 1 and not has_tests:
-            candidates = self.generate_parallel_branches(prompt, branch_count=1, history=history, temperatures=temp_ladder)
+            candidates = self.generate_parallel_branches(prompt, branch_count=1, history=history, temperatures=temp_ladder, **branch_options)
+            if strata_cancelled():
+                return cancelled_result(candidates)
             raw_response = candidates[0]
             thinking_text, clean_response = parse_reasoning_and_response(raw_response)
             response = clean_response or raw_response
@@ -1006,7 +1096,9 @@ class ProReasoningEngine:
             return response, metadata
 
         # Path 2: Pro Multi-Branch Search
-        candidates = self.generate_parallel_branches(prompt, branch_count=branch_count, history=history, temperatures=temp_ladder)
+        candidates = self.generate_parallel_branches(prompt, branch_count=branch_count, history=history, temperatures=temp_ladder, **branch_options)
+        if strata_cancelled():
+            return cancelled_result(candidates)
         winning_branch = 0
         winning_response = candidates[0]
         winning_temp = temp_ladder[0]

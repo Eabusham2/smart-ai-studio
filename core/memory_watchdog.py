@@ -22,13 +22,17 @@ class SystemMemoryWatchdog:
         max_ram_usage_percent: float = 98.5,
         min_free_ram_gb: float = 0.15,
         max_process_ram_gb: float = 13.0,
-        on_pressure_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        on_pressure_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        additional_processes_provider: Optional[Callable[[], Any]] = None,
     ):
         self.check_interval_seconds = check_interval_seconds
         self.max_ram_usage_percent = max_ram_usage_percent
         self.min_free_ram_gb = min_free_ram_gb
         self.max_process_ram_gb = max_process_ram_gb
         self.on_pressure_callback = on_pressure_callback
+        # The runtime owner verifies identity/lifetime before returning these PIDs.
+        # The watchdog never discovers workers by names or unrelated child scans.
+        self.additional_processes_provider = additional_processes_provider
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -52,16 +56,16 @@ class SystemMemoryWatchdog:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
-            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-                torch.mps.empty_cache()
+            from core.training_memory import clear_available_mps_cache
+            clear_available_mps_cache(torch)
         except Exception:
             pass
 
     @staticmethod
-    def get_detailed_memory_breakdown() -> Dict[str, Any]:
+    def get_detailed_memory_breakdown(owned_pids=None) -> Dict[str, Any]:
         """
         Computes granular, authentic memory breakdown across:
-        1. App Process RSS (Python GUI / framework memory).
+        1. App Process RSS and optional, caller-verified owned worker RSS.
         2. Model Metal Active Memory (MLX unified memory tensors).
         3. Model Metal Peak & Cache Allocation.
         4. Host System RAM (Used, Available, Total) matching macOS Activity Monitor.
@@ -77,6 +81,28 @@ class SystemMemoryWatchdog:
                 rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
                 app_rss_gb = (rss / (1024 ** 3)) if platform.system() == "Darwin" else (rss / (1024 ** 2))
             except Exception:
+                pass
+
+        owned_rss_gb = 0.0
+        owned_process_count = 0
+        if owned_pids is not None:
+            try:
+                import psutil
+                seen = {os.getpid()}
+                for pid in owned_pids:
+                    if type(pid) is not int or pid <= 0 or pid in seen:
+                        continue
+                    seen.add(pid)
+                    try:
+                        rss = int(psutil.Process(pid).memory_info().rss)
+                        if rss < 0:
+                            continue
+                        owned_rss_gb += rss / (1024 ** 3)
+                        owned_process_count += 1
+                    except Exception:
+                        # A verified worker can exit between discovery and this read.
+                        continue
+            except (ImportError, TypeError):
                 pass
 
         model_active_gb = 0.0
@@ -125,10 +151,12 @@ class SystemMemoryWatchdog:
             except Exception:
                 pass
 
-        total_allocated_gb = max(app_rss_gb, app_rss_gb + model_active_gb)
+        total_allocated_gb = max(app_rss_gb, app_rss_gb + model_active_gb) + owned_rss_gb
 
         return {
             "app_rss_gb": round(app_rss_gb, 2),
+            "owned_process_rss_gb": round(owned_rss_gb, 2),
+            "owned_process_count": owned_process_count,
             "model_metal_active_gb": round(model_active_gb, 2),
             "model_metal_peak_gb": round(max(model_active_gb, model_peak_gb), 2),
             "model_metal_cache_gb": round(model_cache_gb, 2),
@@ -163,15 +191,17 @@ class SystemMemoryWatchdog:
             pass
 
     @staticmethod
-    def get_process_rss_gb() -> float:
-        """Returns the current process memory in Gigabytes."""
-        breakdown = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+    def get_process_rss_gb(owned_pids=None) -> float:
+        """Return Studio's accounted memory plus any verified owned workers, in GB."""
+        breakdown = (SystemMemoryWatchdog.get_detailed_memory_breakdown()
+                     if owned_pids is None else SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owned_pids))
         return breakdown["total_allocated_gb"]
 
     @staticmethod
-    def get_system_memory_status() -> Dict[str, Any]:
+    def get_system_memory_status(owned_pids=None) -> Dict[str, Any]:
         """Queries host total, used, and free RAM in GB matching macOS Activity Monitor."""
-        breakdown = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+        breakdown = (SystemMemoryWatchdog.get_detailed_memory_breakdown()
+                     if owned_pids is None else SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owned_pids))
         return {
             "total_gb": breakdown["system_total_gb"],
             "used_gb": breakdown["system_used_gb"],
@@ -179,13 +209,24 @@ class SystemMemoryWatchdog:
             "used_percent": breakdown["system_percent"],
             "process_rss_gb": breakdown["total_allocated_gb"],
             "app_rss_gb": breakdown["app_rss_gb"],
+            "owned_process_rss_gb": breakdown.get("owned_process_rss_gb", 0.0),
+            "owned_process_count": breakdown.get("owned_process_count", 0),
             "model_metal_active_gb": breakdown["model_metal_active_gb"],
             "model_metal_peak_gb": breakdown["model_metal_peak_gb"]
         }
 
     def check_memory_pressure(self) -> Tuple[bool, Dict[str, Any]]:
         """Evaluates whether current system or process memory exceeds safe operating bounds."""
-        status = self.get_system_memory_status()
+        owned_pids = None
+        provider = self.additional_processes_provider
+        if callable(provider):
+            try:
+                owned_pids = list(provider() or ())
+            except Exception:
+                # Preserve host/Studio monitoring if a runtime is being replaced.
+                owned_pids = None
+        status = (self.get_system_memory_status(owned_pids=owned_pids)
+                  if owned_pids else self.get_system_memory_status())
         self.last_check_status = status
 
         # Dynamically scale Metal cache headroom based on available memory

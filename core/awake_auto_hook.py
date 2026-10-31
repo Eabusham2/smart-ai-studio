@@ -141,6 +141,14 @@ def _formatted_token_count(engine, formatted_prompt: str) -> int:
 
 def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
     """One Context budget = packed prompt/history + generated output for every backend."""
+    backend = _active_trainable_backend(engine)
+    if getattr(backend, "runtime", None) == "strata":
+        # The HTTP adapter's count_tokens is a conservative UTF-8 estimate, not
+        # the model tokenizer. Subtracting it can reject valid long conversations
+        # or artificially shorten replies. Strata applies its real chat template,
+        # counts native tokens, rejects overlong prompts and clamps max_tokens to
+        # the exact remaining window. Send that window as the output upper bound.
+        return _strata_generation_context(engine, backend)
     context_budget = _selected_context_budget(engine)
     prompt_tokens = _formatted_token_count(engine, formatted_prompt)
     remaining = int(context_budget) - int(prompt_tokens)
@@ -150,6 +158,26 @@ def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
             f"{context_budget:,}; refusing truncation."
         )
     return int(remaining)
+
+
+def _strata_generation_context(engine, backend) -> int:
+    """Use the loaded server's context; changes require a deliberate reload."""
+    context = backend.n_ctx()
+    if type(context) is not int or not 1024 <= context <= 10_000_000:
+        raise RuntimeError("Strata has no valid loaded context window.")
+    requested = int(getattr(engine, "_context_budget_tokens", 0) or 0)
+    if requested <= 0:
+        # Direct API callers need the same loaded default throughout Pro's
+        # second pass; the native RAM heuristic must not replace it mid-query.
+        requested = context
+        engine._context_budget_tokens = context
+    if requested != context:
+        raise RuntimeError(
+            f"Strata is loaded with Context {context:,}, but {requested:,} is selected. "
+            "Unload the model, apply the desired Context, then load it again."
+        )
+    engine._effective_context_budget_tokens = context
+    return context
 
 
 def _oldest_completed_chunk(history: List[Dict[str, str]], ratio: float) -> tuple[list, list]:
@@ -191,9 +219,17 @@ def install_awake_auto_learning(cls) -> None:
         if not prompt:
             return history
 
+        backend = _active_trainable_backend(self)
+        if getattr(backend, "runtime", None) == "strata":
+            context_budget = _strata_generation_context(self, backend)
+            self._last_context_consolidation_note = (
+                f"Strata inference only · Context {context_budget:,} includes prompt/history + output. "
+                "The server counts exact tokens; history is kept without weight consolidation."
+            )
+            return history
+
         context_budget = _selected_context_budget(self)
         consolidator = getattr(self, "awake_consolidator", None)
-        backend = _active_trainable_backend(self)
         tokenizer = getattr(backend, "tokenizer", None)
         if consolidator is None or backend is None or tokenizer is None:
             return history

@@ -48,43 +48,108 @@ def install_gui_generation_cap() -> None:
         except Exception:
             return 0
 
+    def _strata_selected(self) -> bool:
+        info = getattr(self, "models_config", {}).get(getattr(self, "active_tab_id", None), {})
+        return info.get("controller_runtime") == "strata" or info.get("backend_family") == "strata"
+
+    def _loaded_strata_context(self):
+        engine = getattr(self, "engine", None)
+        backend = getattr(engine, "controller_backend", None)
+        if (getattr(engine, "active_backend", None) == "controller"
+                and getattr(backend, "runtime", None) == "strata"
+                and getattr(backend, "is_loaded", False)):
+            value = backend.n_ctx()
+            if type(value) is int and value >= 1024:
+                return value
+        return None
+
     def _current_context(self) -> int:
         engine = getattr(self, "engine", None)
         selected = int(getattr(engine, "_context_budget_tokens", 0) or 0)
         if selected > 0:
             return selected
-        auto = int(get_auto_context_window_size())
+        if _strata_selected(self):
+            info = self.models_config.get(self.active_tab_id, {})
+            auto = int(info.get("default_context", 32768))
+        else:
+            auto = int(get_auto_context_window_size())
         advertised = _advertised_context(self)
         selected = min(auto, advertised) if advertised else auto
         selected = max(1024, selected)
         if engine is not None:
             engine._context_budget_tokens = selected
-            backend = getattr(engine, "mlx_backend", None)
+            backend = getattr(engine, "controller_backend" if _strata_selected(self) else "mlx_backend", None)
             if backend is not None:
                 backend.context_budget_tokens = selected
         return selected
 
+    def _refresh_context_model_note(self) -> None:
+        context = _current_context(self)
+        variable = getattr(self, "generation_cap_var", None)
+        if variable is not None:
+            variable.set(str(context))
+        if _strata_selected(self):
+            _set_reason(
+                self,
+                f"Strata inference only · Context {context:,} = prompt/history + output. "
+                "Server counts tokens; no weight consolidation or silent truncation.",
+            )
+        else:
+            _set_reason(
+                self,
+                f"Context {context:,} total = prompt/history + output. "
+                "Old dialogue consolidates at 80%; output uses all remaining room until EOS.",
+            )
+
     def _apply_context(self, event=None):
         engine = getattr(self, "engine", None)
+        is_strata = _strata_selected(self)
+        if is_strata:
+            from core.gui_speed_tuning import speed_busy_reason
+            reason = speed_busy_reason(self)
+            if reason or getattr(self, "_speed_close_requested", False):
+                self.generation_cap_var.set(str(_current_context(self)))
+                _set_reason(self, reason.replace("before tuning", "before changing Context") or "Studio is closing.")
+                return "break" if event is not None else None
         if getattr(self, "_speed_ui_running", False) or getattr(engine, "speed_tuning_active", False):
             return "break" if event is not None else None
         raw = str(getattr(self, "generation_cap_var", None).get()).strip()
         try:
             requested = int(raw.replace(",", ""))
         except Exception:
+            if is_strata:
+                self.generation_cap_var.set(str(_current_context(self)))
+                _set_reason(self, "Enter a whole number of Context tokens before loading Strata.")
+                return "break" if event is not None else None
             requested = _current_context(self)
+        advertised = _advertised_context(self)
+        if is_strata:
+            if requested < 1024 or (advertised and requested > advertised):
+                self.generation_cap_var.set(str(_current_context(self)))
+                _set_reason(self, f"Strata Context must be 1,024–{advertised or 262144:,} tokens; the previous selection is kept.")
+                return "break" if event is not None else None
+            loaded_context = _loaded_strata_context(self)
+            if loaded_context is not None and requested != loaded_context:
+                self.generation_cap_var.set(str(_current_context(self)))
+                _set_reason(
+                    self,
+                    f"Strata is loaded with Context {loaded_context:,}. "
+                    "Unload the model, apply the desired Context, then load it again.",
+                )
+                return "break" if event is not None else None
         requested = max(1024, requested)
 
         engine = getattr(self, "engine", None)
         if engine is not None:
             engine._context_budget_tokens = requested
-            backend = getattr(engine, "mlx_backend", None)
+            backend = getattr(engine, "controller_backend" if is_strata else "mlx_backend", None)
             if backend is not None:
                 backend.context_budget_tokens = requested
         self.generation_cap_var.set(f"{requested}")
 
-        advertised = _advertised_context(self)
-        if advertised and requested > advertised:
+        if is_strata:
+            _refresh_context_model_note(self)
+        elif advertised and requested > advertised:
             _set_reason(
                 self,
                 f"Context {requested:,} requested; selected model advertises {advertised:,}. "
@@ -162,10 +227,15 @@ def install_gui_generation_cap() -> None:
             anchor="e",
         )
         self.lbl_generation_cap_reason.pack(side="right", padx=(4, 10))
+        if _strata_selected(self):
+            _refresh_context_model_note(self)
 
     def set_generating_with_cap_reason(self, generating: bool):
         result = original_set_generating(self, generating)
         if not generating:
+            if _strata_selected(self):
+                _refresh_context_model_note(self)
+                return result
             engine = getattr(self, "engine", None)
             backend = getattr(engine, "mlx_backend", None)
             reason = str(getattr(backend, "last_generation_cap_reason", "") or "")
@@ -185,7 +255,8 @@ def install_gui_generation_cap() -> None:
         # Preserve newer Learn/attachment arguments while adding only telemetry.
         result = original_process(self, full_msg, user_prompt, *args, **kwargs)
         engine = getattr(self, "engine", None)
-        backend = getattr(engine, "mlx_backend", None)
+        backend = (None if getattr(getattr(engine, "controller_backend", None), "runtime", None) == "strata"
+                   else getattr(engine, "mlx_backend", None))
 
         try:
             raw_decode_tps = float(getattr(backend, "last_tok_per_sec", 0.0) or 0.0)
@@ -263,4 +334,5 @@ def install_gui_generation_cap() -> None:
     cls._set_generating_state = set_generating_with_cap_reason
     cls._process_message_thread = process_with_real_pro_metadata
     cls._apply_theme_colors = apply_theme_with_cap
+    cls._refresh_context_model_note = _refresh_context_model_note
     cls._generation_cap_ui_installed = True

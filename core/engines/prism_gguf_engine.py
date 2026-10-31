@@ -193,13 +193,20 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             marker = Path(directory) / "cancel"
             stopped = threading.Event()
 
+            def cancellation_requested():
+                try:
+                    return cancelled is not None and cancelled()
+                except Exception:
+                    return True
+
+            # A cached profile can apply before the OS schedules the watcher.
+            # Carry an existing cancellation into the worker's first check.
+            if cancellation_requested():
+                marker.touch()
+
             def watch_cancel():
                 while not stopped.is_set():
-                    try:
-                        requested = cancelled is not None and cancelled()
-                    except Exception:
-                        requested = True
-                    if requested:
+                    if cancellation_requested():
                         marker.touch()
                         return
                     stopped.wait(0.05)

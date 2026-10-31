@@ -83,8 +83,16 @@ def install_chat(pro_module) -> None:
         branch_count: int = 16,
         history=None,
         temperatures=None,
+        cancel_event=None,
     ):
         n = max(1, int(branch_count))
+        controller = getattr(self, "controller_backend", None)
+        is_strata = getattr(controller, "runtime", None) == "strata"
+        if is_strata:
+            # Usage belongs to this whole search, including the fixed extra
+            # branch. Never leave the previous query's totals on an early exit.
+            controller.last_branch_usage = {}
+        cancel_options = {"cancel_event": cancel_event} if cancel_event is not None else {}
         if n <= 1:
             temps = list(temperatures) if temperatures is not None else [CHAT_N1_TEMPERATURE]
             return original_generate(
@@ -93,6 +101,7 @@ def install_chat(pro_module) -> None:
                 branch_count=1,
                 history=history,
                 temperatures=temps[:1],
+                **cancel_options,
             )
 
         # solve() receives N+1 temperatures from pro_ladder(): N routed curve values
@@ -112,14 +121,40 @@ def install_chat(pro_module) -> None:
             branch_count=n,
             history=history,
             temperatures=routed,
+            **cancel_options,
         )
-        extra = original_generate(
-            self,
-            prompt,
-            branch_count=1,
-            history=history,
-            temperatures=[extra_temp],
-        )
+        if ((cancel_event is not None and cancel_event.is_set())
+                or (is_strata and (len(branches or []) != n
+                    or getattr(controller, "last_generation", {}).get("status") == "cancelled"))):
+            if is_strata:
+                controller.last_branch_usage = {}
+            return list(branches or [])
+        routed_usage = dict(getattr(controller, "last_branch_usage", {}) or {}) if is_strata else {}
+        if is_strata:
+            controller.last_branch_usage = {}
+        try:
+            extra = original_generate(
+                self,
+                prompt,
+                branch_count=1,
+                history=history,
+                temperatures=[extra_temp],
+                **cancel_options,
+            )
+        except BaseException:
+            if is_strata:
+                controller.last_branch_usage = {}
+            raise
+        if is_strata:
+            extra_usage = dict(controller.last_branch_usage or {})
+            controller.last_branch_usage = {}
+            fields = ("prompt_tokens", "completion_tokens", "total_tokens")
+            complete = (len(extra or []) == 1
+                        and not (cancel_event is not None and cancel_event.is_set())
+                        and getattr(controller, "last_generation", {}).get("status") == "completed")
+            if complete and all(type(usage.get(key)) is int and usage[key] >= 0
+                                for usage in (routed_usage, extra_usage) for key in fields):
+                controller.last_branch_usage = {key: routed_usage[key] + extra_usage[key] for key in fields}
         return list(branches or []) + list(extra or [])
 
     def solve_with_actual_candidate_metadata(self, *args, **kwargs):

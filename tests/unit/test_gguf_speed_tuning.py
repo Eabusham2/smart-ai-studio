@@ -444,6 +444,25 @@ class TestPrismTuningTransport(unittest.TestCase):
         self.assertTrue(captured[0]["force"])
         self.assertFalse(Path(captured[0]["cancel_path"]).parent.exists())
 
+    def test_existing_cancellation_reaches_worker_before_watcher_is_scheduled(self):
+        backend = prism.PrismGGUFReasoningBackend.__new__(prism.PrismGGUFReasoningBackend)
+        backend.model = object()
+        captured = []
+
+        def call(payload, *, progress=None):
+            captured.append(payload)
+            # A saved profile can apply before the OS schedules a new thread.
+            self.assertTrue(Path(payload["cancel_path"]).exists())
+            return {"status": "ok", "result": {"status": "cancelled", "settings": {"n_threads": 4}}}
+
+        backend._call = call
+        # Keep the asynchronous watcher unscheduled to make the race deterministic.
+        with patch.object(prism.threading, "Thread"):
+            result = backend.configure_auto_speed(cancelled=lambda: True)
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(len(captured), 1)
+        self.assertFalse(Path(captured[0]["cancel_path"]).parent.exists())
+
     def test_worker_tunes_actual_model_and_forwards_force_cancel_and_progress(self):
         clock = Clock()
         model = FakeLlama(clock)

@@ -2,8 +2,8 @@
 
 The historical Pro prompt packer reduced the usable history window based on transient
 free-RAM thresholds and then silently kept only the newest turns. That changes the
-information available to the model. This hardening keeps the same chat template and
-filters only the existing synthetic warning messages, but no longer drops legitimate
+information available to the model. Native templates keep their existing warning
+filters; Strata receives the original structured messages. Neither path drops
 history for memory pressure. Capacity-triggered awake consolidation runs through the
 normal solve wrappers before generation; the MLX backend remains the final model/user
 output-cap authority.
@@ -16,6 +16,16 @@ def install(cls) -> None:
         return
 
     def full_history_prompt(self, prompt, history=None):
+        controller = getattr(self, "controller_backend", None)
+        if getattr(controller, "runtime", None) == "strata":
+            # Strata owns the chat template. Preserve the structured conversation
+            # before the legacy native-only whitespace/warning filters below.
+            messages = [dict(turn) for turn in (history or [])]
+            if (not messages or messages[-1].get("role") != "user"
+                    or messages[-1].get("content") != prompt):
+                messages.append({"role": "user", "content": prompt})
+            return controller.prepare_chat_prompt(messages)
+
         tok = getattr(self.mlx_backend, "tokenizer", None) or getattr(self, "tokenizer", None)
         messages = []
         for turn in (history or []):

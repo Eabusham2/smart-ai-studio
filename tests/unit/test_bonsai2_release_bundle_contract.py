@@ -52,7 +52,8 @@ def test_release_workflow_streams_oversized_macos_bundle():
     assert 'SMARTAI_MODEL_BUNDLE_RELEASE: "1"' in workflow
     assert "python build_bonsai2_bundled_zip.py" in workflow
     assert '--archive-name SmartAI-macOS-arm64.zip' in workflow
-    assert '--upload-tag "${{ steps.release_info.outputs.tag_name }}"' in workflow
+    assert 'RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}' in workflow
+    assert '--upload-tag "$RELEASE_TAG"' in workflow
     assert "timeout-minutes: 180" in workflow
     assert 'bundle_release = os.getenv("SMARTAI_MODEL_BUNDLE_RELEASE", "0") == "1"' in build
 

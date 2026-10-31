@@ -27,7 +27,8 @@ from core.speed_control import install_speed_control
 from core.engines.gguf_engine import GGUFReasoningBackend
 from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
 from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
-
+# Strata serializes HTTP requests itself. Its unload must close the active
+# transport before waiting, so a native inference lock would block cancellation.
 for _backend in (MLXReasoningBackend, GGUFReasoningBackend, PrismGGUFReasoningBackend, BitNetCppReasoningBackend):
     install_native_runtime_lock(_backend)
 install_speed_control(ProReasoningEngine)

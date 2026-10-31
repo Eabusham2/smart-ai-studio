@@ -350,6 +350,17 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
     }
 }
 
+# Strata packs are explicit choices; existing default models remain unchanged.
+from config.strata_models import STRATA_PRESETS, get_strata_preset
+
+for _strata_id in STRATA_PRESETS:
+    _strata_info = get_strata_preset(_strata_id)
+    MODEL_PRESETS[_strata_id] = {
+        **_strata_info,
+        "key": _strata_id,
+        "default_repo_id": _strata_info["model_path"],
+    }
+
 
 _global_settings: Optional[Settings] = None
 

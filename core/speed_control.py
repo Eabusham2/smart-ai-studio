@@ -24,8 +24,12 @@ def install_speed_control(cls) -> None:
         self.speed_tuning_active = False
         self.speed_status = {"status": "idle", "message": "Load a model to configure speed."}
         self._speed_cancel_event = threading.Event()
+        self._speed_loading_thread = None
 
     def active_native(self):
+        controller = getattr(self, "controller_backend", None)
+        if getattr(self, "active_backend", None) == "controller" and getattr(controller, "runtime", None) == "strata":
+            return controller
         return {
             "mlx": getattr(self, "mlx_backend", None),
             "gguf": getattr(self, "gguf_backend", None),
@@ -35,7 +39,7 @@ def install_speed_control(cls) -> None:
     def cancel(self):
         self._speed_cancel_event.set()
 
-    def configure_locked(self, enabled=True, force=False, progress=None, cancelled=None):
+    def configure_locked(self, enabled=True, force=False, progress=None, cancelled=None, *, reset_cancel=True):
         backend = active_native(self)
         if backend is None or getattr(backend, "model", None) is None:
             self.auto_speed_enabled = bool(enabled)
@@ -51,13 +55,23 @@ def install_speed_control(cls) -> None:
             self.auto_speed_enabled = bool(enabled)
             self.speed_status = {"status": "unsupported" if enabled else "disabled", "message": "This runtime keeps its native execution settings."}
             return dict(self.speed_status)
+        # A cancel/unload can arrive while native weights are still loading.
+        # Automatic calibration belongs to that same load operation; it must
+        # not erase the request when the loader reaches its tuning phase.
+        if not reset_cancel and self._speed_cancel_event.is_set():
+            self.speed_status = {
+                "status": "cancelled",
+                "message": "Speed tuning cancelled before calibration; execution settings retained.",
+            }
+            return dict(self.speed_status)
         lock = runtime_lock(backend)
         if not lock.acquire(blocking=False):
             return {"status": "busy", "message": "Wait for inference or learning to finish before tuning."}
         previous_enabled = self.auto_speed_enabled
         try:
             self.auto_speed_enabled = bool(enabled)
-            self._speed_cancel_event.clear()
+            if reset_cancel:
+                self._speed_cancel_event.clear()
             self.speed_tuning_active = True
             backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
             if getattr(self, "_context_budget_tokens", 0):
@@ -97,15 +111,29 @@ def install_speed_control(cls) -> None:
     @functools.wraps(original_load)
     def load(self, *args, **kwargs):
         with self._model_lock:
-            result = original_load(self, *args, **kwargs)
-            if isinstance(result, dict) and result.get("status") == "loaded" and not getattr(self.settings, "use_mock", False):
-                result = dict(result)
-                result["speed"] = configure_locked(self, self.auto_speed_enabled)
-            return result
+            self._speed_cancel_event.clear()
+            previous_loading_thread = self._speed_loading_thread
+            self._speed_loading_thread = threading.get_ident()
+            try:
+                result = original_load(self, *args, **kwargs)
+                if isinstance(result, dict) and result.get("status") == "loaded" and not getattr(self.settings, "use_mock", False):
+                    result = dict(result)
+                    result["speed"] = configure_locked(self, self.auto_speed_enabled, reset_cancel=False)
+                return result
+            finally:
+                self._speed_loading_thread = previous_loading_thread
 
     @functools.wraps(original_unload)
     def unload(self, *args, **kwargs):
-        cancel(self)
+        # The loader's own same-thread teardown is setup for its next model.
+        # External unload/watchdog requests must still cancel before waiting.
+        if self._speed_loading_thread != threading.get_ident():
+            cancel(self)
+        controller = getattr(self, "controller_backend", None)
+        if getattr(controller, "runtime", None) == "strata":
+            # A silent native prefill can hold its HTTP read for minutes. Close
+            # that transport before waiting for any load/configuration lock.
+            controller.cancel_current_request()
         with self._model_lock:
             backend = active_native(self)
             if backend is not None:
@@ -113,7 +141,10 @@ def install_speed_control(cls) -> None:
                     result = original_unload(self, *args, **kwargs)
             else:
                 result = original_unload(self, *args, **kwargs)
-            self.speed_status = {"status": "idle", "message": "Load a model to configure speed."}
+            if isinstance(result, dict) and result.get("status") == "error":
+                self.speed_status = {"status": "error", "message": result.get("error", "Model unload failed.")}
+            else:
+                self.speed_status = {"status": "idle", "message": "Load a model to configure speed."}
             return result
 
     cls.__init__ = initialize

@@ -2,6 +2,8 @@
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from core.native_speed import install_native_runtime_lock
 from core.speed_control import install_speed_control
 
@@ -142,6 +144,63 @@ def test_unload_cancels_tune_before_waiting_for_model_lock():
     assert not tuning.is_alive() and not unloading.is_alive()
     assert engine.active_backend is None
     assert not engine.speed_tuning_active
+
+
+@pytest.mark.parametrize("action", ["cancel", "unload"])
+def test_cancel_during_weight_loading_is_not_cleared_by_automatic_tuning(action):
+    entered, release = threading.Event(), threading.Event()
+
+    class LoadingEngine:
+        def __init__(self):
+            self.settings = SimpleNamespace(use_mock=False)
+            self._model_lock = threading.Lock()
+            self.active_backend = None
+            self.mlx_backend = None
+
+        def load_model(self):
+            with self._model_lock:
+                self.unload_model()
+                self.active_backend = "mlx"
+                self.mlx_backend = FakeBackend()
+                entered.set()
+                assert release.wait(2)
+                return {"status": "loaded"}
+
+        def unload_model(self):
+            self.mlx_backend = None
+            self.active_backend = None
+            return {"status": "unloaded"}
+
+    install_speed_control(LoadingEngine)
+    engine = LoadingEngine()
+    results = []
+    loading = threading.Thread(target=lambda: results.append(engine.load_model()))
+    loading.start()
+    assert entered.wait(1)
+    backend = engine.mlx_backend
+    unloading = None
+    if action == "unload":
+        # Observe the external request, independently of any earlier setup.
+        engine._speed_cancel_event.clear()
+        unloading = threading.Thread(target=engine.unload_model)
+        unloading.start()
+        assert engine._speed_cancel_event.wait(1)
+    else:
+        engine.cancel_speed_tuning()
+    release.set()
+    loading.join(2)
+    assert not loading.is_alive()
+    assert results[0]["status"] == "loaded"
+    assert results[0]["speed"]["status"] == "cancelled"
+    assert backend.calls == []
+    if unloading is not None:
+        unloading.join(2)
+        assert not unloading.is_alive()
+        assert engine.active_backend is None
+    else:
+        # A later explicit request is a new operation and can clear the old cancel.
+        assert engine.configure_auto_speed(force=True)["status"] == "baseline"
+        assert len(backend.calls) == 1
 
 
 def test_direct_native_stream_owns_runtime_until_generator_closes():

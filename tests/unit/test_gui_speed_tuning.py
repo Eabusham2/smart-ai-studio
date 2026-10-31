@@ -182,6 +182,7 @@ def make_app(monkeypatch, tmp_path):
             self._memory_limit_enabled = True
             self._memory_limit_gb = 9.0
             self.sent = 0
+            self.queued_calls = []
 
         def _build_single_top_bar(self):
             self.btn_send = Widget(state="normal")
@@ -196,6 +197,9 @@ def make_app(monkeypatch, tmp_path):
 
         def _on_send_message(self):
             self.sent += 1
+
+        def _run_queued_task(self, *args, **kwargs):
+            self.queued_calls.append((args, kwargs))
 
     module = SimpleNamespace(
         SmartAIChatbotApp=App,
@@ -247,6 +251,117 @@ def test_ui_rejects_tuning_during_eval(monkeypatch, tmp_path):
     app.btn_speed_tune.cget("command")()
     assert not pending
     assert "evaluation" in app.lbl_speed_status.cget("text")
+
+
+def test_queued_learning_dispatch_is_preserved_across_speed_test(monkeypatch, tmp_path):
+    app, pending, _module = make_app(monkeypatch, tmp_path)
+    app.btn_speed_tune.cget("command")()
+    # The main chat queue has already removed this item before scheduling its
+    # dispatch. Starting Retune in that interval must not consume the item.
+    args = ("/learn source", "learn source", "/local/document.pdf", "")
+    app._run_queued_task(*args)
+    assert app.queued_calls == []
+    pending.pop()()
+    app.root.tick()  # Complete the test on the Tk poll.
+    app.root.tick()  # Resume the exact queued request once.
+    app.root.tick()
+    assert app.queued_calls == [(args, {})]
+
+
+def test_close_does_not_resume_deferred_chat_or_start_another_test(monkeypatch, tmp_path):
+    app, pending, _module = make_app(monkeypatch, tmp_path)
+    app.btn_speed_tune.cget("command")()
+    app._run_queued_task("queued", "queued", None, None)
+    app._on_close_app()
+    pending.pop()()
+    app.root.tick()
+    app.root.tick()
+    app.btn_speed_tune.cget("command")()
+    app._on_send_message()
+    assert not pending
+    assert app.sent == 0
+    assert app.queued_calls == []
+
+
+@pytest.mark.parametrize("busy", ["load", "manual_tune", "automatic_tune"])
+def test_eval_direct_start_cannot_race_model_loading_or_tuning(busy):
+    source = Path(__file__).parents[2] / "core" / "gui_eval_panel.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    install = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "install_gui_eval_panel")
+    method = next(node for node in install.body if isinstance(node, ast.FunctionDef) and node.name == "_start_eval")
+    active_info = Mock(side_effect=AssertionError("Eval must not inspect or load another runtime while busy"))
+    messagebox = SimpleNamespace(showinfo=Mock())
+    namespace = {"_eval_alive": lambda app: False, "_active_text_info": active_info, "messagebox": messagebox}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
+    app = SimpleNamespace(
+        _model_load_in_progress=busy == "load", _speed_ui_running=busy == "manual_tune",
+        engine=SimpleNamespace(speed_tuning_active=busy == "automatic_tune"),
+    )
+    namespace["_start_eval"](app)
+    active_info.assert_not_called()
+    messagebox.showinfo.assert_called_once()
+
+
+@pytest.mark.parametrize("handler", ["_start_eval", "_open_eval_window"])
+def test_strata_training_eval_is_rejected_before_unloading_or_starting_a_process(handler):
+    source = Path(__file__).parents[2] / "core" / "gui_eval_panel.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    install = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "install_gui_eval_panel")
+    method = next(node for node in install.body if isinstance(node, ast.FunctionDef) and node.name == handler)
+    messagebox = SimpleNamespace(showinfo=Mock())
+    namespace = {
+        "_eval_alive": lambda app: False,
+        "_active_text_info": lambda app: {"controller_runtime": "strata", "model_type": "text"},
+        "messagebox": messagebox,
+    }
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
+    app = SimpleNamespace(engine=SimpleNamespace(unload_model=Mock()))
+    namespace[handler](app)
+    app.engine.unload_model.assert_not_called()
+    messagebox.showinfo.assert_called_once()
+    assert messagebox.showinfo.call_args.args[0] == "Inference Only"
+
+
+def test_cancel_is_available_during_strata_setup_before_auto_speed_starts(monkeypatch, tmp_path):
+    import threading
+
+    app, _pending, _module = make_app(monkeypatch, tmp_path)
+    app._model_load_in_progress = True
+    app._model_load_cancel_event = threading.Event()
+    app.engine.speed_tuning_active = False
+    app.root.tick()
+    assert app.btn_speed_cancel.cget("state") == "normal"
+    app.btn_speed_cancel.cget("command")()
+    assert app._model_load_cancel_event.is_set()
+    assert app.engine.cancel_requested
+
+
+@pytest.mark.parametrize("cleanup_succeeds", [True, False])
+def test_close_uses_owned_async_unload_and_keeps_retry_available_on_failure(monkeypatch, tmp_path, cleanup_succeeds):
+    app, _pending, _module = make_app(monkeypatch, tmp_path)
+    app.engine.controller_backend = SimpleNamespace(runtime="strata", _manager=object())
+    attempts = []
+
+    def unload():
+        attempts.append(True)
+        app._model_load_in_progress = True
+
+    app._unload_strata_async = unload
+    app._on_close_app()
+    assert attempts == [True]
+    assert not getattr(app, "closed", False)
+    app._model_load_in_progress = False
+    app._strata_unload_pending = not cleanup_succeeds
+    if cleanup_succeeds:
+        app.engine.controller_backend = None
+    app.root.tick()  # Ordinary status poll.
+    app.root.tick()  # Deferred close after worker completion.
+    assert attempts == [True]
+    assert bool(getattr(app, "closed", False)) is cleanup_succeeds
+    if not cleanup_succeeds:
+        assert not app._speed_close_requested
+        assert not app._speed_ui_closed
+        assert "Retry unload" in app.lbl_speed_status.cget("text")
 
 
 def test_automatic_load_restores_controls_using_loaded_state(monkeypatch, tmp_path):
@@ -314,6 +429,7 @@ def test_text_tab_switch_uses_async_loader_without_implicit_download(cached, loc
         audio_engine=SimpleNamespace(unload_model=Mock()),
         media_engine=SimpleNamespace(unload_model=Mock()),
         is_model_loaded=True, synapses_learned_count=0,
+        _model_is_cached=lambda _info: cached,
         lbl_model_status=Mock(), lbl_params=Mock(),
         C={"accent_cyan": "cyan", "accent_yellow": "yellow"},
     )

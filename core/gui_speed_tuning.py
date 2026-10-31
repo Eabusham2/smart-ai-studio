@@ -164,10 +164,14 @@ def install_gui_speed_tuning() -> None:
 
     def _cancel(self) -> None:
         self._speed_cancel_event.set()
+        load_cancel = getattr(self, "_model_load_cancel_event", None)
+        if load_cancel is not None:
+            load_cancel.set()
         cancel = getattr(self.engine, "cancel_speed_tuning", None)
         if callable(cancel):
             cancel()
-        _status(self, "Stopping speed test at the next safe token boundary…")
+        _status(self, "Cancelling model setup…" if getattr(self, "_model_load_in_progress", False)
+                else "Stopping speed test at the next safe token boundary…")
 
     # Capture and restore existing widget states; do not enable an action that
     # was disabled by the model loader, eval, or another pre-existing policy.
@@ -210,6 +214,8 @@ def install_gui_speed_tuning() -> None:
             self._speed_locked_loaded = None
 
     def _run(self, *, enabled: bool, force: bool) -> None:
+        if getattr(self, "_speed_close_requested", False):
+            return
         _sync_memory_limit(self)
         reason = speed_busy_reason(self)
         if reason:
@@ -236,7 +242,9 @@ def install_gui_speed_tuning() -> None:
         self.chk_auto_speed.configure(state="disabled")
         self.btn_speed_tune.configure(state="disabled")
         self.btn_speed_cancel.configure(state="normal")
-        _status(self, "Measuring speed…" if enabled else "Restoring default execution settings…")
+        is_strata = getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
+        _status(self, "Checking Strata placement…" if is_strata else
+                "Measuring speed…" if enabled else "Restoring default execution settings…")
 
         def worker():
             try:
@@ -272,14 +280,17 @@ def install_gui_speed_tuning() -> None:
             pass
 
         active = speed_tuning_active(self)
-        _lock_controls(self, active or bool(getattr(self, "_model_load_in_progress", False)))
+        closing = bool(getattr(self, "_speed_close_requested", False))
+        _lock_controls(self, active or bool(getattr(self, "_model_load_in_progress", False)) or closing)
         enabled = bool(getattr(self.engine, "auto_speed_enabled", True))
-        busy = bool(speed_busy_reason(self))
+        busy = bool(speed_busy_reason(self)) or closing
         self.chk_auto_speed.configure(state="disabled" if busy or not _is_text(self) else "normal")
         self.btn_speed_tune.configure(
             state="normal" if enabled and not busy and _is_text(self) and self.is_model_loaded else "disabled",
+            text=("Check placement" if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata" else "Retune"),
         )
-        self.btn_speed_cancel.configure(state="normal" if active else "disabled")
+        loading = getattr(self, "_model_load_in_progress", False) and not getattr(self, "_model_unload_in_progress", False)
+        self.btn_speed_cancel.configure(state="normal" if active or loading else "disabled")
         current = dict(getattr(self.engine, "speed_status", {}) or {})
         if not self._speed_ui_running and current != self._speed_last_engine_status:
             self._speed_last_engine_status = current
@@ -297,6 +308,7 @@ def install_gui_speed_tuning() -> None:
             return
         self._speed_ui_running = False
         self._speed_ui_closed = False
+        self._speed_close_requested = False
         self._speed_events = queue.Queue()
         self._speed_cancel_event = threading.Event()
         self._speed_control_states = {}
@@ -364,11 +376,29 @@ def install_gui_speed_tuning() -> None:
         return result
 
     def close_with_speed(self):
+        self._speed_close_requested = True
         if hasattr(self, "_speed_cancel_event"):
             _cancel(self)
+        # An idle Strata server can still need several seconds to drain. Keep
+        # Tk responsive while the existing owned-unload worker performs that
+        # cleanup, just as when Close arrives during a model operation.
+        controller = getattr(self.engine, "controller_backend", None)
+        pending = bool(getattr(self, "_model_load_in_progress", False))
+        if (not pending and getattr(controller, "runtime", None) == "strata"
+                and getattr(controller, "_manager", None) is not None
+                and not getattr(self, "_speed_close_cleanup_started", False)):
+            self._speed_close_cleanup_started = True
+            self._unload_strata_async()
         if speed_tuning_active(self) or getattr(self, "_model_load_in_progress", False):
-            _status(self, "Stopping speed test before closing…")
+            _status(self, "Stopping model operation before closing…")
             self.root.after(100, lambda: close_with_speed(self))
+            return
+        if getattr(self, "_speed_close_cleanup_started", False) and getattr(self, "_strata_unload_pending", False):
+            # A failed stop keeps its owner available for retry. Do not discard
+            # the window or recursively start an endless series of stop jobs.
+            self._speed_close_requested = False
+            self._speed_close_cleanup_started = False
+            _status(self, "Strata cleanup is incomplete. Use Retry unload, then close Studio.")
             return
         self._speed_ui_closed = True
         poll_id = getattr(self, "_speed_poll_id", None)
@@ -379,10 +409,18 @@ def install_gui_speed_tuning() -> None:
                 pass
         return original_close(self)
 
-    def guard(method):
+    def guard(method, *, defer_queued=False):
         @functools.wraps(method)
         def guarded(self, *args, **kwargs):
+            if getattr(self, "_speed_close_requested", False):
+                return None
             if speed_tuning_active(self) or getattr(self, "_model_load_in_progress", False):
+                if defer_queued:
+                    # The queue dispatcher has already popped this user-owned
+                    # chat/learn item. Preserve it across a speed test started
+                    # in the dispatch delay instead of silently dropping it.
+                    self.root.after(250, lambda: guarded(self, *args, **kwargs))
+                    return None
                 _status(self, "Speed tuning is running. Cancel it or wait before using the model.")
                 return None
             _sync_memory_limit(self)
@@ -399,7 +437,7 @@ def install_gui_speed_tuning() -> None:
     ):
         method = getattr(cls, name, None)
         if callable(method):
-            setattr(cls, name, guard(method))
+            setattr(cls, name, guard(method, defer_queued=name == "_run_queued_task"))
 
     cls._build_single_top_bar = build_with_speed
     cls._apply_theme_colors = theme_with_speed
