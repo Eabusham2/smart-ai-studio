@@ -1,8 +1,8 @@
-"""Strict model-admission policy for Smart AI Studio.
+"""Model metadata and legacy ternary-specific policy helpers for Smart AI Studio.
 
-Only text/chat models must prove native ternary / 1.58-bit style weights.
-Image, video, and audio generation models are admitted by their media task.
-"2-bit" by itself is NOT accepted as evidence of ternary weights.
+The generic admit_* APIs accept a chosen model based on its real artifacts.
+The enforce_*_ternary APIs remain for callers explicitly requiring ternary.
+"2-bit" by itself is never evidence of ternary weights.
 """
 from __future__ import annotations
 
@@ -46,6 +46,18 @@ TEXT_PIPELINE_MARKERS = (
     "automatic-speech-recognition",
     "conversational",
 )
+
+
+def admit_local_model(path: str, gguf_file: str | None = None) -> Tuple[bool, str, Dict[str, Any]]:
+    """Inspect a chosen local artifact without a ternary-only restriction."""
+    from core.model_admission import admit_local_model as inspect_selected
+    return inspect_selected(path, gguf_file=gguf_file)
+
+
+def admit_hf_model(repo_id: str, gguf_file: str | None = None) -> Tuple[bool, str, Dict[str, Any]]:
+    """Pin and inspect the user's exact Hub model/weight selection."""
+    from core.model_admission import admit_hf_model as inspect_selected
+    return inspect_selected(repo_id, gguf_file=gguf_file)
 
 
 def _blob(values: Iterable[Any]) -> str:

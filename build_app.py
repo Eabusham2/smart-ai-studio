@@ -14,6 +14,62 @@ import subprocess
 import sys
 
 
+def _write_macos_runtime_scripts(app_code_dir: str):
+    """Provide explicit dependency setup and one shared package launch path."""
+    launch = r'''#!/usr/bin/env bash
+set -e
+SMARTAI_CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SMARTAI_CODE_DIR"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH"
+SMARTAI_VENV="$HOME/Library/Application Support/SmartAI/python"
+SMARTAI_PYTHON=""
+for candidate in "$SMARTAI_VENV/bin/python" "$(command -v python3 || true)" /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ] && "$candidate" -c 'import sys, tkinter; assert sys.version_info >= (3, 10)' 2>/dev/null; then
+        SMARTAI_PYTHON="$candidate"
+        break
+    fi
+done
+if [ -z "$SMARTAI_PYTHON" ]; then
+    echo "Python 3.10+ with Tkinter is required. Install a native Python, then run Install_Dependencies.command."
+    exit 1
+fi
+exec "$SMARTAI_PYTHON" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
+'''
+    install = r'''#!/usr/bin/env bash
+set -e
+SMARTAI_CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SMARTAI_CODE_DIR"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH"
+SMARTAI_PYTHON="$(command -v python3 || true)"
+if [ -z "$SMARTAI_PYTHON" ] || ! "$SMARTAI_PYTHON" -c 'import sys, tkinter; assert sys.version_info >= (3, 10)'; then
+    echo "Install Python 3.10+ with Tkinter before running this dependency installer."
+    exit 1
+fi
+SMARTAI_ARCH="$("$SMARTAI_PYTHON" -c 'import platform; print(platform.machine())')"
+if [ "$(uname -m)" = arm64 ] && [ "$SMARTAI_ARCH" != arm64 ]; then
+    echo "Use an arm64 Python on Apple Silicon; an Intel Python cannot build the native Metal runtime."
+    exit 1
+fi
+SMARTAI_VENV="$HOME/Library/Application Support/SmartAI/python"
+echo "Installing Studio dependencies into $SMARTAI_VENV. This downloads Python packages, not model weights."
+"$SMARTAI_PYTHON" -m venv "$SMARTAI_VENV"
+"$SMARTAI_VENV/bin/python" -m pip install --upgrade pip
+SMARTAI_BUILD_ARGS=()
+if [ "$SMARTAI_ARCH" = arm64 ]; then
+    echo "Building stock llama-cpp-python with Metal. Xcode Command Line Tools must be installed."
+    export CMAKE_ARGS="${CMAKE_ARGS:+$CMAKE_ARGS }-DGGML_METAL=on"
+    SMARTAI_BUILD_ARGS=(--no-binary=llama-cpp-python)
+fi
+"$SMARTAI_VENV/bin/python" -m pip install "${SMARTAI_BUILD_ARGS[@]}" -r "$SMARTAI_CODE_DIR/requirements.txt"
+echo "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command."
+'''
+    for name, content in (("launch_studio.sh", launch), ("Install_Dependencies.command", install)):
+        path = os.path.join(app_code_dir, name)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        os.chmod(path, 0o755)
+
+
 def create_macos_bundle(dist_dir: str, app_name: str):
     """Creates a native macOS .app bundle and compiles a .dmg disk image installer."""
     print(f"[*] Assembling macOS {app_name}.app Application Bundle...")
@@ -30,7 +86,7 @@ on run
     set myPath to POSIX path of (path to me)
     set resDir to myPath & "Contents/Resources/app"
     set logFile to "/tmp/smartai_launch.log"
-    set shScript to "export PATH=\\"/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/Library/Frameworks/Python.framework/Versions/3.11/bin:/Library/Frameworks/Python.framework/Versions/3.10/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH\\"; cd " & quoted form of resDir & "; PYTHON_CMD=\\"\\"; for C in \\"$(which python3 2>/dev/null)\\" /opt/homebrew/bin/python3 /usr/local/bin/python3 /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 \\"$HOME/.pyenv/shims/python3\\"; do if [ -n \\"$C\\" ] && [ -x \\"$C\\" ]; then if \\"$C\\" -c \\"import tkinter\\" 2>/dev/null; then PYTHON_CMD=\\"$C\\"; break; fi; fi; done; if [ -z \\"$PYTHON_CMD\\" ]; then PYTHON_CMD=\\"python3\\"; fi; \\"$PYTHON_CMD\\" app_gui.py > " & quoted form of logFile & " 2>&1 &"
+    set shScript to "/bin/bash " & quoted form of (resDir & "/launch_studio.sh") & " > " & quoted form of logFile & " 2>&1 &"
     try
         do shell script shScript
     on error errMsg
@@ -46,7 +102,7 @@ end run
     os.makedirs(app_code_dir, exist_ok=True)
 
     # 2. Copy application source trees & icons
-    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "AppIcon.icns"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "AppIcon.icns", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(app_code_dir, item)
         if os.path.isdir(src):
@@ -55,6 +111,8 @@ end run
             shutil.copytree(src, dst)
         elif os.path.isfile(src):
             shutil.copy2(src, dst)
+
+    _write_macos_runtime_scripts(app_code_dir)
 
     if os.path.exists("AppIcon.icns"):
         shutil.copy2("AppIcon.icns", os.path.join(resources_dir, "AppIcon.icns"))
@@ -100,7 +158,7 @@ end run
 </dict>
 </plist>
 """
-    with open(os.path.join(contents_dir, "Info.plist"), "w") as f:
+    with open(os.path.join(contents_dir, "Info.plist"), "w", encoding="utf-8", newline="\n") as f:
         f.write(plist_content)
 
     # 4. Clear macOS quarantine attributes
@@ -125,13 +183,22 @@ end run
         shutil.copytree(app_bundle, os.path.join(dmg_temp, f"{app_name}.app"))
         
         # Copy quick launchers and helper scripts
-        for helper in ["Launch_SmartAI_macOS.command", "Fix_Mac_Permissions.command", "README.md"]:
+        for helper in ["Fix_Mac_Permissions.command", "README.md"]:
             helper_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), helper)
             if os.path.exists(helper_path):
                 dest = os.path.join(dmg_temp, helper)
                 shutil.copy2(helper_path, dest)
                 if helper.endswith(".command"):
                     os.chmod(dest, 0o755)
+
+        for name, target in (("Launch_SmartAI_macOS.command", "launch_studio.sh"),
+                             ("Install_Dependencies.command", "Install_Dependencies.command")):
+            dest = os.path.join(dmg_temp, name)
+            with open(dest, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write('#!/usr/bin/env bash\nset -e\n'
+                             'SMARTAI_PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+                             f'exec /bin/bash "$SMARTAI_PACKAGE_DIR/{app_name}.app/Contents/Resources/app/{target}" "$@"\n')
+            os.chmod(dest, 0o755)
 
         if os.path.exists(dmg_path):
             try:

@@ -37,8 +37,8 @@ class MediaGenerationEngine:
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-                torch.mps.empty_cache()
+            from core.training_memory import clear_available_mps_cache
+            clear_available_mps_cache(torch)
         except Exception:
             pass
 

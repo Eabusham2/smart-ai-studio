@@ -13,6 +13,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -158,25 +159,89 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             env["LD_LIBRARY_PATH"] = os.pathsep.join(lib_dirs + [env.get("LD_LIBRARY_PATH", "")])
         return env
 
-    def _call(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _call(self, payload: Dict[str, Any], *, progress=None) -> Dict[str, Any]:
         with self._io_lock:
             if self._worker is None or self._worker.poll() is not None:
                 raise RuntimeError("Prism GGUF worker is not running")
             assert self._worker.stdin is not None and self._worker.stdout is not None
             self._worker.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
             self._worker.stdin.flush()
-            line = self._worker.stdout.readline()
-            if not line:
-                raise RuntimeError("Prism GGUF worker exited without a response")
-            result = json.loads(line)
-            if result.get("status") == "error":
-                raise RuntimeError(str(result.get("error") or "Prism worker error"))
-            return result
+            while True:
+                line = self._worker.stdout.readline()
+                if not line:
+                    raise RuntimeError("Prism GGUF worker exited without a response")
+                result = json.loads(line)
+                if result.get("event") == "speed_progress":
+                    if progress is not None:
+                        try:
+                            progress(str(result.get("message") or ""))
+                        except Exception:
+                            pass
+                    continue
+                if result.get("status") == "error":
+                    raise RuntimeError(str(result.get("error") or "Prism worker error"))
+                return result
+
+    def configure_auto_speed(self, enabled=True, force=False, progress=None, cancelled=None) -> Dict[str, Any]:
+        """Keep tuning and private-kernel measurements inside the Prism worker."""
+        if self.model is None:
+            return {"status": "unsupported", "settings": {},
+                    "message": "Load a Prism model before tuning its speed."}
+        # The worker cannot read another stdin command while a native request is
+        # active. A private marker conveys cancellation at token boundaries.
+        with tempfile.TemporaryDirectory(prefix="smartai-prism-tune-") as directory:
+            marker = Path(directory) / "cancel"
+            stopped = threading.Event()
+
+            def cancellation_requested():
+                try:
+                    return cancelled is not None and cancelled()
+                except Exception:
+                    return True
+
+            # A cached profile can apply before the OS schedules the watcher.
+            # Carry an existing cancellation into the worker's first check.
+            if cancellation_requested():
+                marker.touch()
+
+            def watch_cancel():
+                while not stopped.is_set():
+                    if cancellation_requested():
+                        marker.touch()
+                        return
+                    stopped.wait(0.05)
+
+            watcher = threading.Thread(target=watch_cancel, name="prism-speed-cancel", daemon=True)
+            watcher.start()
+            try:
+                response = self._call({
+                    "op": "tune_speed", "enabled": bool(enabled), "force": bool(force),
+                    "cancel_path": str(marker),
+                    "max_process_gb": getattr(self, "speed_memory_limit_gb", None),
+                    "memory_owner_pid": os.getpid(),
+                }, progress=progress)
+                self.auto_speed_result = dict(response.get("result") or {})
+            except Exception as exc:
+                self.auto_speed_result = {"status": "error", "settings": {},
+                                          "message": f"Prism speed tuning failed: {str(exc)[:250]}"}
+            finally:
+                stopped.set()
+                watcher.join(timeout=1.0)
+        return dict(self.auto_speed_result)
 
     def load_model(self) -> bool:
         if not os.path.isfile(self.model_path):
+            self.last_error = "The selected Prism GGUF file does not exist."
             return False
         self.unload_model()
+        self.last_error = ""
+        try:
+            from core.gguf_metadata import inspect_gguf
+            metadata = inspect_gguf(self.model_path)
+            self.model_path = metadata["model_path"]
+        except (OSError, ValueError) as exc:
+            self.last_error = str(exc)
+            return False
         os.makedirs(self.adapter_root, exist_ok=True)
         config = {
             "model_path": self.model_path,
@@ -185,12 +250,18 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             "n_gpu_layers": self.n_gpu_layers,
             "n_ctx": self.n_ctx,
             "verbose": self.verbose,
+            "n_threads": self.n_threads,
+            "n_threads_batch": self.n_threads_batch,
+            "auto_memory_placement": self.auto_memory_placement,
+            "memory_limit_gb": self.memory_limit_gb,
+            "memory_owner_pid": os.getpid(),
         }
         config_path = os.path.join(self.adapter_root, "prism-worker-config.json")
         with open(config_path, "w", encoding="utf-8") as handle:
             json.dump(config, handle)
 
         err = open(self._worker_error_log, "a", encoding="utf-8")
+        error_start = err.tell()
         try:
             self._worker = subprocess.Popen(
                 [sys.executable, "-m", "core.engines.prism_gguf_worker", config_path],
@@ -210,7 +281,10 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             if self._worker.poll() is not None:
                 break
             try:
-                self._call({"op": "ping"})
+                ready = self._call({"op": "ping"})
+                self.memory_placement = dict(ready.get("memory_placement") or {})
+                if "n_gpu_layers" in self.memory_placement:
+                    self.n_gpu_layers = int(self.memory_placement["n_gpu_layers"])
                 self.model = _PrismModelProxy(self)
                 self.chat_handler = object() if self.mmproj_path else None
                 self.is_gguf_available = True
@@ -220,7 +294,20 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                 time.sleep(0.25)
 
         self.unload_model()
-        raise RuntimeError(f"Prism GGUF worker failed to start: {last_error or 'worker exited'}")
+        detail = str(last_error or "worker exited")
+        try:
+            # Keep the native encoding/allocation error visible without reading
+            # an unbounded log or reporting an unrelated previous launch.
+            with open(self._worker_error_log, "rb") as log:
+                log.seek(0, os.SEEK_END)
+                log.seek(max(error_start, log.tell() - 4096))
+                native_error = log.read(4096).decode("utf-8", errors="replace").strip()
+            if native_error:
+                detail += ": " + native_error
+        except OSError:
+            pass
+        self.last_error = f"Prism GGUF worker failed to start: {detail}"
+        raise RuntimeError(self.last_error)
 
     def generate_branches(
         self,
@@ -324,5 +411,6 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                     except Exception:
                         pass
         self._worker = None
+        self._speed_tuner = None
         self.model = None
         self.chat_handler = None

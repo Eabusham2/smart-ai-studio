@@ -83,6 +83,22 @@ def backend_label(backend: Any) -> str:
     return type(backend).__name__
 
 
+def clear_available_mps_cache(torch_module) -> None:
+    """Do not enter the native MPS allocator on a host without an MPS device.
+
+    A PyTorch build can expose torch.mps on a macOS runner without a usable Metal
+    device. Calling empty_cache there can abort in native code, outside Python's
+    exception handling. Availability must be checked before touching that cache.
+    """
+    backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+    available = getattr(backend, "is_available", None)
+    if not callable(available) or not available():
+        return
+    empty = getattr(getattr(torch_module, "mps", None), "empty_cache", None)
+    if callable(empty):
+        empty()
+
+
 def release_training_memory(backend: Any = None) -> Dict[str, float]:
     """Drop transient Python/framework caches without unloading the live inference model."""
     before = process_rss_mb()
@@ -114,11 +130,10 @@ def release_training_memory(backend: Any = None) -> Dict[str, float]:
                 torch.cuda.ipc_collect()
             except Exception:
                 pass
-        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-            try:
-                torch.mps.empty_cache()
-            except Exception:
-                pass
+        try:
+            clear_available_mps_cache(torch)
+        except Exception:
+            pass
     except Exception:
         pass
 

@@ -37,6 +37,54 @@ Media commands documented there include:
 
 The project document is the authoritative reference for implementation details; this README remains the quick-start/project overview.
 
+### Your chosen model: automatic placement and speed configuration
+
+Import a local model or fetch an exact Hugging Face artifact. Studio preserves
+**your model, selected files and quantization**, including nonternary models;
+multiple GGUF choices require an explicit filename. Downloads are revision
+pinned and complete shard groups are inspected before registration. Choose
+**Automatic**, **Native** or **Strata** as the runtime preference.
+
+Compatible large GGUFs can use native GPU/CPU placement and memory-mapped
+weights. Supported Transformers checkpoints can dispatch across GPU, CPU and
+disk for inference. Supported MoE GGUF layouts can use the actual
+[Strata](https://github.com/Niko1221/Strata) engine's GPU/RAM/SSD expert placement.
+**Gyro-S and Q2_0 are optional examples, not a model whitelist or an automatic
+replacement for a model that fails to load.** The existing default is unchanged.
+
+Managed Strata uses a private, verified **v0.2.8 / Terminal Control 0.1.54**,
+checks the exact selected source with the official planner, prepares it in a
+source-specific directory, and starts an authenticated local service owned by
+Studio. Unsupported architecture/encoding combinations fail with an explanation.
+A model larger than VRAM can run through a compatible offload path, but this does
+not guarantee that every model fits RAM, runs quickly, or has a supported loader.
+
+For a **Qwen3.8-Flash-Next ternary model on a Mac**, inspect the actual format.
+Strata Metal's Gyro APR trellis support is **nonternary** and does not establish
+support for true `TQ1_0`, `TQ2_0` or `PTQ1_0`. Jakevin's custom ternary export and
+the Qwen48 T5 export require their publisher-specific MLX/oMLX runtimes, which
+this integration does not add. Studio does not replace them with Gyro or Q2.
+See the [exact format and Mac limits](docs/STRATA_AUTO_SPEED.md#qwen38-flash-next-ternary-on-a-mac).
+
+An **8 GB GPU + 32 GB RAM + fast SSD** is a relevant configuration for some
+supported Strata packs. The
+[RTX 5060 Laptop report](https://www.reddit.com/r/LocalLLaMA/comments/1xft2ae/have_8_gb_of_vram_and_32_gb_of_ram_you_can_run/)
+is an upstream community result, not a Studio benchmark or a speed guarantee.
+The example downloads are **58.5 GB for Gyro-S** and **66.4 GB for Q2_0**, with
+rough free-SSD planning estimates of **94.3 GB** and **116.4 GB** respectively,
+plus runtime/app data. Custom models have their own preparation requirements.
+
+**Auto speed** and **Retune** separately compare conservative execution settings
+on supported loaded MLX and llama.cpp models, accepting repeatable gains only
+with the same calibration tokens. Strata's **Check placement** reports its
+configuration; it does not run the upstream quick/thorough tuner or claim a
+measured gain. Strata and CPU/disk-dispatched Transformers are inference only;
+other training-capable backends retain their existing learning behavior.
+
+See **[Chosen-model placement, Strata, and native auto speed](docs/STRATA_AUTO_SPEED.md)**
+for import behavior, exact sources, quality defaults, storage, cancellation,
+platform limits and verification.
+
 ---
 
 ## 🏷️ Repository Tags & Topics
@@ -75,13 +123,21 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
 
 ## 🤖 Model Matrix & Architectures
 
-Smart AI Studio features seamless mutual-exclusion unified memory switching across three specialized local model backends:
+Smart AI Studio switches between its existing local model backends and the
+optional, separately managed Strata engine:
 
 | Model Tab | Parameter Scale | Quantization / Precision | VRAM Footprint | Primary Specialization |
 | :--- | :---: | :---: | :---: | :--- |
 | **✦ Ternary Bonsai** | `27.4B Base` | `1.58-Bit BitLinear (2-bit MLX)` | `~5.8 GB` | Complex reasoning, multi-step math, and software architecture |
 | **⚡ Qwen 3.8 Flash Next** | `3.8B Base` | `1.58-Bit / 4-bit KV Cache` | `~1.8 GB` | High-throughput sub-second coding and concise query answering |
 | **🔓 Dolphin Vision 2.9** | `7.0B Base` | `Abliterated Multimodal Vision` | `~4.8 GB` | Uncensored multimodal comprehension, image analysis, and vector art |
+| **Strata Gyro-S** | `~125B MoE + 51B n-gram` | `Gyro APR trellis; nonternary` | `Automatic GPU / RAM / SSD placement` | Large text-model inference; no weight training |
+| **Strata Q2_0** | `~125B MoE + 51B n-gram` | `ISTA GSQ-RCO Q2_0; nonternary` | `Automatic GPU / RAM / SSD placement` | Large text-model inference; no weight training |
+
+The last two rows are examples. Imported models retain their own inspected
+format, context and source identity. These large Qwen packs are separate from
+the smaller existing Qwen preset; their publisher links and storage estimates
+are in the [Strata guide](docs/STRATA_AUTO_SPEED.md#example-strata-presets).
 
 ---
 
@@ -95,6 +151,11 @@ The studio auto-detects physical host RAM via `core.platform` to maximize contex
 | **$\ge$ 32 GB RAM** (M-Pro / 32GB GPUs) | **131,072 Tokens (128K)** | Multi-file refactoring, deep dependency mapping |
 | **$\ge$ 15 GB RAM** (16GB Baseline) | **65,536 Tokens (64K)** | Standard multi-turn coding and continuous reasoning |
 | **$<$ 15 GB RAM** (8GB Lean) | **32,768 Tokens (32K)** | Portable laptop execution with minimal memory usage |
+
+The two Strata examples start at **32K context**; custom entries retain their
+inspected limits and selected context. The table above is not a fit guarantee
+for an imported model. More context reserves additional runtime memory and can
+reduce available model residency. Placement does not silently shrink context.
 
 ---
 
@@ -132,6 +193,15 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+Native GGUF inference on Apple Silicon uses stock `llama-cpp-python` with Metal.
+For the packaged Mac app, run **Install_Dependencies.command** once before using
+that backend. The command is beside the app in the regular package; in the
+multipart model bundle it is inside **SmartAI.app → Show Package Contents →
+Contents/Resources/app**. It requires native Python 3.10+ with Tkinter and Xcode
+Command Line Tools, installs into a user environment, and builds the Metal
+binding. The app launcher uses that environment. It does not download models;
+managed Strata installs its own separate verified runtime when selected.
+
 ### 3. Launch Desktop Studio (GUI)
 ```bash
 python3 app_gui.py
@@ -141,6 +211,25 @@ python3 app_gui.py
 ```bash
 python3 main.py --live
 ```
+
+### Optional: load a large model through Strata
+
+Import your selected compatible GGUF (or fetch its exact Hugging Face file) and
+choose **Automatic** or explicitly **Strata**. The official preflight checks
+whether that artifact has a usable native preparation path. Alternatively,
+select the optional **Strata Gyro-S** or **Strata Q2_0** example.
+
+First load installs a verified private Terminal and compatible engine, then
+prepares the selected files. Built-in examples download their pinned weights;
+custom local preparation does not fetch replacement model weights. Follow the
+loading progress. **Cancel** retains reusable downloads/preparation files, and
+closing or unloading stops only Studio's owned service. No global Strata install
+or manual local server is required.
+
+Use the [platform and memory guide](docs/STRATA_AUTO_SPEED.md#platforms-and-memory)
+for the exact backend requirements. Apple Silicon requires **macOS 15+** for
+managed Strata. A Mac being able to run a small MLX model does not establish
+memory fit or format support for a larger custom ternary checkpoint.
 
 ---
 

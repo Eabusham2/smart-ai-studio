@@ -37,6 +37,8 @@ class DummyPro:
         }
 
     def unload_model(self):
+        if getattr(self, "unload_error", False):
+            return {"status": "error", "unloaded": False}
         self._loaded = False
         self.active_backend = None
         return {"status": "unloaded"}
@@ -122,3 +124,50 @@ def test_mock_load_never_marks_real_cache_ready():
     engine = DummyPro(use_mock=True, loaded=False)
     engine.load_model("Mock Model", model_path="owner/mock")
     assert is_model_registered_loaded("owner/mock") is False
+
+
+def test_failed_strata_shutdown_keeps_registration_until_successful_retry():
+    engine = DummyPro(use_mock=False, loaded=False)
+    engine.load_model("Strata model", model_path="strata://gyro-s", backend="controller")
+    engine.controller_backend = SimpleNamespace(runtime="strata")
+    engine.unload_error = True
+    assert engine.unload_model()["status"] == "error"
+    assert is_model_registered_loaded("strata://gyro-s")
+    engine.unload_error = False
+    assert engine.unload_model()["status"] == "unloaded"
+    assert not is_model_registered_loaded("strata://gyro-s")
+
+
+@pytest.mark.parametrize("usage", [{}, {"completion_tokens": 83, "prompt_tokens": 120, "total_tokens": 203}])
+def test_strata_telemetry_uses_native_usage_and_owned_process_memory(monkeypatch, usage):
+    from core.memory_watchdog import SystemMemoryWatchdog
+
+    observed = []
+
+    def memory(owned_pids=None):
+        observed.append(owned_pids)
+        return {"total_allocated_gb": 4.5}
+
+    monkeypatch.setattr(SystemMemoryWatchdog, "get_detailed_memory_breakdown", memory)
+    engine = DummyPro(use_mock=False, loaded=True)
+    engine.active_backend = "controller"
+    engine.controller_backend = SimpleNamespace(
+        runtime="strata", last_branch_usage=usage, owned_process_ids=lambda: [123, 456],
+    )
+    engine.mlx_backend = SimpleNamespace(last_tok_per_sec=999.0, last_generation_cap_reason="Old MLX request")
+    response, meta = engine.solve("hello")
+    assert response == "one two three four"
+    assert meta["backend"] == "strata"
+    assert meta["decode_tok_speed"] == 0.0
+    assert meta["generation_cap_reason"] == ""
+    assert meta["usage"] == usage
+    assert meta["memory_rss_mb"] == 4.5 * 1024
+    assert observed == [[123, 456]]
+    if usage:
+        assert meta["tokens_generated"] == 83
+        assert meta["token_usage_available"] is True
+        assert meta["tok_speed"] * meta["measured_wall_time_s"] == pytest.approx(83)
+    else:
+        assert "tokens_generated" not in meta
+        assert meta["token_usage_available"] is False
+        assert meta["tok_speed"] == 0.0

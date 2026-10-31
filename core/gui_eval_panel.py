@@ -423,9 +423,21 @@ def install_gui_eval_panel() -> None:
     def _start_eval(self):
         if _eval_alive(self):
             return
+        if getattr(self, "_model_load_in_progress", False):
+            messagebox.showinfo("Model Loading", "Wait for model loading to finish before starting evaluation.")
+            return
+        if (
+            getattr(self, "_speed_ui_running", False)
+            or getattr(getattr(self, "engine", None), "speed_tuning_active", False)
+        ):
+            messagebox.showinfo("Speed Test Running", "Finish or cancel speed tuning before starting evaluation.")
+            return
         info = _active_text_info(self)
         if info is None:
             messagebox.showinfo("Text Models Only", "The evaluation suite is available only for text models.")
+            return
+        if info.get("controller_runtime") == "strata":
+            messagebox.showinfo("Inference Only", "This evaluation suite includes weight training. Select a trainable model; the Strata integration supports text inference.")
             return
 
         try:
@@ -540,6 +552,9 @@ def install_gui_eval_panel() -> None:
         info = _active_text_info(self)
         if info is None:
             messagebox.showinfo("Text Models Only", "Select a text model to use the evaluation suite.")
+            return
+        if info.get("controller_runtime") == "strata":
+            messagebox.showinfo("Inference Only", "This evaluation suite includes weight training. Select a trainable model; the Strata integration supports text inference.")
             return
 
         modal = getattr(self, "_eval_modal", None)

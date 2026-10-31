@@ -173,31 +173,31 @@ jobs:
         id: release_info
         shell: bash
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
             TITLE="Smart AI Studio ${TAG_NAME}"
           else
             TAG_NAME="latest"
             TITLE="Smart AI Studio — Rolling Release (${GITHUB_SHA::7})"
           fi
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "release_title=${TITLE}" >> $GITHUB_OUTPUT
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "release_title=${TITLE}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare GitHub Release for Streamed Model Bundle
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
+          RELEASE_TITLE: ${{ steps.release_info.outputs.release_title }}
         run: |
-          TAG="${{ steps.release_info.outputs.tag_name }}"
-          TITLE="${{ steps.release_info.outputs.release_title }}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --draft --notes "Packaging release assets..."
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --draft --notes "Packaging release assets..."
           fi
 
           while IFS= read -r asset; do
-            [ -n "$asset" ] && gh release delete-asset "$TAG" "$asset" -y || true
+            [ -n "$asset" ] && gh release delete-asset "$RELEASE_TAG" "$asset" -y || true
           done < <(
-            gh release view "$TAG" --json assets --jq '.assets[].name' |
+            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' |
               grep -E '^(SmartAI-macOS-arm64\.zip\.part[0-9]+|SmartAI-macOS-arm64\.bundle\.json|Reassemble-SmartAI-macOS-arm64\.command)$' || true
           )
 
@@ -212,12 +212,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
         run: |
           python build_bonsai2_bundled_zip.py \
             --app-bundle dist/SmartAI.app \
             --output-dir dist \
             --archive-name SmartAI-macOS-arm64.zip \
-            --upload-tag "${{ steps.release_info.outputs.tag_name }}"
+            --upload-tag "$RELEASE_TAG"
 
       - name: Upload Build Artifacts to Workflow Run
         uses: actions/upload-artifact@v4
@@ -239,9 +240,64 @@ jobs:
             dist/SmartAI-Windows.zip
             dist/SmartAI-Linux-x86_64.tar.gz
             dist/SmartAI-Unix-POSIX.tar.gz
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
           make_latest: true
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify Release Assets and Update Rolling Tag
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
+        with:
+          script: |
+            const fs = require('fs').promises;
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner, repo, release_id: release.id, per_page: 100,
+            });
+            const manifest = JSON.parse(await fs.readFile('dist/SmartAI-macOS-arm64.bundle.json', 'utf8'));
+            if (manifest.archive_name !== 'SmartAI-macOS-arm64.zip' || !Array.isArray(manifest.parts) || !manifest.parts.length) {
+              throw new Error('The split macOS bundle has no valid release manifest.');
+            }
+            const expected = manifest.parts.map(part => {
+              if (!/^SmartAI-macOS-arm64\.zip\.part[0-9]+$/.test(part.name) || !Number.isSafeInteger(part.size) || part.size <= 0) {
+                throw new Error('The split macOS manifest contains an invalid part.');
+              }
+              return { name: part.name, size: part.size };
+            });
+            for (const name of [
+              'SmartAI-macOS-arm64.bundle.json', 'Reassemble-SmartAI-macOS-arm64.command',
+              'SmartAI-Windows.zip', 'SmartAI-Linux-x86_64.tar.gz', 'SmartAI-Unix-POSIX.tar.gz',
+            ]) {
+              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
+            }
+            if (new Set(expected.map(item => item.name)).size !== expected.length) {
+              throw new Error('The release manifest contains duplicate part names.');
+            }
+            for (const item of expected) {
+              const asset = assets.find(asset => asset.name === item.name);
+              if (!asset || asset.state !== 'uploaded' || item.size <= 0 || asset.size !== item.size) {
+                throw new Error(`Release asset is missing, incomplete, or the wrong size: ${item.name}`);
+              }
+            }
+
+            // Keep the old download until every replacement asset is verified.
+            for (const asset of assets.filter(asset => asset.name === 'SmartAI-macOS-arm64.zip')) {
+              await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
+            }
+            // Only the rolling tag moves. Immutable version tags are never rewritten.
+            if (tag === 'latest') {
+              await github.rest.git.updateRef({ owner, repo, ref: 'tags/latest', sha: context.sha, force: true });
+              const { data: ref } = await github.rest.git.getRef({ owner, repo, ref: 'tags/latest' });
+              if (ref.object.type !== 'commit' || ref.object.sha !== context.sha) {
+                throw new Error('The rolling release tag does not point to the packaged commit.');
+              }
+              core.notice(`Verified rolling release at ${context.sha}.`);
+            }
