@@ -351,7 +351,11 @@ def install_awake_auto_learning(cls) -> None:
 
         # Preserve the historical chat decision point: entropy chooses N=1/8/16.
         native = getattr(self, "gguf_backend", None)
-        if getattr(native, "runtime", None) == "prism_speculative":
+        if bool(getattr(self, "_gui_force_single_stream", False)):
+            entropy = None
+            branch_count = 1
+            mode = "Instant GUI stream (Pro unchecked)"
+        elif getattr(native, "runtime", None) == "prism_speculative":
             # Native completion does not expose full-vocabulary entropy. Use
             # the explicit GUI/API branch budget for both Off and draft modes;
             # never substitute a prompt heuristic for the model router.
@@ -421,6 +425,7 @@ def install_awake_auto_learning(cls) -> None:
         cancel_event: Optional[Any] = None,
         force_branch_count: Optional[int] = None,
         temperature: Optional[float] = None,
+        progress_callback=None,
     ):
         if not getattr(self, "_awake_stream_history_prepared", False):
             history = _apply_awake_learning(self, history, prompt)
@@ -440,6 +445,7 @@ def install_awake_auto_learning(cls) -> None:
                 cancel_event=cancel_event,
                 force_branch_count=force_branch_count,
                 temperature=temperature,
+                **({"progress_callback": progress_callback} if progress_callback is not None else {}),
             )
         finally:
             self.settings.max_new_tokens = previous_max
