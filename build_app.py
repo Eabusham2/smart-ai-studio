@@ -23,7 +23,16 @@ cd "$SMARTAI_CODE_DIR"
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH"
 SMARTAI_VENV="$HOME/Library/Application Support/SmartAI/python"
 SMARTAI_PYTHON=""
-for candidate in "$SMARTAI_VENV/bin/python" "$(command -v python3 || true)" /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+SMARTAI_VENDOR="$SMARTAI_CODE_DIR/vendor/python3.10"
+if [ -d "$SMARTAI_VENDOR" ]; then
+    for candidate in "$(command -v python3.10 || true)" /opt/homebrew/bin/python3.10 /usr/local/bin/python3.10; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ] && "$candidate" -c 'import sys,tkinter;assert sys.version_info[:2] == (3,10)' 2>/dev/null; then
+            SMARTAI_PYTHON="$candidate"
+            break
+        fi
+    done
+fi
+for candidate in "$SMARTAI_PYTHON" "$SMARTAI_VENV/bin/python" "$(command -v python3 || true)" /opt/homebrew/bin/python3 /usr/local/bin/python3; do
     if [ -n "$candidate" ] && [ -x "$candidate" ] && "$candidate" -c 'import sys, tkinter; assert sys.version_info >= (3, 10)' 2>/dev/null; then
         SMARTAI_PYTHON="$candidate"
         break
@@ -34,12 +43,13 @@ if [ -z "$SMARTAI_PYTHON" ]; then
     exit 1
 fi
 # Prefer the dependencies packaged with the portable macOS release.
-SMARTAI_VENDOR="$SMARTAI_CODE_DIR/vendor/python3.10"
 if [ -d "$SMARTAI_VENDOR" ] && "$SMARTAI_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 10)' 2>/dev/null; then
     export PYTHONPATH="$SMARTAI_VENDOR${PYTHONPATH:+:$PYTHONPATH}"
     exec "$SMARTAI_PYTHON" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
 fi
-if [ ! -f "$SMARTAI_VENV/.smartai-deps-ready" ]; then
+SMARTAI_REQ_HASH="$("$SMARTAI_PYTHON" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$SMARTAI_CODE_DIR/requirements.txt")"
+SMARTAI_READY_HASH="$(cat "$SMARTAI_VENV/.smartai-deps-ready" 2>/dev/null || true)"
+if [ "$SMARTAI_REQ_HASH" != "$SMARTAI_READY_HASH" ] || [ ! -x "$SMARTAI_VENV/bin/python" ]; then
     /bin/bash "$SMARTAI_CODE_DIR/Install_Dependencies.command" || exit 1
 fi
 exec "$SMARTAI_VENV/bin/python" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
@@ -49,8 +59,14 @@ set -e
 SMARTAI_CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SMARTAI_CODE_DIR"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH"
-SMARTAI_PYTHON="$(command -v python3 || true)"
-if [ -z "$SMARTAI_PYTHON" ] || ! "$SMARTAI_PYTHON" -c 'import sys, tkinter; assert sys.version_info >= (3, 10)'; then
+SMARTAI_PYTHON=""
+for candidate in "$(command -v python3 || true)" /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ] && "$candidate" -c 'import sys,tkinter;assert sys.version_info >= (3,10)' 2>/dev/null; then
+        SMARTAI_PYTHON="$candidate"
+        break
+    fi
+done
+if [ -z "$SMARTAI_PYTHON" ]; then
     echo "Install Python 3.10+ with Tkinter before running this dependency installer."
     exit 1
 fi
@@ -70,7 +86,8 @@ if [ "$SMARTAI_ARCH" = arm64 ]; then
     SMARTAI_BUILD_ARGS=(--no-binary=llama-cpp-python)
 fi
 "$SMARTAI_VENV/bin/python" -m pip install "${SMARTAI_BUILD_ARGS[@]}" -r "$SMARTAI_CODE_DIR/requirements.txt"
-touch "$SMARTAI_VENV/.smartai-deps-ready"
+SMARTAI_REQ_HASH="$("$SMARTAI_VENV/bin/python" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$SMARTAI_CODE_DIR/requirements.txt")"
+printf '%s\\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_VENV/.smartai-deps-ready"
 echo "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command."
 '''
     for name, content in (("launch_studio.sh", launch), ("Install_Dependencies.command", install)):
