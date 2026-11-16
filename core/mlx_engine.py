@@ -666,6 +666,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     for response in iterator:
                         last = response
                         generated += 1
+                        if progress_callback is not None:
+                            progress_callback(idx, count, generated, time.perf_counter() - started, finished=False)
                         self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
                         pieces.append(str(getattr(response, "text", response)))
                     completed = True
@@ -719,6 +721,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
                 for response in iterator:
                     generated += 1
+                    if progress_callback is not None:
+                        progress_callback(idx, count, generated, time.perf_counter() - started, finished=False)
                     try:
                         measured = float(getattr(response, "generation_tps", 0.0) or 0.0)
                     except Exception:
