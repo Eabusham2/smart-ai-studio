@@ -4911,12 +4911,28 @@ class SmartAIChatbotApp:
                 accumulated = []
                 pro_active = bool(use_pro_branches and pro_branch_count > 1)
                 pro_summary = None
+                best_work_ui = {"label": None}
                 self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
 
                 def _init_ai_stream():
                     self.chat_stream.configure(state="normal")
                     self.chat_stream.insert("end", f"\n✦ {info['short_name']}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
+                    if pro_active and hasattr(self.chat_stream, "window_create"):
+                        panel = tk.Frame(
+                            self.chat_stream, bg=self.C["bg_card"],
+                            highlightbackground=self.C["border"],
+                            highlightthickness=1, padx=10, pady=7,
+                        )
+                        label = tk.Label(
+                            panel, text="🌿 Best Work 0/? · preparing",
+                            bg=self.C["bg_card"], fg=self.C["text_main"],
+                            font=_FONT_TINY_BOLD, anchor="w",
+                        )
+                        label.pack(fill="x")
+                        best_work_ui["label"] = label
+                        self.chat_stream.window_create("end", window=panel)
+                        self.chat_stream.insert("end", "\n")
                     self.chat_stream.mark_set(mark_name, "end-1c")
                     self.chat_stream.mark_gravity(mark_name, "left")
                     self.chat_stream.configure(state="disabled")
@@ -4943,6 +4959,12 @@ class SmartAIChatbotApp:
                     self.root.after(0, _insert_chunk)
 
                 if pro_active:
+                    def _best_work_status(value):
+                        label = best_work_ui.get("label")
+                        if label is not None:
+                            label.configure(text=value)
+                        self._scroll_chat_to_bottom()
+
                     # Pro is explicitly enabled by the user. Each completed
                     # candidate reports its real token count when available.
                     completed_branches = 0
@@ -4978,8 +5000,11 @@ class SmartAIChatbotApp:
                                         f"⚡ First Pro token · TTFT {now-start_time:.2f}s"
                                         f" · branch {done+1}/{total}"
                                     )
-                                self.root.after(0, lambda value=message:
-                                                self.lbl_tps.configure(text=value))
+                                self.root.after(
+                                    0,
+                                    lambda value=message, progress=f"🌿 Best Work {done}/{total} · generating branch {done+1}":
+                                        (self.lbl_tps.configure(text=value), _best_work_status(progress)),
+                                )
                             return
 
                         completed_branches = int(done)
@@ -4991,12 +5016,8 @@ class SmartAIChatbotApp:
                         rate = measured_tokens / wall_s if counts_available and measured_tokens else 0.0
                         self._live_tps = rate
                         detail = f"{tokens} tokens" if type(tokens) is int else "tokens unavailable"
-                        notice = f"🌿 Branch {done}/{total} complete · {detail}"
                         def _show():
-                            self.chat_stream.configure(state="normal")
-                            self.chat_stream.insert("end", notice + "\n", "ai_msg")
-                            self.chat_stream.configure(state="disabled")
-                            self._scroll_chat_to_bottom()
+                            _best_work_status(f"🌿 Best Work {done}/{total} · {detail}")
                             self.lbl_tps.configure(text=(
                                 f"⚡ Pro {rate:.1f} tok/s · {done}/{total} branches (wall)"
                                 if rate > 0 else f"⚡ Pro {done}/{total} branches · TPS unavailable"
@@ -5006,34 +5027,51 @@ class SmartAIChatbotApp:
                     self.root.after(0, lambda: self.lbl_tps.configure(
                         text=f"⚡ Pro 0/{pro_branch_count} branches · preparing"
                     ))
-                    # One selected answer and one execution cycle, not an
-                    # extra post-search model call. Preserve the full prompt
-                    # and the existing verifier/consensus winner selection.
+                    # All candidates are inert. The existing scorer decides
+                    # the winner before any selected tool action can execute.
+                    from core.best_work import BEST_WORK_GUIDE, continue_selected_best_work
+                    best_work_history = [
+                        {"role": "system", "content": BEST_WORK_GUIDE},
+                        *(curr_history or []),
+                    ]
                     answer, branch_meta = self.engine.solve(
-                        full_msg, history=curr_history, cancel_event=self.cancel_event,
-                        force_branch_count=pro_branch_count, progress_callback=_branch_done
+                        full_msg, history=best_work_history,
+                        cancel_event=self.cancel_event,
+                        force_branch_count=pro_branch_count,
+                        progress_callback=_branch_done,
                     )
                     if self.cancel_event.is_set():
                         return
-                    # Candidate branches never execute tools. The winner alone
-                    # may issue one terminal action, then this turn ends.
-                    selected_tool = self.multimodal.execute_selected_branch_tool(
-                        answer, user_prompt
-                    )
-                    if selected_tool is not None:
-                        action_name = str(selected_tool["name"])
-                        outcome = json.dumps(selected_tool["result"], ensure_ascii=False, indent=2)
-                        answer = f"⚙️ {action_name}:\n```json\n{outcome}\n```"
-                        branch_meta["selected_tool_call"] = action_name
-                    winner_thinking = str(branch_meta.get("thinking_text") or "").strip()
-                    if winner_thinking and "<think>" not in str(answer):
-                        accumulated.append(f"<think>\n{winner_thinking}\n</think>\n")
-                    accumulated.append(str(answer))
+
+                    def _selected_action_status(kind, name, stage):
+                        status = (f"🌿 Best Work · executing selected {name}"
+                                  if kind == "executing"
+                                  else f"🌿 Best Work · continuing after {name}")
+                        self.root.after(0, lambda value=status: _best_work_status(value))
+
+                    for piece in continue_selected_best_work(
+                        self.multimodal, prompt=full_msg,
+                        history=best_work_history, answer=answer,
+                        metadata=branch_meta, branch_count=pro_branch_count,
+                        cancel_event=self.cancel_event,
+                        progress_callback=_branch_done,
+                        status_callback=_selected_action_status,
+                    ):
+                        if self.cancel_event.is_set():
+                            return
+                        accumulated.append(str(piece))
+                    latest_meta = getattr(self.multimodal, "last_best_work_metadata", None)
+                    if isinstance(latest_meta, dict):
+                        branch_meta = latest_meta
                     self.last_metadata = branch_meta
                     self.engine._last_stream_pro_meta = branch_meta
-                    pro_summary = (
-                        f"🌿 Best-of-{actual_branch_total}: {completed_branches} completed"
-                        f" · selected branch #{int(branch_meta.get('winning_branch', 0)) + 1}"
+                    chosen = int(branch_meta.get("winning_branch", 0)) + 1
+                    pro_summary = None
+                    self.root.after(
+                        0, lambda count=completed_branches, total=actual_branch_total, win=chosen:
+                            _best_work_status(
+                                f"🌿 Best Work {count}/{total} · selected branch #{win} · complete"
+                            ),
                     )
                 else:
                     # MLX/native streams produce model token events. Other
