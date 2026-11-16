@@ -668,17 +668,18 @@ class MediaController:
             result = {"status": "error", "error": str(exc)}
         return {"name": name, "result": result}
 
-    def stream_solve(self, prompt, history=None, cancel_event=None):
+    def stream_solve(self, prompt, history=None, cancel_event=None, progress_callback=None):
         with self.lock:
             self._depth += 1
             self.busy = True
             try:
-                yield from self._stream_solve(prompt, history=history, cancel_event=cancel_event)
+                yield from self._stream_solve(prompt, history=history, cancel_event=cancel_event,
+                                              progress_callback=progress_callback)
             finally:
                 self._depth -= 1
                 self.busy = self._depth > 0
 
-    def _stream_solve(self, prompt, history=None, cancel_event=None):
+    def _stream_solve(self, prompt, history=None, cancel_event=None, progress_callback=None):
         """Existing Pro decides tools; media requests do not add a planner model call."""
         allow_media_update = bool(re.search(r"\b(?:learn|train|fine[- ]?tune|rsi|improve\s+the\s+(?:image|video|audio)\s+model)\b", str(prompt), re.I))
         perceive = sorted(kind for kind in ("image", "video", "audio") if self._can_perceive(kind))
@@ -700,18 +701,44 @@ class MediaController:
         )
         turns = list(history or [])
         turns.insert(0, {"role":"system","content":guide})
+        executed_actions = set()
         for _round in range(3):
             self._cancelled()
             pieces = []
-            iterator = self.app.engine.stream_solve(prompt, history=turns, cancel_event=cancel_event)
+            engine = self.app.engine
+            # After receiving real tool output, restore the historical
+            # uncertainty router when the user has enabled Pro. Do not
+            # reuse the branch count from before that result.
+            previous_force = getattr(engine, "_gui_force_single_stream", False)
+            if _round > 0 and getattr(engine, "_gui_pro_enabled", False):
+                engine._gui_force_single_stream = False
+            try:
+                kwargs = {}
+                if progress_callback is not None:
+                    import inspect
+                    try:
+                        if "progress_callback" in inspect.signature(engine.stream_solve).parameters:
+                            kwargs["progress_callback"] = progress_callback
+                    except (TypeError, ValueError):
+                        pass
+                iterator = engine.stream_solve(
+                    prompt, history=turns, cancel_event=cancel_event, **kwargs
+                )
+            except BaseException:
+                engine._gui_force_single_stream = previous_force
+                raise
             try:
                 for chunk in iterator:
                     self._cancelled()
                     pieces.append(str(chunk))
                     yield chunk
             finally:
-                close = getattr(iterator, "close", None)
-                if close: close()
+                try:
+                    close = getattr(iterator, "close", None)
+                    if close:
+                        close()
+                finally:
+                    engine._gui_force_single_stream = previous_force
             answer = "".join(pieces)
             visible = re.sub(r"<think>.*?</think>", "", answer, flags=re.S).strip()
             matched = re.fullmatch(r"<media_call>\s*(\{.*\})\s*</media_call>", visible, flags=re.S)
@@ -724,6 +751,12 @@ class MediaController:
                     allow_media_update
                     and requested_name in ("media_learn", "media_rsi")
                 )
+                action_key = (requested_name,
+                              json.dumps(request.get("arguments", {}), sort_keys=True))
+                if action_key in executed_actions:
+                    yield "\nDuplicate tool request blocked."
+                    return
+                executed_actions.add(action_key)
                 result = self.call(
                     requested_name,
                     request.get("arguments", {}),
