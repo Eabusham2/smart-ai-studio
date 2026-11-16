@@ -189,10 +189,25 @@ def main() -> int:
                     stream=True,
                     stop=stops,
                 )
-                for chunk in stream:
-                    token = str(chunk.get("choices", [{}])[0].get("text", ""))
-                    if token:
-                        _emit({"event": "token", "text": token})
+                from core.tool_boundary_stop import ToolBoundaryStopper
+                detector = ToolBoundaryStopper() if request.get("stop_at_tool_boundary") is True else None
+                try:
+                    for chunk in stream:
+                        token = str(chunk.get("choices", [{}])[0].get("text", ""))
+                        if detector is not None:
+                            old_length = len(detector.text)
+                            stop_here = detector.feed(token)
+                            token = detector.text[old_length:]
+                        else:
+                            stop_here = False
+                        if token:
+                            _emit({"event": "token", "text": token})
+                        if stop_here:
+                            break
+                finally:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
                 _emit({"event": "done"})
                 continue
             if op == "entropy":
