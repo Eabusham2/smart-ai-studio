@@ -341,6 +341,7 @@ def install_awake_auto_learning(cls) -> None:
         temperature: float = 0.75,
         top_p: float = 0.92,
         cancel_event: Optional[Any] = None,
+        progress_callback=None,
     ):
         from core.lossless_speed_control import cancel_before_request
         if cancel_before_request(self, cancel_event):
@@ -396,6 +397,7 @@ def install_awake_auto_learning(cls) -> None:
                 cancel_event=cancel_event,
                 force_branch_count=int(branch_count),
                 temperature=None,
+                **({"progress_callback": progress_callback} if progress_callback is not None else {}),
             )
         finally:
             self._awake_stream_history_prepared = False
