@@ -21,12 +21,16 @@ before dispatch, and only its selected action executes. Actual tool output is
 then returned in the conversation. The original routing method reevaluates the
 new context and can choose either a normal stream or another Pro round. A full
 answer without a tool call finishes without an extra generation request.
-Cancellation is checked before dispatch. The handoff tracks attempted operations
+Cancellation is checked before dispatch. A steer waits for the prior owned worker
+to finish cleanup before starting the new context-aware routing pass; its pending
+callback cannot start a duplicate request. The handoff tracks attempted operations
 before execution so a repeated identical action cannot be automatically retried.
 
 The chat has a Best Work progress card when Pro actually runs, including after a
 tool result. The selected response is rendered once, rather than retaining both
-raw stream text and the formatted copy.
+raw stream text and the formatted copy. Multiple thinking sections remain in order
+around the invocation and actual result, with each section rendered as a thinking
+control rather than leaving later raw tags in the response.
 
 ## Output and telemetry
 

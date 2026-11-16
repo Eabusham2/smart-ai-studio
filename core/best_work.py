@@ -246,7 +246,8 @@ def _execute_action(controller, action, user_prompt, executed):
 
 
 def stream_best_work(controller, prompt, history=None, cancel_event=None,
-                     progress_callback=None, status_callback=None, max_tool_calls=3):
+                     progress_callback=None, status_callback=None, max_tool_calls=3,
+                     route_with_history=False):
     """Use the existing stream/entropy/Pro pipeline at every real handoff.
 
     N=1 streams immediately; N>1 streams only the existing scorer's winner.
@@ -270,7 +271,7 @@ def stream_best_work(controller, prompt, history=None, cancel_event=None,
         for stage in range(max_tool_calls + 1):
             if cancel_event is not None and cancel_event.is_set():
                 return
-            engine._best_work_route_with_history = stage > 0
+            engine._best_work_route_with_history = bool(route_with_history or stage > 0)
             if status_callback:
                 status_callback({"kind": "routing", "stage": stage + 1})
             detector = ToolBoundaryStopper()

@@ -486,12 +486,8 @@ jobs:
             gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --draft --notes "Packaging release assets..."
           fi
 
-          while IFS= read -r asset; do
-            [ -n "$asset" ] && gh release delete-asset "$RELEASE_TAG" "$asset" -y || true
-          done < <(
-            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' |
-              grep -E '^(SmartAI-macOS-arm64\.zip\.part[0-9]+|SmartAI-macOS-arm64\.bundle\.json|Reassemble-SmartAI-macOS-arm64\.command)$' || true
-          )
+          # Keep prior downloads until replacement files pass the final gate.
+          # The model bundler uploads matching part names with --clobber.
 
       - name: Download native-OS portable and setup packages
         uses: actions/download-artifact@v4
@@ -622,8 +618,16 @@ jobs:
               }
             }
 
-            // Keep the old download until every replacement asset is verified.
-            for (const asset of assets.filter(asset => asset.name === 'SmartAI-macOS-arm64.zip')) {
+            // Do not leave the old dependency-less packages alongside the
+            // verified replacement: users could otherwise download an unfixed
+            // Windows/Unix archive from this new release by mistake.
+            const currentNames = new Set(expected.map(item => item.name));
+            const legacyNames = new Set([
+              'SmartAI-macOS-arm64.zip', 'SmartAI-Windows.zip',
+              'SmartAI-Unix-POSIX.tar.gz', 'SmartAI-Linux-x86_64.tar.gz',
+            ]);
+            for (const asset of assets.filter(asset => !currentNames.has(asset.name) &&
+                (legacyNames.has(asset.name) || /^SmartAI-macOS-arm64\.zip\.part[0-9]+$/.test(asset.name)))) {
               await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
             }
             // Only the rolling tag moves. Immutable version tags are never rewritten.

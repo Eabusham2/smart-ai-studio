@@ -4432,25 +4432,32 @@ class SmartAIChatbotApp:
         self.txt_input.delete("1.0", "end")
         self._recompute_input_height(is_focused=True)
 
+        self._pending_steer = steer_text
         if self.is_generating:
             self._append_steer_directive(steer_text)
             self.cancel_event.set()
             self.root.after(150, lambda: self._execute_steered_generation(steer_text))
         else:
             self._append_user_message(f"🎯 [Steer Directive]: {steer_text}")
-            self._set_generating_state(True)
-            use_pro = bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())
-            threading.Thread(target=self._process_message_thread,
-                             args=(steer_text, steer_text, None, None, use_pro),
-                             daemon=True).start()
+            self._execute_steered_generation(steer_text)
 
     def _execute_steered_generation(self, steer_directive: str):
+        if getattr(self, "_pending_steer", None) != steer_directive:
+            return  # A newer steer superseded this scheduled handoff.
+        worker = getattr(self, "_generation_worker", None)
+        if worker is not None and worker.is_alive():
+            # Do not clear the old request's cancel flag after an arbitrary
+            # delay. Wait for its owned generation/tool cleanup to finish.
+            self.root.after(50, lambda: self._execute_steered_generation(steer_directive))
+            return
+        self._pending_steer = None
         self._set_generating_state(True)
         steered_prompt = f"[Live Steering Directive: {steer_directive}]\nPlease follow this directive directly."
         use_pro = bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())
-        threading.Thread(target=self._process_message_thread,
-                         args=(steered_prompt, steer_directive, None, None, use_pro),
-                         daemon=True).start()
+        self._generation_worker = threading.Thread(target=self._process_message_thread,
+                         args=(steered_prompt, steer_directive, None, None, use_pro, True),
+                         daemon=True)
+        self._generation_worker.start()
 
     def _on_enter_pressed(self, event):
         if not (event.state & 0x1):  # Shift not held
@@ -4532,12 +4539,13 @@ class SmartAIChatbotApp:
         self._update_telemetry()
 
         self._set_generating_state(True)
-        threading.Thread(
+        self._generation_worker = threading.Thread(
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
                   bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())),
             daemon=True,
-        ).start()
+        )
+        self._generation_worker.start()
 
     def _process_message_thread(
         self,
@@ -4546,6 +4554,7 @@ class SmartAIChatbotApp:
         learn_source_path: Optional[str] = None,
         learn_media_target: Optional[str] = None,
         use_pro_branches: bool = False,
+        route_with_history: bool = False,
     ):
         start_time = time.perf_counter()
         # Preserve historical routing. The GUI only enables/disables Pro;
@@ -5029,7 +5038,7 @@ class SmartAIChatbotApp:
                 options = {}
                 if use_pro_branches:
                     options.update(best_work_enabled=True, progress_callback=_branch_progress,
-                                   status_callback=_decision)
+                                   status_callback=_decision, route_with_history=route_with_history)
                 iterator = self.multimodal.stream_solve(full_msg,
                     history=curr_history, cancel_event=self.cancel_event, **options
                 )
@@ -5126,49 +5135,54 @@ class SmartAIChatbotApp:
                         if pro_summary:
                             self.chat_stream.insert("end", pro_summary + "\n\n", "ai_msg")
 
-                        # Parse <think>...</think>
-                        th_text = None
-                        main_body = text
-                        if "<think>" in text and "</think>" in text:
-                            p1 = text.find("<think>") + 7
-                            p2 = text.find("</think>")
-                            th_text = text[p1:p2].strip()
-                            main_body = (text[:p1-7] + text[p2+8:]).strip()
-
-                        # Compact, shrink-to-fit thinking pill
-                        if th_text:
-                            self._think_counter += 1
-                            think_id = f"think_{self._think_counter}"
-                            self.thinking_cache[think_id] = th_text
-                            self.thinking_expanded[think_id] = False
-                            btn_tag = f"tag_btn_{think_id}"
-                            self.chat_stream.insert(
-                                "end", f"  ▶ 💭 Thought for {dur:.1f}s [Click to Expand]  ",
-                                ("think_dropdown_btn", btn_tag)
-                            )
-                            self.chat_stream.insert("end", "\n\n")
-                            self.chat_stream.tag_bind(btn_tag, "<Button-1>", lambda e, tid=think_id: self._on_toggle_thinking_dropdown(tid))
-
-                        parts = main_body.split("```")
-                        for i, part in enumerate(parts):
-                            if i % 2 == 0:
-                                self._render_styled_markdown(part)
-                            else:
-                                lines = part.split("\n", 1)
-                                lang = lines[0].strip() if lines else "python"
-                                code_content = lines[1] if len(lines) > 1 else part
-                                self._code_counter += 1
-                                code_id = f"code_{self._code_counter}"
-                                self.code_snippets[code_id] = code_content.strip()
-                                tag_copy = f"tag_cp_{code_id}"
-                                tag_canvas = f"tag_cv_{code_id}"
-                                self.chat_stream.insert("end", f"  📄 {lang or 'python'}  ", "code_hdr")
-                                self.chat_stream.insert("end", " [ 📋 Copy ] ", ("code_action_copy", tag_copy))
-                                self.chat_stream.insert("end", " [ 🎨 Open in Canvas ] \n", ("code_action_canvas", tag_canvas))
-                                self.chat_stream.insert("end", code_content.rstrip(), "code_block")
+                        # A selected tool handoff can produce several thinking
+                        # sections. Preserve their position around the call and
+                        # result; never leave later sections as raw XML tags.
+                        segments = []
+                        cursor = 0
+                        for match in re.finditer(r"<think>(.*?)</think>", text, re.I | re.S):
+                            segments.append((False, text[cursor:match.start()]))
+                            segments.append((True, match.group(1)))
+                            cursor = match.end()
+                        segments.append((False, text[cursor:]))
+                        main_body = "".join(value for is_thought, value in segments if not is_thought).strip()
+                        for is_thought, segment in segments:
+                            th_text = segment.strip() if is_thought else None
+                            # Compact, shrink-to-fit thinking pill
+                            if th_text:
+                                self._think_counter += 1
+                                think_id = f"think_{self._think_counter}"
+                                self.thinking_cache[think_id] = th_text
+                                self.thinking_expanded[think_id] = False
+                                btn_tag = f"tag_btn_{think_id}"
+                                self.chat_stream.insert(
+                                    "end", f"  ▶ 💭 Thought for {dur:.1f}s [Click to Expand]  ",
+                                    ("think_dropdown_btn", btn_tag)
+                                )
                                 self.chat_stream.insert("end", "\n\n")
-                                self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
-                                self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
+                                self.chat_stream.tag_bind(btn_tag, "<Button-1>", lambda e, tid=think_id: self._on_toggle_thinking_dropdown(tid))
+
+                            if not is_thought:
+                                parts = segment.split("```")
+                                for i, part in enumerate(parts):
+                                    if i % 2 == 0:
+                                        self._render_styled_markdown(part)
+                                    else:
+                                        lines = part.split("\n", 1)
+                                        lang = lines[0].strip() if lines else "python"
+                                        code_content = lines[1] if len(lines) > 1 else part
+                                        self._code_counter += 1
+                                        code_id = f"code_{self._code_counter}"
+                                        self.code_snippets[code_id] = code_content.strip()
+                                        tag_copy = f"tag_cp_{code_id}"
+                                        tag_canvas = f"tag_cv_{code_id}"
+                                        self.chat_stream.insert("end", f"  📄 {lang or 'python'}  ", "code_hdr")
+                                        self.chat_stream.insert("end", " [ 📋 Copy ] ", ("code_action_copy", tag_copy))
+                                        self.chat_stream.insert("end", " [ 🎨 Open in Canvas ] \n", ("code_action_canvas", tag_canvas))
+                                        self.chat_stream.insert("end", code_content.rstrip(), "code_block")
+                                        self.chat_stream.insert("end", "\n\n")
+                                        self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
+                                        self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
 
                         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
                             self.chat_history[self.active_tab_id].append({"role": "assistant", "content": main_body})
@@ -5229,6 +5243,8 @@ class SmartAIChatbotApp:
         self._update_queue_ui()
 
     def _check_and_run_next_queue(self):
+        if getattr(self, "_pending_steer", None) is not None:
+            return
         if self.prompt_queue:
             item = self.prompt_queue.pop(0)
             if len(item) == 2:
@@ -5263,12 +5279,13 @@ class SmartAIChatbotApp:
         self._update_telemetry()
 
         self._set_generating_state(True)
-        threading.Thread(
+        self._generation_worker = threading.Thread(
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
                   bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())),
             daemon=True,
-        ).start()
+        )
+        self._generation_worker.start()
 
     def _on_stop_generation(self):
         self.cancel_event.set()

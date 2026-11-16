@@ -111,14 +111,21 @@ new AsyncFunction('github', 'context', 'core', 'require', script)(github, contex
         # that startup latency into a false failure of the release assertions.
         env={**os.environ, "RELEASE_TAG": tag}, capture_output=True, text=True, timeout=30, check=True,
     )
-    return json.loads(result.stdout)
+    parsed = json.loads(result.stdout)
+    parsed['assets'] = assets
+    return parsed
 
 
-def test_successful_release_removes_only_legacy_zip_and_moves_exact_rolling_commit(tmp_path):
+def test_successful_release_removes_only_obsolete_packages_and_moves_exact_rolling_commit(tmp_path):
     result = run_release_gate(tmp_path)
     assert result["error"] is None
     calls = result["calls"]
-    assert [args["asset_id"] for method, args in calls if method == "delete"] == [100]
+    deleted = {args["asset_id"] for method, args in calls if method == "delete"}
+    assert {asset['name'] for asset in result['assets'] if asset['id'] in deleted} == {
+        'SmartAI-macOS-arm64.zip', 'SmartAI-Windows.zip', 'SmartAI-Unix-POSIX.tar.gz',
+        'SmartAI-Linux-x86_64.tar.gz',
+    }
+    assert 101 not in deleted  # An unrelated named backup must be preserved.
     assert [args for method, args in calls if method == "update"] == [{
         "owner": "test-owner", "repo": "test-repo", "ref": "tags/latest", "sha": SHA, "force": True,
     }]
@@ -157,3 +164,10 @@ def test_provenance_gate_runs_after_all_uploads_and_missing_package_is_fatal():
     assert source.index("- name: Publish or Update GitHub Release") < source.index(f"- name: {STEP_NAME}")
     assert 'python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"' in source
     assert ",check=True)" in source
+
+
+
+def test_release_does_not_delete_previous_downloads_before_verification():
+    source = WORKFLOW.read_text(encoding='utf-8')
+    preparation = source.split('- name: Prepare GitHub Release', 1)[1].split('- name: Download native-OS', 1)[0]
+    assert 'delete-asset' not in preparation
