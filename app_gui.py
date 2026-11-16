@@ -5015,6 +5015,16 @@ class SmartAIChatbotApp:
                     )
                     if self.cancel_event.is_set():
                         return
+                    # Candidate branches never execute tools. The winner alone
+                    # may issue one terminal action, then this turn ends.
+                    selected_tool = self.multimodal.execute_selected_branch_tool(
+                        answer, user_prompt
+                    )
+                    if selected_tool is not None:
+                        action_name = str(selected_tool["name"])
+                        outcome = json.dumps(selected_tool["result"], ensure_ascii=False, indent=2)
+                        answer = f"⚙️ {action_name}:\n```json\n{outcome}\n```"
+                        branch_meta["selected_tool_call"] = action_name
                     winner_thinking = str(branch_meta.get("thinking_text") or "").strip()
                     if winner_thinking and "<think>" not in str(answer):
                         accumulated.append(f"<think>\n{winner_thinking}\n</think>\n")
