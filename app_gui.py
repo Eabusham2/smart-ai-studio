@@ -4535,8 +4535,8 @@ class SmartAIChatbotApp:
         threading.Thread(
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
-                  bool(self.pro_branches_var.get()),
-                  int(self.pro_branch_count_var.get())),
+                  bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get()),
+                  int(self.pro_branch_count_var.get()) if hasattr(self, "pro_branch_count_var") else 4),
             daemon=True,
         ).start()
 
@@ -5048,9 +5048,15 @@ class SmartAIChatbotApp:
 
                 full_ans = "".join(accumulated).strip()
                 if not full_ans and not self.cancel_event.is_set():
-                    self.root.after(0, lambda: self._append_ai_message(
-                        "⚠️ Model returned no text; no duplicate inference was started."
-                    ))
+                    def _no_text_notice():
+                        self.chat_stream.configure(state="normal")
+                        self.chat_stream.insert(
+                            "end", "\n⚠ Native runtime completed without response text.\n\n", "ai_msg"
+                        )
+                        self.chat_stream.configure(state="disabled")
+                        self._scroll_chat_to_bottom()
+                        self._update_telemetry(0.0)
+                    self.root.after(0, _no_text_notice)
                     return
 
                 duration_s = max(0.01, time.perf_counter() - start_time)
@@ -5235,8 +5241,8 @@ class SmartAIChatbotApp:
         threading.Thread(
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
-                  bool(self.pro_branches_var.get()),
-                  int(self.pro_branch_count_var.get())),
+                  bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get()),
+                  int(self.pro_branch_count_var.get()) if hasattr(self, "pro_branch_count_var") else 4),
             daemon=True,
         ).start()
 
