@@ -13,7 +13,7 @@ def test_app_keeps_turboquant_exception_but_safe_speedups_remain():
     kv = _src("core/kv_cache_manager.py")
     assert "make_turboquant_prompt_cache" in kv
     assert "_adaptive_prefill_step_size" in mlx
-    assert "prompt_ids = self.tokenizer.encode(prompt)" in mlx
+    assert "prompt_ids = self._encode_prompt(prompt)" in mlx
     assert "mlx_lm.stream_generate" in mlx
     assert "if not force and not _memory_pressure()" in mlx
 

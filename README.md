@@ -37,6 +37,20 @@ Media commands documented there include:
 
 The project document is the authoritative reference for implementation details; this README remains the quick-start/project overview.
 
+### Lossless execution speedups
+
+Open **Speedups…** for exact prompt-state reuse, shared branch prefill, tokenizer
+memoization, opt-in persistent caching and GPU runtime warmup. Compatible native
+Bonsai GGUF artifacts can also use prompt lookup, MTP or DFlash2 through the
+patched, receipt-verified server. The TensorFold-inspired target-row policy keeps
+verification arithmetic aligned with serial decoding and preserves sampler and
+recurrent rollback state. Unsupported paths recompute or report incompatibility.
+
+See **[the nine speedups and compatibility guide](docs/ternary-speedups.md)** for
+defaults, exactness boundaries, released native runtimes and source-only build
+instructions. The tests and native compile gates run without a model; they do
+not claim measured hardware output parity or a throughput gain.
+
 ### Your chosen model: automatic placement and speed configuration
 
 Import a local model or fetch an exact Hugging Face artifact. Studio preserves

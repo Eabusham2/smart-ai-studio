@@ -8,6 +8,7 @@ live MLX learning a stable adapter checkpoint path across restarts.
 from __future__ import annotations
 
 import os
+import math
 import time
 
 from core.hf_downloader import register_loaded_model, unregister_loaded_model
@@ -30,6 +31,8 @@ def _active_backend_name(engine) -> str:
     active = getattr(engine, "active_backend", None)
     if active == "controller" and getattr(getattr(engine, "controller_backend", None), "runtime", None) == "strata":
         return "strata"
+    if active == "gguf" and getattr(getattr(engine, "gguf_backend", None), "runtime", None) == "prism_speculative":
+        return "prism_speculative"
     if active:
         return str(active)
     mlx = getattr(engine, "mlx_backend", None)
@@ -104,7 +107,10 @@ def install_pro_runtime_hardening(cls) -> None:
         return result
 
     def hardened_unload(self, *args, **kwargs):
-        is_strata = getattr(getattr(self, "controller_backend", None), "runtime", None) == "strata"
+        owns_sidecar = (
+            getattr(getattr(self, "controller_backend", None), "runtime", None) == "strata"
+            or getattr(getattr(self, "gguf_backend", None), "runtime", None) == "prism_speculative"
+        )
         result = None
         try:
             result = original_unload(self, *args, **kwargs)
@@ -112,7 +118,7 @@ def install_pro_runtime_hardening(cls) -> None:
         finally:
             # A failed owned shutdown can leave real model resources resident.
             # Keep their registration until the retained runtime is stopped.
-            if not is_strata or (isinstance(result, dict) and result.get("status") == "unloaded"):
+            if not owns_sidecar or (isinstance(result, dict) and result.get("status") == "unloaded"):
                 unregister_loaded_model()
 
     def hardened_fallback(self, prompt: str, branch_count: int):
@@ -130,11 +136,17 @@ def install_pro_runtime_hardening(cls) -> None:
         response, metadata = original_solve(self, *args, **kwargs)
         elapsed = max(1e-9, time.perf_counter() - started)
         metadata = dict(metadata or {})
-        generated = _count_response_tokens(self, response)
         controller = getattr(self, "controller_backend", None)
         is_strata = getattr(controller, "runtime", None) == "strata"
-        if is_strata:
-            usage = dict(getattr(controller, "last_branch_usage", {}) or {})
+        native = getattr(self, "gguf_backend", None)
+        is_native = (getattr(self, "active_backend", None) == "gguf"
+                     and getattr(native, "runtime", None) == "prism_speculative")
+        owner = controller if is_strata else native if is_native else None
+        generated = 0 if is_native else _count_response_tokens(self, response)
+        if is_strata or is_native:
+            usage = dict(getattr(owner, "last_branch_usage", {}) or {})
+            if is_native and any(type(value) is not int or value < 0 for value in usage.values()):
+                usage = {}
             generated = usage.get("completion_tokens", 0)
             metadata["usage"] = usage
             metadata["token_usage_available"] = "completion_tokens" in usage
@@ -143,10 +155,10 @@ def install_pro_runtime_hardening(cls) -> None:
         metadata["tok_speed"] = generated / elapsed if generated else 0.0
         metadata["measured_wall_time_s"] = elapsed
         metadata["memory_rss_mb"] = _rss_mb()
-        if is_strata:
+        if is_strata or is_native:
             # Count only processes whose ownership the managed runtime verified.
             from core.memory_watchdog import SystemMemoryWatchdog
-            memory = SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=controller.owned_process_ids())
+            memory = SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owner.owned_process_ids())
             metadata["memory_rss_mb"] = memory["total_allocated_gb"] * 1024
             if not metadata["token_usage_available"]:
                 metadata.pop("tokens_generated", None)
@@ -154,12 +166,19 @@ def install_pro_runtime_hardening(cls) -> None:
 
         # Raw decoder TPS is a different metric: MLX-LM reports it from the active
         # autoregressive decode loop, excluding the rest of an N-branch Pro request.
-        mlx = None if is_strata else getattr(self, "mlx_backend", None)
+        mlx = None if is_strata or is_native else getattr(self, "mlx_backend", None)
         try:
             decode_tps = float(getattr(mlx, "last_tok_per_sec", 0.0) or 0.0)
         except Exception:
             decode_tps = 0.0
         metadata["decode_tok_speed"] = decode_tps
+        if is_native:
+            telemetry = dict(native.get_speculative_telemetry() or {})
+            metadata["speculative"] = telemetry
+            measured = telemetry.get("decode_tokens_per_second")
+            metadata["decode_tok_speed"] = (
+                float(measured) if type(measured) in (int, float)
+                and math.isfinite(float(measured)) and measured > 0 else 0.0)
         metadata["generation_cap_reason"] = str(
             getattr(mlx, "last_generation_cap_reason", "") or ""
         )

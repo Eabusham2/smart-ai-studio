@@ -149,6 +149,12 @@ def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
         # counts native tokens, rejects overlong prompts and clamps max_tokens to
         # the exact remaining window. Send that window as the output upper bound.
         return _strata_generation_context(engine, backend)
+    if getattr(backend, "runtime", None) == "prism_speculative":
+        # Count inside the new native request after its cancellation state is
+        # reset. The adapter subtracts exact prompt tokens from this total cap.
+        context_budget = _selected_context_budget(engine)
+        backend.context_budget_tokens = context_budget
+        return context_budget
     context_budget = _selected_context_budget(engine)
     prompt_tokens = _formatted_token_count(engine, formatted_prompt)
     remaining = int(context_budget) - int(prompt_tokens)
@@ -225,6 +231,14 @@ def install_awake_auto_learning(cls) -> None:
             self._last_context_consolidation_note = (
                 f"Strata inference only · Context {context_budget:,} includes prompt/history + output. "
                 "The server counts exact tokens; history is kept without weight consolidation."
+            )
+            return history
+
+        if getattr(backend, "runtime", None) == "prism_speculative":
+            context_budget = _selected_context_budget(self)
+            self._last_context_consolidation_note = (
+                f"Native inference only · Context {context_budget:,} includes prompt/history + output. "
+                "Complete history is retained; target weights and adapters are immutable."
             )
             return history
 
@@ -328,12 +342,27 @@ def install_awake_auto_learning(cls) -> None:
         top_p: float = 0.92,
         cancel_event: Optional[Any] = None,
     ):
+        from core.lossless_speed_control import cancel_before_request
+        if cancel_before_request(self, cancel_event):
+            self._last_stream_pro_meta = None
+            return
         history = _apply_awake_learning(self, history, prompt)
         self._last_stream_pro_meta = None
 
         # Preserve the historical chat decision point: entropy chooses N=1/8/16.
-        entropy = float(self.calculate_token_entropy(prompt))
-        mode, branch_count = self.router.route(entropy, has_test_cases=False)
+        native = getattr(self, "gguf_backend", None)
+        if getattr(native, "runtime", None) == "prism_speculative":
+            # Native completion does not expose full-vocabulary entropy. Use
+            # the explicit GUI/API branch budget for both Off and draft modes;
+            # never substitute a prompt heuristic for the model router.
+            branch_count = getattr(self, "lossless_speed_options", {}).get("native_branch_count", 1)
+            if type(branch_count) is not int or not 1 <= branch_count <= 64:
+                raise ValueError("Select a native branch count from 1 through 64 in Speedups.")
+            entropy = None
+            mode = f"Native (N={branch_count})"
+        else:
+            entropy = float(self.calculate_token_entropy(prompt))
+            mode, branch_count = self.router.route(entropy, has_test_cases=False)
 
         if int(branch_count) <= 1:
             formatted = self._format_prompt_with_history(prompt, history)

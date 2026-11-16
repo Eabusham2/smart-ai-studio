@@ -102,7 +102,7 @@ end run
     os.makedirs(app_code_dir, exist_ok=True)
 
     # 2. Copy application source trees & icons
-    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "AppIcon.icns", "requirements.txt", "pyproject.toml"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "tools/prepare_speculative_runtime.py", "docs/ternary-speedups.md", "app_icon.png", "AppIcon.icns", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(app_code_dir, item)
         if os.path.isdir(src):
@@ -110,6 +110,7 @@ end run
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
         elif os.path.isfile(src):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
 
     _write_macos_runtime_scripts(app_code_dir)
@@ -243,7 +244,7 @@ def create_windows_bundle(dist_dir: str, app_name: str):
     os.makedirs(win_dir, exist_ok=True)
 
     # Copy application source trees
-    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "requirements.txt", "pyproject.toml"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "tools/prepare_speculative_runtime.py", "docs/ternary-speedups.md", "app_icon.png", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(win_dir, item)
         if os.path.isdir(src):
@@ -251,6 +252,7 @@ def create_windows_bundle(dist_dir: str, app_name: str):
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
         elif os.path.isfile(src):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
 
     # 1. Create Windows Batch Launcher (SmartAI.bat)
@@ -298,7 +300,7 @@ def create_linux_bundle(dist_dir: str, app_name: str):
     os.makedirs(usr_bin, exist_ok=True)
 
     # Copy application code into AppDir
-    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "app_icon.png", "requirements.txt", "pyproject.toml"]:
+    for item in ["app_gui.py", "main.py", "master_4000_eval_suite.py", "run_studio_complete.py", "config", "core", "memory", "consolidation", "eval", "tools/prepare_speculative_runtime.py", "docs/ternary-speedups.md", "app_icon.png", "requirements.txt", "pyproject.toml"]:
         src = os.path.abspath(item)
         dst = os.path.join(usr_bin, item)
         if os.path.isdir(src):
@@ -306,6 +308,7 @@ def create_linux_bundle(dist_dir: str, app_name: str):
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
         elif os.path.isfile(src):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
 
     # 1. Create AppRun script

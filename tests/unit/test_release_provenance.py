@@ -35,7 +35,8 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
     ]}
     (dist / "SmartAI-macOS-arm64.bundle.json").write_text(json.dumps(manifest), encoding="utf-8")
     for name in ("Reassemble-SmartAI-macOS-arm64.command", "SmartAI-Windows.zip",
-                 "SmartAI-Linux-x86_64.tar.gz", "SmartAI-Unix-POSIX.tar.gz"):
+                 "SmartAI-Linux-x86_64.tar.gz", "SmartAI-Unix-POSIX.tar.gz",
+                 "SmartAI-native-cpu-Linux-X64.zip", "SmartAI-native-metal-macOS-ARM64.zip"):
         (dist / name).write_bytes(b"built package")
     assets = [*manifest["parts"], *({"name": path.name, "size": path.stat().st_size} for path in dist.iterdir())]
     for index, asset in enumerate(assets):
@@ -48,6 +49,8 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
         assets = [item for item in assets if item["name"] != manifest["parts"][1]["name"]]
     elif fault == "missing_package":
         assets = [item for item in assets if item["name"] != "SmartAI-Windows.zip"]
+    elif fault == "missing_native":
+        assets = [item for item in assets if item["name"] != "SmartAI-native-cpu-Linux-X64.zip"]
     elif fault == "wrong_size":
         assets[0]["size"] += 1
     elif fault == "upload_in_progress":
@@ -95,7 +98,10 @@ new AsyncFunction('github', 'context', 'core', 'require', script)(github, contex
                .replace("SHA", json.dumps(SHA)))
     result = subprocess.run(
         [node, "-e", harness], cwd=tmp_path,
-        env={**os.environ, "RELEASE_TAG": tag}, capture_output=True, text=True, timeout=10, check=True,
+        # The first Node process on a hosted Windows runner can spend more than
+        # ten seconds starting. Keep a bounded process timeout without turning
+        # that startup latency into a false failure of the release assertions.
+        env={**os.environ, "RELEASE_TAG": tag}, capture_output=True, text=True, timeout=30, check=True,
     )
     return json.loads(result.stdout)
 
@@ -112,7 +118,7 @@ def test_successful_release_removes_only_legacy_zip_and_moves_exact_rolling_comm
     assert order.index("assets") < order.index("delete") < order.index("update") < order.index("getRef")
 
 
-@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "wrong_size", "upload_in_progress", "duplicate_part"])
+@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "wrong_size", "upload_in_progress", "duplicate_part"])
 def test_incomplete_replacement_neither_deletes_legacy_download_nor_moves_tag(tmp_path, fault):
     result = run_release_gate(tmp_path, fault=fault)
     assert result["error"]

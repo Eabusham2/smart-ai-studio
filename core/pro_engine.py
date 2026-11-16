@@ -277,14 +277,14 @@ class ProReasoningEngine:
                         "message": f"Weights for {model_name} ({target_path}) are not downloaded yet."
                     }
 
+            def load_cancelled():
+                event = getattr(self, "_speed_cancel_event", None)
+                external = getattr(self, "_model_load_cancelled", None)
+                return bool((event and event.is_set()) or (external and external()))
+
             try:
                 # 0. Architecture-specific controller adapter (VLM/audio-language/etc.)
                 if target_backend == "controller":
-                    def load_cancelled():
-                        event = getattr(self, "_speed_cancel_event", None)
-                        external = getattr(self, "_model_load_cancelled", None)
-                        return bool((event and event.is_set()) or (external and external()))
-
                     controller_cls = StrataReasoningBackend if controller_runtime == "strata" else UniversalControllerBackend
                     self.controller_backend = controller_cls(
                         model_path=target_path,
@@ -369,6 +369,20 @@ class ProReasoningEngine:
                         if bool(info.get("prism_llama_fork"))
                         else GGUFReasoningBackend
                     )
+                    speed_options = getattr(self, "lossless_speed_options", {})
+                    native_options = {}
+                    server_path = info.get("speculative_server_path") or speed_options.get("speculative_server_path")
+                    if server_path:
+                        from core.engines.prism_speculative_engine import PrismSpeculativeReasoningBackend
+                        gguf_cls = PrismSpeculativeReasoningBackend
+                        native_options = {
+                            "server_path": server_path,
+                            "mode": (info.get("speculative_mode") or speed_options.get("speculative_mode", "none"))
+                            if speed_options.get("enabled", True) else "none",
+                            "draft_model_path": info.get("draft_model_path") or speed_options.get("draft_model_path"),
+                            "runtime_receipt_path": info.get("speculative_runtime_receipt_path") or speed_options.get("speculative_runtime_receipt_path"),
+                            "max_draft_tokens": info.get("max_draft_tokens", speed_options.get("max_draft_tokens")),
+                        }
                     self.gguf_backend = gguf_cls(
                         model_path=target_path,
                         mmproj_path=mmproj_path,
@@ -376,8 +390,10 @@ class ProReasoningEngine:
                         n_ctx=int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
                         auto_memory_placement=bool(info.get("auto_memory_placement", True)),
                         memory_limit_gb=getattr(self, "speed_memory_limit_gb", None),
+                        **native_options,
                     )
-                    if self.gguf_backend.load_model():
+                    load_options = {"cancelled": load_cancelled} if server_path else {}
+                    if self.gguf_backend.load_model(**load_options):
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
                             self.awake_consolidator.engine = self.gguf_backend
                         return {
@@ -389,7 +405,8 @@ class ProReasoningEngine:
                             "memory_placement": dict(getattr(self.gguf_backend, "memory_placement", {}) or {}),
                         }
                     return {
-                        "status": "error", "model": model_name, "backend": "gguf", "path": target_path,
+                        "status": "cancelled" if server_path and load_cancelled() and getattr(self.gguf_backend, "_process", None) is None else "error",
+                        "model": model_name, "backend": "gguf", "path": target_path,
                         "error": getattr(self.gguf_backend, "last_error", "") or "The native runtime could not load this GGUF model.",
                     }
 
@@ -455,6 +472,15 @@ class ProReasoningEngine:
         """
         old_model = self.active_model_name
 
+        native = getattr(self, "gguf_backend", None)
+        if getattr(native, "runtime", None) == "prism_speculative":
+            try:
+                native.unload_model()
+            except Exception as exc:
+                return {"status": "error", "unloaded": False, "model": old_model,
+                        "backend": "prism_speculative", "error": str(exc)}
+            self.gguf_backend = None
+
         controller = getattr(self, "controller_backend", None)
         if getattr(controller, "_offload_directory", None):
             try:
@@ -498,6 +524,9 @@ class ProReasoningEngine:
 
         if hasattr(self, "mlx_backend") and self.mlx_backend is not None:
             try:
+                invalidate = getattr(self.mlx_backend, "invalidate_prompt_reuse", None)
+                if callable(invalidate):
+                    invalidate("unload")
                 if hasattr(self.mlx_backend, "model") and self.mlx_backend.model is not None:
                     del self.mlx_backend.model
                     self.mlx_backend.model = None
@@ -581,6 +610,8 @@ class ProReasoningEngine:
             return self.mlx_backend.calculate_token_entropy(prompt)
 
         if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "model", None) is not None:
+            if getattr(self.gguf_backend, "supports_entropy", True) is False:
+                raise RuntimeError("This native runtime does not expose model entropy. Select an explicit thinking branch count.")
             return self.gguf_backend.calculate_token_entropy(prompt)
 
         if self.bitnet_backend and getattr(self.bitnet_backend, "is_loaded", False) and getattr(self.bitnet_backend, "model", None) is not None:
@@ -811,9 +842,15 @@ class ProReasoningEngine:
         cancel_event: Optional[Any] = None
     ):
         """Yields live tokens in real time from the active MLX / GGUF / BitNet model."""
+        from core.lossless_speed_control import cancel_before_request
+        if cancel_before_request(self, cancel_event):
+            return
         if (getattr(self.controller_backend, "runtime", None) == "strata"
                 and not getattr(self.controller_backend, "is_loaded", False)):
             raise RuntimeError("Load the Strata model before generating text.")
+        if (getattr(self.gguf_backend, "runtime", None) == "prism_speculative"
+                and not getattr(self.gguf_backend, "is_loaded", False)):
+            raise RuntimeError("Load the selected native runtime before generating text.")
         formatted_prompt = self._format_prompt_with_history(prompt, history)
 
         # 0. Specialized controller streaming
@@ -861,17 +898,28 @@ class ProReasoningEngine:
         # 2. GGUF Streaming
         if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "model", None) is not None:
             has_yielded = False
-            for token in self.gguf_backend.stream_generate_tokens(
+            is_native = getattr(self.gguf_backend, "runtime", None) == "prism_speculative"
+            cancel_options = {"cancelled": cancel_event.is_set} if is_native and cancel_event is not None else {}
+            stream = self.gguf_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
                 max_tokens=self.settings.max_new_tokens,
                 temperature=temperature,
-                top_p=top_p
-            ):
-                if cancel_event and cancel_event.is_set():
-                    break
-                has_yielded = True
-                yield token
-            if has_yielded:
+                top_p=top_p,
+                **cancel_options,
+            )
+            try:
+                for token in stream:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    has_yielded = True
+                    yield token
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+            # Completion or cancellation with no text is still a completed
+            # native request. It must never restart via the solve fallback.
+            if has_yielded or is_native:
                 return
 
         # 3. BitNet Streaming
@@ -909,6 +957,9 @@ class ProReasoningEngine:
         cancel_event: Optional[Any] = None,
     ) -> List[str]:
         """Samples candidate reasoning rollouts using calibrated temperature laddering and auto-scaled context window."""
+        from core.lossless_speed_control import cancel_before_request
+        if cancel_before_request(self, cancel_event):
+            return []
         if (getattr(self.controller_backend, "runtime", None) == "strata"
                 and not getattr(self.controller_backend, "is_loaded", False)):
             raise RuntimeError("Load the Strata model before generating text.")
@@ -944,14 +995,17 @@ class ProReasoningEngine:
 
         # 2. GGUF / Llama.cpp Inference
         if self.gguf_backend and self.gguf_backend.is_gguf_available:
+            is_native = getattr(self.gguf_backend, "runtime", None) == "prism_speculative"
+            cancel_options = {"cancelled": cancel_event.is_set} if is_native and cancel_event is not None else {}
             branches = self.gguf_backend.generate_branches(
                 prompt=formatted_prompt,
                 branch_count=branch_count,
                 max_tokens=self.settings.max_new_tokens,
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
-                top_p=self.settings.search_top_p
+                top_p=self.settings.search_top_p,
+                **cancel_options,
             )
-            if branches:
+            if branches or is_native:
                 return branches
 
         # 3. BitNet 1.58-Bit Pure Ternary Integer Inference
@@ -1072,8 +1126,17 @@ class ProReasoningEngine:
         """
         start_time = time.perf_counter()
         has_tests = bool(test_cases and test_cases.strip())
-        entropy = self.calculate_token_entropy(prompt)
-        mode, branch_count = self.router.route(entropy, has_test_cases=has_tests)
+        native = getattr(self, "gguf_backend", None)
+        is_native = getattr(native, "runtime", None) == "prism_speculative"
+        if is_native:
+            if type(force_branch_count) is not int or force_branch_count < 1:
+                raise ValueError("Choose an explicit thinking branch count for this native runtime; automatic model-entropy routing is unavailable.")
+            entropy = None
+            branch_count = force_branch_count
+            mode = f"Pro Search (N={branch_count})" if branch_count > 1 else "Instant Pass (N=1)"
+        else:
+            entropy = self.calculate_token_entropy(prompt)
+            mode, branch_count = self.router.route(entropy, has_test_cases=has_tests)
         if force_branch_count is not None and force_branch_count > 0:
             branch_count = force_branch_count
             mode = f"Pro Search (N={branch_count})" if branch_count > 1 else "Instant Pass (N=1)"
@@ -1083,16 +1146,17 @@ class ProReasoningEngine:
         winning_temp = temp_ladder[0]
         controller = self.controller_backend
         is_strata = getattr(controller, "runtime", None) == "strata"
-        branch_options = {"cancel_event": cancel_event} if is_strata else {}
+        branch_options = {"cancel_event": cancel_event} if is_strata or is_native else {}
+        telemetry = native.get_speculative_telemetry if is_native else self.speculative_engine.get_telemetry
 
         def cancelled_result(candidates):
             return "", {"cancelled": True, "mode": mode, "raw_branches": candidates,
                         "branch_count": len(candidates), "verified": False, "surprise_score": 0.0}
 
         def strata_cancelled():
-            return is_strata and (
+            return (is_strata or is_native) and (
                 bool(cancel_event is not None and cancel_event.is_set())
-                or getattr(controller, "last_generation", {}).get("status") == "cancelled"
+                or getattr(native if is_native else controller, "last_generation", {}).get("status") == "cancelled"
             )
 
         # Path 1: Instant Single-Pass Mode
@@ -1100,6 +1164,8 @@ class ProReasoningEngine:
             candidates = self.generate_parallel_branches(prompt, branch_count=1, history=history, temperatures=temp_ladder, **branch_options)
             if strata_cancelled():
                 return cancelled_result(candidates)
+            if not candidates:
+                raise RuntimeError("The selected runtime completed without any response candidates.")
             raw_response = candidates[0]
             thinking_text, clean_response = parse_reasoning_and_response(raw_response)
             response = clean_response or raw_response
@@ -1120,7 +1186,7 @@ class ProReasoningEngine:
                 "raw_branches": candidates,
                 "execution_time_ms": exec_time,
                 "verifier_details": "Single-pass execution without test assertions.",
-                "speculative": self.speculative_engine.get_telemetry()
+                "speculative": telemetry()
             }
             return response, metadata
 
@@ -1128,6 +1194,8 @@ class ProReasoningEngine:
         candidates = self.generate_parallel_branches(prompt, branch_count=branch_count, history=history, temperatures=temp_ladder, **branch_options)
         if strata_cancelled():
             return cancelled_result(candidates)
+        if not candidates:
+            raise RuntimeError("The selected runtime completed without any response candidates.")
         winning_branch = 0
         winning_response = candidates[0]
         winning_temp = temp_ladder[0]
@@ -1160,7 +1228,9 @@ class ProReasoningEngine:
                     break
 
             # Calculate Surprise Score
-            if verified:
+            if entropy is None:
+                surprise_score = None
+            elif verified:
                 if first_branch_passed:
                     surprise_score = 0.10 + 0.10 * entropy
                 else:
@@ -1212,11 +1282,11 @@ class ProReasoningEngine:
         metadata = {
             "mode": mode,
             "backend": "mlx" if (self.mlx_backend and self.mlx_backend.is_mlx_available) else ("torch" if self.model is not None else "live_unloaded"),
-            "entropy": round(entropy, 4),
+            "entropy": round(entropy, 4) if entropy is not None else None,
             "branch_count": len(candidates),
             "verified": verified,
             "verified_reward": verified_reward,
-            "surprise_score": round(surprise_score, 4),
+            "surprise_score": round(surprise_score, 4) if surprise_score is not None else None,
             "winning_branch": winning_branch,
             "winning_temp": winning_temp,
             "temp_ladder": temp_ladder,
@@ -1227,7 +1297,7 @@ class ProReasoningEngine:
             "memory_rss_mb": mem_rss_mb,
             "execution_time_ms": exec_time,
             "verifier_details": verifier_details,
-            "speculative": self.speculative_engine.get_telemetry()
+            "speculative": telemetry()
         }
         return final_resp, metadata
 

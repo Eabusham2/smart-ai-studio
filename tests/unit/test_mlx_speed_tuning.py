@@ -406,6 +406,10 @@ class TestVLMNativeSpeedAdapter(unittest.TestCase):
     def test_existing_vlm_chat_calls_keep_sampling_and_add_only_valid_context_override(self):
         with tempfile.TemporaryDirectory() as folder, fake_vlm_runtime(folder) as env:
             env.backend._effective_generation_cap = lambda *args, **kwargs: 24
+            env.backend._prepare_optional_warmup = lambda mx: None
+            env.backend._encode_prompt = env.backend.tokenizer.encode
+            env.backend._vlm_reuse_kwargs = lambda *args, **kwargs: {}
+            env.backend._finish_vlm_request = lambda **kwargs: None
             env.backend._speed_vlm_prefill_kwargs = types.MethodType(engine_method("_speed_vlm_prefill_kwargs", env.state), env.backend)
             branches = engine_method("generate_branches", env.state)
             streaming = engine_method("stream_generate_tokens", env.state)

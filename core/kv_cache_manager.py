@@ -36,11 +36,24 @@ class SmartKVCacheManager:
         self.current_length = 0
 
     def get_cache(self) -> List[Any]:
+        if self.cache is None:
+            self.cache = make_prompt_cache(self.model)
         return self.cache
+
+    def release(self) -> None:
+        """Drop request-owned state without allocating a replacement arena."""
+        self.cache = None
+        self.current_length = 0
+
+    def ensure_fresh(self) -> None:
+        """Reuse an already empty arena; never reset the same request twice."""
+        if self.current_length:
+            self.release()
+        self.get_cache()
 
     def reset(self, purge_allocator: bool = False) -> None:
         """Rebuild logical KV state; only purge Metal's allocator on real pressure/OOM."""
-        self.cache = None
+        self.release()
         if purge_allocator:
             try:
                 if hasattr(mx, "clear_cache"):
@@ -55,7 +68,7 @@ class SmartKVCacheManager:
     def auto_compact_if_needed(self, incoming_tokens_len: int) -> bool:
         # "Compact" here means throw away stale KV tensors and recompute from the
         # complete packed prompt. No token IDs or conversation content are removed.
-        if self.current_length + int(incoming_tokens_len) > self.max_tokens:
+        if self.current_length and self.current_length + int(incoming_tokens_len) > self.max_tokens:
             self.reset(purge_allocator=False)
             return True
         return False

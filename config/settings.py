@@ -87,11 +87,22 @@ try:
         vision_mmproj_path: Optional[str] = Field(default=None, description="GGUF vision clip projector path")
         auto_download: bool = Field(default=True, description="Automatically stream missing weights from Hugging Face")
 
-        # Speculative acceleration remains disabled until exact decoder equivalence is proven.
-        speculative_mode: str = Field(default="none", description="Speculative decoding request; production MLX remains disabled unless exact output equivalence is proven")
+        # Drafting requires an explicitly selected, hash-verified native build.
+        speculative_mode: str = Field(default="none", description="Native drafting: none, auto, lookup, mtp, dflash2; MLX drafting remains disabled")
         speculative_tokens: int = Field(default=4, description="Number of draft tokens K to speculate ahead")
+        speculative_server_path: Optional[str] = Field(default=None, description="Local patched native server; no automatic runtime or target substitution")
         draft_model_path: Optional[str] = Field(default=None, description="Path to secondary draft model or DFlash drafter")
         draft_device: Optional[str] = Field(default=None, description="Device for secondary draft head")
+        speedup_enabled: bool = True
+        speedup_prompt_reuse: bool = True
+        speedup_branch_prefill: bool = True
+        speedup_tokenizer_memo: bool = True
+        speedup_persistent_cache: bool = False
+        speedup_metal_warmup: bool = False
+        speedup_cache_dir: Optional[str] = None
+        speedup_max_draft_tokens: Optional[int] = None
+        speedup_speculative_runtime_receipt_path: Optional[str] = None
+        speedup_native_branch_count: int = 1
 
         # Reasoning & Test-Time Search
         entropy_low_threshold: float = Field(default=0.25, description="Low entropy cutoff for Instant (N=1)")
@@ -147,8 +158,19 @@ except ImportError:
 
         speculative_mode: str = os.getenv("SPECULATIVE_MODE", "none")
         speculative_tokens: int = int(os.getenv("SPECULATIVE_TOKENS", "4"))
+        speculative_server_path: Optional[str] = os.getenv("SPECULATIVE_SERVER_PATH", None)
         draft_model_path: Optional[str] = os.getenv("DRAFT_MODEL_PATH", None)
         draft_device: Optional[str] = os.getenv("DRAFT_DEVICE", None)
+        speedup_enabled: bool = os.getenv("SPEEDUP_ENABLED", "true").lower() in ("1", "true", "yes")
+        speedup_prompt_reuse: bool = os.getenv("SPEEDUP_PROMPT_REUSE", "true").lower() in ("1", "true", "yes")
+        speedup_branch_prefill: bool = os.getenv("SPEEDUP_BRANCH_PREFILL", "true").lower() in ("1", "true", "yes")
+        speedup_tokenizer_memo: bool = os.getenv("SPEEDUP_TOKENIZER_MEMO", "true").lower() in ("1", "true", "yes")
+        speedup_persistent_cache: bool = os.getenv("SPEEDUP_PERSISTENT_CACHE", "false").lower() in ("1", "true", "yes")
+        speedup_metal_warmup: bool = os.getenv("SPEEDUP_METAL_WARMUP", "false").lower() in ("1", "true", "yes")
+        speedup_cache_dir: Optional[str] = os.getenv("SPEEDUP_CACHE_DIR", None)
+        speedup_max_draft_tokens: Optional[int] = field(default_factory=lambda: int(os.environ["SPEEDUP_MAX_DRAFT_TOKENS"]) if os.getenv("SPEEDUP_MAX_DRAFT_TOKENS") else None)
+        speedup_speculative_runtime_receipt_path: Optional[str] = os.getenv("SPEEDUP_SPECULATIVE_RUNTIME_RECEIPT_PATH", None)
+        speedup_native_branch_count: int = int(os.getenv("SPEEDUP_NATIVE_BRANCH_COUNT", "1"))
 
         entropy_low_threshold: float = float(os.getenv("ENTROPY_LOW_THRESHOLD", "0.25"))
         entropy_high_threshold: float = float(os.getenv("ENTROPY_HIGH_THRESHOLD", "0.70"))

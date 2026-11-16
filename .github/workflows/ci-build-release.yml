@@ -26,6 +26,9 @@ jobs:
     outputs:
       reuse_green: ${{ steps.green.outputs.reuse_green }}
       verified_pr_head: ${{ steps.green.outputs.verified_pr_head }}
+      verified_run_id: ${{ steps.green.outputs.verified_run_id }}
+      native_reuse_run_id: ${{ steps.native.outputs.native_reuse_run_id }}
+      native_reuse_matrix: ${{ steps.native.outputs.native_reuse_matrix }}
     steps:
       - name: Detect already-green merged PR head
         id: green
@@ -34,8 +37,9 @@ jobs:
           script: |
             core.setOutput('reuse_green', 'false');
             core.setOutput('verified_pr_head', '');
+            core.setOutput('verified_run_id', '');
 
-            // PRs must always execute the full matrix. Tags, manual runs, direct
+            // PRs always execute the full Python matrix. Tags, manual runs, direct
             // pushes, squash merges, and rebases also fall back to full CI.
             if (context.eventName !== 'push') return;
             if (!['refs/heads/master', 'refs/heads/main'].includes(context.ref)) return;
@@ -84,12 +88,117 @@ jobs:
               return;
             }
 
+            // Reuse only when both compiled, model-free runtimes are still
+            // available for packaging from this exact successful PR run.
+            const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner, repo, run_id: greenRun.id, per_page: 100,
+            });
+            const nativeArtifacts = artifacts.artifacts.filter(artifact =>
+              artifact.name.startsWith('SmartAI-native-') && !artifact.expired
+            );
+            if (nativeArtifacts.length !== 2 ||
+                !nativeArtifacts.some(artifact => artifact.name.startsWith('SmartAI-native-cpu-Linux-')) ||
+                !nativeArtifacts.some(artifact => artifact.name.startsWith('SmartAI-native-metal-macOS-'))) {
+              core.notice('Tested native build artifacts are unavailable; full CI will run.');
+              return;
+            }
+
             core.notice(
               `Reusing successful PR CI run ${greenRun.id} for PR #${mergedPr.number} ` +
               `at ${prHead}. Master will package/release without rerunning the matrix.`
             );
             core.setOutput('reuse_green', 'true');
             core.setOutput('verified_pr_head', prHead);
+            core.setOutput('verified_run_id', greenRun.id);
+
+      - name: Detect reusable native compile artifacts
+        id: native
+        if: steps.green.outputs.reuse_green != 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.setOutput('native_reuse_run_id', '');
+            core.setOutput('native_reuse_matrix', '{"include":[]}');
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+            if (!pr || pr.head.repo?.full_name !== `${owner}/${repo}`) return;
+            const workflowPath = '.github/workflows/ci-build-release.yml';
+            const inputs = ['core/native_exactness.py', 'tools/prepare_speculative_runtime.py'];
+            // Only the job's scheduling condition may differ. Runner, matrix,
+            // actions, compiler commands, source URL, and all job env stay exact.
+            function nativeDefinition(source) {
+              if (/^(env|defaults):/m.test(source)) return null;
+              source = source.replace(/\r\n/g, '\n');
+              const boundary = source.indexOf('\njobs:\n');
+              if (boundary < 0) return null;
+              const header = source.slice(0, boundary);
+              const lines = source.split('\n');
+              const start = lines.indexOf('  native-build:');
+              if (start < 0) return null;
+              let end = start + 1;
+              while (end < lines.length && !/^  [A-Za-z][A-Za-z0-9_-]*:/.test(lines[end])) end++;
+              return header + '\n' + lines.slice(start, end).filter(line => !/^    if:/.test(line)).join('\n').trimEnd();
+            }
+            async function fileAt(path, ref) {
+              const { data } = await github.rest.repos.getContent({ owner, repo, path, ref });
+              if (data.type !== 'file' || data.encoding !== 'base64' || !/^[a-f0-9]{40}$/.test(data.sha)) {
+                throw new Error(`Cannot verify source blob ${path}`);
+              }
+              return { sha: data.sha, text: Buffer.from(data.content, 'base64').toString('utf8') };
+            }
+            try {
+              const current = await Promise.all(inputs.map(path => fileAt(path, context.sha)));
+              const definition = nativeDefinition((await fileAt(workflowPath, context.sha)).text);
+              if (!definition) return;
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, branch: pr.head.ref, event: 'pull_request', status: 'completed', per_page: 30,
+              });
+              for (const run of data.workflow_runs) {
+                if (run.id === context.runId || run.name !== context.workflow || run.path !== workflowPath ||
+                    run.head_repository?.full_name !== `${owner}/${repo}` ||
+                    run.head_branch !== pr.head.ref ||
+                    !run.pull_requests.some(item => item.number === pr.number && item.base.sha === pr.base.sha)) continue;
+                try {
+                  // A head containing the recorded base has the same build tree
+                  // as its PR merge checkout. Diverged/rebased bases rebuild.
+                  const { data: comparison } = await github.rest.repos.compareCommits({
+                    owner, repo, base: pr.base.sha, head: run.head_sha,
+                  });
+                  if (!['ahead', 'identical'].includes(comparison.status)) continue;
+                  const previous = await Promise.all(inputs.map(path => fileAt(path, run.head_sha)));
+                  if (previous.some((file, index) => file.sha !== current[index].sha)) continue;
+                  if (nativeDefinition((await fileAt(workflowPath, run.head_sha)).text) !== definition) continue;
+                  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                    owner, repo, run_id: run.id, filter: 'latest', per_page: 100,
+                  });
+                  if (!['cpu', 'metal'].every(backend => jobs.some(job =>
+                      job.name === `Compile Native Verifier (${backend}, no models)` && job.conclusion === 'success'))) continue;
+                  const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                    owner, repo, run_id: run.id, per_page: 100,
+                  });
+                  const native = artifacts.filter(item => item.name.startsWith('SmartAI-native-'));
+                  const expected = [
+                    { backend: 'cpu', pattern: /^SmartAI-native-cpu-Linux-(X64|ARM64)$/ },
+                    { backend: 'metal', pattern: /^SmartAI-native-metal-macOS-(X64|ARM64)$/ },
+                  ];
+                  if (native.length !== 2 || native.some(item => item.expired ||
+                      !Number.isFinite(Date.parse(item.expires_at)) || Date.parse(item.expires_at) <= Date.now() || !(item.size_in_bytes > 0))) continue;
+                  const matrix = expected.map(item => {
+                    const matches = native.filter(artifact => item.pattern.test(artifact.name));
+                    return matches.length === 1 ? { backend: item.backend, name: matches[0].name } : null;
+                  });
+                  if (matrix.some(item => !item)) continue;
+                  core.setOutput('native_reuse_run_id', String(run.id));
+                  core.setOutput('native_reuse_matrix', JSON.stringify({ include: matrix }));
+                  core.notice(`Reusing both unchanged native compilations from PR run ${run.id}; all Python lanes still run.`);
+                  return;
+                } catch (error) {
+                  core.notice(`Native artifacts from run ${run.id} are not verifiable: ${error.message}`);
+                }
+              }
+            } catch (error) {
+              core.notice(`Native reuse unavailable; compiling both runtimes: ${error.message}`);
+            }
 
   test:
     name: Run Test Suite (${{ matrix.os }})
@@ -127,6 +236,11 @@ jobs:
 
       - name: Execute Full Test Suite
         shell: bash
+        env:
+          SMARTAI_TEST_OFFLINE: "1"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          RUN_REAL_WEIGHTS_EVAL: "0"
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
             xvfb-run -a python -m pytest -v
@@ -134,14 +248,134 @@ jobs:
             python -m pytest -v
           fi
 
+  native-build:
+    name: Compile Native Verifier (${{ matrix.backend }}, no models)
+    needs: preflight
+    if: needs.preflight.outputs.reuse_green != 'true' && needs.preflight.outputs.native_reuse_run_id == ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            backend: cpu
+          - os: macos-latest
+            backend: metal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch pinned source archive only
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            'https://huggingface.co/ProCreations/Ternary-Bonsai-2-27B-DFlash2/resolve/4cfb6ad03268fed0f60ca96c1a659c0b1c77e50b/runtime/prism-dflash2-source.tar.gz' \
+            --output prism-source.tar.gz
+      - name: Compile patched verifier without executing a model
+        shell: bash
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          RUN_REAL_WEIGHTS_EVAL: "0"
+        run: |
+          python tools/prepare_speculative_runtime.py \
+            --source-archive prism-source.tar.gz --output-dir native-exact \
+            --backend '${{ matrix.backend }}' --jobs 2
+          mkdir native-release
+          cp native-exact/build-smartai/bin/llama-server native-release/
+          cp native-exact/build-smartai/bin/llama-server.smartai.json native-release/
+          cp native-exact/LICENSE native-release/Prism-llama-LICENSE
+          cp docs/ternary-speedups.md native-release/README.md
+      - name: Preserve the exact compiled runtime and receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartAI-native-${{ matrix.backend }}-${{ runner.os }}-${{ runner.arch }}
+          path: native-release/
+          if-no-files-found: error
+          retention-days: 30
+
+  reuse-native:
+    name: Reuse Native Verifier (${{ matrix.backend }}, verified artifact)
+    needs: preflight
+    if: needs.preflight.outputs.reuse_green != 'true' && needs.preflight.outputs.native_reuse_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.native_reuse_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch the previously successful native artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: native-release
+          run-id: ${{ needs.preflight.outputs.native_reuse_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify reused binary and receipt against current source
+        shell: bash
+        env:
+          NATIVE_BACKEND: ${{ matrix.backend }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import ast, hashlib, json, os, shutil
+          root = Path('native-release')
+          required = {'llama-server', 'llama-server.smartai.json', 'Prism-llama-LICENSE', 'README.md'}
+          if {item.name for item in root.iterdir()} != required:
+              raise RuntimeError('Unexpected native artifact layout')
+          if any((root / name).is_symlink() or not (root / name).is_file() for name in required):
+              raise RuntimeError('Native artifact contains a link or non-file')
+          def digest(path):
+              value = hashlib.sha256()
+              with path.open('rb') as handle:
+                  for block in iter(lambda: handle.read(1024 * 1024), b''):
+                      value.update(block)
+              return value.hexdigest()
+          patcher = Path('core/native_exactness.py')
+          constants = {node.targets[0].id: ast.literal_eval(node.value)
+                       for node in ast.parse(patcher.read_text(encoding='utf-8')).body
+                       if isinstance(node, ast.Assign) and len(node.targets) == 1
+                       and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id in {'CONTRACT', 'SOURCE_ARCHIVE_SHA256'}}
+          receipt = json.loads((root / 'llama-server.smartai.json').read_text(encoding='utf-8'))
+          backend = os.environ['NATIVE_BACKEND']
+          if (backend not in {'cpu', 'metal'} or receipt.get('schema_version') != 1
+                  or receipt.get('backend') != backend
+                  or receipt.get('binary_sha256') != digest(root / 'llama-server')
+                  or receipt.get('patcher_sha256') != digest(patcher)
+                  or receipt.get('source_archive_sha256') != constants['SOURCE_ARCHIVE_SHA256']
+                  or receipt.get('exactness_contract') != constants['CONTRACT']):
+              raise RuntimeError('Reused native receipt does not match the binary and current source')
+          if not (root / 'llama-server').stat().st_size or not (root / 'Prism-llama-LICENSE').stat().st_size:
+              raise RuntimeError('Native binary or license is empty')
+          (root / 'llama-server').chmod(0o755)
+          shutil.copyfile('docs/ternary-speedups.md', root / 'README.md')
+          print('Verified existing binary and receipt; refreshed README without recompiling or running a model.')
+          PY
+      - name: Preserve verified native artifact in this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: native-release/
+          if-no-files-found: error
+          retention-days: 30
+
   build-and-release:
     name: Build & Auto-Publish Release Packages
-    needs: [preflight, test]
+    needs: [preflight, test, native-build, reuse-native]
     if: >-
       always() &&
       github.event_name != 'pull_request' &&
       needs.preflight.result == 'success' &&
-      (needs.preflight.outputs.reuse_green == 'true' || needs.test.result == 'success')
+      (needs.preflight.outputs.reuse_green == 'true' ||
+       (needs.test.result == 'success' &&
+        (needs.native-build.result == 'success' || needs.reuse-native.result == 'success')))
     runs-on: macos-latest
     timeout-minutes: 180
 
@@ -158,6 +392,14 @@ jobs:
 
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Fetch the exact green native builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: SmartAI-native-*
+          path: native-runtime-downloads
+          run-id: ${{ needs.preflight.outputs.verified_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -207,6 +449,28 @@ jobs:
         run: |
           python build_app.py
 
+      - name: Package native runtimes and verified receipts
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, shutil
+          Path('dist').mkdir(exist_ok=True)
+          runtimes = list(Path('native-runtime-downloads').glob('SmartAI-native-*'))
+          if len(runtimes) != 2:
+              raise RuntimeError('Expected both exact CI-built native runtimes')
+          patcher_hash = hashlib.sha256(Path('core/native_exactness.py').read_bytes()).hexdigest()
+          for runtime in runtimes:
+              binary = runtime / 'llama-server'
+              receipt = json.loads((runtime / 'llama-server.smartai.json').read_text())
+              if (receipt['binary_sha256'] != hashlib.sha256(binary.read_bytes()).hexdigest()
+                      or receipt['patcher_sha256'] != patcher_hash
+                      or receipt['exactness_contract'] != 'smartai-serial-target-v1'):
+                  raise RuntimeError('Native release receipt does not match the tested code')
+              binary.chmod(0o755)
+              shutil.make_archive(str(Path('dist') / runtime.name), 'zip', runtime)
+          PY
+
       - name: Stream Both Bonsai 2 MLX Models into macOS Release ZIP
         shell: bash
         env:
@@ -230,6 +494,7 @@ jobs:
             dist/SmartAI-Windows.zip
             dist/SmartAI-Linux-x86_64.tar.gz
             dist/SmartAI-Unix-POSIX.tar.gz
+            dist/SmartAI-native-*.zip
 
       - name: Publish or Update GitHub Release
         uses: softprops/action-gh-release@v2
@@ -240,6 +505,7 @@ jobs:
             dist/SmartAI-Windows.zip
             dist/SmartAI-Linux-x86_64.tar.gz
             dist/SmartAI-Unix-POSIX.tar.gz
+            dist/SmartAI-native-*.zip
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
@@ -276,6 +542,11 @@ jobs:
               'SmartAI-macOS-arm64.bundle.json', 'Reassemble-SmartAI-macOS-arm64.command',
               'SmartAI-Windows.zip', 'SmartAI-Linux-x86_64.tar.gz', 'SmartAI-Unix-POSIX.tar.gz',
             ]) {
+              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
+            }
+            const nativeArchives = (await fs.readdir('dist')).filter(name => /^SmartAI-native-.*\.zip$/.test(name));
+            if (nativeArchives.length !== 2) throw new Error('Missing tested native runtime packages');
+            for (const name of nativeArchives) {
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
             }
             if (new Set(expected.map(item => item.name)).size !== expected.length) {
