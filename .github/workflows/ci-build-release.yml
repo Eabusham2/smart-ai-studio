@@ -449,6 +449,24 @@ jobs:
         run: |
           python build_app.py
 
+      - name: Bundle portable macOS Python dependencies
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import platform, sys
+          if platform.system() != 'Darwin' or platform.machine() != 'arm64' or sys.version_info[:2] != (3, 10):
+              raise RuntimeError('Portable macOS dependency bundle requires arm64 Python 3.10')
+          PY
+          python -m pip install --target dist/SmartAI.app/Contents/Resources/app/vendor/python3.10 -r requirements.txt
+          python - <<'PY'
+          from pathlib import Path
+          root = Path('dist/SmartAI.app/Contents/Resources/app/vendor/python3.10')
+          if not (root / 'torch').is_dir() or not (root / 'transformers').is_dir():
+              raise RuntimeError('Portable dependency tree is incomplete')
+          print('Packaged macOS Python 3.10 dependencies:', root)
+          PY
+
       - name: Package native runtimes and verified receipts
         shell: bash
         run: |
