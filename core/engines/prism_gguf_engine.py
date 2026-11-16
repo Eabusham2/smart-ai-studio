@@ -318,21 +318,36 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         top_p: float = 0.92,
         image_bytes: Optional[bytes] = None,
         progress_callback=None,
+        stop_at_tool_boundary: bool = False,
     ) -> List[str]:
         del image_bytes
         out = []
         for idx in range(max(1, int(branch_count))):
             temp = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
-            result = self._call({
-                "op": "generate",
-                "prompt": prompt,
-                "max_tokens": int(max_tokens),
-                "temperature": temp,
-                "top_p": float(top_p),
-            })
-            out.append(str(result.get("text") or ""))
-            usage = result.get("usage") if isinstance(result, dict) else None
-            tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+            started = time.perf_counter()
+            if stop_at_tool_boundary:
+                chunks = []
+                for token in self.stream_generate_tokens(
+                    prompt, int(max_tokens), temp, float(top_p),
+                    stop_at_tool_boundary=True,
+                ):
+                    chunks.append(str(token))
+                    if progress_callback is not None:
+                        progress_callback(idx, branch_count, None,
+                                          time.perf_counter() - started, finished=False)
+                out.append("".join(chunks).strip())
+                tokens = None
+            else:
+                result = self._call({
+                    "op": "generate",
+                    "prompt": prompt,
+                    "max_tokens": int(max_tokens),
+                    "temperature": temp,
+                    "top_p": float(top_p),
+                })
+                out.append(str(result.get("text") or ""))
+                usage = result.get("usage") if isinstance(result, dict) else None
+                tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
             if progress_callback is not None:
                 progress_callback(idx + 1, branch_count, tokens if type(tokens) is int else None, None)
         return out
@@ -344,6 +359,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         temperature: float = 0.75,
         top_p: float = 0.92,
         image_bytes: Optional[bytes] = None,
+        stop_at_tool_boundary: bool = False,
     ) -> Generator[str, None, None]:
         del image_bytes
         with self._io_lock:
@@ -356,6 +372,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                 "max_tokens": int(max_tokens),
                 "temperature": float(temperature),
                 "top_p": float(top_p),
+                "stop_at_tool_boundary": bool(stop_at_tool_boundary),
             }) + "\n")
             self._worker.stdin.flush()
             while True:
