@@ -70,7 +70,8 @@ if [ "$SMARTAI_ARCH" = arm64 ]; then
     SMARTAI_BUILD_ARGS=(--no-binary=llama-cpp-python)
 fi
 "$SMARTAI_VENV/bin/python" -m pip install "${SMARTAI_BUILD_ARGS[@]}" -r "$SMARTAI_CODE_DIR/requirements.txt"
-touch "$SMARTAI_VENV/.smartai-deps-ready"\necho "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command."
+touch "$SMARTAI_VENV/.smartai-deps-ready"
+echo "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command."
 '''
     for name, content in (("launch_studio.sh", launch), ("Install_Dependencies.command", install)):
         path = os.path.join(app_code_dir, name)
