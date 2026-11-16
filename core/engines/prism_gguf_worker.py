@@ -178,7 +178,7 @@ def main() -> int:
                     stop=stops,
                 )
                 text = str(result.get("choices", [{}])[0].get("text", "")).strip()
-                _emit({"status": "ok", "text": text})
+                _emit({"status": "ok", "text": text, "usage": result.get("usage")})
                 continue
             if op == "stream":
                 stream = model(
@@ -191,8 +191,11 @@ def main() -> int:
                 )
                 from core.tool_boundary_stop import ToolBoundaryStopper
                 detector = ToolBoundaryStopper() if request.get("stop_at_tool_boundary") is True else None
+                observed_usage = None
                 try:
                     for chunk in stream:
+                        if isinstance(chunk.get("usage"), dict):
+                            observed_usage = chunk["usage"]
                         token = str(chunk.get("choices", [{}])[0].get("text", ""))
                         if detector is not None:
                             old_length = len(detector.text)
@@ -208,7 +211,7 @@ def main() -> int:
                     close = getattr(stream, "close", None)
                     if callable(close):
                         close()
-                _emit({"event": "done"})
+                _emit({"event": "done", "usage": observed_usage})
                 continue
             if op == "entropy":
                 tokens = model.tokenize(str(request.get("prompt") or "").encode("utf-8"))
