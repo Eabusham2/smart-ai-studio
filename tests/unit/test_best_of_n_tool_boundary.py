@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from core.branch_policy import select_branch_budget
+from core.entropy_router import EntropyRouter
 from core.media_orchestrator import MediaController
 
 
@@ -17,17 +17,19 @@ def make_controller():
     return media
 
 
-def test_simple_chat_uses_one_stream_without_hidden_entropy_inference():
-    assert select_branch_budget("hello") == 1
-    assert select_branch_budget("Could you please summarize this code snippet?") == 1
+def test_gui_has_only_one_pro_checkbox_and_no_heuristic_picker():
+    source = (Path(__file__).resolve().parents[2] / "app_gui.py").read_text()
+    assert 'self.pro_branches_var = tk.BooleanVar(value=False)' in source
+    assert "self.auto_pro_var" not in source
+    assert "self.pro_branch_count_select" not in source
+    assert "select_branch_budget" not in source
 
 
-def test_complex_work_can_choose_best_of_n_and_manual_controls_override():
-    prompt = "Implement, debug, test and benchmark this codebase with edge cases."
-    assert select_branch_budget(prompt) == 4
-    assert select_branch_budget(prompt, requested=8) == 8
-    assert select_branch_budget(prompt, auto=False) == 1
-    assert select_branch_budget("hello", manual=True, requested=16) == 16
+def test_original_model_entropy_router_keeps_one_eight_sixteen_policy():
+    router = EntropyRouter()
+    assert router.route(0.10)[1] == 1
+    assert router.route(0.45)[1] == 8
+    assert router.route(0.85)[1] == 16
 
 
 def test_selected_branch_executes_one_terminal_tool_and_returns_once():
