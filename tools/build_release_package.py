@@ -186,6 +186,44 @@ def portable_dependency_lock(frozen, native_version):
     return '\n'.join(rows) + '\n'
 
 
+def smoke_app(code, *, setup_home=None):
+    """Launch the packaged interpreter with no host Python/user site fallback."""
+    from bootstrap_runtime import python_path
+    code = Path(code)
+    env = dict(os.environ, PYTHONNOUSERSITE='1', HF_HUB_OFFLINE='1',
+               TRANSFORMERS_OFFLINE='1', RUN_REAL_WEIGHTS_EVAL='0')
+    env.pop('PYTHONHOME', None)
+    env.pop('PYTHONPATH', None)
+    if setup_home is not None:
+        env['SMARTAI_SETUP_HOME'] = str(setup_home)
+    subprocess.run([str(python_path(code / 'runtime/python')),
+                    str(code / 'bootstrap_runtime.py'), '--smoke-test'],
+                   env=env, check=True)
+
+
+def verified_dmg(app, destination):
+    """Package the .app directory itself, then test it from the mounted image."""
+    app, destination = Path(app), Path(destination)
+    # -srcfolder copies a directory's contents. Its source must contain the
+    # .app, rather than point inside the .app and put Contents at volume root.
+    subprocess.run(['hdiutil', 'create', '-volname', 'SmartAI', '-srcfolder',
+                    str(app.parent), '-ov', '-format', 'UDZO', str(destination)], check=True)
+    mount = app.parent.parent / 'mounted-dmg-check'
+    mount.mkdir()
+    attached = False
+    try:
+        subprocess.run(['hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint',
+                        str(mount), str(destination)], check=True)
+        attached = True
+        mounted_code = mount / 'SmartAI.app/Contents/Resources/app'
+        if not (mounted_code / 'bootstrap_runtime.py').is_file():
+            raise RuntimeError('DMG does not contain the complete SmartAI.app')
+        smoke_app(mounted_code)
+    finally:
+        if attached:
+            subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
+
+
 def package(target, output, *, prepare_only=False):
     from bootstrap_runtime import pip_install, fingerprint, python_path
     import build_app
@@ -243,9 +281,7 @@ def package(target, output, *, prepare_only=False):
     relocated=build/'relocated with spaces'/app.name
     relocated.parent.mkdir();shutil.move(str(app),str(relocated));app=relocated
     code=app/'Contents/Resources/app' if target.startswith('macOS') else app/'SmartAI.AppDir/usr/bin' if target.startswith('Linux') else app
-    env=dict(os.environ, PYTHONNOUSERSITE='1', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', RUN_REAL_WEIGHTS_EVAL='0')
-    env.pop('PYTHONHOME',None);env.pop('PYTHONPATH',None)
-    subprocess.run([str(python_path(code/'runtime/python')),str(code/'bootstrap_runtime.py'),'--smoke-test'],env=env,check=True)
+    smoke_app(code)
     if prepare_only:return app
     portable=output/f'SmartAI-{target}-portable.zip'
     archive_tree(app,portable)
@@ -259,15 +295,26 @@ def package(target, output, *, prepare_only=False):
         archive_tree(app,output/'SmartAI.app.tar.gz','tar')
     if target.startswith('macOS'):
         dmg=output/f'SmartAI-{target}.dmg'
-        subprocess.run(['hdiutil','create','-volname','SmartAI','-srcfolder',str(app),'-ov','-format','UDZO',str(dmg)],check=True)
+        verified_dmg(app, dmg)
         files+=split_large(dmg)
     # Setup is the same app and pinned Python, with packages installed on demand
     # into a user-owned directory, never into /Applications or system Python.
     shutil.rmtree(code/'runtime/python');shutil.copytree(base,code/'runtime/python',symlinks=False)
+    # The private Setup environment is intentionally empty: exercise its real
+    # first-launch installation before certifying the non-portable format.
+    setup_home=build/'clean setup home with spaces'
+    try:
+        smoke_app(code, setup_home=setup_home)
+        # A second launch must reuse the complete private environment.
+        smoke_app(code, setup_home=setup_home)
+    finally:
+        if setup_home.exists():
+            shutil.rmtree(setup_home)
     setup=output/f'SmartAI-{target}-Setup.zip'
     archive_tree(app,setup);files+=split_large(setup)
     receipt={'schema':1,'target':target,'commit':os.environ.get('GITHUB_SHA','local'),
-             'model_inference_run':False,'gui_smoke':'passed',
+             'model_inference_run':False,'gui_smoke':'passed','setup_smoke':'passed',
+             'dmg_smoke':'passed' if target.startswith('macOS') else 'not_applicable',
              'files':[{'name':p.name,'size':p.stat().st_size,'sha256':sha(p)} for p in files]}
     (output/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
     print('PACKAGES_VERIFIED',target,len(files),flush=True)

@@ -87,7 +87,7 @@ def test_receipts_reject_wrong_commit_missing_file_and_corruption(tmp_path):
             p=tmp_path/f'SmartAI-{target}-{suffix}';p.write_bytes(b'package')
             files.append({'name':p.name,'size':7,'sha256':hashlib.sha256(b'package').hexdigest()})
         (tmp_path/f'SmartAI-{target}.receipt.json').write_text(json.dumps({
-            'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed','files':files}))
+            'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed','setup_smoke':'passed','dmg_smoke':'passed','files':files}))
     verifier.verify(tmp_path,'a'*40)
     with pytest.raises(RuntimeError):verifier.verify(tmp_path,'b'*40)
     (tmp_path/'SmartAI-Windows-x86_64-portable.zip').write_bytes(b'changed')
@@ -150,3 +150,65 @@ def test_shipped_setup_lock_does_not_reference_the_ci_wheel_directory():
     result = builder.portable_dependency_lock(original, '0.3.37')
     assert result == 'torch==2.2.0\nllama-cpp-python==0.3.37\ntransformers==4.40.0\n'
     assert 'file:' not in result
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_dmg_contains_app_at_volume_root_and_detaches_after_smoke(tmp_path, monkeypatch, fails):
+    app = tmp_path / 'relocated with spaces' / 'SmartAI.app'
+    app.mkdir(parents=True)
+    destination = tmp_path / 'SmartAI.dmg'
+    commands, launched = [], []
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[:2] == ['hdiutil', 'attach']:
+            mount = Path(command[command.index('-mountpoint')+1])
+            code = mount / 'SmartAI.app/Contents/Resources/app'
+            code.mkdir(parents=True)
+            (code / 'bootstrap_runtime.py').write_text('# fixture')
+    def smoke(code):
+        launched.append(code)
+        if fails:
+            raise RuntimeError('synthetic mounted launch failure')
+    monkeypatch.setattr(builder.subprocess, 'run', run)
+    monkeypatch.setattr(builder, 'smoke_app', smoke)
+    if fails:
+        with pytest.raises(RuntimeError, match='mounted launch failure'):
+            builder.verified_dmg(app, destination)
+    else:
+        builder.verified_dmg(app, destination)
+    create = commands[0]
+    assert create[create.index('-srcfolder')+1] == str(app.parent)
+    assert commands[-1][:2] == ['hdiutil', 'detach']
+    assert launched == [tmp_path / 'mounted-dmg-check/SmartAI.app/Contents/Resources/app']
+
+
+def test_setup_smoke_uses_a_private_clean_home_and_ignores_host_python(tmp_path, monkeypatch):
+    monkeypatch.setenv('PYTHONHOME', '/wrong-host-python')
+    monkeypatch.setenv('PYTHONPATH', '/wrong-host-packages')
+    calls = []
+    monkeypatch.setattr(builder.subprocess, 'run', lambda cmd, **kwargs:calls.append((cmd,kwargs)))
+    builder.smoke_app(tmp_path / 'code', setup_home=tmp_path / 'clean setup')
+    command, options = calls[0]
+    assert command[-1] == '--smoke-test'
+    assert str(tmp_path / 'code/runtime/python') in command[0]
+    assert options['check'] is True
+    assert options['env']['SMARTAI_SETUP_HOME'] == str(tmp_path / 'clean setup')
+    assert options['env']['RUN_REAL_WEIGHTS_EVAL'] == '0'
+    assert 'PYTHONHOME' not in options['env'] and 'PYTHONPATH' not in options['env']
+
+
+@pytest.mark.parametrize('missing', ['setup_smoke', 'dmg_smoke'])
+def test_release_refuses_package_without_format_specific_launch_proof(tmp_path, missing):
+    for target in ('Linux-x86_64','Windows-x86_64','macOS-arm64'):
+        rows = []
+        for suffix in ('portable.zip', 'Setup.zip'):
+            path = tmp_path / f'SmartAI-{target}-{suffix}'
+            path.write_bytes(b'package')
+            rows.append({'name':path.name,'size':7,'sha256':hashlib.sha256(b'package').hexdigest()})
+        receipt={'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed',
+                 'setup_smoke':'passed','dmg_smoke':'passed','files':rows}
+        if target == 'macOS-arm64':
+            receipt.pop(missing)
+        (tmp_path/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt))
+    with pytest.raises(RuntimeError, match='was not verified'):
+        verifier.verify(tmp_path,'a'*40)

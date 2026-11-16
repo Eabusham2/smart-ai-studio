@@ -599,7 +599,7 @@ jobs:
             for (const target of ['Linux-x86_64', 'Windows-x86_64', 'macOS-arm64']) {
               const name = `SmartAI-${target}.receipt.json`;
               const receipt = JSON.parse(await fs.readFile(`dist/${name}`, 'utf8'));
-              if (receipt.commit !== context.sha || receipt.gui_smoke !== 'passed') throw new Error(`Unverified package ${target}`);
+              if (receipt.commit !== context.sha || receipt.gui_smoke !== 'passed' || receipt.setup_smoke !== 'passed' || (target.startsWith('macOS') && receipt.dmg_smoke !== 'passed')) throw new Error(`Unverified package ${target}`);
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
               expected.push(...receipt.files.map(item => ({ name: item.name, size: item.size })));
             }

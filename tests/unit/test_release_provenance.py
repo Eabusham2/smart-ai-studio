@@ -45,7 +45,7 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
             path.write_bytes(b"native-tested-package")
             files.append({"name":path.name,"size":path.stat().st_size})
         (dist/f"SmartAI-{target}.receipt.json").write_text(json.dumps({
-            "commit":SHA,"gui_smoke":"passed","files":files}),encoding="utf-8")
+            "commit":SHA,"gui_smoke":"passed","setup_smoke":"passed","dmg_smoke":"passed","files":files}),encoding="utf-8")
     assets = [*manifest["parts"], *({"name": path.name, "size": path.stat().st_size} for path in dist.iterdir())]
     for index, asset in enumerate(assets):
         asset.update(id=index + 1, state="uploaded")

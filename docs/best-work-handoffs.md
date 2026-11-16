@@ -57,7 +57,10 @@ Source checkouts can still use their own Python environment.
 Portable launch does not run pip. Setup requires internet for dependency download.
 OS graphics drivers and a supported desktop environment remain host prerequisites.
 Every native package is relocated to a path containing spaces and must pass a
-model-free GUI/database smoke test before a success receipt is written. The
+model-free GUI/database smoke test. Setup must also install into a clean private
+environment and pass both its first and second launch. The macOS disk image is
+mounted read-only and the contained .app is launched before a success receipt is
+written. The
 publisher verifies commit IDs, sizes, hashes, and all required packages before
 moving the rolling release tag. Large archives have verified reassembly helpers.
 

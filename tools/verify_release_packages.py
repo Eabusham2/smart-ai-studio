@@ -11,6 +11,10 @@ def verify(root, commit):
         record=json.loads((root/f'SmartAI-{target}.receipt.json').read_text(encoding='utf-8'))
         if record.get('schema')!=1 or record.get('target')!=target or record.get('commit')!=commit or record.get('gui_smoke')!='passed':
             raise RuntimeError('Package receipt does not describe the tested commit: '+target)
+        if record.get('setup_smoke') != 'passed':
+            raise RuntimeError('Setup first launch was not verified: '+target)
+        if target.startswith('macOS') and record.get('dmg_smoke') != 'passed':
+            raise RuntimeError('Mounted DMG launch was not verified: '+target)
         files=record.get('files')
         if not isinstance(files,list) or len(files)<2:raise RuntimeError('Package files missing')
         names=set()
