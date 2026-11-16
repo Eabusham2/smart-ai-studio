@@ -975,6 +975,17 @@ class ProReasoningEngine:
                 pass
             return {}
 
+        def _tool_stop_kwargs(backend):
+            if not bool(getattr(self, "_best_work_stop_at_tools", False)):
+                return {}
+            try:
+                import inspect
+                if "stop_at_tool_boundary" in inspect.signature(backend.generate_branches).parameters:
+                    return {"stop_at_tool_boundary": True}
+            except (TypeError, ValueError):
+                pass
+            return {}
+
         def _report_if_legacy(branches, backend):
             if progress_callback is not None and not _progress_kwargs(backend):
                 for index in range(len(branches)):
@@ -993,6 +1004,7 @@ class ProReasoningEngine:
                 top_p=self.settings.search_top_p,
                 **cancel_options,
                 **_progress_kwargs(self.controller_backend),
+                **_tool_stop_kwargs(self.controller_backend),
             )
             if branches or is_strata:
                 return _report_if_legacy(branches, self.controller_backend)
@@ -1006,6 +1018,7 @@ class ProReasoningEngine:
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
                 top_p=self.settings.search_top_p,
                 **_progress_kwargs(self.mlx_backend),
+                **_tool_stop_kwargs(self.mlx_backend),
             )
             if branches:
                 return _report_if_legacy(branches, self.mlx_backend)
@@ -1022,6 +1035,7 @@ class ProReasoningEngine:
                 top_p=self.settings.search_top_p,
                 **cancel_options,
                 **_progress_kwargs(self.gguf_backend),
+                **_tool_stop_kwargs(self.gguf_backend),
             )
             if branches or is_native:
                 return _report_if_legacy(branches, self.gguf_backend)
@@ -1035,6 +1049,7 @@ class ProReasoningEngine:
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
                 top_p=self.settings.search_top_p,
                 **_progress_kwargs(self.bitnet_backend),
+                **_tool_stop_kwargs(self.bitnet_backend),
             )
             if branches:
                 return _report_if_legacy(branches, self.bitnet_backend)
