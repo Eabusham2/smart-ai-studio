@@ -4560,6 +4560,7 @@ class SmartAIChatbotApp:
         pro_branch_count: int = 4,
         auto_pro_branches: bool = True,
     ):
+        from core.branch_policy import select_branch_budget
         start_time = time.perf_counter()
         selected_budget = select_branch_budget(
             user_prompt, manual=use_pro_branches, auto=auto_pro_branches,
