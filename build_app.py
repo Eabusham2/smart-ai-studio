@@ -285,7 +285,7 @@ exit /b %ERRORLEVEL%
 
     # 2. Create Windowed Silent VBS Launcher (SmartAI.vbs)
     vbs_content = f"""Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "cmd /c """" & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\\SmartAI.bat"""""", 0, False
+WshShell.Run "cmd /c " & Chr(34) & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\\SmartAI.bat" & Chr(34), 0, False
 """
     with open(os.path.join(win_dir, f"{app_name}.vbs"), "w") as f:
         f.write(vbs_content)
