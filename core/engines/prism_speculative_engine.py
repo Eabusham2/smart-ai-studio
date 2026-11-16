@@ -502,7 +502,11 @@ class PrismSpeculativeReasoningBackend:
     def generate_branches(self, prompt: str, branch_count: int = 1, max_tokens: int = 1536,
                           temperature: Any = 0.75, top_p: float = 0.92,
                           image_bytes: Optional[bytes] = None,
-                          cancelled: Optional[Callable[[], bool]] = None, **sampling) -> List[str]:
+                          cancelled: Optional[Callable[[], bool]] = None,
+                          progress_callback=None,
+                          stop_at_tool_boundary: bool = False,
+                          **sampling) -> List[str]:
+        from core.tool_boundary_stop import ToolBoundaryStopper
         output = []
         usage = []
         self.last_branch_usage = None
@@ -514,16 +518,48 @@ class PrismSpeculativeReasoningBackend:
                 self.last_generation = {"status": "cancelled", "usage": None}
                 break
             temp = temperature[index % len(temperature)] if isinstance(temperature, (list, tuple)) else temperature
-            text = "".join(self.stream_generate_tokens(prompt, max_tokens, float(temp), top_p,
-                                                       image_bytes=image_bytes, cancelled=cancelled, **sampling)).strip()
-            if self._cancelled.is_set():
+            detector = ToolBoundaryStopper() if stop_at_tool_boundary else None
+            chunks = []
+            started = time.perf_counter()
+            iterator = self.stream_generate_tokens(
+                prompt, max_tokens, float(temp), top_p,
+                image_bytes=image_bytes, cancelled=cancelled, **sampling
+            )
+            try:
+                for part in iterator:
+                    chunks.append(str(part))
+                    if progress_callback is not None:
+                        progress_callback(index, requested_count, None,
+                                          time.perf_counter() - started, finished=False)
+                    if detector is not None and detector.feed(part):
+                        # The native stream's connection is closed below. No
+                        # unverified text beyond this call can reach a caller.
+                        break
+            finally:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+            if self._external_cancelled(cancelled) or self._cancelled.is_set():
+                self.last_generation = {"status": "cancelled", "usage": None}
                 break
-            output.append(text)
-            usage.append(self.last_generation.get("usage"))
-        if len(output) == requested_count and not self._cancelled.is_set() and not self._external_cancelled(cancelled) and usage and all(isinstance(item, dict) and all(type(item.get(key)) is int for key in
-                         ("prompt_tokens", "completion_tokens")) for item in usage):
-            self.last_branch_usage = {key: sum(item[key] for item in usage)
-                                      for key in ("prompt_tokens", "completion_tokens")}
+            output.append(detector.text.strip() if detector is not None else "".join(chunks).strip())
+            recorded = self.last_generation.get("usage")
+            usage.append(recorded)
+            tokens = recorded.get("completion_tokens") if isinstance(recorded, dict) else None
+            if progress_callback is not None:
+                progress_callback(index + 1, requested_count,
+                                  tokens if type(tokens) is int else None,
+                                  time.perf_counter() - started)
+        if (len(output) == requested_count and not self._cancelled.is_set()
+                and not self._external_cancelled(cancelled) and usage
+                and all(isinstance(item, dict)
+                        and all(type(item.get(key)) is int
+                                for key in ("prompt_tokens", "completion_tokens"))
+                        for item in usage)):
+            self.last_branch_usage = {
+                key: sum(item[key] for item in usage)
+                for key in ("prompt_tokens", "completion_tokens")
+            }
             self.last_branch_usage["total_tokens"] = sum(self.last_branch_usage.values())
         return output
 
