@@ -19,11 +19,14 @@ def split_selected_action(candidate: str):
     reconsidered using the *actual* tool result, not executed speculatively.
     """
     source = str(candidate or "")
-    fenced = [(m.start(), m.end()) for m in _FENCE.finditer(source)]
     for match in _TAG.finditer(source):
-        if any(start <= match.start() < end for start, end in fenced):
+        before = source[:match.start()]
+        # A streaming prefix may end inside an *open* fenced example or think
+        # block; waiting for a closing fence would otherwise execute examples.
+        if len(re.findall(r"(?m)^[ \\t]*\x60{3}", before)) % 2:
             continue
-        if any(m.start() <= match.start() < m.end() for m in re.finditer(r"<think>[\s\S]*?</think>", source, flags=re.I)):
+        lower = before.casefold()
+        if lower.rfind("<think>") > lower.rfind("</think>"):
             continue
         try:
             payload = json.loads(match.group("data"))
