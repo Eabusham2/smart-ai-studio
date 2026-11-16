@@ -5099,9 +5099,33 @@ class SmartAIChatbotApp:
                     # Do not run automatic entropy-routed N=8/16 searches for a
                     # GUI turn when the explicit Pro checkbox is unchecked.
                     previous_force_single = getattr(self.engine, "_gui_force_single_stream", False)
+                    previous_pro_enabled = getattr(self.engine, "_gui_pro_enabled", False)
+                    previous_tool_stop = getattr(self.engine, "_best_work_stop_at_tools", False)
                     self.engine._gui_force_single_stream = True
+                    self.engine._gui_pro_enabled = bool(use_pro_branches)
+                    self.engine._best_work_stop_at_tools = bool(use_pro_branches)
+                    followup_stats = {"seen": False, "completed": 0, "tokens": 0, "known": True}
+
+                    def _followup_branches(done, total, tokens, seconds, finished=True):
+                        followup_stats["seen"] = True
+                        if finished:
+                            followup_stats["completed"] = int(done)
+                            if type(tokens) is int and tokens >= 0:
+                                followup_stats["tokens"] += tokens
+                            else:
+                                followup_stats["known"] = False
+                        rate = (followup_stats["tokens"] / max(0.001, time.perf_counter() - start_time)
+                                if followup_stats["known"] and followup_stats["tokens"] else None)
+                        message = (f"🌿 Best Work {done}/{total} after tool · {rate:.1f} tok/s (all branches)"
+                                   if rate is not None else f"🌿 Best Work {done}/{total} after tool · TPS unavailable")
+                        self.root.after(0, lambda value=message: self.lbl_tps.configure(text=value))
+
+                    stream_kwargs = {}
+                    if use_pro_branches:
+                        stream_kwargs["progress_callback"] = _followup_branches
                     iterator = self.multimodal.stream_solve(
-                        full_msg, history=curr_history, cancel_event=self.cancel_event
+                        full_msg, history=curr_history,
+                        cancel_event=self.cancel_event, **stream_kwargs
                     )
                     try:
                         for chunk in iterator:
@@ -5136,6 +5160,14 @@ class SmartAIChatbotApp:
                                 close()
                         finally:
                             self.engine._gui_force_single_stream = previous_force_single
+                            self.engine._gui_pro_enabled = previous_pro_enabled
+                            self.engine._best_work_stop_at_tools = previous_tool_stop
+                    if followup_stats["seen"]:
+                        self._best_work_mode = True
+                        self._best_work_final_rate = (
+                            followup_stats["tokens"] / max(0.001, time.perf_counter() - start_time)
+                            if followup_stats["known"] and followup_stats["tokens"] else None
+                        )
 
                 if ui_pending:
                     _schedule_stream_insert("".join(ui_pending))
