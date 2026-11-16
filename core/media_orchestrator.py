@@ -641,6 +641,10 @@ class MediaController:
         Existing allow_update policy and permission checks remain authoritative.
         """
         visible = re.sub(r"<think>.*?</think>", "", str(answer or ""), flags=re.S).strip()
+        # A branch may describe several ideas, but may request only one
+        # terminal tool action. Ignore ambiguous or concatenated calls.
+        if visible.count("<media_call>") != 1 or visible.count("</media_call>") != 1:
+            return None
         match = re.fullmatch(r"<media_call>\s*(\{.*\})\s*</media_call>", visible, flags=re.S)
         if match is None:
             return None
