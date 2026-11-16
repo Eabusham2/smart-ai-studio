@@ -23,6 +23,18 @@ class TestEpisodicMemoryDB(unittest.TestCase):
         except Exception:
             pass
 
+    def test_fresh_release_creates_missing_database_directory(self):
+        # Empty directories are not preserved in release archives.
+        nested = os.path.join(self.temp_dir.name, "fresh-install", "data")
+        db_file = os.path.join(nested, "memory.db")
+        self.assertFalse(os.path.exists(nested))
+        db = EpisodicMemoryDB(db_path=db_file)
+        self.assertTrue(os.path.isdir(nested))
+        self.assertTrue(os.path.isfile(db_file))
+        self.assertEqual(db.get_stats()["total_interactions"], 0)
+        db.log_interaction("first launch", "ok")
+        self.assertEqual(EpisodicMemoryDB(db_path=db_file).get_stats()["total_interactions"], 1)
+
     def test_database_initialization(self):
         stats = self.db.get_stats()
         self.assertEqual(stats["total_interactions"], 0)
