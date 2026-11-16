@@ -37,7 +37,6 @@ from core.memory_watchdog import SystemMemoryWatchdog
 from core.learning_sources import inspect_learning_source
 from core.platform import get_auto_context_window_size
 from core.pro_engine import ProReasoningEngine, parse_reasoning_and_response
-from core.branch_policy import select_branch_budget
 from core.tools import AgentToolRegistry
 from memory.db import EpisodicMemoryDB
 
@@ -1473,29 +1472,15 @@ class SmartAIChatbotApp:
         )
         self.btn_branch_vis.pack(side="left", padx=2)
 
-        # Fast single-stream inference is the default; Pro search is opt-in.
+        # Single user control; the original entropy router chooses N=1/8/16.
         self.pro_branches_var = tk.BooleanVar(value=False)
-        self.auto_pro_var = tk.BooleanVar(value=True)
-        self.pro_branch_count_var = tk.StringVar(value="4")
         self.chk_pro_branches = tk.Checkbutton(
             right_box, text="Pro branches", variable=self.pro_branches_var,
             font=_FONT_TINY_BOLD, bg=self.C["bg_hud"], fg=self.C["btn_fg"],
             activebackground=self.C["bg_hud"], activeforeground=self.C["btn_fg"],
             selectcolor=self.C["btn_bg"], highlightthickness=0, bd=0,
         )
-        self.chk_pro_branches.pack(side="left", padx=(4, 1))
-        self.pro_branch_count_select = ttk.Combobox(
-            right_box, textvariable=self.pro_branch_count_var,
-            values=("4", "8", "16"), width=3, state="readonly",
-        )
-        self.pro_branch_count_select.pack(side="left", padx=(0, 2))
-        self.chk_auto_pro = tk.Checkbutton(
-            right_box, text="Auto", variable=self.auto_pro_var,
-            font=_FONT_TINY_BOLD, bg=self.C["bg_hud"], fg=self.C["btn_fg"],
-            activebackground=self.C["bg_hud"], activeforeground=self.C["btn_fg"],
-            selectcolor=self.C["btn_bg"], highlightthickness=0, bd=0,
-        )
-        self.chk_auto_pro.pack(side="left", padx=(2, 2))
+        self.chk_pro_branches.pack(side="left", padx=(4, 2))
 
         # Memory Explorer Button
         self.btn_memory_exp = tk.Button(
@@ -4544,9 +4529,7 @@ class SmartAIChatbotApp:
         threading.Thread(
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
-                  bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get()),
-                  int(self.pro_branch_count_var.get()) if hasattr(self, "pro_branch_count_var") else 4,
-                  bool(getattr(self, "auto_pro_var", None) and self.auto_pro_var.get())),
+                  bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())),
             daemon=True,
         ).start()
 
@@ -4558,16 +4541,12 @@ class SmartAIChatbotApp:
         learn_media_target: Optional[str] = None,
         use_pro_branches: bool = False,
         pro_branch_count: int = 4,
-        auto_pro_branches: bool = True,
+        auto_pro_branches: bool = False,
     ):
-        from core.branch_policy import select_branch_budget
         start_time = time.perf_counter()
-        selected_budget = select_branch_budget(
-            user_prompt, manual=use_pro_branches, auto=auto_pro_branches,
-            requested=pro_branch_count
-        )
-        use_pro_branches = selected_budget > 1
-        pro_branch_count = selected_budget
+        # Preserve historical routing. The GUI only enables/disables Pro;
+        # neither a keyword heuristic nor a GUI count overrides the router.
+        use_pro_branches = bool(use_pro_branches)
         try:
             media_command = self.multimodal.handle_command(full_msg)
             if media_command is not None:
@@ -4907,6 +4886,21 @@ class SmartAIChatbotApp:
                         self.root.after(0, lambda: self._append_ai_message("⏹ Generation stopped."))
                     return
 
+                # The established entropy router remains authoritative. No
+                # model/entropy pass is performed when Pro is unchecked.
+                if use_pro_branches:
+                    if is_native_stream:
+                        # Native speculative servers do not expose a full-vocab
+                        # entropy estimate; retain the existing native setting.
+                        pro_branch_count = int(getattr(self.engine, "lossless_speed_options", {})
+                                               .get("native_branch_count", 1))
+                    else:
+                        entropy = self.engine.calculate_token_entropy(full_msg)
+                        _mode, pro_branch_count = self.engine.router.route(
+                            entropy, has_test_cases=False
+                        )
+                else:
+                    pro_branch_count = 1
                 # 1. Initialize streaming container in chat
                 accumulated = []
                 pro_active = bool(use_pro_branches and pro_branch_count > 1)
@@ -5330,9 +5324,7 @@ class SmartAIChatbotApp:
         threading.Thread(
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
-                  bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get()),
-                  int(self.pro_branch_count_var.get()) if hasattr(self, "pro_branch_count_var") else 4,
-                  bool(getattr(self, "auto_pro_var", None) and self.auto_pro_var.get())),
+                  bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())),
             daemon=True,
         ).start()
 
