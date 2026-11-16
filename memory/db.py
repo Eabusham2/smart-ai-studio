@@ -5,6 +5,7 @@ and tracks consolidated parameter updates across sleep cycles.
 """
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -31,7 +32,11 @@ class _ClosingSQLiteConnection(sqlite3.Connection):
 
 class EpisodicMemoryDB:
     def __init__(self, db_path: str = "memory.db"):
-        self.db_path = db_path
+        self.db_path = os.fspath(db_path)
+        # Fresh release archives do not retain empty data/ directories.
+        # Create the parent before SQLite opens, without touching existing data.
+        parent = os.path.dirname(os.path.abspath(self.db_path))
+        os.makedirs(parent, exist_ok=True)
         self.init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
