@@ -744,6 +744,7 @@ class UniversalControllerBackend:
         if not callable(self._generator):
             raise RuntimeError("MLX-VLM generator unavailable")
         prepared = self._mlx_prompt(prompt, len(images or []))
+        started = time.perf_counter()
         value = self._generator(
             self.model,
             self.processor,
@@ -751,6 +752,16 @@ class UniversalControllerBackend:
             images or [],
             max_tokens=int(max_tokens),
             temperature=float(temperature),
+        )
+        self.last_generation_seconds = max(1e-9, time.perf_counter() - started)
+        # Use the backend's actual generation counters when supplied; do not
+        # derive token counts from a number of words or emitted text chunks.
+        count = getattr(value, "generation_tokens", None)
+        self.last_generation_tokens = count if type(count) is int and count >= 0 else None
+        measured = getattr(value, "generation_tps", None)
+        self.last_tok_per_sec = (
+            float(measured) if type(measured) in (float, int)
+            and math.isfinite(measured) and measured > 0 else None
         )
         return self._text_from_generation(value).strip()
 
@@ -834,6 +845,7 @@ class UniversalControllerBackend:
         if device is not None and hasattr(inputs, "to"):
             inputs = inputs.to(device)
         do_sample = float(temperature) > 0.0
+        started = time.perf_counter()
         with torch.no_grad():
             ids = self.model.generate(
                 **inputs,
@@ -841,6 +853,17 @@ class UniversalControllerBackend:
                 do_sample=do_sample,
                 temperature=max(float(temperature), 1e-5) if do_sample else None,
             )
+        elapsed = max(1e-9, time.perf_counter() - started)
+        self.last_generation_seconds = elapsed
+        try:
+            prompt_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_length = int(prompt_ids.shape[-1]) if prompt_ids is not None else 0
+            self.last_generation_tokens = max(0, int(ids.shape[-1]) - prompt_length)
+            self.last_tok_per_sec = (self.last_generation_tokens / elapsed
+                                     if self.last_generation_tokens > 0 else None)
+        except (AttributeError, TypeError, ValueError):
+            self.last_generation_tokens = None
+            self.last_tok_per_sec = None
         decoder = getattr(self.processor, "batch_decode", None) or getattr(self.tokenizer, "batch_decode", None)
         if callable(decoder):
             return str(decoder(ids, skip_special_tokens=True)[0]).strip()
@@ -883,9 +906,12 @@ class UniversalControllerBackend:
             started = time.perf_counter()
             out.append(self._generate(prompt, max_tokens, t))
             if progress_callback is not None:
-                # This backend buffers text rather than exposing raw model-token
-                # events. Report real completion, but no invented token count.
-                progress_callback(idx + 1, count, None, time.perf_counter() - started)
+                # A buffered controller cannot offer first-token progress, but
+                # the actual backend's counters are available on completion.
+                observed = getattr(self, "last_generation_tokens", None)
+                progress_callback(idx + 1, count,
+                                  observed if type(observed) is int and observed >= 0 else None,
+                                  time.perf_counter() - started)
         return out
 
     def calculate_token_entropy(self, prompt: str) -> float:
