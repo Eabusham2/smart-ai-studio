@@ -955,6 +955,7 @@ class ProReasoningEngine:
         history: Optional[List[Dict[str, str]]] = None,
         temperatures: Optional[List[float]] = None,
         cancel_event: Optional[Any] = None,
+        progress_callback=None,
     ) -> List[str]:
         """Samples candidate reasoning rollouts using calibrated temperature laddering and auto-scaled context window."""
         from core.lossless_speed_control import cancel_before_request
@@ -965,6 +966,23 @@ class ProReasoningEngine:
             raise RuntimeError("Load the Strata model before generating text.")
         formatted_prompt = self._format_prompt_with_history(prompt, history)
         ladder = temperatures if temperatures is not None else get_ladder_temperatures(branch_count)
+
+        def _progress_kwargs(backend):
+            if progress_callback is None:
+                return {}
+            import inspect
+            try:
+                if 'progress_callback' in inspect.signature(backend.generate_branches).parameters:
+                    return {'progress_callback': progress_callback}
+            except (ValueError, TypeError):
+                pass
+            return {}
+
+        def _report_if_legacy(branches, backend):
+            if progress_callback is not None and not _progress_kwargs(backend):
+                for index in range(len(branches)):
+                    progress_callback(index + 1, branch_count, None, None)
+            return branches
 
         # 0. Architecture-specific controller inference
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
@@ -977,9 +995,10 @@ class ProReasoningEngine:
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
                 top_p=self.settings.search_top_p,
                 **cancel_options,
+                **_progress_kwargs(self.controller_backend),
             )
             if branches or is_strata:
-                return branches
+                return _report_if_legacy(branches, self.controller_backend)
 
         # 1. Apple Silicon Native MLX Inference
         if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
@@ -988,10 +1007,11 @@ class ProReasoningEngine:
                 branch_count=branch_count,
                 max_tokens=self.settings.max_new_tokens,
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
-                top_p=self.settings.search_top_p
+                top_p=self.settings.search_top_p,
+                **_progress_kwargs(self.mlx_backend),
             )
             if branches:
-                return branches
+                return _report_if_legacy(branches, self.mlx_backend)
 
         # 2. GGUF / Llama.cpp Inference
         if self.gguf_backend and self.gguf_backend.is_gguf_available:
@@ -1004,9 +1024,10 @@ class ProReasoningEngine:
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
                 top_p=self.settings.search_top_p,
                 **cancel_options,
+                **_progress_kwargs(self.gguf_backend),
             )
             if branches or is_native:
-                return branches
+                return _report_if_legacy(branches, self.gguf_backend)
 
         # 3. BitNet 1.58-Bit Pure Ternary Integer Inference
         if self.bitnet_backend and self.bitnet_backend.is_loaded:
@@ -1015,10 +1036,11 @@ class ProReasoningEngine:
                 branch_count=branch_count,
                 max_tokens=self.settings.max_new_tokens,
                 temperature=ladder if len(ladder) == branch_count else self.settings.search_temperature,
-                top_p=self.settings.search_top_p
+                top_p=self.settings.search_top_p,
+                **_progress_kwargs(self.bitnet_backend),
             )
             if branches:
-                return branches
+                return _report_if_legacy(branches, self.bitnet_backend)
 
         # 4. PyTorch CUDA / MPS / CPU Inference
         if self.model is not None and self.tokenizer is not None:
@@ -1043,12 +1065,19 @@ class ProReasoningEngine:
                         )
                     prompt_len = inputs["input_ids"].shape[1]
                     branches.append(self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True))
+                    if progress_callback is not None:
+                        count = int(outputs.shape[-1] - prompt_len)
+                        progress_callback(b_idx + 1, branch_count, count, None)
                 return branches
             except Exception as e:
                 pass
 
         # 5. Fallback or Mock Generation
-        return self._generate_fallback_branches(prompt, branch_count)
+        branches = self._generate_fallback_branches(prompt, branch_count)
+        if progress_callback is not None:
+            for index in range(len(branches)):
+                progress_callback(index + 1, branch_count, None, None)
+        return branches
 
     def _generate_fallback_branches(self, prompt: str, branch_count: int) -> List[str]:
         """Generates reasoning traces and responses when running in mock test mode or when weights are unloaded."""
@@ -1115,7 +1144,8 @@ class ProReasoningEngine:
         history: Optional[List[Dict[str, str]]] = None,
         cancel_event: Optional[Any] = None,
         force_branch_count: Optional[int] = None,
-        temperature: Optional[float] = None
+        temperature: Optional[float] = None,
+        progress_callback=None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Main reasoning loop with conversational history retention:
@@ -1147,6 +1177,8 @@ class ProReasoningEngine:
         controller = self.controller_backend
         is_strata = getattr(controller, "runtime", None) == "strata"
         branch_options = {"cancel_event": cancel_event} if is_strata or is_native else {}
+        if progress_callback is not None:
+            branch_options['progress_callback'] = progress_callback
         telemetry = native.get_speculative_telemetry if is_native else self.speculative_engine.get_telemetry
 
         def cancelled_result(candidates):
@@ -1261,8 +1293,9 @@ class ProReasoningEngine:
         except Exception:
             pass
 
-        # Speculative / tok speed estimation
-        tok_speed = 10.9 if (self.mlx_backend and self.mlx_backend.is_mlx_available) else 12.5
+        # Never advertise invented 10.9/12.5 tok/s. Production measurements
+        # belong to the backend; aggregate branch rates need real token counts.
+        tok_speed = None
 
         # Detailed per-branch execution telemetry
         branch_telemetry = []
