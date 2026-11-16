@@ -876,8 +876,8 @@ class ProReasoningEngine:
                     stream.close()
             # An empty completed or cancelled Strata request must not be sent again
             # through solve(), nor fall through to a different model backend.
-            if has_yielded or is_strata:
-                return
+            # An empty completion must not be restarted on another backend.
+            return
 
         # 1. MLX Streaming
         if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
@@ -892,8 +892,7 @@ class ProReasoningEngine:
                     break
                 has_yielded = True
                 yield token
-            if has_yielded:
-                return
+            return
 
         # 2. GGUF Streaming
         if self.gguf_backend and getattr(self.gguf_backend, "is_gguf_available", False) and getattr(self.gguf_backend, "model", None) is not None:
@@ -919,8 +918,7 @@ class ProReasoningEngine:
                     close()
             # Completion or cancellation with no text is still a completed
             # native request. It must never restart via the solve fallback.
-            if has_yielded or is_native:
-                return
+            return
 
         # 3. BitNet Streaming
         if self.bitnet_backend and getattr(self.bitnet_backend, "is_loaded", False) and getattr(self.bitnet_backend, "model", None) is not None:
@@ -935,8 +933,7 @@ class ProReasoningEngine:
                     break
                 has_yielded = True
                 yield token
-            if has_yielded:
-                return
+            return
 
         # 4. Fallback Token Generator
         ans, meta = self.solve(prompt, history=history, cancel_event=cancel_event, temperature=temperature)
