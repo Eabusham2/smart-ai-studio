@@ -336,7 +336,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                         progress_callback(idx, branch_count, None,
                                           time.perf_counter() - started, finished=False)
                 out.append("".join(chunks).strip())
-                tokens = None
+                tokens = getattr(self, "last_generation_tokens", None)
             else:
                 result = self._call({
                     "op": "generate",
@@ -362,6 +362,9 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         stop_at_tool_boundary: bool = False,
     ) -> Generator[str, None, None]:
         del image_bytes
+        self.last_generation_tokens = None
+        self.last_tok_per_sec = None
+        started = time.perf_counter()
         with self._io_lock:
             if self._worker is None or self._worker.poll() is not None:
                 return
@@ -385,6 +388,13 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                     if token:
                         yield token
                 elif event.get("event") == "done":
+                    usage = event.get("usage")
+                    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+                    if type(tokens) is int and tokens >= 0:
+                        self.last_generation_tokens = tokens
+                        elapsed = max(1e-9, time.perf_counter() - started)
+                        self.last_generation_seconds = elapsed
+                        self.last_tok_per_sec = tokens / elapsed if tokens else None
                     break
                 elif event.get("status") == "error":
                     raise RuntimeError(str(event.get("error") or "Prism stream failed"))
