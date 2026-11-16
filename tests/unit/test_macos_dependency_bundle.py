@@ -57,6 +57,7 @@ def test_macos_bundle_carries_manifests_explicit_installer_and_correct_launch_pa
     assert "-m venv" in installer and "-r \"$SMARTAI_CODE_DIR/requirements.txt\"" in installer
     assert "--no-binary=llama-cpp-python" in installer and "-DGGML_METAL=on" in installer
     assert "pip install" not in launcher and "-m venv" not in launcher
+    assert "vendor/python3.10" in launcher and "Install_Dependencies.command" in launcher
     assert '"$SMARTAI_VENV/bin/python"' in launcher
     assert '"$SMARTAI_CODE_DIR/app_gui.py" "$@"' in launcher
     applescript = next(command[-1] for command in native_commands if command[0] == "osacompile")
@@ -82,6 +83,7 @@ def test_mac_launcher_uses_installed_environment_and_preserves_paths_and_argumen
     python.parent.mkdir(parents=True)
     python.write_text('#!/usr/bin/env bash\nif [ "$1" = -c ]; then exit 0; fi\nprintf "%s\\n" "$PWD" "$@"\n')
     python.chmod(0o755)
+    (python.parent.parent / ".smartai-deps-ready").touch()  # Already-installed environment
     bash = shutil.which("bash")
     assert bash
     for name in ("launch_studio.sh", "Install_Dependencies.command"):
