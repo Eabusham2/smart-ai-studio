@@ -408,7 +408,8 @@ class GGUFReasoningBackend:
         max_tokens: int = 1536,
         temperature: Any = 0.75,
         top_p: float = 0.92,
-        image_bytes: Optional[bytes] = None
+        image_bytes: Optional[bytes] = None,
+        progress_callback=None,
     ) -> List[str]:
         """Generates candidate reasoning branches using GGUF model."""
         if self.model is None:
@@ -417,6 +418,8 @@ class GGUFReasoningBackend:
         branches = []
         for b_idx in range(branch_count):
             t_val = float(temperature[b_idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
+            started = time.perf_counter()
+            produced = None
             try:
                 output = self.model(
                     prompt,
@@ -427,8 +430,12 @@ class GGUFReasoningBackend:
                 )
                 text = output["choices"][0]["text"].strip()
                 branches.append(text)
+                usage = output.get("usage") if isinstance(output, dict) else None
+                produced = usage.get("completion_tokens") if isinstance(usage, dict) else None
             except Exception as e:
                 branches.append(f"⚠️ GGUF generation error: {str(e)}")
+            if progress_callback is not None:
+                progress_callback(b_idx + 1, branch_count, produced if type(produced) is int else None, time.perf_counter() - started)
 
         return branches
 
