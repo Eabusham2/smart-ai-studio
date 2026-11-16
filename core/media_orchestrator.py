@@ -753,10 +753,11 @@ class MediaController:
                 )
                 action_key = (requested_name,
                               json.dumps(request.get("arguments", {}), sort_keys=True))
-                if action_key in executed_actions:
-                    yield "\nDuplicate tool request blocked."
-                    return
-                executed_actions.add(action_key)
+                if getattr(self.app.engine, "_gui_pro_enabled", False):
+                    if action_key in executed_actions:
+                        yield "\nDuplicate tool request blocked."
+                        return
+                    executed_actions.add(action_key)
                 result = self.call(
                     requested_name,
                     request.get("arguments", {}),
