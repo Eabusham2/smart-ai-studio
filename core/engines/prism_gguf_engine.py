@@ -317,6 +317,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         temperature: Any = 0.75,
         top_p: float = 0.92,
         image_bytes: Optional[bytes] = None,
+        progress_callback=None,
     ) -> List[str]:
         del image_bytes
         out = []
@@ -330,6 +331,10 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                 "top_p": float(top_p),
             })
             out.append(str(result.get("text") or ""))
+            usage = result.get("usage") if isinstance(result, dict) else None
+            tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+            if progress_callback is not None:
+                progress_callback(idx + 1, branch_count, tokens if type(tokens) is int else None, None)
         return out
 
     def stream_generate_tokens(
