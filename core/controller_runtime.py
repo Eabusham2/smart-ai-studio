@@ -873,12 +873,19 @@ class UniversalControllerBackend:
         max_tokens: int = 1536,
         temperature: Any = 0.65,
         top_p: float = 0.92,
+        progress_callback=None,
     ) -> List[str]:
         del top_p
         out = []
-        for idx in range(max(1, int(branch_count))):
+        count = max(1, int(branch_count))
+        for idx in range(count):
             t = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
+            started = time.perf_counter()
             out.append(self._generate(prompt, max_tokens, t))
+            if progress_callback is not None:
+                # This backend buffers text rather than exposing raw model-token
+                # events. Report real completion, but no invented token count.
+                progress_callback(idx + 1, count, None, time.perf_counter() - started)
         return out
 
     def calculate_token_entropy(self, prompt: str) -> float:
