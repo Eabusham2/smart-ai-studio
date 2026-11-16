@@ -1022,6 +1022,17 @@ class ProReasoningEngine:
                 pass
             return {}
 
+        def _cancel_kwargs(backend):
+            if cancel_event is None:
+                return {}
+            import inspect
+            try:
+                if "cancelled" in inspect.signature(backend.generate_branches).parameters:
+                    return {"cancelled": cancel_event.is_set}
+            except (TypeError, ValueError):
+                pass
+            return {}
+
         def _report_if_legacy(branches, backend):
             if progress_callback is not None and not _progress_kwargs(backend):
                 for index in range(len(branches)):
@@ -1031,7 +1042,7 @@ class ProReasoningEngine:
         # 0. Architecture-specific controller inference
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
             is_strata = getattr(self.controller_backend, "runtime", None) == "strata"
-            cancel_options = {"cancelled": cancel_event.is_set} if is_strata and cancel_event is not None else {}
+            cancel_options = _cancel_kwargs(self.controller_backend)
             branches = self.controller_backend.generate_branches(
                 prompt=formatted_prompt,
                 branch_count=branch_count,
@@ -1042,6 +1053,8 @@ class ProReasoningEngine:
                 **_progress_kwargs(self.controller_backend),
                 **_tool_stop_kwargs(self.controller_backend),
             )
+            if cancel_event is not None and cancel_event.is_set():
+                return list(branches or [])
             if branches or is_strata:
                 return _report_if_legacy(branches, self.controller_backend)
 
@@ -1055,14 +1068,17 @@ class ProReasoningEngine:
                 top_p=self.settings.search_top_p,
                 **_progress_kwargs(self.mlx_backend),
                 **_tool_stop_kwargs(self.mlx_backend),
+                **_cancel_kwargs(self.mlx_backend),
             )
+            if cancel_event is not None and cancel_event.is_set():
+                return list(branches or [])
             if branches:
                 return _report_if_legacy(branches, self.mlx_backend)
 
         # 2. GGUF / Llama.cpp Inference
         if self.gguf_backend and self.gguf_backend.is_gguf_available:
             is_native = getattr(self.gguf_backend, "runtime", None) == "prism_speculative"
-            cancel_options = {"cancelled": cancel_event.is_set} if is_native and cancel_event is not None else {}
+            cancel_options = _cancel_kwargs(self.gguf_backend)
             branches = self.gguf_backend.generate_branches(
                 prompt=formatted_prompt,
                 branch_count=branch_count,
@@ -1073,6 +1089,8 @@ class ProReasoningEngine:
                 **_progress_kwargs(self.gguf_backend),
                 **_tool_stop_kwargs(self.gguf_backend),
             )
+            if cancel_event is not None and cancel_event.is_set():
+                return list(branches or [])
             if branches or is_native:
                 return _report_if_legacy(branches, self.gguf_backend)
 
@@ -1086,7 +1104,10 @@ class ProReasoningEngine:
                 top_p=self.settings.search_top_p,
                 **_progress_kwargs(self.bitnet_backend),
                 **_tool_stop_kwargs(self.bitnet_backend),
+                **_cancel_kwargs(self.bitnet_backend),
             )
+            if cancel_event is not None and cancel_event.is_set():
+                return list(branches or [])
             if branches:
                 return _report_if_legacy(branches, self.bitnet_backend)
 
@@ -1100,6 +1121,8 @@ class ProReasoningEngine:
 
                 branches = []
                 for b_idx in range(branch_count):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return branches
                     t_val = ladder[b_idx % len(ladder)] if ladder else self.settings.search_temperature
                     from core.generation_metrics import TokenMeter
                     from core.tool_boundary_stop import TokenBoundaryCriteria
@@ -1242,7 +1265,7 @@ class ProReasoningEngine:
         winning_temp = temp_ladder[0]
         controller = self.controller_backend
         is_strata = getattr(controller, "runtime", None) == "strata"
-        branch_options = {"cancel_event": cancel_event} if is_strata or is_native else {}
+        branch_options = {"cancel_event": cancel_event} if cancel_event is not None else {}
         if progress_callback is not None:
             branch_options['progress_callback'] = progress_callback
         telemetry = native.get_speculative_telemetry if is_native else self.speculative_engine.get_telemetry
@@ -1252,9 +1275,9 @@ class ProReasoningEngine:
                         "branch_count": len(candidates), "verified": False, "surprise_score": 0.0}
 
         def strata_cancelled():
-            return (is_strata or is_native) and (
-                bool(cancel_event is not None and cancel_event.is_set())
-                or getattr(native if is_native else controller, "last_generation", {}).get("status") == "cancelled"
+            return bool(cancel_event is not None and cancel_event.is_set()) or (
+                (is_strata or is_native)
+                and getattr(native if is_native else controller, "last_generation", {}).get("status") == "cancelled"
             )
 
         # Path 1: Instant Single-Pass Mode

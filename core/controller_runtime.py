@@ -934,23 +934,27 @@ class UniversalControllerBackend:
     def generate_branches(
         self, prompt: str, branch_count: int = 1, max_tokens: int = 1536,
         temperature: Any = 0.65, top_p: float = 0.92, progress_callback=None,
-        stop_at_tool_boundary: bool = False,
+        stop_at_tool_boundary: bool = False, cancelled=None,
     ) -> List[str]:
         out = []
         count = max(1, int(branch_count))
         for idx in range(count):
+            if callable(cancelled) and cancelled():
+                return out
             t = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
-            if stop_at_tool_boundary:
+            if stop_at_tool_boundary or cancelled is not None:
                 pieces = []
                 iterator = self.stream_generate_tokens(prompt, max_tokens, t, top_p,
-                                                       stop_at_tool_boundary=True)
+                                                       stop_at_tool_boundary=stop_at_tool_boundary, cancelled=cancelled)
                 try:
                     for piece in iterator:
                         pieces.append(piece)
                         if progress_callback is not None:
                             progress_callback(idx, count, getattr(self, "last_generation_tokens", None),
                                               time.perf_counter() - started, finished=False)
+                        if callable(cancelled) and cancelled():
+                            break
                 finally:
                     close = getattr(iterator, "close", None)
                     if callable(close):

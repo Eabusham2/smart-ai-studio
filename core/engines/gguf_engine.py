@@ -406,19 +406,22 @@ class GGUFReasoningBackend:
         temperature: Any = 0.75, top_p: float = 0.92,
         image_bytes: Optional[bytes] = None, progress_callback=None,
         stop_at_tool_boundary: bool = False,
+        cancelled=None,
     ) -> List[str]:
         if self.model is None:
             return []
         from core.generation_metrics import TokenMeter, observe_llama_tokens
         branches = []
         for b_idx in range(branch_count):
+            if callable(cancelled) and cancelled():
+                return branches
             t_val = float(temperature[b_idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
-            if stop_at_tool_boundary:
+            if stop_at_tool_boundary or cancelled is not None:
                 pieces = []
                 stream = self.stream_generate_tokens(
                     prompt, max_tokens, t_val, top_p, image_bytes,
-                    stop_at_tool_boundary=True,
+                    stop_at_tool_boundary=stop_at_tool_boundary, cancelled=cancelled,
                 )
                 try:
                     for piece in stream:
@@ -427,6 +430,8 @@ class GGUFReasoningBackend:
                             progress_callback(b_idx, branch_count,
                                               getattr(self, "last_generation_tokens", None),
                                               time.perf_counter() - started, finished=False)
+                        if callable(cancelled) and cancelled():
+                            break
                 finally:
                     close = getattr(stream, "close", None)
                     if callable(close):
@@ -457,6 +462,7 @@ class GGUFReasoningBackend:
         self, prompt: str, max_tokens: int = 1536, temperature: float = 0.75,
         top_p: float = 0.92, image_bytes: Optional[bytes] = None,
         stop_at_tool_boundary: bool = False,
+        cancelled=None,
     ) -> Generator[str, None, None]:
         if self.model is None:
             return
@@ -485,7 +491,7 @@ class GGUFReasoningBackend:
                             text = boundary.text[offset:]
                         if text:
                             yield text
-                        if stopped:
+                        if stopped or (callable(cancelled) and cancelled()):
                             break
                 finally:
                     close = getattr(iterator, "close", None)

@@ -277,30 +277,34 @@ class BitNetCppReasoningBackend:
         temperature: Any = 0.65,
         top_p: float = 0.92,
         progress_callback=None,
-        stop_at_tool_boundary: bool = False,
+        stop_at_tool_boundary: bool = False, cancelled=None,
     ) -> List[str]:
         from core.tool_boundary_stop import ToolBoundaryStopper
         out = []
         count = max(1, int(branch_count))
         for idx in range(count):
+            if callable(cancelled) and cancelled():
+                return out
             temp = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
             tokens = None
-            if stop_at_tool_boundary:
-                detector = ToolBoundaryStopper()
-                iterator = self.stream_generate_tokens(prompt, int(max_tokens), temp, float(top_p), stop_at_tool_boundary=True)
+            if stop_at_tool_boundary or cancelled is not None:
+                detector = ToolBoundaryStopper() if stop_at_tool_boundary else None
+                pieces = []
+                iterator = self.stream_generate_tokens(prompt, int(max_tokens), temp, float(top_p), stop_at_tool_boundary=stop_at_tool_boundary, cancelled=cancelled)
                 try:
                     for piece in iterator:
+                        pieces.append(str(piece))
                         if progress_callback is not None:
                             progress_callback(idx, count, getattr(self, "last_generation_tokens", None),
                                               time.perf_counter() - started, finished=False)
-                        if detector.feed(piece):
+                        if (detector is not None and detector.feed(piece)) or (callable(cancelled) and cancelled()):
                             break
                 finally:
                     close = getattr(iterator, "close", None)
                     if callable(close):
                         close()
-                result_text = detector.text.strip()
+                result_text = (detector.text if detector is not None else "".join(pieces)).strip()
                 observed = getattr(self, "last_generation_tokens", None)
                 if type(observed) is int and observed >= 0:
                     tokens = observed
@@ -327,7 +331,7 @@ class BitNetCppReasoningBackend:
 
     def stream_generate_tokens(
         self, prompt: str, max_tokens: int = 1536, temperature: float = 0.65,
-        top_p: float = 0.92, stop_at_tool_boundary: bool = False,
+        top_p: float = 0.92, stop_at_tool_boundary: bool = False, cancelled=None,
     ) -> Generator[str, None, None]:
         if not self._base_url:
             return
@@ -361,7 +365,7 @@ class BitNetCppReasoningBackend:
                     piece = detector.text[offset:]
                 if piece:
                     yield piece
-                if stop_here or item.get("stop") is True:
+                if stop_here or item.get("stop") is True or (callable(cancelled) and cancelled()):
                     break
         finally:
             response.close()

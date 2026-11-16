@@ -620,9 +620,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         top_p: float = 0.92,
         progress_callback=None,
         stop_at_tool_boundary: bool = False,
+        cancelled=None,
     ):
         """Generate Pro branches without silent quality-reducing fallbacks."""
-        if not self.is_mlx_available or self.model is None:
+        if not self.is_mlx_available or self.model is None or (callable(cancelled) and cancelled()):
             return []
 
         import mlx.core as mx
@@ -646,6 +647,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             branches = []
             prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
             for idx in range(count):
+                if callable(cancelled) and cancelled():
+                    return branches
                 temp_value = float(temps[idx % len(temps)])
                 pieces = []
                 meter = TokenMeter(self, "mlx-vlm")
@@ -674,6 +677,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                         observe_mlx_response(meter, response)
                         if progress_callback is not None:
                             progress_callback(idx, count, meter.tokens, time.perf_counter() - started, finished=False)
+                        if callable(cancelled) and cancelled():
+                            return branches
                         self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
                         piece = str(getattr(response, "text", response))
                         pieces.append(piece)
@@ -733,6 +738,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     observe_mlx_response(meter, response)
                     if progress_callback is not None:
                         progress_callback(idx, count, meter.tokens, time.perf_counter() - started, finished=False)
+                    if callable(cancelled) and cancelled():
+                        return ""
                     try:
                         measured = float(getattr(response, "generation_tps", 0.0) or 0.0)
                     except Exception:
@@ -757,6 +764,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return "".join(pieces)
 
         for idx in range(count):
+            if callable(cancelled) and cancelled():
+                return branches
             _reclaim_if_needed(mx)
             temp_value = float(temps[idx % len(temps)])
             try:
@@ -773,6 +782,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             finally:
                 self._release_text_cache(branches=idx < count - 1)
                 _reclaim_if_needed(mx)
+            if callable(cancelled) and cancelled():
+                return branches[:-1]
             if progress_callback is not None:
                 progress_callback(idx + 1, count, self.last_generation_tokens, self.last_generation_seconds)
 

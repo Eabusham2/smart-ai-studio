@@ -318,18 +318,20 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         top_p: float = 0.92,
         image_bytes: Optional[bytes] = None,
         progress_callback=None,
-        stop_at_tool_boundary: bool = False,
+        stop_at_tool_boundary: bool = False, cancelled=None,
     ) -> List[str]:
         del image_bytes
         out = []
         for idx in range(max(1, int(branch_count))):
+            if callable(cancelled) and cancelled():
+                return out
             temp = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
-            if stop_at_tool_boundary:
+            if stop_at_tool_boundary or cancelled is not None:
                 chunks = []
                 for token in self.stream_generate_tokens(
                     prompt, int(max_tokens), temp, float(top_p),
-                    stop_at_tool_boundary=True,
+                    stop_at_tool_boundary=stop_at_tool_boundary, cancelled=cancelled,
                 ):
                     chunks.append(str(token))
                     if progress_callback is not None:
@@ -355,7 +357,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
     def stream_generate_tokens(
         self, prompt: str, max_tokens: int = 1536, temperature: float = 0.75,
         top_p: float = 0.92, image_bytes: Optional[bytes] = None,
-        stop_at_tool_boundary: bool = False,
+        stop_at_tool_boundary: bool = False, cancelled=None,
     ) -> Generator[str, None, None]:
         del image_bytes
         from core.generation_metrics import TokenMeter
@@ -393,6 +395,8 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                         if text:
                             meter.observe(text=True)
                             yield text
+                        if callable(cancelled) and cancelled():
+                            break
                     elif event.get("event") == "done":
                         completed = True
                         break
