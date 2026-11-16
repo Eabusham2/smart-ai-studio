@@ -366,7 +366,7 @@ def create_linux_bundle(dist_dir: str, app_name: str):
 set -eu
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SMARTAI_CODE_DIR="$HERE/usr/bin"
-SMARTAI_ENV="\${{XDG_DATA_HOME:-$HOME/.local/share}}/SmartAI/python"
+SMARTAI_ENV="${{XDG_DATA_HOME:-$HOME/.local/share}}/SmartAI/python"
 elevate() {{
     if [ "$(id -u)" -eq 0 ]; then "$@"
     elif command -v sudo >/dev/null 2>&1; then sudo "$@"
@@ -406,7 +406,7 @@ SMARTAI_READY_HASH="$(cat "$SMARTAI_ENV/.smartai-deps-ready" 2>/dev/null || true
 if [ "$SMARTAI_REQ_HASH" != "$SMARTAI_READY_HASH" ]; then
     echo "Installing or updating Smart AI Studio dependencies..."
     "$SMARTAI_ENV/bin/python" -m pip install -r "$SMARTAI_CODE_DIR/requirements.txt" || exit 1
-    printf '%s\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_ENV/.smartai-deps-ready"
+    printf '%s\\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_ENV/.smartai-deps-ready"
 fi
 exec "$SMARTAI_ENV/bin/python" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
 """
