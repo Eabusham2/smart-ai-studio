@@ -5030,32 +5030,37 @@ class SmartAIChatbotApp:
                         {"role": "system", "content": BEST_WORK_GUIDE},
                         *(curr_history or []),
                     ]
-                    answer, branch_meta = self.engine.solve(
-                        full_msg, history=best_work_history,
-                        cancel_event=self.cancel_event,
-                        force_branch_count=pro_branch_count,
-                        progress_callback=_branch_done,
-                    )
-                    if self.cancel_event.is_set():
-                        return
-
-                    def _selected_action_status(kind, name, stage):
-                        status = (f"🌿 Best Work · executing selected {name}"
-                                  if kind == "executing"
-                                  else f"🌿 Best Work · continuing after {name}")
-                        self.root.after(0, lambda value=status: _best_work_status(value))
-
-                    for piece in continue_selected_best_work(
-                        self.multimodal, prompt=full_msg,
-                        history=best_work_history, answer=answer,
-                        metadata=branch_meta, branch_count=pro_branch_count,
-                        cancel_event=self.cancel_event,
-                        progress_callback=_branch_done,
-                        status_callback=_selected_action_status,
-                    ):
+                    prior_stop = getattr(self.engine, "_best_work_stop_at_tools", False)
+                    self.engine._best_work_stop_at_tools = True
+                    try:
+                        answer, branch_meta = self.engine.solve(
+                            full_msg, history=best_work_history,
+                            cancel_event=self.cancel_event,
+                            force_branch_count=pro_branch_count,
+                            progress_callback=_branch_done,
+                        )
                         if self.cancel_event.is_set():
                             return
-                        accumulated.append(str(piece))
+
+                        def _selected_action_status(kind, name, stage):
+                            status = (f"🌿 Best Work · executing selected {name}"
+                                      if kind == "executing"
+                                      else f"🌿 Best Work · continuing after {name}")
+                            self.root.after(0, lambda value=status: _best_work_status(value))
+
+                        for piece in continue_selected_best_work(
+                            self.multimodal, prompt=full_msg,
+                            history=best_work_history, answer=answer,
+                            metadata=branch_meta, branch_count=pro_branch_count,
+                            cancel_event=self.cancel_event,
+                            progress_callback=_branch_done,
+                            status_callback=_selected_action_status,
+                        ):
+                            if self.cancel_event.is_set():
+                                return
+                            accumulated.append(str(piece))
+                    finally:
+                        self.engine._best_work_stop_at_tools = prior_stop
                     latest_meta = getattr(self.multimodal, "last_best_work_metadata", None)
                     if isinstance(latest_meta, dict):
                         branch_meta = latest_meta
@@ -5064,7 +5069,8 @@ class SmartAIChatbotApp:
                     # Whole-request rate includes every completed branch and
                     # the tool-boundary continuation, never a word estimate.
                     self._best_work_final_rate = (
-                        self._live_tps if counts_available and measured_tokens > 0 else None
+                        measured_tokens / max(0.001, time.perf_counter() - start_time)
+                        if counts_available and measured_tokens > 0 else None
                     )
                     chosen = int(branch_meta.get("winning_branch", 0)) + 1
                     pro_summary = None
