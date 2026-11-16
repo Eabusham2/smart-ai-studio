@@ -618,6 +618,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         max_tokens: int = 512,
         temperature=0.75,
         top_p: float = 0.92,
+        progress_callback=None,
     ):
         """Generate Pro branches without silent quality-reducing fallbacks."""
         if not self.is_mlx_available or self.model is None:
@@ -678,6 +679,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 self.last_generation_tokens = generated
                 self.last_generation_seconds = elapsed
                 branches.append("".join(pieces))
+                if progress_callback is not None:
+                    progress_callback(idx + 1, count, generated, elapsed)
                 _reclaim_if_needed(mx)
             return branches
 
@@ -755,6 +758,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             finally:
                 self._release_text_cache(branches=idx < count - 1)
                 _reclaim_if_needed(mx)
+            if progress_callback is not None:
+                progress_callback(idx + 1, count, self.last_generation_tokens, self.last_generation_seconds)
 
         return branches
 
