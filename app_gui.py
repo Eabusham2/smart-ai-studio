@@ -4439,12 +4439,18 @@ class SmartAIChatbotApp:
         else:
             self._append_user_message(f"🎯 [Steer Directive]: {steer_text}")
             self._set_generating_state(True)
-            threading.Thread(target=self._process_message_thread, args=(steer_text, steer_text), daemon=True).start()
+            use_pro = bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())
+            threading.Thread(target=self._process_message_thread,
+                             args=(steer_text, steer_text, None, None, use_pro),
+                             daemon=True).start()
 
     def _execute_steered_generation(self, steer_directive: str):
         self._set_generating_state(True)
         steered_prompt = f"[Live Steering Directive: {steer_directive}]\nPlease follow this directive directly."
-        threading.Thread(target=self._process_message_thread, args=(steered_prompt, steer_directive), daemon=True).start()
+        use_pro = bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())
+        threading.Thread(target=self._process_message_thread,
+                         args=(steered_prompt, steer_directive, None, None, use_pro),
+                         daemon=True).start()
 
     def _on_enter_pressed(self, event):
         if not (event.state & 0x1):  # Shift not held
