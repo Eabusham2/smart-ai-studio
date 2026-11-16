@@ -598,6 +598,7 @@ class SmartAIChatbotApp:
         self.synapses_learned_m = 0.0
         self.is_generating = False
         self.is_model_loaded = False
+        self._live_tps = 0.0
         self.show_resources = False
         self.show_canvas = False
         self.canvas_preview_mode = False
@@ -1470,6 +1471,22 @@ class SmartAIChatbotApp:
             command=self._on_open_branch_visualizer
         )
         self.btn_branch_vis.pack(side="left", padx=2)
+
+        # Fast single-stream inference is the default; Pro search is opt-in.
+        self.pro_branches_var = tk.BooleanVar(value=False)
+        self.pro_branch_count_var = tk.StringVar(value="4")
+        self.chk_pro_branches = tk.Checkbutton(
+            right_box, text="Pro branches", variable=self.pro_branches_var,
+            font=_FONT_TINY_BOLD, bg=self.C["bg_hud"], fg=self.C["btn_fg"],
+            activebackground=self.C["bg_hud"], activeforeground=self.C["btn_fg"],
+            selectcolor=self.C["btn_bg"], highlightthickness=0, bd=0,
+        )
+        self.chk_pro_branches.pack(side="left", padx=(4, 1))
+        self.pro_branch_count_select = ttk.Combobox(
+            right_box, textvariable=self.pro_branch_count_var,
+            values=("4", "8", "16"), width=3, state="readonly",
+        )
+        self.pro_branch_count_select.pack(side="left", padx=(0, 2))
 
         # Memory Explorer Button
         self.btn_memory_exp = tk.Button(
@@ -4517,7 +4534,9 @@ class SmartAIChatbotApp:
         self._set_generating_state(True)
         threading.Thread(
             target=self._process_message_thread,
-            args=(user_msg, raw_text, learn_source_path, learn_media_target),
+            args=(user_msg, raw_text, learn_source_path, learn_media_target,
+                  bool(self.pro_branches_var.get()),
+                  int(self.pro_branch_count_var.get())),
             daemon=True,
         ).start()
 
@@ -4527,6 +4546,8 @@ class SmartAIChatbotApp:
         user_prompt: str,
         learn_source_path: Optional[str] = None,
         learn_media_target: Optional[str] = None,
+        use_pro_branches: bool = False,
+        pro_branch_count: int = 4,
     ):
         start_time = time.perf_counter()
         try:
@@ -4870,12 +4891,15 @@ class SmartAIChatbotApp:
 
                 # 1. Initialize streaming container in chat
                 accumulated = []
+                pro_active = bool(use_pro_branches and pro_branch_count > 1)
+                pro_summary = None
+                self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
 
                 def _init_ai_stream():
                     self.chat_stream.configure(state="normal")
                     self.chat_stream.insert("end", f"\n✦ {info['short_name']}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
-                    self.chat_stream.mark_set(mark_name, "end")
+                    self.chat_stream.mark_set(mark_name, "end-1c")
                     self.chat_stream.mark_gravity(mark_name, "left")
                     self.chat_stream.configure(state="disabled")
                     self._scroll_chat_to_bottom()
@@ -4916,19 +4940,22 @@ class SmartAIChatbotApp:
                     ui_pending.clear()
 
                 full_ans = "".join(accumulated).strip()
-                if not full_ans and not self.cancel_event.is_set() and not (is_strata_stream or is_native_stream):
-                    ans, meta = self.engine.solve(full_msg, history=curr_history, cancel_event=self.cancel_event)
-                    full_ans = ans.strip() if ans else "I am ready. How can I help you today?"
+                if not full_ans and not self.cancel_event.is_set():
+                    self.root.after(0, lambda: self._append_ai_message(
+                        "⚠️ Model returned no text; no duplicate inference was started."
+                    ))
+                    return
 
                 duration_s = max(0.01, time.perf_counter() - start_time)
-                if is_strata_stream or is_native_stream:
-                    # _update_telemetry reads this request's native timings or
-                    # the matching Pro usage/duration, never a word estimate.
-                    tok_per_sec = 0.0
-                else:
-                    tokens_count = max(1, len(full_ans.split()) * 2)
-                    tok_per_sec = tokens_count / duration_s
-                    self.total_tokens_used += tokens_count
+                # No word-count TPS; use the observed live token rate when known.
+                tok_per_sec = self._live_tps
+                if not pro_active and not (is_strata_stream or is_native_stream):
+                    backend = (getattr(self.engine, "mlx_backend", None)
+                               if getattr(self.engine, "active_backend", None) == "mlx"
+                               else getattr(self.engine, "gguf_backend", None))
+                    measured = getattr(backend, "last_tok_per_sec", None)
+                    if type(measured) in (int, float) and math.isfinite(measured) and measured > 0:
+                        tok_per_sec = float(measured)
 
                 if (is_strata_stream or is_native_stream) and (not full_ans or self.cancel_event.is_set()):
                     notice = ("⏹ Native generation stopped." if self.cancel_event.is_set()
@@ -4954,9 +4981,12 @@ class SmartAIChatbotApp:
                         # Delete raw stream chunk to replace with styled markdown
                         try:
                             if mark_name in self.chat_stream.mark_names():
-                                self.chat_stream.delete(mark_name, "end")
+                                self.chat_stream.delete(mark_name, "end-1c")
                         except Exception:
                             pass
+
+                        if pro_summary:
+                            self.chat_stream.insert("end", pro_summary + "\n\n", "ai_msg")
 
                         # Parse <think>...</think>
                         th_text = None
@@ -5010,6 +5040,8 @@ class SmartAIChatbotApp:
                     except Exception as e:
                         try:
                             self.chat_stream.configure(state="normal")
+                            if mark_name in self.chat_stream.mark_names():
+                                self.chat_stream.delete(mark_name, "end-1c")
                             self.chat_stream.insert("end", f"\n{text}\n\n", "ai_msg")
                             self.chat_stream.configure(state="disabled")
                             self._scroll_chat_to_bottom()
