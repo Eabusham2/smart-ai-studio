@@ -366,13 +366,47 @@ def create_linux_bundle(dist_dir: str, app_name: str):
 set -eu
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SMARTAI_CODE_DIR="$HERE/usr/bin"
-SMARTAI_ENV="${{XDG_DATA_HOME:-$HOME/.local/share}}/SmartAI/python"
-if [ ! -x "$SMARTAI_ENV/bin/python" ]; then
-    python3 -m venv "$SMARTAI_ENV" || {{ echo "Python 3 with venv is required" >&2; exit 1; }}
+SMARTAI_ENV="\${{XDG_DATA_HOME:-$HOME/.local/share}}/SmartAI/python"
+elevate() {{
+    if [ "$(id -u)" -eq 0 ]; then "$@"
+    elif command -v sudo >/dev/null 2>&1; then sudo "$@"
+    else return 1
+    fi
+}}
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Python 3.10+ is required. Install the operating-system Python package." >&2
+    exit 1
 fi
-if [ ! -f "$SMARTAI_ENV/.smartai-deps-ready" ]; then
+if ! python3 -c 'import sys,tkinter; assert sys.version_info >= (3,10)' 2>/dev/null; then
+    echo "Installing the missing Tkinter system package for the GUI..."
+    if command -v apt-get >/dev/null 2>&1; then
+        elevate apt-get update && elevate apt-get install -y python3-tk python3-venv || exit 1
+    elif command -v dnf >/dev/null 2>&1; then
+        elevate dnf install -y python3-tkinter || exit 1
+    elif command -v pacman >/dev/null 2>&1; then
+        elevate pacman -S --needed --noconfirm tk || exit 1
+    else
+        echo "Python 3.10+ with Tkinter is required; install your distribution's tkinter package." >&2
+        exit 1
+    fi
+fi
+if [ ! -x "$SMARTAI_ENV/bin/python" ]; then
+    if ! python3 -m venv "$SMARTAI_ENV"; then
+        if command -v apt-get >/dev/null 2>&1; then
+            elevate apt-get install -y python3-venv || exit 1
+            python3 -m venv "$SMARTAI_ENV" || exit 1
+        else
+            echo "Python venv is missing. Install the OS python3-venv package." >&2
+            exit 1
+        fi
+    fi
+fi
+SMARTAI_REQ_HASH="$("$SMARTAI_ENV/bin/python" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$SMARTAI_CODE_DIR/requirements.txt")"
+SMARTAI_READY_HASH="$(cat "$SMARTAI_ENV/.smartai-deps-ready" 2>/dev/null || true)"
+if [ "$SMARTAI_REQ_HASH" != "$SMARTAI_READY_HASH" ]; then
+    echo "Installing or updating Smart AI Studio dependencies..."
     "$SMARTAI_ENV/bin/python" -m pip install -r "$SMARTAI_CODE_DIR/requirements.txt" || exit 1
-    touch "$SMARTAI_ENV/.smartai-deps-ready"
+    printf '%s\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_ENV/.smartai-deps-ready"
 fi
 exec "$SMARTAI_ENV/bin/python" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
 """
@@ -407,11 +441,10 @@ cd "$DIR/{app_name}.AppDir"
 
     # 4. Create Linux/Unix Dependency Setup script
     install_sh = f"""#!/usr/bin/env bash
-echo "Installing Python dependencies for {app_name} on Unix/Linux..."
-python3 -m pip install --upgrade pip
-pip3 install -r requirements.txt
-echo "Dependencies installed successfully!"
-echo "Launch with: ./{app_name}.sh"
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+echo "Smart AI Studio sets up its private dependencies automatically on first launch."
+exec "$HERE/{app_name}.sh" "$@"
 """
     install_path = os.path.join(linux_dir, "install_dependencies.sh")
     with open(install_path, "w") as f:
