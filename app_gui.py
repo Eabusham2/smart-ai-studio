@@ -5104,7 +5104,7 @@ class SmartAIChatbotApp:
                     if type(measured) in (int, float) and math.isfinite(measured) and measured > 0:
                         tok_per_sec = float(measured)
 
-                if (is_strata_stream or is_native_stream) and (not full_ans or self.cancel_event.is_set()):
+                if not full_ans or self.cancel_event.is_set():
                     notice = ("⏹ Native generation stopped." if self.cancel_event.is_set()
                               else "⚠ Native runtime completed without response text.")
                     def finish_without_answer(message=notice):
@@ -5114,8 +5114,8 @@ class SmartAIChatbotApp:
                         self._scroll_chat_to_bottom()
                         self._update_telemetry(0.0)
                     self.root.after(0, finish_without_answer)
-                    # A transport completion without answer text is not a second
-                    # inference request or an assistant reply in saved history.
+                    # Cancellation on every backend is a stopped request,
+                    # never a fabricated fallback or a completed saved reply.
                     return
 
                 # 3. Finalize markdown styling and collapsible thinking pill

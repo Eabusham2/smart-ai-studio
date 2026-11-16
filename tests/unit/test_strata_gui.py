@@ -373,3 +373,30 @@ def test_native_telemetry_preserves_existing_counter_and_speed_behavior(app):
     assert app.total_tokens_used == 777
     assert app.lbl_context.cget("text").startswith("📊 Context: 777 /")
     assert app.lbl_tps.cget("text") == "⚡ 5.0 tok/s"
+
+
+
+@pytest.mark.parametrize("family", ["mlx", "gguf", "controller", "bitnet", "torch"])
+@pytest.mark.parametrize("partial", [False, True])
+def test_cancelled_ordinary_backend_never_fabricates_or_saves_completed_answer(app, family, partial):
+    app.active_tab_id = "native"
+    app.chat_history = {"native": []}
+    app.engine.controller_backend = None
+    app.engine.gguf_backend = None
+    app.engine.active_backend = family
+    setattr(app.engine, family + "_backend", SimpleNamespace(runtime="ordinary", last_tok_per_sec=None))
+    def stream(*args, **kwargs):
+        if partial:
+            yield "Partial response before Stop"
+        app.cancel_event.set()
+        return
+        yield
+    app.multimodal.stream_solve = stream
+    app._process_message_thread("Analyze this example", "Analyze this example")
+    app.root.drain()
+    app.engine.solve.assert_not_called()
+    app.tools.execute_tool.assert_not_called()
+    app.db.log_interaction.assert_not_called()
+    assert app.chat_history["native"] == []
+    assert "I am ready" not in app.chat_stream.text
+    assert "stopped" in app.chat_stream.text.lower()
