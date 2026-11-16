@@ -98,6 +98,7 @@ def continue_selected_best_work(
     turns = list(history or ())
     turns.insert(0, {"role": "system", "content": BEST_WORK_GUIDE})
     current_prompt = str(prompt or "")
+    controller.last_best_work_metadata = dict(metadata or {})
     executed = set()
     for stage in range(max_tool_calls + 1):
         if cancel_event is not None and cancel_event.is_set():
