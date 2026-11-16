@@ -276,22 +276,50 @@ class BitNetCppReasoningBackend:
         max_tokens: int = 1536,
         temperature: Any = 0.65,
         top_p: float = 0.92,
+        progress_callback=None,
+        stop_at_tool_boundary: bool = False,
     ) -> List[str]:
+        from core.tool_boundary_stop import ToolBoundaryStopper
         out = []
-        for idx in range(max(1, int(branch_count))):
+        count = max(1, int(branch_count))
+        for idx in range(count):
             temp = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
-            result = self._request(
-                "/completion",
-                {
-                    "prompt": prompt,
-                    "n_predict": int(max_tokens),
-                    "temperature": temp,
-                    "top_p": float(top_p),
-                    "stream": False,
-                },
-                timeout=1800,
-            )
-            out.append(str(result.get("content") or result.get("text") or "").strip())
+            started = time.perf_counter()
+            tokens = None
+            if stop_at_tool_boundary:
+                detector = ToolBoundaryStopper()
+                iterator = self.stream_generate_tokens(prompt, int(max_tokens), temp, float(top_p))
+                try:
+                    for piece in iterator:
+                        if progress_callback is not None:
+                            progress_callback(idx, count, None,
+                                              time.perf_counter() - started, finished=False)
+                        if detector.feed(piece):
+                            break
+                finally:
+                    close = getattr(iterator, "close", None)
+                    if callable(close):
+                        close()
+                result_text = detector.text.strip()
+            else:
+                result = self._request(
+                    "/completion",
+                    {
+                        "prompt": prompt,
+                        "n_predict": int(max_tokens),
+                        "temperature": temp,
+                        "top_p": float(top_p),
+                        "stream": False,
+                    },
+                    timeout=1800,
+                )
+                result_text = str(result.get("content") or result.get("text") or "").strip()
+                count_value = result.get("tokens_predicted")
+                if type(count_value) is int and count_value >= 0:
+                    tokens = count_value
+            out.append(result_text)
+            if progress_callback is not None:
+                progress_callback(idx + 1, count, tokens, time.perf_counter() - started)
         return out
 
     def stream_generate_tokens(
