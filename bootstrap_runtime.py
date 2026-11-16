@@ -65,6 +65,11 @@ def pip_install(runtime, root):
 
 
 def private_root():
+    # The release smoke test must not accidentally reuse a runner's previous
+    # installation. Also permit an explicit user-owned setup destination.
+    override = os.environ.get('SMARTAI_SETUP_HOME')
+    if override:
+        return Path(override).expanduser().resolve()
     if os.name == 'nt':
         return Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'SmartAI'
     if sys.platform == 'darwin':

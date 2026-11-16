@@ -303,10 +303,18 @@ def package(target, output, *, prepare_only=False):
     # The private Setup environment is intentionally empty: exercise its real
     # first-launch installation before certifying the non-portable format.
     setup_home=build/'clean setup home with spaces'
+    if setup_home.exists():
+        raise RuntimeError('Setup smoke directory is not initially empty')
     try:
         smoke_app(code, setup_home=setup_home)
+        markers = list(setup_home.glob('runtimes/*/.smartai-deps-ready'))
+        if len(markers) != 1 or markers[0].read_text(encoding='utf-8').strip() != fingerprint(code):
+            raise RuntimeError('Setup did not initialize its isolated private runtime')
+        first_marker = markers[0].stat().st_mtime_ns
         # A second launch must reuse the complete private environment.
         smoke_app(code, setup_home=setup_home)
+        if markers[0].stat().st_mtime_ns != first_marker:
+            raise RuntimeError('Second Setup launch unexpectedly reinstalled dependencies')
     finally:
         if setup_home.exists():
             shutil.rmtree(setup_home)

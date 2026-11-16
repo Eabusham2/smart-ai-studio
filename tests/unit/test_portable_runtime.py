@@ -212,3 +212,33 @@ def test_release_refuses_package_without_format_specific_launch_proof(tmp_path, 
         (tmp_path/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt))
     with pytest.raises(RuntimeError, match='was not verified'):
         verifier.verify(tmp_path,'a'*40)
+
+
+
+def test_setup_home_override_controls_actual_installation_and_reuse(tmp_path, monkeypatch):
+    app = tmp_path / 'app'; app.mkdir()
+    (app / 'requirements.txt').write_text('test==1\n', encoding='utf-8')
+    base = app / 'runtime/python'
+    executable = bootstrap.python_path(base)
+    executable.parent.mkdir(parents=True); executable.write_bytes(b'fake-python')
+    isolated = tmp_path / 'clean setup home with spaces'
+    monkeypatch.setenv('SMARTAI_SETUP_HOME', str(isolated))
+    calls = []
+    def install(runtime, root):
+        calls.append(runtime)
+        assert runtime.is_relative_to(isolated)
+        (runtime / '.smartai-deps-ready').write_text(bootstrap.fingerprint(root)+'\n', encoding='utf-8')
+    monkeypatch.setattr(bootstrap, 'pip_install', install)
+    assert bootstrap.private_root() == isolated.resolve()
+    installed = bootstrap.ensure_runtime(app)
+    assert installed.is_relative_to(isolated)
+    assert bootstrap.ensure_runtime(app) == installed
+    assert len(calls) == 1
+    assert not (base / '.smartai-deps-ready').exists()
+
+
+def test_native_package_gate_checks_actual_private_installation():
+    source = (ROOT / 'tools/build_release_package.py').read_text(encoding='utf-8')
+    assert "setup_home.glob('runtimes/*/.smartai-deps-ready')" in source
+    assert "Setup did not initialize its isolated private runtime" in source
+    assert "Second Setup launch unexpectedly reinstalled dependencies" in source
