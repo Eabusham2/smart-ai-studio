@@ -23,3 +23,31 @@ class ToolBoundaryStopper:
             self.text = self.text[:-len(tail)] if tail else self.text
             self.stopped = True
         return self.stopped
+
+
+class TokenBoundaryCriteria:
+    """Transformers stopping criterion; no sampler, weights, or score changes."""
+    def __init__(self, tokenizer, prompt_length, meter, *, enabled=False, cancelled=None):
+        self.tokenizer = tokenizer
+        self.prompt_length = int(prompt_length)
+        self.meter = meter
+        self.enabled = bool(enabled)
+        self.cancelled = cancelled
+        self.detector = ToolBoundaryStopper()
+
+    def __call__(self, input_ids, scores=None, **kwargs):
+        if callable(self.cancelled) and self.cancelled():
+            return True
+        ids = input_ids[0][self.prompt_length:]
+        count = len(ids)
+        self.meter.observe(count=count)
+        if not self.enabled or count == 0:
+            return False
+        # Check a short trailing window first. Decode the full candidate only
+        # when a closing tag appears, avoiding quadratic per-token decoding.
+        tail = self.tokenizer.decode(ids[-64:], skip_special_tokens=False)
+        if "</tool_call>" not in tail.casefold() and "</media_call>" not in tail.casefold():
+            return False
+        full = self.tokenizer.decode(ids, skip_special_tokens=False)
+        self.detector = ToolBoundaryStopper()
+        return self.detector.feed(full)

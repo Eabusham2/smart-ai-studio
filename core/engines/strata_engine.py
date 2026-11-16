@@ -14,6 +14,7 @@ import json
 import math
 import socket
 import threading
+import time
 from typing import Any, Callable, Generator, Optional
 from urllib.parse import urlsplit
 
@@ -397,7 +398,8 @@ class StrataReasoningBackend:
         return copy.deepcopy(value)
 
     def stream_generate_tokens(self, prompt, max_tokens=1536, temperature=0.75,
-                               top_p=0.92, image_bytes=None, cancelled=None) -> Generator[str, None, None]:
+                               top_p=0.92, image_bytes=None, cancelled=None,
+                               stop_at_tool_boundary=False) -> Generator[str, None, None]:
         if image_bytes is not None:
             raise NotImplementedError("This Strata controller currently accepts text only.")
         if not self.is_loaded:
@@ -417,6 +419,10 @@ class StrataReasoningBackend:
             self.last_usage = {}
             self.last_branch_usage = {}
             self.last_generation = {"status": "streaming", "model": model_id, "usage": {}}
+            from core.generation_metrics import TokenMeter
+            from core.tool_boundary_stop import ToolBoundaryStopper
+            meter = TokenMeter(self, "strata")
+            boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
             reasoning = False
             finished = False
             try:
@@ -439,8 +445,10 @@ class StrataReasoningBackend:
                         if chunk.get("usage") is not None:
                             self.last_usage = self._usage(chunk["usage"])
                             self.last_generation["usage"] = copy.deepcopy(self.last_usage)
+                            meter.observe(count=self.last_usage["completion_tokens"])
                         if isinstance(chunk.get("timings"), dict):
                             self.last_generation["timings"] = copy.deepcopy(chunk["timings"])
+                            meter.observe(rate=chunk["timings"].get("predicted_per_second"))
                         choices = chunk.get("choices")
                         if not isinstance(choices, list) or len(choices) > 1:
                             raise StrataError("Strata returned invalid streaming choices.")
@@ -457,16 +465,33 @@ class StrataReasoningBackend:
                                 raise StrataError("Strata returned a non-text delta.")
                             if finished and (thought or content):
                                 raise StrataError("Strata returned text after its finish event.")
+                            pieces = []
                             if thought:
                                 if not reasoning:
                                     reasoning = True
-                                    yield "<think>"
-                                yield thought
+                                    pieces.append("<think>")
+                                pieces.append(thought)
                             if content:
                                 if reasoning:
                                     reasoning = False
-                                    yield "</think>"
-                                yield content
+                                    pieces.append("</think>")
+                                pieces.append(content)
+                            logprobs = choice.get("logprobs") or {}
+                            token_records = logprobs.get("content") if isinstance(logprobs, dict) else None
+                            meter.observe(delta=len(token_records) if isinstance(token_records, list) else None,
+                                          text=bool(thought or content))
+                            for piece in pieces:
+                                stop_here = False
+                                if boundary is not None:
+                                    offset = len(boundary.text)
+                                    stop_here = boundary.feed(piece)
+                                    piece = boundary.text[offset:]
+                                if stop_here:
+                                    self.last_generation.update(status="completed", finish_reason="tool_boundary")
+                                if piece:
+                                    yield piece
+                                if stop_here:
+                                    return
                             reason = choice.get("finish_reason")
                             if reason is not None:
                                 if not isinstance(reason, str) or not reason:
@@ -484,15 +509,19 @@ class StrataReasoningBackend:
                     yield "</think>"
                 return
             except GeneratorExit:
-                self.last_generation["status"] = "cancelled"
+                if not (boundary is not None and boundary.stopped):
+                    self.last_generation["status"] = "cancelled"
                 raise
             except Exception as exc:
                 self.last_error = self._safe_message(exc)
                 self.last_generation.update(status="error", error=self.last_error)
                 raise
+            finally:
+                meter.finish()
 
     def generate_branches(self, prompt, branch_count=1, max_tokens=1536, temperature=0.75,
-                          top_p=0.92, image_bytes=None, cancelled=None) -> list[str]:
+                          top_p=0.92, image_bytes=None, cancelled=None,
+                          progress_callback=None, stop_at_tool_boundary=False) -> list[str]:
         self.last_branch_usage = {}
         if type(branch_count) is not int or branch_count < 1:
             raise ValueError("Strata branch_count must be a positive integer.")
@@ -507,11 +536,28 @@ class StrataReasoningBackend:
                 self.last_usage = {}
                 self.last_generation = {"status": "cancelled", "model": self.model_id}
                 break
-            text = "".join(self.stream_generate_tokens(
-                prompt, max_tokens, ladder[index % len(ladder)], top_p, image_bytes, cancelled))
+            started = time.perf_counter()
+            pieces = []
+            options = {"stop_at_tool_boundary": True} if stop_at_tool_boundary else {}
+            iterator = self.stream_generate_tokens(
+                prompt, max_tokens, ladder[index % len(ladder)], top_p, image_bytes, cancelled, **options)
+            try:
+                for piece in iterator:
+                    pieces.append(piece)
+                    if progress_callback is not None:
+                        progress_callback(index, branch_count, getattr(self, "last_generation_tokens", None),
+                                          time.perf_counter()-started, finished=False)
+            finally:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+            text = "".join(pieces)
             if self.last_generation.get("status") == "cancelled":
                 break
             out.append(text)
+            if progress_callback is not None:
+                progress_callback(index+1, branch_count, getattr(self, "last_generation_tokens", None),
+                                  time.perf_counter()-started)
             usage = self.last_generation.get("usage", {})
             if self.last_generation.get("status") != "completed" or any(
                 type(usage.get(key)) is not int or usage[key] < 0 for key in aggregate

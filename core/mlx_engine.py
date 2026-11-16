@@ -628,6 +628,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         import mlx.core as mx
         self._prepare_optional_warmup(mx)
         from core.tool_boundary_stop import ToolBoundaryStopper
+        from core.generation_metrics import TokenMeter, observe_mlx_response
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
@@ -647,6 +648,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             for idx in range(count):
                 temp_value = float(temps[idx % len(temps)])
                 pieces = []
+                meter = TokenMeter(self, "mlx-vlm")
                 started = time.perf_counter()
                 generated = 0
                 last = None
@@ -669,8 +671,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     for response in iterator:
                         last = response
                         generated += 1
+                        observe_mlx_response(meter, response)
                         if progress_callback is not None:
-                            progress_callback(idx, count, generated, time.perf_counter() - started, finished=False)
+                            progress_callback(idx, count, meter.tokens, time.perf_counter() - started, finished=False)
                         self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
                         piece = str(getattr(response, "text", response))
                         pieces.append(piece)
@@ -682,14 +685,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     if iterator is not None and callable(getattr(iterator, "close", None)):
                         iterator.close()
                     self._finish_vlm_request(completed=completed, branches=idx < count - 1)
+                    meter.finish()
                 elapsed = max(0.001, time.perf_counter() - started)
-                measured = float(getattr(last, "generation_tps", 0.0) or 0.0) if last is not None else 0.0
-                self.last_tok_per_sec = measured if measured > 0.0 else (generated / elapsed if generated else 0.0)
-                self.last_generation_tokens = generated
-                self.last_generation_seconds = elapsed
                 branches.append("".join(pieces))
                 if progress_callback is not None:
-                    progress_callback(idx + 1, count, generated, elapsed)
+                    progress_callback(idx + 1, count, meter.tokens, elapsed)
                 _reclaim_if_needed(mx)
             return branches
 
@@ -723,14 +723,16 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
             response = None
             generated = 0
+            meter = TokenMeter(self, "mlx-lm")
             started = time.perf_counter()
             iterator = None
             try:
                 iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
                 for response in iterator:
                     generated += 1
+                    observe_mlx_response(meter, response)
                     if progress_callback is not None:
-                        progress_callback(idx, count, generated, time.perf_counter() - started, finished=False)
+                        progress_callback(idx, count, meter.tokens, time.perf_counter() - started, finished=False)
                     try:
                         measured = float(getattr(response, "generation_tps", 0.0) or 0.0)
                     except Exception:
@@ -749,12 +751,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 if iterator is not None and callable(getattr(iterator, "close", None)):
                     iterator.close()
                 self._release_text_cache(branches=True)
+                meter.finish()
 
             elapsed = max(0.001, time.perf_counter() - started)
-            if self.last_tok_per_sec <= 0.0 and generated:
-                self.last_tok_per_sec = generated / elapsed
-            self.last_generation_tokens = generated
-            self.last_generation_seconds = elapsed
             return "".join(pieces)
 
         for idx in range(count):
@@ -784,6 +783,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         if not self.is_mlx_available or self.model is None:
             return
 
+        from core.generation_metrics import TokenMeter, observe_mlx_response
         import mlx.core as mx
         self._prepare_optional_warmup(mx)
 
@@ -801,6 +801,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
+            meter = TokenMeter(self, "mlx-vlm")
             generated = 0
             started = time.perf_counter()
             last = None
@@ -824,6 +825,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 for response in iterator:
                     last = response
                     generated += 1
+                    observe_mlx_response(meter, response)
                     self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
                     chunk = getattr(response, "text", None)
                     yield str(chunk if chunk is not None else response)
@@ -833,10 +835,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     iterator.close()
                 self._finish_vlm_request(completed=completed)
                 elapsed = max(0.001, time.perf_counter() - started)
-                measured = float(getattr(last, "generation_tps", 0.0) or 0.0) if last is not None else 0.0
-                self.last_tok_per_sec = measured if measured > 0.0 else (generated / elapsed if generated else 0.0)
-                self.last_generation_tokens = generated
-                self.last_generation_seconds = elapsed
+                meter.finish()
                 _reclaim_if_needed(mx)
             return
 
@@ -850,6 +849,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         except Exception as exc:
             raise RuntimeError("MLX sampler unavailable; refusing to change sampling semantics") from exc
 
+        meter = TokenMeter(self, "mlx-lm")
         generated = 0
         response = None
         started = time.perf_counter()
@@ -873,6 +873,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             )
 
         def _yield_response(resp):
+            observe_mlx_response(meter, resp)
             try:
                 measured = float(getattr(resp, "generation_tps", 0.0) or 0.0)
             except Exception:
@@ -916,9 +917,6 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             if iterator is not None and callable(getattr(iterator, "close", None)):
                 iterator.close()
             elapsed = max(0.001, time.perf_counter() - started)
-            if self.last_tok_per_sec <= 0.0 and generated:
-                self.last_tok_per_sec = generated / elapsed
-            self.last_generation_tokens = generated
-            self.last_generation_seconds = elapsed
+            meter.finish()
             self._release_text_cache()
             _reclaim_if_needed(mx)

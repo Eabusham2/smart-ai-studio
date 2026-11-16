@@ -4546,8 +4546,6 @@ class SmartAIChatbotApp:
         learn_source_path: Optional[str] = None,
         learn_media_target: Optional[str] = None,
         use_pro_branches: bool = False,
-        pro_branch_count: int = 4,
-        auto_pro_branches: bool = False,
     ):
         start_time = time.perf_counter()
         # Preserve historical routing. The GUI only enables/disables Pro;
@@ -4892,47 +4890,25 @@ class SmartAIChatbotApp:
                         self.root.after(0, lambda: self._append_ai_message("⏹ Generation stopped."))
                     return
 
-                # The established entropy router remains authoritative. No
-                # model/entropy pass is performed when Pro is unchecked.
-                if use_pro_branches:
-                    if is_native_stream:
-                        # Native speculative servers do not expose a full-vocab
-                        # entropy estimate; retain the existing native setting.
-                        pro_branch_count = int(getattr(self.engine, "lossless_speed_options", {})
-                                               .get("native_branch_count", 1))
-                    else:
-                        entropy = self.engine.calculate_token_entropy(full_msg)
-                        _mode, pro_branch_count = self.engine.router.route(
-                            entropy, has_test_cases=False
-                        )
-                else:
-                    pro_branch_count = 1
                 # 1. Initialize streaming container in chat
                 accumulated = []
-                pro_active = bool(use_pro_branches and pro_branch_count > 1)
+                pro_active = False  # The original engine router decides, not the GUI.
                 self._best_work_mode = pro_active
                 self._best_work_final_rate = None
                 pro_summary = None
-                best_work_ui = {"label": None}
+                best_work_ui = {"label": None, "panel": None, "done": 0, "total": 0}
+                self._live_generation_snapshot = None
                 self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
 
                 def _init_ai_stream():
                     self.chat_stream.configure(state="normal")
                     self.chat_stream.insert("end", f"\n✦ {info['short_name']}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
-                    if pro_active and hasattr(self.chat_stream, "window_create"):
-                        panel = tk.Frame(
-                            self.chat_stream, bg=self.C["bg_card"],
-                            highlightbackground=self.C["border"],
-                            highlightthickness=1, padx=10, pady=7,
-                        )
-                        label = tk.Label(
-                            panel, text="🌿 Best Work 0/? · preparing",
-                            bg=self.C["bg_card"], fg=self.C["text_main"],
-                            font=_FONT_TINY_BOLD, anchor="w",
-                        )
-                        label.pack(fill="x")
-                        best_work_ui["label"] = label
+                    if use_pro_branches and hasattr(self.chat_stream, "window_create"):
+                        # An empty zero-border holder is invisible until the
+                        # router actually chooses Pro, including after a tool.
+                        panel = tk.Frame(self.chat_stream, bg=self.C["bg_chat"], height=1, bd=0)
+                        best_work_ui["panel"] = panel
                         self.chat_stream.window_create("end", window=panel)
                         self.chat_stream.insert("end", "\n")
                     self.chat_stream.mark_set(mark_name, "end-1c")
@@ -4960,174 +4936,104 @@ class SmartAIChatbotApp:
                             pass
                     self.root.after(0, _insert_chunk)
 
-                if pro_active:
-                    def _best_work_status(value):
-                        label = best_work_ui.get("label")
-                        if label is not None:
-                            label.configure(text=value)
-                        self._scroll_chat_to_bottom()
+                from core.generation_metrics import RequestMetrics, observe_generations, valid_rate
+                measurements = RequestMetrics()
+                last_metrics_paint = 0.0
 
-                    # Pro is explicitly enabled by the user. Each completed
-                    # candidate reports its real token count when available.
-                    completed_branches = 0
-                    actual_branch_total = pro_branch_count
-                    measured_tokens = 0
-                    counts_available = True
+                def _paint_best_work(value):
+                    panel = best_work_ui.get("panel")
+                    label = best_work_ui.get("label")
+                    if label is None and panel is not None:
+                        panel.configure(bg=self.C["bg_card"], highlightbackground=self.C["border"],
+                                        highlightthickness=1, padx=10, pady=7)
+                        label = tk.Label(panel, text=value, bg=self.C["bg_card"],
+                                         fg=self.C["text_main"], font=_FONT_TINY_BOLD, anchor="w")
+                        label.pack(fill="x")
+                        best_work_ui["label"] = label
+                    elif label is not None:
+                        label.configure(text=value)
+                    self._scroll_chat_to_bottom()
 
-                    first_pro_token_at = None
-                    last_pro_ui_at = 0.0
-
-                    def _branch_done(done, total, tokens, seconds, finished=True):
-                        nonlocal completed_branches, measured_tokens, counts_available, actual_branch_total
-                        actual_branch_total = int(total)
-                        nonlocal first_pro_token_at, last_pro_ui_at
-                        now = time.perf_counter()
-                        if not finished:
-                            # 'done' is the number of completed branches; 'tokens'
-                            # is the count in the currently running MLX branch.
-                            if first_pro_token_at is None and type(tokens) is int and tokens >= 1:
-                                first_pro_token_at = now
-                            wall_s = max(0.001, now - start_time)
-                            current = measured_tokens + (tokens if type(tokens) is int else 0)
-                            rate = current / wall_s if counts_available and current else 0.0
-                            if now - last_pro_ui_at >= 0.12 or tokens == 1:
-                                last_pro_ui_at = now
-                                self._live_tps = rate
-                                message = (
-                                    f"⚡ Pro {rate:.1f} tok/s · branch {done+1}/{total} generating"
-                                    if rate > 0 else f"⚡ Pro branch {done+1}/{total} generating"
-                                )
-                                if tokens == 1:
-                                    message = (
-                                        f"⚡ First Pro token · TTFT {now-start_time:.2f}s"
-                                        f" · branch {done+1}/{total}"
-                                    )
-                                self.root.after(
-                                    0,
-                                    lambda value=message, progress=f"🌿 Best Work {done}/{total} · generating branch {done+1}":
-                                        (self.lbl_tps.configure(text=value), _best_work_status(progress)),
-                                )
-                            return
-
-                        completed_branches = int(done)
-                        if type(tokens) is int and tokens >= 0:
-                            measured_tokens += tokens
+                def _decision(event):
+                    nonlocal pro_active
+                    kind = event.get("kind")
+                    total = event.get("total", 0)
+                    if kind == "route":
+                        best_work_ui["done"] = 0
+                        best_work_ui["total"] = total
+                        if total > 1:
+                            pro_active = True
+                            self._best_work_mode = True
+                            value = f"🌿 Best Work 0/{total} · generating candidates"
                         else:
-                            counts_available = False
-                        wall_s = max(0.001, now - start_time)
-                        rate = measured_tokens / wall_s if counts_available and measured_tokens else 0.0
-                        self._live_tps = rate
-                        detail = f"{tokens} tokens" if type(tokens) is int else "tokens unavailable"
-                        def _show():
-                            _best_work_status(f"🌿 Best Work {done}/{total} · {detail}")
-                            self.lbl_tps.configure(text=(
-                                f"⚡ Pro {rate:.1f} tok/s · {done}/{total} branches (wall)"
-                                if rate > 0 else f"⚡ Pro {done}/{total} branches · TPS unavailable"
-                            ))
-                        self.root.after(0, _show)
+                            value = "🌿 Continuing in single stream" if pro_active else None
+                    elif kind == "selected":
+                        best_work_ui["done"] = total
+                        value = f"🌿 Best Work {total}/{total} · selected branch #{event.get('winning_branch', 0) + 1}"
+                    elif kind == "executing":
+                        value = (f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · "
+                                 f"executing selected {event.get('name', 'tool')}")
+                    else:
+                        value = "🌿 Rechecking original Pro routing after tool result" if pro_active else None
+                    if value is not None:
+                        if kind == "executing":
+                            painted = threading.Event()
+                            def _paint_before_execution(text=value):
+                                try:
+                                    _paint_best_work(text)
+                                    self.chat_stream.update_idletasks()
+                                finally:
+                                    painted.set()
+                            self.root.after(0, _paint_before_execution)
+                            # No execution can overtake display of the selected
+                            # branch and invocation; closing/cancelling aborts.
+                            while not painted.wait(0.05):
+                                if self.cancel_event.is_set():
+                                    return
+                        else:
+                            self.root.after(0, lambda text=value: _paint_best_work(text))
 
-                    self.root.after(0, lambda: self.lbl_tps.configure(
-                        text=f"⚡ Pro 0/{pro_branch_count} branches · preparing"
-                    ))
-                    # All candidates are inert. The existing scorer decides
-                    # the winner before any selected tool action can execute.
-                    from core.best_work import BEST_WORK_GUIDE, continue_selected_best_work
-                    best_work_history = [
-                        {"role": "system", "content": BEST_WORK_GUIDE},
-                        *(curr_history or []),
-                    ]
-                    prior_stop = getattr(self.engine, "_best_work_stop_at_tools", False)
-                    self.engine._best_work_stop_at_tools = True
-                    try:
-                        answer, branch_meta = self.engine.solve(
-                            full_msg, history=best_work_history,
-                            cancel_event=self.cancel_event,
-                            force_branch_count=pro_branch_count,
-                            progress_callback=_branch_done,
-                        )
-                        if self.cancel_event.is_set():
-                            return
+                def _branch_progress(done, total, tokens, seconds, finished=True, **_kwargs):
+                    best_work_ui["done"] = int(done)
+                    best_work_ui["total"] = int(total)
+                    action = "comparing candidates" if finished and done == total else (
+                        f"branch #{done} done" if finished else f"generating branch #{done+1}")
+                    self.root.after(0, lambda text=f"🌿 Best Work {done}/{total} · {action}":
+                                    _paint_best_work(text))
 
-                        def _selected_action_status(kind, name, stage):
-                            status = (f"🌿 Best Work · executing selected {name}"
-                                      if kind == "executing"
-                                      else f"🌿 Best Work · continuing after {name}")
-                            self.root.after(0, lambda value=status: _best_work_status(value))
+                def _observed(sample):
+                    nonlocal last_metrics_paint
+                    snap = measurements.update(sample)
+                    self._live_generation_snapshot = snap
+                    rate = snap.get("decode_tps")
+                    self._live_tps = float(rate) if valid_rate(rate) else 0.0
+                    now = time.perf_counter()
+                    if now - last_metrics_paint < 0.1 and not sample.get("finished") and sample.get("tokens") != 1:
+                        return
+                    last_metrics_paint = now
+                    count = snap.get("tokens")
+                    prefix = "Best Work · " if pro_active else ""
+                    if valid_rate(rate):
+                        value = f"⚡ {prefix}{rate:.1f} tok/s decode"
+                        if count is not None:
+                            value += f" · {count} generated tokens"
+                    elif snap.get("ttft_s") is not None:
+                        value = f"⚡ {prefix}First token {snap['ttft_s']:.2f}s · measuring decode"
+                    else:
+                        value = "⚡ Preparing first token…"
+                    self.root.after(0, lambda text=value: self.lbl_tps.configure(text=text))
 
-                        for piece in continue_selected_best_work(
-                            self.multimodal, prompt=full_msg,
-                            history=best_work_history, answer=answer,
-                            metadata=branch_meta, branch_count=pro_branch_count,
-                            cancel_event=self.cancel_event,
-                            progress_callback=_branch_done,
-                            status_callback=_selected_action_status,
-                        ):
-                            if self.cancel_event.is_set():
-                                return
-                            accumulated.append(str(piece))
-                    finally:
-                        self.engine._best_work_stop_at_tools = prior_stop
-                    latest_meta = getattr(self.multimodal, "last_best_work_metadata", None)
-                    if isinstance(latest_meta, dict):
-                        branch_meta = latest_meta
-                    self.last_metadata = branch_meta
-                    self.engine._last_stream_pro_meta = branch_meta
-                    # Whole-request rate includes every completed branch and
-                    # the tool-boundary continuation, never a word estimate.
-                    self._best_work_final_rate = (
-                        measured_tokens / max(0.001, time.perf_counter() - start_time)
-                        if counts_available and measured_tokens > 0 else None
-                    )
-                    chosen = int(branch_meta.get("winning_branch", 0)) + 1
-                    pro_summary = None
-                    self.root.after(
-                        0, lambda count=completed_branches, total=actual_branch_total, win=chosen:
-                            _best_work_status(
-                                f"🌿 Best Work {count}/{total} · selected branch #{win} · complete"
-                            ),
-                    )
-                else:
-                    # MLX/native streams produce model token events. Other
-                    # runtimes can yield text chunks, which are NOT exact tokens.
-                    exact_events = (
-                        (getattr(self.engine, "active_backend", None) == "mlx"
-                         and getattr(getattr(self.engine, "mlx_backend", None), "model", None) is not None)
-                        or is_native_stream
-                    )
-                    count_events = 0
-                    first_event_at = None
-                    # Do not run automatic entropy-routed N=8/16 searches for a
-                    # GUI turn when the explicit Pro checkbox is unchecked.
-                    previous_force_single = getattr(self.engine, "_gui_force_single_stream", False)
-                    previous_pro_enabled = getattr(self.engine, "_gui_pro_enabled", False)
-                    previous_tool_stop = getattr(self.engine, "_best_work_stop_at_tools", False)
-                    self.engine._gui_force_single_stream = True
-                    self.engine._gui_pro_enabled = bool(use_pro_branches)
-                    self.engine._best_work_stop_at_tools = bool(use_pro_branches)
-                    followup_stats = {"seen": False, "completed": 0, "tokens": 0, "known": True}
-
-                    def _followup_branches(done, total, tokens, seconds, finished=True):
-                        followup_stats["seen"] = True
-                        if finished:
-                            followup_stats["completed"] = int(done)
-                            if type(tokens) is int and tokens >= 0:
-                                followup_stats["tokens"] += tokens
-                            else:
-                                followup_stats["known"] = False
-                        rate = (followup_stats["tokens"] / max(0.001, time.perf_counter() - start_time)
-                                if followup_stats["known"] and followup_stats["tokens"] else None)
-                        message = (f"🌿 Best Work {done}/{total} after tool · {rate:.1f} tok/s (all branches)"
-                                   if rate is not None else f"🌿 Best Work {done}/{total} after tool · TPS unavailable")
-                        self.root.after(0, lambda value=message: self.lbl_tps.configure(text=value))
-
-                    stream_kwargs = {}
-                    if use_pro_branches:
-                        stream_kwargs["progress_callback"] = _followup_branches
-                    iterator = self.multimodal.stream_solve(
-                        full_msg, history=curr_history,
-                        cancel_event=self.cancel_event, **stream_kwargs
-                    )
-                    try:
+                previous_force_single = getattr(self.engine, "_gui_force_single_stream", False)
+                self.engine._gui_force_single_stream = not bool(use_pro_branches)
+                options = {}
+                if use_pro_branches:
+                    options.update(best_work_enabled=True, progress_callback=_branch_progress,
+                                   status_callback=_decision)
+                iterator = self.multimodal.stream_solve(full_msg,
+                    history=curr_history, cancel_event=self.cancel_event, **options
+                )
+                try:
+                    with observe_generations(_observed):
                         for chunk in iterator:
                             if self.cancel_event.is_set():
                                 break
@@ -5135,39 +5041,29 @@ class SmartAIChatbotApp:
                             accumulated.append(part)
                             ui_pending.append(part)
                             now = time.perf_counter()
-                            if part:
-                                count_events += 1
-                                if first_event_at is None:
-                                    first_event_at = now
-                                if exact_events:
-                                    if count_events == 1:
-                                        message = f"⚡ First token · TTFT {now-start_time:.2f}s"
-                                    else:
-                                        self._live_tps = (count_events - 1) / max(0.001, now-first_event_at)
-                                        message = f"⚡ {self._live_tps:.1f} tok/s · {count_events} tokens"
-                                else:
-                                    message = f"⚡ Streaming · TTFT {first_event_at-start_time:.2f}s · TPS unavailable"
-                                self.root.after(0, lambda value=message: self.lbl_tps.configure(text=value))
-                            if (len(ui_pending) >= 8 or now - last_ui_flush >= 0.04
-                                    or count_events == 1):
+                            # Paint the first observed text and each selected
+                            # handoff immediately, before advancing to execution.
+                            if len(accumulated) == 1 or use_pro_branches or len(ui_pending) >= 8 or now-last_ui_flush >= 0.04:
                                 _schedule_stream_insert("".join(ui_pending))
                                 ui_pending.clear()
                                 last_ui_flush = now
+                finally:
+                    try:
+                        close = getattr(iterator, "close", None)
+                        if callable(close):
+                            close()
                     finally:
-                        try:
-                            close = getattr(iterator, "close", None)
-                            if callable(close):
-                                close()
-                        finally:
-                            self.engine._gui_force_single_stream = previous_force_single
-                            self.engine._gui_pro_enabled = previous_pro_enabled
-                            self.engine._best_work_stop_at_tools = previous_tool_stop
-                    if followup_stats["seen"]:
-                        self._best_work_mode = True
-                        self._best_work_final_rate = (
-                            followup_stats["tokens"] / max(0.001, time.perf_counter() - start_time)
-                            if followup_stats["known"] and followup_stats["tokens"] else None
-                        )
+                        self.engine._gui_force_single_stream = previous_force_single
+                latest_meta = getattr(self.multimodal, "last_best_work_metadata", None) if use_pro_branches else None
+                if isinstance(latest_meta, dict):
+                    self.last_metadata = latest_meta
+                snapshot = measurements.snapshot()
+                if measurements.samples:
+                    self._live_generation_snapshot = snapshot
+                    self._best_work_final_rate = snapshot.get("wall_tps") if pro_active else None
+                if pro_active and not self.cancel_event.is_set():
+                    self.root.after(0, lambda: _paint_best_work(
+                        f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · complete"))
 
                 if ui_pending:
                     _schedule_stream_insert("".join(ui_pending))
@@ -5190,9 +5086,10 @@ class SmartAIChatbotApp:
                 # No word-count TPS; use the observed live token rate when known.
                 tok_per_sec = self._live_tps
                 if not pro_active and not (is_strata_stream or is_native_stream):
-                    backend = (getattr(self.engine, "mlx_backend", None)
-                               if getattr(self.engine, "active_backend", None) == "mlx"
-                               else getattr(self.engine, "gguf_backend", None))
+                    owner_name = {"mlx": "mlx_backend", "gguf": "gguf_backend",
+                                  "controller": "controller_backend", "bitnet": "bitnet_backend"}.get(
+                                      getattr(self.engine, "active_backend", None), "gguf_backend")
+                    backend = getattr(self.engine, owner_name, None)
                     measured = getattr(backend, "last_tok_per_sec", None)
                     if type(measured) in (int, float) and math.isfinite(measured) and measured > 0:
                         tok_per_sec = float(measured)
@@ -5412,7 +5309,20 @@ class SmartAIChatbotApp:
             syn_str = format_added_synapses(self.synapses_learned_count)
             self.lbl_synapses.configure(text="Inference only" if inference_only else f"📈 {syn_str}")
         if hasattr(self, "lbl_tps"):
-            if getattr(self, "_best_work_mode", False):
+            observed = getattr(self, "_live_generation_snapshot", None)
+            if isinstance(observed, dict):
+                rate = observed.get("decode_tps")
+                count = observed.get("tokens")
+                if type(rate) in (int, float) and math.isfinite(rate) and rate > 0:
+                    label = f"⚡ {rate:.1f} tok/s decode"
+                    if count is not None:
+                        label += f" · {count} generated tokens"
+                    self.lbl_tps.configure(text=label)
+                elif observed.get("ttft_s") is not None:
+                    self.lbl_tps.configure(text=f"⚡ TTFT {observed['ttft_s']:.2f}s · decode rate unavailable")
+                else:
+                    self.lbl_tps.configure(text="⚡ Speed: unavailable")
+            elif getattr(self, "_best_work_mode", False):
                 full_rate = getattr(self, "_best_work_final_rate", None)
                 if type(full_rate) in (int, float) and math.isfinite(full_rate) and full_rate > 0:
                     self.lbl_tps.configure(text=f"⚡ Best Work {full_rate:.1f} tok/s (all branches, wall)")

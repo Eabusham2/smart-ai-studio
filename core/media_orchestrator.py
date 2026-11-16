@@ -668,13 +668,19 @@ class MediaController:
             result = {"status": "error", "error": str(exc)}
         return {"name": name, "result": result}
 
-    def stream_solve(self, prompt, history=None, cancel_event=None, progress_callback=None):
+    def stream_solve(self, prompt, history=None, cancel_event=None, progress_callback=None,
+                     best_work_enabled=False, status_callback=None):
         with self.lock:
             self._depth += 1
             self.busy = True
             try:
-                yield from self._stream_solve(prompt, history=history, cancel_event=cancel_event,
-                                              progress_callback=progress_callback)
+                if best_work_enabled:
+                    from core.best_work import stream_best_work
+                    yield from stream_best_work(self, prompt, history, cancel_event,
+                                                progress_callback, status_callback)
+                else:
+                    yield from self._stream_solve(prompt, history=history, cancel_event=cancel_event,
+                                                  progress_callback=progress_callback)
             finally:
                 self._depth -= 1
                 self.busy = self._depth > 0
@@ -721,7 +727,7 @@ class MediaController:
                             kwargs["progress_callback"] = progress_callback
                     except (TypeError, ValueError):
                         pass
-                iterator = engine.stream_solve(
+                iterator = self.app.engine.stream_solve(
                     prompt, history=turns, cancel_event=cancel_event, **kwargs
                 )
             except BaseException:

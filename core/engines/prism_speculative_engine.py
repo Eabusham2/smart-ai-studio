@@ -380,6 +380,7 @@ class PrismSpeculativeReasoningBackend:
         payload.update({"prompt": prompt, "n_predict": int(max_tokens),
                         "temperature": float(temperature), "top_p": float(top_p),
                         "stream": True, "cache_prompt": False,
+                        "return_tokens": True, "timings_per_token": True,
                         "stop": ["<|im_end|>", "</s>", "\nuser", "\nHuman:"]})
         allowed = set(self.sampling_defaults) | {"seed", "stop"}
         if set(overrides) - allowed:
@@ -391,6 +392,7 @@ class PrismSpeculativeReasoningBackend:
                                temperature: float = 0.75, top_p: float = 0.92,
                                image_bytes: Optional[bytes] = None,
                                cancelled: Optional[Callable[[], bool]] = None,
+                               stop_at_tool_boundary: bool = False,
                                **sampling) -> Generator[str, None, None]:
         if image_bytes is not None:
             raise RuntimeError("This native speculative adapter does not accept images")
@@ -437,6 +439,10 @@ class PrismSpeculativeReasoningBackend:
                     raise
                 self.last_generation = {"status": "cancelled", "usage": None}
                 return
+            from core.generation_metrics import TokenMeter, observe_server_event
+            from core.tool_boundary_stop import ToolBoundaryStopper
+            meter = TokenMeter(self, "native-speculative")
+            boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
             completed = False
             response = None
             try:
@@ -476,8 +482,22 @@ class PrismSpeculativeReasoningBackend:
                     content = item.get("content", "")
                     if not isinstance(content, str):
                         raise RuntimeError("Native stream returned invalid text")
+                    observe_server_event(meter, item)
+                    stopped = False
+                    if boundary is not None:
+                        offset = len(boundary.text)
+                        stopped = boundary.feed(content)
+                        content = boundary.text[offset:]
                     if content:
                         yield content
+                    if stopped:
+                        usage = ({"prompt_tokens": prompt_tokens, "completion_tokens": meter.tokens,
+                                  "total_tokens": prompt_tokens + meter.tokens}
+                                 if type(meter.tokens) is int else None)
+                        self.last_generation = {"status": "completed", "usage": usage,
+                                                "stop_type": "tool_boundary", "timings": dict(item.get("timings") or {})}
+                        completed = True
+                        break
                     if isinstance(item.get("timings"), dict):
                         self._last_timings = dict(item["timings"])
                     if item.get("stop") is True:
@@ -498,6 +518,7 @@ class PrismSpeculativeReasoningBackend:
                 if response is not None:
                     response.close()
                 self._close_connection(connection)
+                meter.finish()
 
     def generate_branches(self, prompt: str, branch_count: int = 1, max_tokens: int = 1536,
                           temperature: Any = 0.75, top_p: float = 0.92,
@@ -523,18 +544,18 @@ class PrismSpeculativeReasoningBackend:
             started = time.perf_counter()
             iterator = self.stream_generate_tokens(
                 prompt, max_tokens, float(temp), top_p,
-                image_bytes=image_bytes, cancelled=cancelled, **sampling
+                image_bytes=image_bytes, cancelled=cancelled,
+                **({"stop_at_tool_boundary": True} if stop_at_tool_boundary else {}), **sampling
             )
             try:
                 for part in iterator:
                     chunks.append(str(part))
                     if progress_callback is not None:
-                        progress_callback(index, requested_count, None,
+                        progress_callback(index, requested_count,
+                                          getattr(self, "last_generation_tokens", None),
                                           time.perf_counter() - started, finished=False)
-                    if detector is not None and detector.feed(part):
-                        # The native stream's connection is closed below. No
-                        # unverified text beyond this call can reach a caller.
-                        break
+                    if detector is not None:
+                        detector.feed(part)
             finally:
                 close = getattr(iterator, "close", None)
                 if callable(close):

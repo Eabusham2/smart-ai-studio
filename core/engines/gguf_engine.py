@@ -402,124 +402,97 @@ class GGUFReasoningBackend:
 
 
     def generate_branches(
-        self,
-        prompt: str,
-        branch_count: int = 1,
-        max_tokens: int = 1536,
-        temperature: Any = 0.75,
-        top_p: float = 0.92,
-        image_bytes: Optional[bytes] = None,
-        progress_callback=None,
+        self, prompt: str, branch_count: int = 1, max_tokens: int = 1536,
+        temperature: Any = 0.75, top_p: float = 0.92,
+        image_bytes: Optional[bytes] = None, progress_callback=None,
         stop_at_tool_boundary: bool = False,
     ) -> List[str]:
-        """Generates candidate reasoning branches using GGUF model."""
         if self.model is None:
             return []
-
+        from core.generation_metrics import TokenMeter, observe_llama_tokens
         branches = []
         for b_idx in range(branch_count):
             t_val = float(temperature[b_idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
-            produced = None
-            try:
-                options = {
-                    "max_tokens": max_tokens, "temperature": t_val,
-                    "top_p": top_p,
-                    "stop": ["<|im_end|>", "</s>", "\nuser", "\nHuman:"],
-                }
-                if stop_at_tool_boundary:
-                    from core.tool_boundary_stop import ToolBoundaryStopper
-                    detector = ToolBoundaryStopper()
-                    stream = self.model(prompt, stream=True, **options)
-                    try:
-                        for event in stream:
-                            choice = (event.get("choices") or [{}])[0]
-                            piece = choice.get("text", "") or ""
-                            if progress_callback is not None and piece:
-                                progress_callback(b_idx, branch_count, None,
-                                                  time.perf_counter() - started, finished=False)
-                            if detector.feed(piece):
-                                break
-                            usage = event.get("usage") if isinstance(event, dict) else None
-                            if isinstance(usage, dict) and type(usage.get("completion_tokens")) is int:
-                                produced = usage["completion_tokens"]
-                    finally:
-                        close = getattr(stream, "close", None)
-                        if callable(close):
-                            close()
-                    text = detector.text.strip()
-                else:
-                    output = self.model(prompt, **options)
-                    text = output["choices"][0]["text"].strip()
-                    usage = output.get("usage") if isinstance(output, dict) else None
-                    produced = usage.get("completion_tokens") if isinstance(usage, dict) else None
-                branches.append(text)
-            except Exception as e:
-                branches.append(f"⚠️ GGUF generation error: {str(e)}")
+            if stop_at_tool_boundary:
+                pieces = []
+                stream = self.stream_generate_tokens(
+                    prompt, max_tokens, t_val, top_p, image_bytes,
+                    stop_at_tool_boundary=True,
+                )
+                try:
+                    for piece in stream:
+                        pieces.append(piece)
+                        if progress_callback is not None:
+                            progress_callback(b_idx, branch_count,
+                                              getattr(self, "last_generation_tokens", None),
+                                              time.perf_counter() - started, finished=False)
+                finally:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
+                branches.append("".join(pieces).strip())
+            else:
+                meter = TokenMeter(self, "gguf")
+                try:
+                    with observe_llama_tokens(self.model, meter):
+                        output = self.model(
+                            prompt, max_tokens=max_tokens, temperature=t_val,
+                            top_p=top_p, stop=["<|im_end|>", "</s>", "\nuser", "\nHuman:"]
+                        )
+                    branches.append(output["choices"][0]["text"].strip())
+                    usage = output.get("usage") or {}
+                    meter.observe(count=usage.get("completion_tokens"))
+                except Exception as exc:
+                    branches.append(f"⚠️ GGUF generation error: {exc}")
+                finally:
+                    meter.finish()
             if progress_callback is not None:
-                progress_callback(b_idx + 1, branch_count, produced if type(produced) is int else None, time.perf_counter() - started)
-
+                progress_callback(b_idx + 1, branch_count,
+                                  getattr(self, "last_generation_tokens", None),
+                                  time.perf_counter() - started)
         return branches
 
     def stream_generate_tokens(
-        self,
-        prompt: str,
-        max_tokens: int = 1536,
-        temperature: float = 0.75,
-        top_p: float = 0.92,
-        image_bytes: Optional[bytes] = None
+        self, prompt: str, max_tokens: int = 1536, temperature: float = 0.75,
+        top_p: float = 0.92, image_bytes: Optional[bytes] = None,
+        stop_at_tool_boundary: bool = False,
     ) -> Generator[str, None, None]:
-        """Stream GGUF output and report only model-backed token measurements."""
         if self.model is None:
             return
-
-        self.last_tok_per_sec = None
-        self.last_generation_tokens = None
-        started = time.perf_counter()
-        first_token = None
-        last_token = None
-        usage_tokens = None
+        from core.generation_metrics import TokenMeter, observe_llama_tokens
+        from core.tool_boundary_stop import ToolBoundaryStopper
+        meter = TokenMeter(self, "gguf")
+        boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
         iterator = None
-        completed = False
         try:
-            iterator = self.model(
-                prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stream=True,
-                stop=["<|im_end|>", "</s>", "\nuser", "\nHuman:"]
-            )
-            for event in iterator:
-                if isinstance(event, dict):
-                    usage = event.get("usage")
-                    if isinstance(usage, dict) and type(usage.get("completion_tokens")) is int:
-                        usage_tokens = usage["completion_tokens"]
-                    choices = event.get("choices") or [{}]
-                    text = str(choices[0].get("text", "") or "")
-                else:
-                    text = str(event)
-                if text:
-                    now = time.perf_counter()
-                    if first_token is None:
-                        first_token = now
-                    last_token = now
-                    yield text
-            completed = True
-        except Exception:
-            return
+            with observe_llama_tokens(self.model, meter):
+                iterator = self.model(
+                    prompt, max_tokens=max_tokens, temperature=temperature,
+                    top_p=top_p, stream=True,
+                    stop=["<|im_end|>", "</s>", "\nuser", "\nHuman:"]
+                )
+                try:
+                    for event in iterator:
+                        usage = event.get("usage") or {}
+                        meter.observe(count=usage.get("completion_tokens"))
+                        text = str((event.get("choices") or [{}])[0].get("text") or "")
+                        meter.observe(text=bool(text))
+                        stopped = False
+                        if boundary is not None:
+                            offset = len(boundary.text)
+                            stopped = boundary.feed(text)
+                            text = boundary.text[offset:]
+                        if text:
+                            yield text
+                        if stopped:
+                            break
+                finally:
+                    close = getattr(iterator, "close", None)
+                    if callable(close):
+                        close()
         finally:
-            if iterator is not None:
-                close = getattr(iterator, "close", None)
-                if callable(close):
-                    close()
-            if completed and type(usage_tokens) is int and usage_tokens >= 0:
-                self.last_generation_tokens = usage_tokens
-                # First-token latency and steady decode throughput are distinct.
-                # Model-reported token count is authoritative; a chunk isn't a token.
-                elapsed = max(1e-9, time.perf_counter() - started)
-                self.last_generation_seconds = elapsed
-                self.last_tok_per_sec = usage_tokens / elapsed if usage_tokens else None
+            meter.finish()
 
     def calculate_token_entropy(self, prompt: str) -> float:
         """Calculates Shannon entropy from GGUF next-token logits."""

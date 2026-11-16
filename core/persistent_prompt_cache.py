@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 from typing import Any
 
 
@@ -373,6 +374,7 @@ class PersistentPromptStore:
                 destination = self.directory / (key + ".json")
                 os.replace(temporary, destination)
                 temporary = None
+                self._touch_manifest(destination)
                 self._prune()
                 return destination.exists()
         except Exception:
@@ -413,13 +415,21 @@ class PersistentPromptStore:
                         if payload.stat().st_size != value["tensor_bytes"] or _sha_file(payload) != value["tensor_sha256"]:
                             continue
                         cache = self._get_codec().read(payload, value["descriptor"], len(value["tokens"]))
-                        os.utime(path, None)
+                        self._touch_manifest(path)
                         return tuple(value["tokens"]), cache
                     except Exception:
                         continue
         except Exception:
             pass
         return None
+
+    def _touch_manifest(self, path):
+        # Fast saves can share one filesystem timestamp tick. Explicit ordered
+        # timestamps preserve oldest-first eviction instead of hash-name order.
+        latest = max((p.stat().st_mtime_ns for p in self.directory.glob("*.json")
+                      if _DIGEST.fullmatch(p.stem)), default=0)
+        stamp = max(time.time_ns(), latest + 1)
+        os.utime(path, ns=(stamp, stamp))
 
     def _prune(self):
         manifests = []

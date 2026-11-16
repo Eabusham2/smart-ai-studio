@@ -353,51 +353,67 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         return out
 
     def stream_generate_tokens(
-        self,
-        prompt: str,
-        max_tokens: int = 1536,
-        temperature: float = 0.75,
-        top_p: float = 0.92,
-        image_bytes: Optional[bytes] = None,
+        self, prompt: str, max_tokens: int = 1536, temperature: float = 0.75,
+        top_p: float = 0.92, image_bytes: Optional[bytes] = None,
         stop_at_tool_boundary: bool = False,
     ) -> Generator[str, None, None]:
         del image_bytes
-        self.last_generation_tokens = None
-        self.last_tok_per_sec = None
-        started = time.perf_counter()
+        from core.generation_metrics import TokenMeter
+        meter = TokenMeter(self, "prism")
         with self._io_lock:
             if self._worker is None or self._worker.poll() is not None:
+                meter.finish()
                 return
             assert self._worker.stdin is not None and self._worker.stdout is not None
+            handle, cancel_path = tempfile.mkstemp(prefix="smartai-prism-cancel-")
+            os.close(handle)
+            os.unlink(cancel_path)
+            completed = False
             self._worker.stdin.write(json.dumps({
-                "op": "stream",
-                "prompt": prompt,
-                "max_tokens": int(max_tokens),
-                "temperature": float(temperature),
-                "top_p": float(top_p),
-                "stop_at_tool_boundary": bool(stop_at_tool_boundary),
+                "op": "stream", "prompt": prompt, "max_tokens": int(max_tokens),
+                "temperature": float(temperature), "top_p": float(top_p),
+                "stop_at_tool_boundary": bool(stop_at_tool_boundary), "cancel_path": cancel_path,
             }) + "\n")
             self._worker.stdin.flush()
-            while True:
-                line = self._worker.stdout.readline()
-                if not line:
-                    break
-                event = json.loads(line)
-                if event.get("event") == "token":
-                    token = str(event.get("text") or "")
-                    if token:
-                        yield token
-                elif event.get("event") == "done":
-                    usage = event.get("usage")
-                    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-                    if type(tokens) is int and tokens >= 0:
-                        self.last_generation_tokens = tokens
-                        elapsed = max(1e-9, time.perf_counter() - started)
-                        self.last_generation_seconds = elapsed
-                        self.last_tok_per_sec = tokens / elapsed if tokens else None
-                    break
-                elif event.get("status") == "error":
-                    raise RuntimeError(str(event.get("error") or "Prism stream failed"))
+            def measure(event):
+                if event.get("event") == "metrics":
+                    meter.observe(count=event.get("tokens"), rate=event.get("decode_tps"))
+                if event.get("event") == "done":
+                    usage = event.get("usage") or {}
+                    meter.observe(count=usage.get("completion_tokens"))
+            try:
+                while True:
+                    line = self._worker.stdout.readline()
+                    if not line:
+                        raise RuntimeError("Prism worker exited before completion")
+                    event = json.loads(line)
+                    measure(event)
+                    if event.get("event") == "token":
+                        text = str(event.get("text") or "")
+                        if text:
+                            meter.observe(text=True)
+                            yield text
+                    elif event.get("event") == "done":
+                        completed = True
+                        break
+                    elif event.get("status") == "error":
+                        completed = True
+                        raise RuntimeError(str(event.get("error") or "Prism stream failed"))
+            finally:
+                if not completed and self._worker.poll() is None:
+                    # Finish/drain this owned request before another command can
+                    # read its leftover metrics or completion message.
+                    Path(cancel_path).touch()
+                    for line in self._worker.stdout:
+                        event = json.loads(line)
+                        measure(event)
+                        if event.get("event") == "done" or event.get("status") == "error":
+                            break
+                try:
+                    os.unlink(cancel_path)
+                except FileNotFoundError:
+                    pass
+                meter.finish()
 
     def calculate_token_entropy(self, prompt: str) -> float:
         try:

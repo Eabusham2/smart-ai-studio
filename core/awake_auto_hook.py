@@ -342,6 +342,7 @@ def install_awake_auto_learning(cls) -> None:
         top_p: float = 0.92,
         cancel_event: Optional[Any] = None,
         progress_callback=None,
+        decision_callback=None,
     ):
         from core.lossless_speed_control import cancel_before_request
         if cancel_before_request(self, cancel_event):
@@ -366,8 +367,14 @@ def install_awake_auto_learning(cls) -> None:
             entropy = None
             mode = f"Native (N={branch_count})"
         else:
-            entropy = float(self.calculate_token_entropy(prompt))
+            routing_prompt = (self._format_prompt_with_history(prompt, history)
+                              if getattr(self, "_best_work_route_with_history", False) else prompt)
+            entropy = float(self.calculate_token_entropy(routing_prompt))
             mode, branch_count = self.router.route(entropy, has_test_cases=False)
+
+        if decision_callback is not None:
+            decision_callback({"kind": "route", "branch_count": int(branch_count),
+                               "total": int(branch_count) + (1 if int(branch_count) > 1 else 0)})
 
         if int(branch_count) <= 1:
             formatted = self._format_prompt_with_history(prompt, history)
@@ -390,6 +397,9 @@ def install_awake_auto_learning(cls) -> None:
         # N>1 delegates to the original Pro engine: same entropy router, branch
         # generator, calibrated convex temperature ladder, verifier/consensus and metadata.
         self._awake_stream_history_prepared = True
+        previous_routing = getattr(self, "_best_work_routing_decision", None)
+        if getattr(self, "_best_work_raw_winner", False):
+            self._best_work_routing_decision = (entropy, mode, int(branch_count))
         try:
             response, metadata = self.solve(
                 prompt,
@@ -401,6 +411,7 @@ def install_awake_auto_learning(cls) -> None:
             )
         finally:
             self._awake_stream_history_prepared = False
+            self._best_work_routing_decision = previous_routing
 
         metadata = dict(metadata or {})
         metadata["entropy"] = entropy
@@ -413,6 +424,12 @@ def install_awake_auto_learning(cls) -> None:
         # Pro must finish its search before one final answer exists. Preserve the
         # newer GUI renderer by yielding that completed answer in small chunks.
         text = str(response or "")
+        if getattr(self, "_best_work_raw_winner", False):
+            from core.best_work import _selected_text
+            text = _selected_text(response, metadata)
+        if decision_callback is not None:
+            decision_callback({"kind": "selected", "total": metadata.get("branch_count", branch_count),
+                               "winning_branch": metadata.get("winning_branch", 0)})
         step = 64
         for idx in range(0, len(text), step):
             if cancel_event and cancel_event.is_set():

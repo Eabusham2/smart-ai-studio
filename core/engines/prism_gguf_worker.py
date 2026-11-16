@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import sys
+import time
 from typing import Any, Dict, List
 
 
@@ -181,36 +182,51 @@ def main() -> int:
                 _emit({"status": "ok", "text": text, "usage": result.get("usage")})
                 continue
             if op == "stream":
-                stream = model(
-                    str(request.get("prompt") or ""),
-                    max_tokens=int(request.get("max_tokens") or 1536),
-                    temperature=float(request.get("temperature") or 0.0),
-                    top_p=float(request.get("top_p") or 0.92),
-                    stream=True,
-                    stop=stops,
-                )
                 from core.tool_boundary_stop import ToolBoundaryStopper
+                from core.generation_metrics import TokenMeter, observe_llama_tokens
                 detector = ToolBoundaryStopper() if request.get("stop_at_tool_boundary") is True else None
+                meter = TokenMeter(source="prism-worker")
+                last_metrics_sent = [0.0]
+                def report(sample):
+                    now = time.perf_counter()
+                    if sample["finished"] or sample["tokens"] == 1 or now-last_metrics_sent[0] >= 0.04:
+                        last_metrics_sent[0] = now
+                        _emit({"event": "metrics", "tokens": sample["tokens"],
+                               "decode_tps": sample["decode_tps"]})
+                meter.callback = report
                 observed_usage = None
+                stream = None
                 try:
-                    for chunk in stream:
-                        if isinstance(chunk.get("usage"), dict):
-                            observed_usage = chunk["usage"]
-                        token = str(chunk.get("choices", [{}])[0].get("text", ""))
-                        if detector is not None:
-                            old_length = len(detector.text)
-                            stop_here = detector.feed(token)
-                            token = detector.text[old_length:]
-                        else:
-                            stop_here = False
-                        if token:
-                            _emit({"event": "token", "text": token})
-                        if stop_here:
-                            break
+                    with observe_llama_tokens(model, meter):
+                        stream = model(
+                            str(request.get("prompt") or ""),
+                            max_tokens=int(request.get("max_tokens") or 1536),
+                            temperature=float(request.get("temperature") or 0.0),
+                            top_p=float(request.get("top_p") or 0.92), stream=True, stop=stops,
+                        )
+                        try:
+                            for chunk in stream:
+                                if isinstance(chunk.get("usage"), dict):
+                                    observed_usage = chunk["usage"]
+                                    meter.observe(count=observed_usage.get("completion_tokens"))
+                                token = str((chunk.get("choices") or [{}])[0].get("text", ""))
+                                stop_here = False
+                                if detector is not None:
+                                    offset = len(detector.text)
+                                    stop_here = detector.feed(token)
+                                    token = detector.text[offset:]
+                                if token:
+                                    _emit({"event": "token", "text": token})
+                                if stop_here or (request.get("cancel_path") and os.path.exists(request["cancel_path"])):
+                                    break
+                        finally:
+                            close = getattr(stream, "close", None)
+                            if callable(close):
+                                close()
                 finally:
-                    close = getattr(stream, "close", None)
-                    if callable(close):
-                        close()
+                    meter.finish()
+                if meter.tokens is not None:
+                    observed_usage = dict(observed_usage or {}, completion_tokens=meter.tokens)
                 _emit({"event": "done", "usage": observed_usage})
                 continue
             if op == "entropy":

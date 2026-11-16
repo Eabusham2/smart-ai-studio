@@ -853,6 +853,17 @@ class ProReasoningEngine:
             raise RuntimeError("Load the selected native runtime before generating text.")
         formatted_prompt = self._format_prompt_with_history(prompt, history)
 
+        def _boundary_options(owner):
+            import inspect
+            try:
+                parameters = inspect.signature(owner.stream_generate_tokens).parameters
+            except (TypeError, ValueError):
+                return {}
+            options = {}
+            if getattr(self, "_best_work_stop_at_tools", False) and "stop_at_tool_boundary" in parameters:
+                options["stop_at_tool_boundary"] = True
+            return options
+
         # 0. Specialized controller streaming
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
             has_yielded = False
@@ -864,6 +875,7 @@ class ProReasoningEngine:
                 temperature=temperature,
                 top_p=top_p,
                 **cancel_options,
+                **_boundary_options(self.controller_backend),
             )
             try:
                 for token in stream:
@@ -872,8 +884,9 @@ class ProReasoningEngine:
                     has_yielded = True
                     yield token
             finally:
-                if is_strata:
-                    stream.close()
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
             # An empty completed or cancelled Strata request must not be sent again
             # through solve(), nor fall through to a different model backend.
             # An empty completion must not be restarted on another backend.
@@ -882,16 +895,20 @@ class ProReasoningEngine:
         # 1. MLX Streaming
         if self.mlx_backend and getattr(self.mlx_backend, "is_mlx_available", False) and getattr(self.mlx_backend, "model", None) is not None:
             has_yielded = False
-            for token in self.mlx_backend.stream_generate_tokens(
-                prompt=formatted_prompt,
-                max_tokens=self.settings.max_new_tokens,
-                temperature=temperature,
-                top_p=top_p
-            ):
-                if cancel_event and cancel_event.is_set():
-                    break
-                has_yielded = True
-                yield token
+            stream = self.mlx_backend.stream_generate_tokens(
+                prompt=formatted_prompt, max_tokens=self.settings.max_new_tokens,
+                temperature=temperature, top_p=top_p
+            )
+            try:
+                for token in stream:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    has_yielded = True
+                    yield token
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
             return
 
         # 2. GGUF Streaming
@@ -905,6 +922,7 @@ class ProReasoningEngine:
                 temperature=temperature,
                 top_p=top_p,
                 **cancel_options,
+                **_boundary_options(self.gguf_backend),
             )
             try:
                 for token in stream:
@@ -923,16 +941,35 @@ class ProReasoningEngine:
         # 3. BitNet Streaming
         if self.bitnet_backend and getattr(self.bitnet_backend, "is_loaded", False) and getattr(self.bitnet_backend, "model", None) is not None:
             has_yielded = False
-            for token in self.bitnet_backend.stream_generate_tokens(
-                prompt=formatted_prompt,
-                max_tokens=self.settings.max_new_tokens,
-                temperature=temperature,
-                top_p=top_p
-            ):
-                if cancel_event and cancel_event.is_set():
-                    break
-                has_yielded = True
-                yield token
+            stream = self.bitnet_backend.stream_generate_tokens(
+                prompt=formatted_prompt, max_tokens=self.settings.max_new_tokens,
+                temperature=temperature, top_p=top_p,
+                **_boundary_options(self.bitnet_backend),
+            )
+            try:
+                for token in stream:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    has_yielded = True
+                    yield token
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+            return
+
+        if self.model is not None and self.tokenizer is not None:
+            from core.transformers_stream import stream_transformers
+            inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
+            if self.device in ("cuda", "mps") and hasattr(inputs, "to"):
+                inputs = inputs.to(self.device)
+            options = {"max_new_tokens": self.settings.max_new_tokens,
+                       "num_return_sequences": 1, "do_sample": True,
+                       "temperature": temperature, "top_p": top_p,
+                       "pad_token_id": self.tokenizer.eos_token_id}
+            yield from stream_transformers(self.model, self.tokenizer, inputs, options, owner=self,
+                                          stop_at_tool_boundary=bool(getattr(self, "_best_work_stop_at_tools", False)),
+                                          cancelled=cancel_event.is_set if cancel_event is not None else None)
             return
 
         # 4. Fallback Token Generator
@@ -1065,6 +1102,14 @@ class ProReasoningEngine:
                 branches = []
                 for b_idx in range(branch_count):
                     t_val = ladder[b_idx % len(ladder)] if ladder else self.settings.search_temperature
+                    from core.generation_metrics import TokenMeter
+                    from core.tool_boundary_stop import TokenBoundaryCriteria
+                    from transformers import StoppingCriteriaList
+                    meter = TokenMeter(self, "transformers")
+                    prefix = int(inputs["input_ids"].shape[1])
+                    stop = TokenBoundaryCriteria(self.tokenizer, prefix, meter,
+                                                enabled=bool(getattr(self, "_best_work_stop_at_tools", False)),
+                                                cancelled=cancel_event.is_set if cancel_event is not None else None)
                     with torch.no_grad():
                         outputs = self.model.generate(
                             **inputs,
@@ -1073,10 +1118,16 @@ class ProReasoningEngine:
                             do_sample=True,
                             temperature=t_val,
                             top_p=self.settings.search_top_p,
-                            pad_token_id=self.tokenizer.eos_token_id
+                            pad_token_id=self.tokenizer.eos_token_id,
+                            stopping_criteria=StoppingCriteriaList([stop]),
                         )
                     prompt_len = inputs["input_ids"].shape[1]
-                    branches.append(self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True))
+                    meter.observe(count=int(outputs.shape[-1] - prompt_len))
+                    meter.finish()
+                    decoded = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
+                    if stop.detector.stopped:
+                        decoded = stop.detector.text
+                    branches.append(decoded)
                     if progress_callback is not None:
                         count = int(outputs.shape[-1] - prompt_len)
                         progress_callback(b_idx + 1, branch_count, count, None)
@@ -1177,8 +1228,12 @@ class ProReasoningEngine:
             branch_count = force_branch_count
             mode = f"Pro Search (N={branch_count})" if branch_count > 1 else "Instant Pass (N=1)"
         else:
-            entropy = self.calculate_token_entropy(prompt)
-            mode, branch_count = self.router.route(entropy, has_test_cases=has_tests)
+            already_routed = getattr(self, "_best_work_routing_decision", None)
+            if already_routed is not None and not has_tests:
+                entropy, mode, branch_count = already_routed
+            else:
+                entropy = self.calculate_token_entropy(prompt)
+                mode, branch_count = self.router.route(entropy, has_test_cases=has_tests)
         if force_branch_count is not None and force_branch_count > 0:
             branch_count = force_branch_count
             mode = f"Pro Search (N={branch_count})" if branch_count > 1 else "Instant Pass (N=1)"

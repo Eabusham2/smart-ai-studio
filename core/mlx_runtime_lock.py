@@ -10,6 +10,7 @@ synthetic nonzero parameter drift.
 """
 from __future__ import annotations
 
+import functools
 import threading
 
 
@@ -23,6 +24,7 @@ def install_mlx_runtime_lock(cls) -> None:
     original_stream = cls.stream_generate_tokens
     original_train = cls.train_mini_batch
 
+    @functools.wraps(original_init)
     def init_with_lock(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         self._runtime_model_lock = threading.RLock()
@@ -34,18 +36,22 @@ def install_mlx_runtime_lock(cls) -> None:
             self._runtime_model_lock = lock
         return lock
 
+    @functools.wraps(original_entropy)
     def entropy_locked(self, *args, **kwargs):
         with _lock(self):
             return original_entropy(self, *args, **kwargs)
 
+    @functools.wraps(original_branches)
     def branches_locked(self, *args, **kwargs):
         with _lock(self):
             return original_branches(self, *args, **kwargs)
 
+    @functools.wraps(original_stream)
     def stream_locked(self, *args, **kwargs):
         with _lock(self):
             yield from original_stream(self, *args, **kwargs)
 
+    @functools.wraps(original_train)
     def train_locked(self, *args, **kwargs):
         if (
             getattr(self, "model", None) is None

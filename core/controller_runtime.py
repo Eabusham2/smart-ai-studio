@@ -880,36 +880,85 @@ class UniversalControllerBackend:
         raise RuntimeError(f"Generation unavailable for runtime {self.runtime}")
 
     def stream_generate_tokens(
-        self,
-        prompt: str,
-        max_tokens: int = 1536,
-        temperature: float = 0.65,
-        top_p: float = 0.92,
+        self, prompt: str, max_tokens: int = 1536, temperature: float = 0.65,
+        top_p: float = 0.92, stop_at_tool_boundary: bool = False, cancelled=None,
     ) -> Generator[str, None, None]:
-        del top_p
-        text = self._generate(prompt, max_tokens, temperature)
-        for match in re.finditer(r"\S+\s*", text):
-            yield match.group(0)
+        if self.runtime.startswith("mlx") or self.runtime in ("jang_vlm", "jang-vlm", "repo_mlx_vlm"):
+            from mlx_vlm.generate import stream_generate
+            from core.generation_metrics import TokenMeter, observe_mlx_response
+            from core.tool_boundary_stop import ToolBoundaryStopper
+            meter = TokenMeter(self, "controller-mlx")
+            detector = ToolBoundaryStopper() if stop_at_tool_boundary else None
+            iterator = stream_generate(self.model, self.processor,
+                                       prompt=self._mlx_prompt(prompt, 0), image=[],
+                                       max_tokens=int(max_tokens), temperature=float(temperature), top_p=float(top_p))
+            try:
+                for response in iterator:
+                    if callable(cancelled) and cancelled():
+                        return
+                    observe_mlx_response(meter, response)
+                    piece = str(getattr(response, "text", ""))
+                    stop_here = False
+                    if detector is not None:
+                        offset = len(detector.text)
+                        stop_here = detector.feed(piece)
+                        piece = detector.text[offset:]
+                    if piece:
+                        yield piece
+                    if stop_here:
+                        return
+            finally:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+                meter.finish()
+            return
+        if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
+            from core.transformers_stream import stream_transformers
+            from core.transformers_placement import transformers_input_device
+            inputs = self.processor(text=prompt, return_tensors="pt")
+            device = transformers_input_device(self.model)
+            if device is not None and hasattr(inputs, "to"):
+                inputs = inputs.to(device)
+            do_sample = float(temperature) > 0
+            options = {"max_new_tokens": int(max_tokens), "do_sample": do_sample,
+                       "temperature": max(float(temperature), 1e-5) if do_sample else None}
+            # Preserve this controller's original sampling policy: its prior
+            # generate() did not override top_p with the Pro value.
+            yield from stream_transformers(self.model, self.tokenizer, inputs, options,
+                                          owner=self, stop_at_tool_boundary=stop_at_tool_boundary,
+                                          cancelled=cancelled)
+            return
+        raise RuntimeError(f"Generation unavailable for runtime {self.runtime}")
 
     def generate_branches(
-        self,
-        prompt: str,
-        branch_count: int = 1,
-        max_tokens: int = 1536,
-        temperature: Any = 0.65,
-        top_p: float = 0.92,
-        progress_callback=None,
+        self, prompt: str, branch_count: int = 1, max_tokens: int = 1536,
+        temperature: Any = 0.65, top_p: float = 0.92, progress_callback=None,
+        stop_at_tool_boundary: bool = False,
     ) -> List[str]:
-        del top_p
         out = []
         count = max(1, int(branch_count))
         for idx in range(count):
             t = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
-            out.append(self._generate(prompt, max_tokens, t))
+            if stop_at_tool_boundary:
+                pieces = []
+                iterator = self.stream_generate_tokens(prompt, max_tokens, t, top_p,
+                                                       stop_at_tool_boundary=True)
+                try:
+                    for piece in iterator:
+                        pieces.append(piece)
+                        if progress_callback is not None:
+                            progress_callback(idx, count, getattr(self, "last_generation_tokens", None),
+                                              time.perf_counter() - started, finished=False)
+                finally:
+                    close = getattr(iterator, "close", None)
+                    if callable(close):
+                        close()
+                out.append("".join(pieces))
+            else:
+                out.append(self._generate(prompt, max_tokens, t))
             if progress_callback is not None:
-                # A buffered controller cannot offer first-token progress, but
-                # the actual backend's counters are available on completion.
                 observed = getattr(self, "last_generation_tokens", None)
                 progress_callback(idx + 1, count,
                                   observed if type(observed) is int and observed >= 0 else None,

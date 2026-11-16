@@ -288,11 +288,11 @@ class BitNetCppReasoningBackend:
             tokens = None
             if stop_at_tool_boundary:
                 detector = ToolBoundaryStopper()
-                iterator = self.stream_generate_tokens(prompt, int(max_tokens), temp, float(top_p))
+                iterator = self.stream_generate_tokens(prompt, int(max_tokens), temp, float(top_p), stop_at_tool_boundary=True)
                 try:
                     for piece in iterator:
                         if progress_callback is not None:
-                            progress_callback(idx, count, None,
+                            progress_callback(idx, count, getattr(self, "last_generation_tokens", None),
                                               time.perf_counter() - started, finished=False)
                         if detector.feed(piece):
                             break
@@ -326,62 +326,46 @@ class BitNetCppReasoningBackend:
         return out
 
     def stream_generate_tokens(
-        self,
-        prompt: str,
-        max_tokens: int = 1536,
-        temperature: float = 0.65,
-        top_p: float = 0.92,
+        self, prompt: str, max_tokens: int = 1536, temperature: float = 0.65,
+        top_p: float = 0.92, stop_at_tool_boundary: bool = False,
     ) -> Generator[str, None, None]:
         if not self._base_url:
             return
-        self.last_generation_tokens = None
-        self.last_tok_per_sec = None
-        started = time.perf_counter()
-        usage_tokens = None
-        completed = False
-        payload = {
-            "prompt": prompt,
-            "n_predict": int(max_tokens),
-            "temperature": float(temperature),
-            "top_p": float(top_p),
-            "stream": True,
-        }
-        req = urllib.request.Request(
-            self._base_url + "/completion",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-            method="POST",
-        )
+        from core.generation_metrics import TokenMeter, observe_server_event
+        from core.tool_boundary_stop import ToolBoundaryStopper
+        meter = TokenMeter(self, "bitnet-server")
+        detector = ToolBoundaryStopper() if stop_at_tool_boundary else None
+        payload = {"prompt": prompt, "n_predict": int(max_tokens),
+                   "temperature": float(temperature), "top_p": float(top_p),
+                   "stream": True, "return_tokens": True, "timings_per_token": True}
+        req = urllib.request.Request(self._base_url + "/completion",
+                                     data=json.dumps(payload).encode("utf-8"),
+                                     headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+                                     method="POST")
         response = urllib.request.urlopen(req, timeout=1800)
         try:
             for raw in response:
-                line = raw.decode("utf-8", errors="ignore").strip()
+                line = raw.decode("utf-8", errors="strict").strip()
                 if not line.startswith("data:"):
                     continue
                 body = line[5:].strip()
                 if body == "[DONE]":
-                    completed = True
                     break
-                try:
-                    item = json.loads(body)
-                except Exception:
-                    continue
-                count = item.get("tokens_predicted")
-                if type(count) is int and count >= 0:
-                    usage_tokens = count
-                chunk = item.get("content") or item.get("text") or ""
-                if chunk:
-                    yield str(chunk)
-                if item.get("stop") is True:
-                    completed = True
+                item = json.loads(body)
+                observe_server_event(meter, item)
+                piece = str(item.get("content") or item.get("text") or "")
+                stop_here = False
+                if detector is not None:
+                    offset = len(detector.text)
+                    stop_here = detector.feed(piece)
+                    piece = detector.text[offset:]
+                if piece:
+                    yield piece
+                if stop_here or item.get("stop") is True:
                     break
         finally:
             response.close()
-            if completed and type(usage_tokens) is int and usage_tokens >= 0:
-                elapsed = max(1e-9, time.perf_counter() - started)
-                self.last_generation_tokens = usage_tokens
-                self.last_generation_seconds = elapsed
-                self.last_tok_per_sec = usage_tokens / elapsed if usage_tokens else None
+            meter.finish()
 
     def calculate_token_entropy(self, prompt: str) -> float:
         # bitnet.cpp server does not expose stable full-vocabulary logits through
