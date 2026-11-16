@@ -301,6 +301,9 @@ class BitNetCppReasoningBackend:
                     if callable(close):
                         close()
                 result_text = detector.text.strip()
+                observed = getattr(self, "last_generation_tokens", None)
+                if type(observed) is int and observed >= 0:
+                    tokens = observed
             else:
                 result = self._request(
                     "/completion",
@@ -331,6 +334,11 @@ class BitNetCppReasoningBackend:
     ) -> Generator[str, None, None]:
         if not self._base_url:
             return
+        self.last_generation_tokens = None
+        self.last_tok_per_sec = None
+        started = time.perf_counter()
+        usage_tokens = None
+        completed = False
         payload = {
             "prompt": prompt,
             "n_predict": int(max_tokens),
@@ -352,16 +360,28 @@ class BitNetCppReasoningBackend:
                     continue
                 body = line[5:].strip()
                 if body == "[DONE]":
+                    completed = True
                     break
                 try:
                     item = json.loads(body)
                 except Exception:
                     continue
+                count = item.get("tokens_predicted")
+                if type(count) is int and count >= 0:
+                    usage_tokens = count
                 chunk = item.get("content") or item.get("text") or ""
                 if chunk:
                     yield str(chunk)
+                if item.get("stop") is True:
+                    completed = True
+                    break
         finally:
             response.close()
+            if completed and type(usage_tokens) is int and usage_tokens >= 0:
+                elapsed = max(1e-9, time.perf_counter() - started)
+                self.last_generation_tokens = usage_tokens
+                self.last_generation_seconds = elapsed
+                self.last_tok_per_sec = usage_tokens / elapsed if usage_tokens else None
 
     def calculate_token_entropy(self, prompt: str) -> float:
         # bitnet.cpp server does not expose stable full-vocabulary logits through
