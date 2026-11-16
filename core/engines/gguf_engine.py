@@ -410,6 +410,7 @@ class GGUFReasoningBackend:
         top_p: float = 0.92,
         image_bytes: Optional[bytes] = None,
         progress_callback=None,
+        stop_at_tool_boundary: bool = False,
     ) -> List[str]:
         """Generates candidate reasoning branches using GGUF model."""
         if self.model is None:
@@ -421,17 +422,38 @@ class GGUFReasoningBackend:
             started = time.perf_counter()
             produced = None
             try:
-                output = self.model(
-                    prompt,
-                    max_tokens=max_tokens,
-                    temperature=t_val,
-                    top_p=top_p,
-                    stop=["<|im_end|>", "</s>", "\nuser", "\nHuman:"]
-                )
-                text = output["choices"][0]["text"].strip()
+                options = {
+                    "max_tokens": max_tokens, "temperature": t_val,
+                    "top_p": top_p,
+                    "stop": ["<|im_end|>", "</s>", "\nuser", "\nHuman:"],
+                }
+                if stop_at_tool_boundary:
+                    from core.tool_boundary_stop import ToolBoundaryStopper
+                    detector = ToolBoundaryStopper()
+                    stream = self.model(prompt, stream=True, **options)
+                    try:
+                        for event in stream:
+                            choice = (event.get("choices") or [{}])[0]
+                            piece = choice.get("text", "") or ""
+                            if progress_callback is not None and piece:
+                                progress_callback(b_idx, branch_count, None,
+                                                  time.perf_counter() - started, finished=False)
+                            if detector.feed(piece):
+                                break
+                            usage = event.get("usage") if isinstance(event, dict) else None
+                            if isinstance(usage, dict) and type(usage.get("completion_tokens")) is int:
+                                produced = usage["completion_tokens"]
+                    finally:
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            close()
+                    text = detector.text.strip()
+                else:
+                    output = self.model(prompt, **options)
+                    text = output["choices"][0]["text"].strip()
+                    usage = output.get("usage") if isinstance(output, dict) else None
+                    produced = usage.get("completion_tokens") if isinstance(usage, dict) else None
                 branches.append(text)
-                usage = output.get("usage") if isinstance(output, dict) else None
-                produced = usage.get("completion_tokens") if isinstance(usage, dict) else None
             except Exception as e:
                 branches.append(f"⚠️ GGUF generation error: {str(e)}")
             if progress_callback is not None:
