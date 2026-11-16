@@ -4910,6 +4910,8 @@ class SmartAIChatbotApp:
                 # 1. Initialize streaming container in chat
                 accumulated = []
                 pro_active = bool(use_pro_branches and pro_branch_count > 1)
+                self._best_work_mode = pro_active
+                self._best_work_final_rate = None
                 pro_summary = None
                 best_work_ui = {"label": None}
                 self._live_tps = 0.0
@@ -5065,6 +5067,11 @@ class SmartAIChatbotApp:
                         branch_meta = latest_meta
                     self.last_metadata = branch_meta
                     self.engine._last_stream_pro_meta = branch_meta
+                    # Whole-request rate includes every completed branch and
+                    # the tool-boundary continuation, never a word estimate.
+                    self._best_work_final_rate = (
+                        self._live_tps if counts_available and measured_tokens > 0 else None
+                    )
                     chosen = int(branch_meta.get("winning_branch", 0)) + 1
                     pro_summary = None
                     self.root.after(
@@ -5369,7 +5376,13 @@ class SmartAIChatbotApp:
             syn_str = format_added_synapses(self.synapses_learned_count)
             self.lbl_synapses.configure(text="Inference only" if inference_only else f"📈 {syn_str}")
         if hasattr(self, "lbl_tps"):
-            if is_strata or is_native:
+            if getattr(self, "_best_work_mode", False):
+                full_rate = getattr(self, "_best_work_final_rate", None)
+                if type(full_rate) in (int, float) and math.isfinite(full_rate) and full_rate > 0:
+                    self.lbl_tps.configure(text=f"⚡ Best Work {full_rate:.1f} tok/s (all branches, wall)")
+                elif not self.is_generating:
+                    self.lbl_tps.configure(text="⚡ Best Work TPS unavailable")
+            elif is_strata or is_native:
                 rate = None
                 suffix = "decode (last request)"
                 if completed and available:
