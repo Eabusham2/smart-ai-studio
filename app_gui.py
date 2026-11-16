@@ -4931,14 +4931,43 @@ class SmartAIChatbotApp:
                     measured_tokens = 0
                     counts_available = True
 
-                    def _branch_done(done, total, tokens, seconds):
+                    first_pro_token_at = None
+                    last_pro_ui_at = 0.0
+
+                    def _branch_done(done, total, tokens, seconds, finished=True):
                         nonlocal completed_branches, measured_tokens, counts_available
+                        nonlocal first_pro_token_at, last_pro_ui_at
+                        now = time.perf_counter()
+                        if not finished:
+                            # 'done' is the number of completed branches; 'tokens'
+                            # is the count in the currently running MLX branch.
+                            if first_pro_token_at is None and type(tokens) is int and tokens >= 1:
+                                first_pro_token_at = now
+                            wall_s = max(0.001, now - start_time)
+                            current = measured_tokens + (tokens if type(tokens) is int else 0)
+                            rate = current / wall_s if counts_available and current else 0.0
+                            if now - last_pro_ui_at >= 0.12 or tokens == 1:
+                                last_pro_ui_at = now
+                                self._live_tps = rate
+                                message = (
+                                    f"⚡ Pro {rate:.1f} tok/s · branch {done+1}/{total} generating"
+                                    if rate > 0 else f"⚡ Pro branch {done+1}/{total} generating"
+                                )
+                                if tokens == 1:
+                                    message = (
+                                        f"⚡ First Pro token · TTFT {now-start_time:.2f}s"
+                                        f" · branch {done+1}/{total}"
+                                    )
+                                self.root.after(0, lambda value=message:
+                                                self.lbl_tps.configure(text=value))
+                            return
+
                         completed_branches = int(done)
                         if type(tokens) is int and tokens >= 0:
                             measured_tokens += tokens
                         else:
                             counts_available = False
-                        wall_s = max(0.001, time.perf_counter() - start_time)
+                        wall_s = max(0.001, now - start_time)
                         rate = measured_tokens / wall_s if counts_available and measured_tokens else 0.0
                         self._live_tps = rate
                         detail = f"{tokens} tokens" if type(tokens) is int else "tokens unavailable"
@@ -5155,6 +5184,8 @@ class SmartAIChatbotApp:
         self.is_generating = generating
         if generating:
             self.cancel_event.clear()
+            if hasattr(self, 'lbl_tps'):
+                self.lbl_tps.configure(text='⚡ Preparing first token…')
             self.btn_send.configure(
                 text="  ⏹ Stop  ", bg=self.C["accent_red"], fg="#ffffff",
                 activebackground="#dc2626", activeforeground="#ffffff"
@@ -5203,7 +5234,9 @@ class SmartAIChatbotApp:
         self._set_generating_state(True)
         threading.Thread(
             target=self._process_message_thread,
-            args=(user_msg, raw_text, learn_source_path, learn_media_target),
+            args=(user_msg, raw_text, learn_source_path, learn_media_target,
+                  bool(self.pro_branches_var.get()),
+                  int(self.pro_branch_count_var.get())),
             daemon=True,
         ).start()
 
