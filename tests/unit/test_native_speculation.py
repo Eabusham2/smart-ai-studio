@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socket
 import threading
 from types import SimpleNamespace
 
@@ -94,11 +95,14 @@ def test_receipt_binds_executable_and_exact_runtime_contract(tmp_path):
 
 
 def test_native_command_isolated_exactness_and_context(tmp_path, monkeypatch):
-    backend = PrismSpeculativeReasoningBackend("/model path/original.gguf", "/runtime path/llama-server",
+    model_path = str(tmp_path / "model path" / "original.gguf")
+    server_path = str(tmp_path / "runtime path" / "llama-server")
+    backend = PrismSpeculativeReasoningBackend(model_path, server_path,
                                                mode="lookup", n_ctx=8912, n_gpu_layers=15)
     backend._plan = plan_speculation("lookup", target_sha256=TARGET_SHA256)
     args = backend._build_command(9001)
-    assert args[args.index("-m") + 1] == "/model path/original.gguf"
+    assert args[args.index("-m") + 1] == model_path
+    assert args[0] == server_path
     assert args[args.index("-c") + 1] == "8912"
     assert args[args.index("-np") + 1] == "1"
     assert args[args.index("-ub") + 1] == "512"  # prefill remains batched
@@ -151,17 +155,27 @@ def http_backend():
             data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             received.append((self.path, data))
             if self.path == "/tokenize":
+                if mode["response"] == "blocked-tokenizer":
+                    blocked.set()
+                    release.wait(5)
+                    return
                 self._json({"tokens": [1, 2, 3]})
                 return
             if mode["response"] == "error":
                 self._json({"error": "context exceeded"}, status=400)
                 return
-            if mode["response"] in {"blocked", "blocked-close"}:
+            if mode["response"] == "blocked-headers":
+                blocked.set()
+                release.wait(5)
+                return
+            if mode["response"] in {"blocked", "blocked-close", "blocked-partial"}:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 if mode["response"] == "blocked-close":
                     self.send_header("Connection", "close")
                 self.end_headers()
+                if mode["response"] == "blocked-partial":
+                    self.wfile.write(b'data: {"content":"unfinished')
                 self.wfile.flush()
                 blocked.set()
                 release.wait(5)
@@ -178,6 +192,14 @@ def http_backend():
                         '"timings":{"draft_n":8,"draft_n_accepted":5,"predicted_per_second":4.25}}\n\n').encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
+            if mode["response"] == "chunked":
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                for start in range(0, len(body), 7):
+                    chunk = body[start:start + 7]
+                    self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                self.wfile.write(b"0\r\n\r\n")
+                return
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -290,10 +312,13 @@ def test_http_errors_never_become_silent_success(http_backend, response):
     assert backend._active_connection is None
 
 
-@pytest.mark.parametrize("response", ["blocked", "blocked-close"])
-def test_cancel_interrupts_a_blocked_socket_read(http_backend, response):
+@pytest.mark.parametrize("response", ["blocked", "blocked-close", "blocked-headers", "blocked-tokenizer", "blocked-partial"])
+def test_cancel_interrupts_a_blocked_socket_read(http_backend, response, monkeypatch):
     backend, _, mode, blocked = http_backend
     mode["response"] = response
+    # Reproduce platforms where cross-thread shutdown cannot wake the reader.
+    # Cancellation must depend on the event below buffering, not OS wakeups.
+    monkeypatch.setattr(socket.socket, "shutdown", lambda *_args: None)
     failures = []
 
     def run():
@@ -357,9 +382,10 @@ def test_pre_cancelled_operations_do_not_start_or_clear_user_cancel(http_backend
     assert "cancelled" in backend.last_error
 
 
-def test_callback_cancels_blocked_native_request_and_stops_remaining_branches(http_backend):
+def test_callback_cancels_blocked_native_request_and_stops_remaining_branches(http_backend, monkeypatch):
     backend, received, mode, blocked = http_backend
     mode["response"] = "blocked-close"
+    monkeypatch.setattr(socket.socket, "shutdown", lambda *_args: None)
     stop = threading.Event()
     failures = []
 
@@ -378,6 +404,13 @@ def test_callback_cancels_blocked_native_request_and_stops_remaining_branches(ht
     assert failures == []
     assert sum(path == "/completion" for path, _ in received) == 1
     assert backend.last_branch_usage is None
+
+
+def test_cancellable_reader_preserves_chunk_framing_and_fragmented_utf8(http_backend):
+    backend, _, mode, _ = http_backend
+    mode["response"] = "chunked"
+    assert list(backend.stream_generate_tokens("test")) == ["hello ", "世界"]
+    assert backend.last_generation["usage"] == {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
 
 
 def test_owned_process_ids_never_scans_unrelated_processes():

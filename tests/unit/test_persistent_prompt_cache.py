@@ -1,5 +1,6 @@
 """File-backed cache contracts using fake tensors only; no model/runtime import."""
 import base64
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
@@ -267,3 +268,36 @@ def test_manifest_token_corruption_is_not_silently_reused(tmp_path):
     manifest["tokens"] = [1, 8, 3]
     manifest_path.write_text(json.dumps(manifest))
     assert disk.load((1, 8, 3, 4), identity()) is None
+
+
+def test_atomic_payload_flush_uses_a_writable_descriptor_on_windows(tmp_path, monkeypatch):
+    """Model Windows _commit rejecting read-only handles on every test host."""
+    real_open = Path.open
+    real_fsync = cache_module.os.fsync
+    active_modes = {}
+    payload_flushes = []
+
+    @contextmanager
+    def tracked_open(path, mode="r", *args, **kwargs):
+        with real_open(path, mode, *args, **kwargs) as handle:
+            descriptor = handle.fileno()
+            active_modes[descriptor] = (path, mode)
+            try:
+                yield handle
+            finally:
+                active_modes.pop(descriptor, None)
+
+    def windows_commit(descriptor):
+        if descriptor in active_modes:
+            path, mode = active_modes[descriptor]
+            if "+" not in mode and not any(flag in mode for flag in "wax"):
+                raise OSError("Windows _commit rejects a read-only descriptor")
+            payload_flushes.append((path.suffix, mode))
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(cache_module.os, "fsync", windows_commit)
+    disk = store(tmp_path)
+    assert disk.save((1, 2, 3), layers(), identity())
+    assert payload_flushes == [(".safetensors", "r+b")]
+    assert disk.load((1, 2, 3, 4), identity())[0] == (1, 2, 3)

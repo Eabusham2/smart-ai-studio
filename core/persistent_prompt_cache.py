@@ -346,7 +346,10 @@ class PersistentPromptStore:
                 os.close(fd)
                 temporary = Path(name)
                 descriptor = codec.write(temporary, cache, len(prefix))
-                with temporary.open("rb") as handle:
+                # Windows _commit requires a writable descriptor. Opening the
+                # finished payload read/write preserves its bytes while making
+                # the same durability barrier portable across all platforms.
+                with temporary.open("r+b") as handle:
                     os.fsync(handle.fileno())
                 size = temporary.stat().st_size
                 digest = _sha_file(temporary)

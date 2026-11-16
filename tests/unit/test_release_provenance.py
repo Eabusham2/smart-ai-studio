@@ -98,7 +98,10 @@ new AsyncFunction('github', 'context', 'core', 'require', script)(github, contex
                .replace("SHA", json.dumps(SHA)))
     result = subprocess.run(
         [node, "-e", harness], cwd=tmp_path,
-        env={**os.environ, "RELEASE_TAG": tag}, capture_output=True, text=True, timeout=10, check=True,
+        # The first Node process on a hosted Windows runner can spend more than
+        # ten seconds starting. Keep a bounded process timeout without turning
+        # that startup latency into a false failure of the release assertions.
+        env={**os.environ, "RELEASE_TAG": tag}, capture_output=True, text=True, timeout=30, check=True,
     )
     return json.loads(result.stdout)
 

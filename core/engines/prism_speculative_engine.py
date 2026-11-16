@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import http.client
 from contextlib import contextmanager
+from functools import partial
+import io
 import json
 import math
 import os
 from pathlib import Path
+import select
 import socket
 import subprocess
 import threading
@@ -29,6 +32,63 @@ from core.speculative_runtime import (
     speculative_arguments,
     validate_runtime_receipt,
 )
+
+
+class _CancellableSocketReader(io.RawIOBase):
+    """Poll an owned socket below HTTP buffering, including partial lines.
+
+    Windows does not reliably wake a buffered socket read when another thread
+    shuts down its socket. Short readiness polls give cancellation a bounded
+    observation time without timing out or discarding a partial HTTP/SSE read.
+    The duplicate also survives HTTPConnection's Connection:close handling.
+    """
+
+    def __init__(self, sock: socket.socket, cancelled: threading.Event):
+        super().__init__()
+        self._timeout = sock.gettimeout()
+        self._socket = sock.dup()
+        self._socket.setblocking(False)
+        self._cancelled = cancelled
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        deadline = None if self._timeout is None else time.monotonic() + self._timeout
+        while True:
+            if self._cancelled.is_set():
+                raise OSError("Native request cancelled")
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise TimeoutError("Native response read timed out")
+            ready, _, _ = select.select([self._socket], [], [],
+                                        0.05 if remaining is None else min(0.05, remaining))
+            if ready:
+                try:
+                    return self._socket.recv_into(buffer)
+                except (BlockingIOError, InterruptedError):
+                    continue
+
+    def close(self) -> None:
+        if not self.closed:
+            self._socket.close()
+        super().close()
+
+
+class _CancellableResponseSocket:
+    def __init__(self, sock: socket.socket, cancelled: threading.Event):
+        self.sock = sock
+        self.cancelled = cancelled
+
+    def makefile(self, mode: str):
+        if mode != "rb":
+            raise ValueError("The native response socket supports binary reads only")
+        return io.BufferedReader(_CancellableSocketReader(self.sock, self.cancelled))
+
+
+class _CancellableHTTPResponse(http.client.HTTPResponse):
+    def __init__(self, sock, *args, cancelled, **kwargs):
+        super().__init__(_CancellableResponseSocket(sock, cancelled), *args, **kwargs)
 
 
 class _NativeModelProxy:
@@ -255,6 +315,7 @@ class PrismSpeculativeReasoningBackend:
         if self._port is None or self._cancelled.is_set():
             raise RuntimeError("The native server is stopped or the request was cancelled")
         connection = http.client.HTTPConnection("127.0.0.1", self._port, timeout=timeout)
+        connection.response_class = partial(_CancellableHTTPResponse, cancelled=self._cancelled)
         with self._state_lock:
             if self._cancelled.is_set():
                 raise RuntimeError("Native request cancelled")
@@ -503,7 +564,9 @@ class PrismSpeculativeReasoningBackend:
                     sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
-            connection.close()
+            # The request thread owns response/connection cleanup. Closing its
+            # BufferedReader here can wait for that thread's read lock; the
+            # polling reader instead observes the event and closes in finally.
 
     def unload_model(self) -> None:
         self.cancel_generation()
