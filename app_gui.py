@@ -4924,16 +4924,94 @@ class SmartAIChatbotApp:
                             pass
                     self.root.after(0, _insert_chunk)
 
-                for chunk in self.multimodal.stream_solve(full_msg, history=curr_history, cancel_event=self.cancel_event):
+                if pro_active:
+                    # Pro is explicitly enabled by the user. Each completed
+                    # candidate reports its real token count when available.
+                    completed_branches = 0
+                    measured_tokens = 0
+                    counts_available = True
+
+                    def _branch_done(done, total, tokens, seconds):
+                        nonlocal completed_branches, measured_tokens, counts_available
+                        completed_branches = int(done)
+                        if type(tokens) is int and tokens >= 0:
+                            measured_tokens += tokens
+                        else:
+                            counts_available = False
+                        wall_s = max(0.001, time.perf_counter() - start_time)
+                        rate = measured_tokens / wall_s if counts_available and measured_tokens else 0.0
+                        self._live_tps = rate
+                        detail = f"{tokens} tokens" if type(tokens) is int else "tokens unavailable"
+                        notice = f"🌿 Branch {done}/{total} complete · {detail}"
+                        def _show():
+                            self.chat_stream.configure(state="normal")
+                            self.chat_stream.insert("end", notice + "\n", "ai_msg")
+                            self.chat_stream.configure(state="disabled")
+                            self._scroll_chat_to_bottom()
+                            self.lbl_tps.configure(text=(
+                                f"⚡ Pro {rate:.1f} tok/s · {done}/{total} branches (wall)"
+                                if rate > 0 else f"⚡ Pro {done}/{total} branches · TPS unavailable"
+                            ))
+                        self.root.after(0, _show)
+
+                    self.root.after(0, lambda: self.lbl_tps.configure(
+                        text=f"⚡ Pro 0/{pro_branch_count} branches · preparing"
+                    ))
+                    answer, branch_meta = self.engine.solve(
+                        full_msg, history=curr_history, cancel_event=self.cancel_event,
+                        force_branch_count=pro_branch_count, progress_callback=_branch_done
+                    )
                     if self.cancel_event.is_set():
-                        break
-                    accumulated.append(chunk)
-                    ui_pending.append(chunk)
-                    now = time.perf_counter()
-                    if len(ui_pending) >= 8 or (now - last_ui_flush) >= 0.04:
-                        _schedule_stream_insert("".join(ui_pending))
-                        ui_pending.clear()
-                        last_ui_flush = now
+                        return
+                    accumulated.append(str(answer))
+                    self.last_metadata = branch_meta
+                    pro_summary = (
+                        f"🌿 Pro search: {completed_branches}/{pro_branch_count} branches complete"
+                        f" · winner #{int(branch_meta.get('winning_branch', 0)) + 1}"
+                    )
+                else:
+                    # MLX/native streams produce model token events. Other
+                    # runtimes can yield text chunks, which are NOT exact tokens.
+                    exact_events = (
+                        (getattr(self.engine, "active_backend", None) == "mlx"
+                         and getattr(getattr(self.engine, "mlx_backend", None), "model", None) is not None)
+                        or is_native_stream
+                    )
+                    count_events = 0
+                    first_event_at = None
+                    iterator = self.multimodal.stream_solve(
+                        full_msg, history=curr_history, cancel_event=self.cancel_event
+                    )
+                    try:
+                        for chunk in iterator:
+                            if self.cancel_event.is_set():
+                                break
+                            part = str(chunk)
+                            accumulated.append(part)
+                            ui_pending.append(part)
+                            now = time.perf_counter()
+                            if part:
+                                count_events += 1
+                                if first_event_at is None:
+                                    first_event_at = now
+                                if exact_events:
+                                    if count_events == 1:
+                                        message = f"⚡ First token · TTFT {now-start_time:.2f}s"
+                                    else:
+                                        self._live_tps = (count_events - 1) / max(0.001, now-first_event_at)
+                                        message = f"⚡ {self._live_tps:.1f} tok/s · {count_events} tokens"
+                                else:
+                                    message = f"⚡ Streaming · TTFT {first_event_at-start_time:.2f}s · TPS unavailable"
+                                self.root.after(0, lambda value=message: self.lbl_tps.configure(text=value))
+                            if (len(ui_pending) >= 8 or now - last_ui_flush >= 0.04
+                                    or count_events == 1):
+                                _schedule_stream_insert("".join(ui_pending))
+                                ui_pending.clear()
+                                last_ui_flush = now
+                    finally:
+                        close = getattr(iterator, "close", None)
+                        if callable(close):
+                            close()
 
                 if ui_pending:
                     _schedule_stream_insert("".join(ui_pending))
