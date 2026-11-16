@@ -397,6 +397,34 @@ class StrataReasoningBackend:
                 raise StrataError("Strata returned invalid token usage.")
         return copy.deepcopy(value)
 
+    def _observed_status(self):
+        """Read actual counters from the owned, serialized Strata request.
+
+        /status is provided by the pinned server and requires the same private
+        API key. No tokenizer estimate, prompt replay, or sampling change is
+        involved. A missing endpoint leaves counts unavailable, never guessed.
+        """
+        if self._endpoint is None:
+            return None
+        connection = http.client.HTTPConnection(*self._endpoint, timeout=0.25)
+        try:
+            connection.request("GET", "/status", headers={
+                "Authorization": "Bearer " + self._api_key,
+                "Accept": "application/json",
+            })
+            response = connection.getresponse()
+            raw = response.read(64 * 1024 + 1)
+            if response.status != 200 or len(raw) > 64 * 1024:
+                return None
+            value = self._json(raw)
+            if not isinstance(value, dict) or type(value.get("generated")) is not int or value["generated"] < 0:
+                return None
+            return value
+        except (OSError, http.client.HTTPException, StrataError):
+            return None
+        finally:
+            connection.close()
+
     def stream_generate_tokens(self, prompt, max_tokens=1536, temperature=0.75,
                                top_p=0.92, image_bytes=None, cancelled=None,
                                stop_at_tool_boundary=False) -> Generator[str, None, None]:
@@ -425,6 +453,8 @@ class StrataReasoningBackend:
             boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
             reasoning = False
             finished = False
+            last_status_read = 0.0
+            status_counter_seen = False
             try:
                 with self._request("POST", "/v1/chat/completions", payload, cancelled) as (response, active):
                     if response.status != 200:
@@ -478,7 +508,16 @@ class StrataReasoningBackend:
                                 pieces.append(content)
                             logprobs = choice.get("logprobs") or {}
                             token_records = logprobs.get("content") if isinstance(logprobs, dict) else None
-                            meter.observe(delta=len(token_records) if isinstance(token_records, list) else None,
+                            reasoning_records = logprobs.get("reasoning_content") if isinstance(logprobs, dict) else None
+                            records = (token_records or []) + (reasoning_records or [])
+                            now = time.perf_counter()
+                            if (thought or content) and (now - last_status_read >= 0.1 or meter.tokens is None):
+                                last_status_read = now
+                                status = self._observed_status()
+                                if status is not None and status.get("busy") is True:
+                                    status_counter_seen = True
+                                    meter.observe(count=status["generated"], rate=status.get("tokens_per_s"))
+                            meter.observe(delta=len(records) if records and not status_counter_seen else None,
                                           text=bool(thought or content))
                             for piece in pieces:
                                 stop_here = False
@@ -487,6 +526,9 @@ class StrataReasoningBackend:
                                     stop_here = boundary.feed(piece)
                                     piece = boundary.text[offset:]
                                 if stop_here:
+                                    status = self._observed_status()
+                                    if status is not None and status.get("busy") is True:
+                                        meter.observe(count=status["generated"], rate=status.get("tokens_per_s"))
                                     self.last_generation.update(status="completed", finish_reason="tool_boundary")
                                 if piece:
                                     yield piece

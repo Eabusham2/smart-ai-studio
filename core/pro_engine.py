@@ -980,7 +980,6 @@ class ProReasoningEngine:
                 break
             suffix = " " if i < len(words) - 1 else ""
             yield word + suffix
-            time.sleep(0.008)
 
     def generate_parallel_branches(
         self,

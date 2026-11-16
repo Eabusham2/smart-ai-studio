@@ -4959,9 +4959,9 @@ class SmartAIChatbotApp:
                     kind = event.get("kind")
                     total = event.get("total", 0)
                     if kind == "route":
-                        best_work_ui["done"] = 0
-                        best_work_ui["total"] = total
                         if total > 1:
+                            best_work_ui["done"] = 0
+                            best_work_ui["total"] = total
                             pro_active = True
                             self._best_work_mode = True
                             value = f"🌿 Best Work 0/{total} · generating candidates"
@@ -4971,8 +4971,9 @@ class SmartAIChatbotApp:
                         best_work_ui["done"] = total
                         value = f"🌿 Best Work {total}/{total} · selected branch #{event.get('winning_branch', 0) + 1}"
                     elif kind == "executing":
-                        value = (f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · "
-                                 f"executing selected {event.get('name', 'tool')}")
+                        value = ((f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · "
+                                  f"executing selected {event.get('name', 'tool')}") if pro_active
+                                 else f"⚙️ Executing {event.get('name', 'tool')}")
                     else:
                         value = "🌿 Rechecking original Pro routing after tool result" if pro_active else None
                     if value is not None:

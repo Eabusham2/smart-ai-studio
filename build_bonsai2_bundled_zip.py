@@ -287,41 +287,50 @@ def _stream_remote_file(
 
 def _write_reassembler(out_dir: Path, archive_name: str, manifest_name: str) -> Path:
     path = out_dir / "Reassemble-SmartAI-macOS-arm64.command"
-    text = f"""#!/bin/bash
+    text = r'''#!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-python3 - <<'PY'
-import hashlib
-import json
-from pathlib import Path
-
-root = Path(".")
-manifest = json.loads((root / "{manifest_name}").read_text())
-out = root / manifest["archive_name"]
-whole = hashlib.sha256()
-with out.open("wb") as dst:
-    for part in manifest["parts"]:
-        p = root / part["name"]
-        if not p.is_file():
-            raise SystemExit(f"Missing release part: {{p.name}}")
-        h = hashlib.sha256()
-        with p.open("rb") as src:
-            while True:
-                chunk = src.read(8 * 1024 * 1024)
-                if not chunk:
-                    break
-                h.update(chunk)
-                whole.update(chunk)
-                dst.write(chunk)
-        if h.hexdigest() != part["sha256"]:
-            raise SystemExit(f"SHA256 mismatch: {{p.name}}")
-if whole.hexdigest() != manifest["archive_sha256"]:
-    raise SystemExit("Whole ZIP SHA256 mismatch")
-print(f"Reassembled and verified: {{out}}")
-PY
-unzip -t "{archive_name}" >/dev/null
-echo "ZIP integrity verified. Extract {archive_name} normally."
-"""
+MANIFEST="__MANIFEST__"
+ARCHIVE="__ARCHIVE__"
+# JSON parsing uses the system JavaScript runtime, not an external Python.
+/usr/bin/osascript -l JavaScript - "$MANIFEST" <<'JXA' > .smartai-parts-to-check
+ObjC.import('Foundation');
+function run(args) {
+  const data = $.NSData.dataWithContentsOfFile(args[0]);
+  if (!data) throw Error('Missing bundle manifest');
+  const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
+  const m = JSON.parse(text);
+  if (m.archive_name !== '__ARCHIVE__' || !Array.isArray(m.parts) || !m.parts.length) throw Error('Invalid manifest');
+  const names = new Set();
+  return m.parts.map(p => {
+    if (!/^SmartAI-macOS-arm64\.zip\.part[0-9]+$/.test(p.name) || !/^[a-f0-9]{64}$/.test(p.sha256) || names.has(p.name)) throw Error('Invalid part');
+    names.add(p.name); return p.sha256 + '  ' + p.name;
+  }).join('\n');
+}
+JXA
+/usr/bin/shasum -a 256 -c .smartai-parts-to-check
+: > "$ARCHIVE.partial"
+while IFS= read -r row; do
+    name="${row#*  }"
+    cat "$name" >> "$ARCHIVE.partial"
+done < .smartai-parts-to-check
+EXPECTED="$(/usr/bin/osascript -l JavaScript - "$MANIFEST" <<'JXA'
+ObjC.import('Foundation');
+function run(args) {
+  const t = $.NSString.alloc.initWithDataEncoding($.NSData.dataWithContentsOfFile(args[0]), $.NSUTF8StringEncoding).js;
+  const h = JSON.parse(t).archive_sha256;
+  if (!/^[a-f0-9]{64}$/.test(h)) throw Error('Invalid archive hash');
+  return h;
+}
+JXA
+)"
+printf '%s  %s\n' "$EXPECTED" "$ARCHIVE.partial" | /usr/bin/shasum -a 256 -c -
+mv "$ARCHIVE.partial" "$ARCHIVE"
+rm .smartai-parts-to-check
+unzip -t "$ARCHIVE" >/dev/null
+echo "ZIP integrity verified. Extract $ARCHIVE normally."
+'''
+    text = text.replace("__MANIFEST__", manifest_name).replace("__ARCHIVE__", archive_name)
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
     return path

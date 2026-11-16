@@ -222,7 +222,7 @@ def test_all_python_lanes_still_run_and_release_requires_verified_native_job():
     assert "os: [ubuntu-latest, macos-latest, windows-latest]" in python_job
     assert "python-version: ['3.10', '3.11']" in python_job
     assert "python -m pytest -v" in python_job
-    assert "needs: [preflight, test, native-build, reuse-native]" in source
+    assert "needs: [preflight, test, native-build, reuse-native, package]" in source
     assert "(needs.native-build.result == 'success' || needs.reuse-native.result == 'success')" in source
     assert "name: ${{ matrix.name }}" in source
     assert "run-id: ${{ needs.preflight.outputs.native_reuse_run_id }}" in source

@@ -45,6 +45,10 @@ def _active_trainable_backend(engine):
     ):
         if backend is not None and getattr(backend, "model", None) is not None:
             return backend
+    # Direct PyTorch has no separate backend object. Its actual tokenizer and
+    # model config must still define the shared prompt+output context boundary.
+    if getattr(engine, "model", None) is not None and getattr(engine, "tokenizer", None) is not None:
+        return engine
     return None
 
 
@@ -65,7 +69,7 @@ def _model_context_limit(engine) -> Optional[int]:
                 value = int(candidate() if callable(candidate) else candidate)
             except Exception:
                 continue
-            if 1024 <= value <= 10_000_000:
+            if 1 <= value <= 10_000_000:
                 values.append(value)
 
     for obj in (getattr(model, "args", None), getattr(model, "config", None), tokenizer):
@@ -82,7 +86,7 @@ def _model_context_limit(engine) -> Optional[int]:
                 value = int(getattr(obj, name))
             except Exception:
                 continue
-            if 1024 <= value <= 10_000_000:
+            if 1 <= value <= 10_000_000:
                 values.append(value)
     return min(values) if values else None
 
@@ -96,7 +100,7 @@ def _selected_context_budget(engine) -> int:
 
     physical = _model_context_limit(engine)
     effective = min(requested, int(physical)) if physical else requested
-    effective = max(1024, int(effective))
+    effective = max(1, int(effective))
     engine._effective_context_budget_tokens = effective
 
     backend = getattr(engine, "mlx_backend", None)

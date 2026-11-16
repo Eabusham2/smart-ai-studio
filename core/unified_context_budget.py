@@ -27,7 +27,7 @@ def _model_context_limit(model, tokenizer) -> Optional[int]:
                 value = int(getattr(obj, name))
             except Exception:
                 continue
-            if 1024 <= value <= 10_000_000:
+            if 1 <= value <= 10_000_000:
                 values.append(value)
     return min(values) if values else None
 
@@ -47,14 +47,14 @@ def install(cls) -> None:
             except Exception:
                 prompt_tokens = 0
 
+        physical = _model_context_limit(self.model, self.tokenizer)
         selected = int(getattr(self, "context_budget_tokens", 0) or 0)
         if selected <= 0:
-            # Compatibility fallback for callers that have not yet installed a
-            # session Context value. The old argument is treated as total context,
-            # never as an additional output-only allowance.
-            selected = max(1, int(requested))
+            # max_tokens is a legacy compatibility argument, not a second cap.
+            # Use the actual model context (or the existing session default).
+            from core.platform import get_auto_context_window_size
+            selected = int(physical or get_auto_context_window_size())
 
-        physical = _model_context_limit(self.model, self.tokenizer)
         context_budget = min(selected, int(physical)) if physical else selected
         if context_budget <= 0:
             raise RuntimeError("Context budget must be positive")

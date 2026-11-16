@@ -872,7 +872,7 @@ class UniversalControllerBackend:
         return str(ids)
 
     def _generate(self, prompt: str, max_tokens: int, temperature: float, media: Optional[Dict[str, Any]] = None) -> str:
-        if self.runtime.startswith("mlx"):
+        if self.runtime.startswith("mlx") or self.runtime in ("jang_vlm", "jang-vlm", "repo_mlx_vlm"):
             images = [media["image"]] if media and media.get("image") else []
             return self._generate_mlx(prompt, images, max_tokens, temperature)
         if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
@@ -975,7 +975,7 @@ class UniversalControllerBackend:
         kind = str(kind or "").lower()
         if kind not in self.input_modalities:
             return False
-        if self.runtime.startswith("mlx") or self.runtime in ("jang_vlm", "jang-vlm"):
+        if self.runtime.startswith("mlx") or self.runtime in ("jang_vlm", "jang-vlm", "repo_mlx_vlm"):
             return kind in {"image", "video"}
         if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
             return kind in {"image", "audio", "video"}

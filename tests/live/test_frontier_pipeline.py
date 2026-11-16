@@ -10,8 +10,9 @@ Verifies:
 
 import os
 import unittest
+import tempfile
 
-from config.settings import get_settings
+from config.settings import Settings
 from core.pro_engine import ProReasoningEngine
 from eval.frontier_benchmarks import (
     GPQA_DIAMOND_SUBSET,
@@ -30,7 +31,13 @@ from rlvr.frontier_curriculum import FrontierCurriculumOrchestrator
 class TestFrontierBenchmarkPipeline(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.settings = get_settings()
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temp_dir.cleanup)
+        cls.settings = Settings(
+            database_path=os.path.join(cls.temp_dir.name, "fixture.db"),
+            lora_adapter_path=os.path.join(cls.temp_dir.name, "adapters.pt"),
+            backend="mock", use_mock=True, live_mode=False, auto_download=False,
+        )
         cls.db = EpisodicMemoryDB(db_path=cls.settings.database_path)
         cls.engine = ProReasoningEngine(settings=cls.settings)
         cls.runner = FrontierBenchmarkRunner(engine=cls.engine, db=cls.db, settings=cls.settings)

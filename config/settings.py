@@ -6,6 +6,7 @@ speculative acceleration configuration, and fallback defaults.
 """
 
 import os
+from config.paths import get_portable_data_dir
 import platform
 import sys
 from dataclasses import dataclass, field
@@ -111,7 +112,7 @@ try:
         instant_branch_count: int = Field(default=1, description="Single-pass branch count")
         search_temperature: float = Field(default=0.75, description="Sampling temperature for Pro rollouts")
         search_top_p: float = Field(default=0.92, description="Top-p nucleus sampling cutoff")
-        max_new_tokens: int = Field(default=1536, description="Max generated reasoning tokens")
+        max_new_tokens: int = Field(default=0, description="Legacy argument; chat uses all remaining Context until EOS, tool handoff, or Stop")
         prm_pruning_threshold: float = Field(default=0.40, description="Process reward model step cutoff")
 
         # Ground-Truth Sandbox Verification
@@ -120,7 +121,7 @@ try:
         docker_image: str = Field(default="python:3.10-slim", description="Docker base image for sandbox")
 
         # Memory & Elastic Weight Consolidation (EWC)
-        database_path: str = Field(default_factory=lambda: os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "memory.db")), description="SQLite episodic memory database path")
+        database_path: str = Field(default_factory=lambda: os.getenv("DATABASE_PATH", os.path.join(get_portable_data_dir(), "memory.db")), description="SQLite episodic memory database path")
         ewc_lambda: float = Field(default=400.0, description="Synaptic quadratic penalty multiplier")
         consolidation_lr: float = Field(default=2e-5, description="Learning rate for slow-LoRA sleep consolidation")
         consolidation_weight_decay: float = Field(default=0.01, description="Weight decay for AdamW in sleep cycle")
@@ -178,14 +179,14 @@ except ImportError:
         instant_branch_count: int = int(os.getenv("INSTANT_BRANCH_COUNT", "1"))
         search_temperature: float = float(os.getenv("SEARCH_TEMPERATURE", "0.75"))
         search_top_p: float = float(os.getenv("SEARCH_TOP_P", "0.92"))
-        max_new_tokens: int = int(os.getenv("MAX_NEW_TOKENS", "1536"))
+        max_new_tokens: int = int(os.getenv("MAX_NEW_TOKENS", "0"))
         prm_pruning_threshold: float = float(os.getenv("PRM_PRUNING_THRESHOLD", "0.40"))
 
         sandbox_timeout_seconds: float = float(os.getenv("SANDBOX_TIMEOUT_SECONDS", "4.0"))
         use_docker_sandbox: bool = os.getenv("USE_DOCKER_SANDBOX", "false").lower() in ("1", "true", "yes")
         docker_image: str = os.getenv("DOCKER_IMAGE", "python:3.10-slim")
 
-        database_path: str = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "memory.db"))
+        database_path: str = os.getenv("DATABASE_PATH", os.path.join(get_portable_data_dir(), "memory.db"))
         ewc_lambda: float = float(os.getenv("EWC_LAMBDA", "400.0"))
         consolidation_lr: float = float(os.getenv("CONSOLIDATION_LR", "0.00002"))
         consolidation_weight_decay: float = float(os.getenv("CONSOLIDATION_WEIGHT_DECAY", "0.01"))

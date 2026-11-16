@@ -5,8 +5,9 @@ Dialogue Memory Ingestion, and Layer-by-Layer Parameter Delta Telemetry.
 
 import os
 import unittest
+import tempfile
 
-from config.settings import get_settings
+from config.settings import Settings
 from eval.clean_slate_reset import execute_clean_slate_reset
 from eval.flagship_benchmarks import (
     FLAGSHIP_AIME_SPLIT,
@@ -27,7 +28,13 @@ from rlvr.flagship_curriculum import FlagshipCurriculumOrchestrator
 class TestFlagshipEvaluationSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.settings = get_settings()
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temp_dir.cleanup)
+        cls.settings = Settings(
+            database_path=os.path.join(cls.temp_dir.name, "fixture.db"),
+            lora_adapter_path=os.path.join(cls.temp_dir.name, "adapters.pt"),
+            backend="mock", use_mock=True, live_mode=False, auto_download=False,
+        )
 
     def test_01_clean_slate_reset_and_manifest(self):
         """Verify clean-slate reset purges tables and outputs valid environment manifest."""

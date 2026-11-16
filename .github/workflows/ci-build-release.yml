@@ -113,7 +113,7 @@ jobs:
 
       - name: Detect reusable native compile artifacts
         id: native
-        if: steps.green.outputs.reuse_green != 'true' && github.event_name == 'pull_request'
+        if: steps.green.outputs.reuse_green != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -121,7 +121,8 @@ jobs:
             core.setOutput('native_reuse_matrix', '{"include":[]}');
             const { owner, repo } = context.repo;
             const pr = context.payload.pull_request;
-            if (!pr || pr.head.repo?.full_name !== `${owner}/${repo}`) return;
+            if (pr && pr.head.repo?.full_name !== `${owner}/${repo}`) return;
+            const sourceBranch = pr ? pr.head.ref : context.ref.replace('refs/heads/', '');
             const workflowPath = '.github/workflows/ci-build-release.yml';
             const inputs = ['core/native_exactness.py', 'tools/prepare_speculative_runtime.py'];
             // Only the job's scheduling condition may differ. Runner, matrix,
@@ -151,18 +152,18 @@ jobs:
               const definition = nativeDefinition((await fileAt(workflowPath, context.sha)).text);
               if (!definition) return;
               const { data } = await github.rest.actions.listWorkflowRunsForRepo({
-                owner, repo, branch: pr.head.ref, event: 'pull_request', status: 'completed', per_page: 30,
+                owner, repo, branch: sourceBranch, event: pr ? 'pull_request' : 'push', status: 'completed', per_page: 30,
               });
               for (const run of data.workflow_runs) {
                 if (run.id === context.runId || run.name !== context.workflow || run.path !== workflowPath ||
                     run.head_repository?.full_name !== `${owner}/${repo}` ||
-                    run.head_branch !== pr.head.ref ||
-                    !run.pull_requests.some(item => item.number === pr.number && item.base.sha === pr.base.sha)) continue;
+                    run.head_branch !== sourceBranch ||
+                    (pr && !run.pull_requests.some(item => item.number === pr.number && item.base.sha === pr.base.sha))) continue;
                 try {
                   // A head containing the recorded base has the same build tree
                   // as its PR merge checkout. Diverged/rebased bases rebuild.
                   const { data: comparison } = await github.rest.repos.compareCommits({
-                    owner, repo, base: pr.base.sha, head: run.head_sha,
+                    owner, repo, base: pr ? pr.base.sha : run.head_sha, head: pr ? run.head_sha : context.sha,
                   });
                   if (!['ahead', 'identical'].includes(comparison.status)) continue;
                   const previous = await Promise.all(inputs.map(path => fileAt(path, run.head_sha)));
@@ -190,7 +191,7 @@ jobs:
                   if (matrix.some(item => !item)) continue;
                   core.setOutput('native_reuse_run_id', String(run.id));
                   core.setOutput('native_reuse_matrix', JSON.stringify({ include: matrix }));
-                  core.notice(`Reusing both unchanged native compilations from PR run ${run.id}; all Python lanes still run.`);
+                  core.notice(`Reusing both unchanged native compilations from run ${run.id}; all Python lanes still run.`);
                   return;
                 } catch (error) {
                   core.notice(`Native artifacts from run ${run.id} are not verifiable: ${error.message}`);
@@ -229,8 +230,12 @@ jobs:
           sudo apt-get install -y xvfb python3-tk libtk8.6
 
       - name: Install Dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
+          if [ "${{ runner.os }}" != "macOS" ]; then
+            python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          fi
           pip install -r requirements.txt
           pip install pytest pytest-asyncio
 
@@ -366,13 +371,59 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  package:
+    name: Portable and Setup (${{ matrix.target }}, no models)
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: Linux-x86_64
+          - os: windows-latest
+            target: Windows-x86_64
+          - os: macos-latest
+            target: macOS-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install Linux GUI libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libx11-6 libxext6 libxrender1 libxft2 libgl1
+      - name: Build bundled runtime and test relocated first launch
+        shell: bash
+        env:
+          SMARTAI_MODEL_BUNDLE_RELEASE: "1"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          RUN_REAL_WEIGHTS_EVAL: "0"
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a python tools/build_release_package.py --target "${{ matrix.target }}" --output release-packages
+          else
+            python tools/build_release_package.py --target "${{ matrix.target }}" --output release-packages
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartAI-ready-${{ matrix.target }}
+          path: release-packages/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
   build-and-release:
     name: Build & Auto-Publish Release Packages
-    needs: [preflight, test, native-build, reuse-native]
+    needs: [preflight, test, native-build, reuse-native, package]
     if: >-
       always() &&
       github.event_name != 'pull_request' &&
       needs.preflight.result == 'success' &&
+      needs.package.result == 'success' &&
       (needs.preflight.outputs.reuse_green == 'true' ||
        (needs.test.result == 'success' &&
         (needs.native-build.result == 'success' || needs.reuse-native.result == 'success')))
@@ -401,15 +452,15 @@ jobs:
           run-id: ${{ needs.preflight.outputs.verified_run_id || github.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install huggingface_hub
 
       - name: Determine Release Tag & Title
         id: release_info
@@ -443,29 +494,21 @@ jobs:
               grep -E '^(SmartAI-macOS-arm64\.zip\.part[0-9]+|SmartAI-macOS-arm64\.bundle\.json|Reassemble-SmartAI-macOS-arm64\.command)$' || true
           )
 
-      - name: Build Application Packages (macOS, Windows, Linux)
-        env:
-          SMARTAI_MODEL_BUNDLE_RELEASE: "1"
-        run: |
-          python build_app.py
+      - name: Download native-OS portable and setup packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: SmartAI-ready-*
+          path: dist
+          merge-multiple: true
 
-      - name: Bundle portable macOS Python dependencies
+      - name: Verify package receipts and recover the tested Mac app
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import platform, sys
-          if platform.system() != 'Darwin' or platform.machine() != 'arm64' or sys.version_info[:2] != (3, 10):
-              raise RuntimeError('Portable macOS dependency bundle requires arm64 Python 3.10')
-          PY
-          python -m pip install --target dist/SmartAI.app/Contents/Resources/app/vendor/python3.10 -r requirements.txt
-          python - <<'PY'
-          from pathlib import Path
-          root = Path('dist/SmartAI.app/Contents/Resources/app/vendor/python3.10')
-          if not (root / 'torch').is_dir() or not (root / 'transformers').is_dir():
-              raise RuntimeError('Portable dependency tree is incomplete')
-          print('Packaged macOS Python 3.10 dependencies:', root)
-          PY
+          python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"
+          mkdir -p verified-mac-app
+          tar -xzf dist/SmartAI.app.tar.gz -C verified-mac-app
+          mv verified-mac-app/SmartAI.app dist/SmartAI.app
+          rm dist/SmartAI.app.tar.gz
 
       - name: Package native runtimes and verified receipts
         shell: bash
@@ -507,30 +550,29 @@ jobs:
         with:
           name: SmartAI-Packages
           path: |
-            dist/SmartAI-macOS-arm64.bundle.json
-            dist/Reassemble-SmartAI-macOS-arm64.command
-            dist/SmartAI-Windows.zip
-            dist/SmartAI-Linux-x86_64.tar.gz
-            dist/SmartAI-Unix-POSIX.tar.gz
-            dist/SmartAI-native-*.zip
+            dist/*.json
+            dist/*.command
+            dist/*.ps1
+            dist/*.sh
+            dist/*.sha256
+          if-no-files-found: error
 
       - name: Publish or Update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: ${{ steps.release_info.outputs.release_title }}
-          files: |
-            dist/SmartAI-Windows.zip
-            dist/SmartAI-Linux-x86_64.tar.gz
-            dist/SmartAI-Unix-POSIX.tar.gz
-            dist/SmartAI-native-*.zip
-          fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-          make_latest: true
-          generate_release_notes: true
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
+          RELEASE_TITLE: ${{ steps.release_info.outputs.release_title }}
+        run: |
+          python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"
+          python - <<'PYUPLOAD'
+          from pathlib import Path
+          import os, subprocess
+          for path in sorted(Path('dist').iterdir()):
+              if path.is_file():
+                  subprocess.run(['gh','release','upload',os.environ['RELEASE_TAG'],str(path),'--clobber'],check=True)
+          PYUPLOAD
+          gh release edit "$RELEASE_TAG" --title "$RELEASE_TITLE" --draft=false --latest
 
       - name: Verify Release Assets and Update Rolling Tag
         if: success()
@@ -556,11 +598,15 @@ jobs:
               }
               return { name: part.name, size: part.size };
             });
-            for (const name of [
-              'SmartAI-macOS-arm64.bundle.json', 'Reassemble-SmartAI-macOS-arm64.command',
-              'SmartAI-Windows.zip', 'SmartAI-Linux-x86_64.tar.gz', 'SmartAI-Unix-POSIX.tar.gz',
-            ]) {
+            for (const name of ['SmartAI-macOS-arm64.bundle.json', 'Reassemble-SmartAI-macOS-arm64.command']) {
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
+            }
+            for (const target of ['Linux-x86_64', 'Windows-x86_64', 'macOS-arm64']) {
+              const name = `SmartAI-${target}.receipt.json`;
+              const receipt = JSON.parse(await fs.readFile(`dist/${name}`, 'utf8'));
+              if (receipt.commit !== context.sha || receipt.gui_smoke !== 'passed') throw new Error(`Unverified package ${target}`);
+              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
+              expected.push(...receipt.files.map(item => ({ name: item.name, size: item.size })));
             }
             const nativeArchives = (await fs.readdir('dist')).filter(name => /^SmartAI-native-.*\.zip$/.test(name));
             if (nativeArchives.length !== 2) throw new Error('Missing tested native runtime packages');

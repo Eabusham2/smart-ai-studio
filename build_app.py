@@ -14,12 +14,27 @@ import subprocess
 import sys
 
 
+def _embed_runtime(code_dir):
+    root = os.getenv("SMARTAI_EMBEDDED_RUNTIME", "")
+    if not root:
+        return
+    target = os.path.join(code_dir, "runtime", "python")
+    if os.path.exists(target):
+        shutil.rmtree(target)
+    shutil.copytree(root, target, symlinks=False)
+    for filename in ("bootstrap_runtime.py", "package_smoke.py"):
+        shutil.copy2(filename, os.path.join(code_dir, filename))
+
+
 def _write_macos_runtime_scripts(app_code_dir: str):
     """Provide explicit dependency setup and one shared package launch path."""
     launch = r'''#!/usr/bin/env bash
 set -e
 SMARTAI_CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SMARTAI_CODE_DIR"
+if [ -x "$SMARTAI_CODE_DIR/runtime/python/bin/python3" ]; then
+    exec "$SMARTAI_CODE_DIR/runtime/python/bin/python3" "$SMARTAI_CODE_DIR/bootstrap_runtime.py" "$@"
+fi
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH"
 SMARTAI_VENV="$HOME/Library/Application Support/SmartAI/python"
 SMARTAI_PYTHON=""
@@ -58,6 +73,9 @@ exec "$SMARTAI_VENV/bin/python" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
 set -e
 SMARTAI_CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SMARTAI_CODE_DIR"
+if [ -x "$SMARTAI_CODE_DIR/runtime/python/bin/python3" ]; then
+    exec "$SMARTAI_CODE_DIR/runtime/python/bin/python3" "$SMARTAI_CODE_DIR/bootstrap_runtime.py" --install-only
+fi
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:$PATH"
 SMARTAI_PYTHON=""
 for candidate in "$(command -v python3 || true)" /opt/homebrew/bin/python3 /usr/local/bin/python3; do
@@ -87,7 +105,7 @@ if [ "$SMARTAI_ARCH" = arm64 ]; then
 fi
 "$SMARTAI_VENV/bin/python" -m pip install "${SMARTAI_BUILD_ARGS[@]}" -r "$SMARTAI_CODE_DIR/requirements.txt"
 SMARTAI_REQ_HASH="$("$SMARTAI_VENV/bin/python" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$SMARTAI_CODE_DIR/requirements.txt")"
-printf '%s\\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_VENV/.smartai-deps-ready"
+printf '%s\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_VENV/.smartai-deps-ready"
 echo "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command."
 '''
     for name, content in (("launch_studio.sh", launch), ("Install_Dependencies.command", install)):
@@ -140,6 +158,7 @@ end run
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
 
+    _embed_runtime(app_code_dir)
     _write_macos_runtime_scripts(app_code_dir)
 
     if os.path.exists("AppIcon.icns"):
@@ -199,7 +218,7 @@ end run
     print(f"[✓] macOS Application Bundle created at: {app_bundle}")
 
     # 4. Generate .dmg disk image installer
-    if shutil.which("hdiutil"):
+    if shutil.which("hdiutil") and os.getenv("SMARTAI_PACKAGE_ASSEMBLY_ONLY") != "1":
         dmg_path = os.path.join(dist_dir, f"{app_name}-macOS-arm64.dmg")
         if os.path.exists(dmg_path):
             os.remove(dmg_path)
@@ -283,9 +302,14 @@ def create_windows_bundle(dist_dir: str, app_name: str):
             shutil.copy2(src, dst)
 
     # 1. Create Windows Batch Launcher (SmartAI.bat)
+    _embed_runtime(win_dir)
     bat_content = f"""@echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+if exist "%~dp0runtime\\python\\python.exe" (
+    "%~dp0runtime\\python\\python.exe" "%~dp0bootstrap_runtime.py" %*
+    exit /b !ERRORLEVEL!
+)
 set "SMARTAI_ENV=%LOCALAPPDATA%\\SmartAI\\python"
 set "SMARTAI_PYTHON=%SMARTAI_ENV%\\Scripts\\python.exe"
 if not exist "%SMARTAI_PYTHON%" (
@@ -339,6 +363,7 @@ Root = FSO.GetParentFolderName(WScript.ScriptFullName)
 Ready = WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\\SmartAI\\python\\.smartai-deps-ready"
 WindowStyle = 0
 If Not FSO.FileExists(Ready) Then WindowStyle = 1
+If FSO.FileExists(Root & "\\runtime\\python\\.smartai-deps-ready") Then WindowStyle = 0
 WshShell.Run Chr(34) & Root & "\\SmartAI.bat" & Chr(34), WindowStyle, False
 """
     with open(os.path.join(win_dir, f"{app_name}.vbs"), "w") as f:
@@ -354,6 +379,9 @@ call "%~dp0SmartAI.bat"
         f.write(setup_bat)
 
     # Zip Windows package
+    if os.getenv("SMARTAI_PACKAGE_ASSEMBLY_ONLY") == "1":
+        return
+
     shutil.make_archive(win_dir, "zip", root_dir=dist_dir, base_dir=f"{app_name}-Windows")
     print(f"[✓] SUCCESS: Windows standalone package generated at: {win_dir}.zip")
 
@@ -379,10 +407,14 @@ def create_linux_bundle(dist_dir: str, app_name: str):
             shutil.copy2(src, dst)
 
     # 1. Create AppRun script
+    _embed_runtime(os.path.join(appdir, "usr", "bin"))
     apprun_content = f"""#!/bin/sh
 set -eu
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SMARTAI_CODE_DIR="$HERE/usr/bin"
+if [ -x "$SMARTAI_CODE_DIR/runtime/python/bin/python3" ]; then
+    exec "$SMARTAI_CODE_DIR/runtime/python/bin/python3" "$SMARTAI_CODE_DIR/bootstrap_runtime.py" "$@"
+fi
 SMARTAI_ENV="${{XDG_DATA_HOME:-$HOME/.local/share}}/SmartAI/python"
 elevate() {{
     if [ "$(id -u)" -eq 0 ]; then "$@"
@@ -423,7 +455,7 @@ SMARTAI_READY_HASH="$(cat "$SMARTAI_ENV/.smartai-deps-ready" 2>/dev/null || true
 if [ "$SMARTAI_REQ_HASH" != "$SMARTAI_READY_HASH" ]; then
     echo "Installing or updating Smart AI Studio dependencies..."
     "$SMARTAI_ENV/bin/python" -m pip install -r "$SMARTAI_CODE_DIR/requirements.txt" || exit 1
-    printf '%s\\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_ENV/.smartai-deps-ready"
+    printf '%s\n' "$SMARTAI_REQ_HASH" > "$SMARTAI_ENV/.smartai-deps-ready"
 fi
 exec "$SMARTAI_ENV/bin/python" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
 """
@@ -467,6 +499,9 @@ exec "$HERE/{app_name}.sh" "$@"
     with open(install_path, "w") as f:
         f.write(install_sh)
     os.chmod(install_path, os.stat(install_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    if os.getenv("SMARTAI_PACKAGE_ASSEMBLY_ONLY") == "1":
+        return
 
     # Create Linux x86_64 tar.gz archive
     tar_path = shutil.make_archive(

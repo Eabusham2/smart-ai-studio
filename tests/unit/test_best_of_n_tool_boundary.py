@@ -19,7 +19,7 @@ def make_controller():
 
 
 def test_gui_has_only_one_pro_checkbox_and_no_heuristic_picker():
-    source = (Path(__file__).resolve().parents[2] / "app_gui.py").read_text()
+    source = (Path(__file__).resolve().parents[2] / "app_gui.py").read_text(encoding='utf-8')
     assert 'self.pro_branches_var = tk.BooleanVar(value=False)' in source
     assert "self.auto_pro_var" not in source
     assert "self.pro_branch_count_select" not in source

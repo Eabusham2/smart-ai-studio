@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "version": "3.11.18",
+  "release": "20261110",
+  "assets": {
+    "macOS-arm64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "73f1ed14486aa278d331e95f7d6d452f5cfb69d90b418e26e62fd4846d53557d",
+      "size": 27111938
+    },
+    "macOS-x86_64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-x86_64-apple-darwin-install_only.tar.gz",
+      "sha256": "9ff3ea8df9037e692939a3f2348f5fd760239ab8eb9d0d2d11d099457dda63a0",
+      "size": 27011510
+    },
+    "Windows-x86_64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "5ca7e23bbcc8933a75f4ae9c3a5e5d1ffae5fd143aec9a9d77cf5124cc6e0eef",
+      "size": 49079288
+    },
+    "Linux-x86_64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "ac0b758b6ae4ba1cb87f7091eb6bb17c9a383a9bcdb5c18493cdd4f34e35ae8c",
+      "size": 49244720
+    }
+  }
+}

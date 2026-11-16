@@ -260,6 +260,13 @@ Test coverage and platform-specific verification may vary by branch and environm
 
 ## 📦 Multi-Platform Packaging
 
+Release packages and Best Work behavior are documented in
+[Best Work handoffs and packaging](docs/best-work-handoffs.md). Portable packages
+bundle Python and dependencies; setup packages install dependencies into a private
+user directory on first launch. No pretrained model is executed by the package
+smoke check.
+
+
 Generate standalone release distribution bundles for macOS, Windows, and Linux:
 ```bash
 python3 build_app.py

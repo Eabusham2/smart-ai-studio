@@ -38,6 +38,14 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
                  "SmartAI-Linux-x86_64.tar.gz", "SmartAI-Unix-POSIX.tar.gz",
                  "SmartAI-native-cpu-Linux-X64.zip", "SmartAI-native-metal-macOS-ARM64.zip"):
         (dist / name).write_bytes(b"built package")
+    for target in ("Linux-x86_64", "Windows-x86_64", "macOS-arm64"):
+        files=[]
+        for suffix in ("portable.zip", "Setup.zip"):
+            path=dist/f"SmartAI-{target}-{suffix}"
+            path.write_bytes(b"native-tested-package")
+            files.append({"name":path.name,"size":path.stat().st_size})
+        (dist/f"SmartAI-{target}.receipt.json").write_text(json.dumps({
+            "commit":SHA,"gui_smoke":"passed","files":files}),encoding="utf-8")
     assets = [*manifest["parts"], *({"name": path.name, "size": path.stat().st_size} for path in dist.iterdir())]
     for index, asset in enumerate(assets):
         asset.update(id=index + 1, state="uploaded")
@@ -48,7 +56,7 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
     if fault == "missing_part":
         assets = [item for item in assets if item["name"] != manifest["parts"][1]["name"]]
     elif fault == "missing_package":
-        assets = [item for item in assets if item["name"] != "SmartAI-Windows.zip"]
+        assets = [item for item in assets if item["name"] != "SmartAI-Windows-x86_64-portable.zip"]
     elif fault == "missing_native":
         assets = [item for item in assets if item["name"] != "SmartAI-native-cpu-Linux-X64.zip"]
     elif fault == "wrong_size":
@@ -147,4 +155,5 @@ def test_provenance_gate_runs_after_all_uploads_and_missing_package_is_fatal():
     source = WORKFLOW.read_text(encoding="utf-8")
     assert source.index("- name: Stream Both Bonsai") < source.index("- name: Publish or Update GitHub Release")
     assert source.index("- name: Publish or Update GitHub Release") < source.index(f"- name: {STEP_NAME}")
-    assert "fail_on_unmatched_files: true" in source
+    assert 'python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"' in source
+    assert ",check=True)" in source
