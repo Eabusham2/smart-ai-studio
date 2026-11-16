@@ -41,8 +41,23 @@ def pip_install(runtime, root):
     wheel_kind = 'metal' if platform.system() == 'Darwin' and platform.machine() == 'arm64' else 'cpu'
     options = ['--prefer-binary', '--only-binary=llama-cpp-python',
                '--extra-index-url', f'https://abetlen.github.io/llama-cpp-python/whl/{wheel_kind}']
-    # Default dependencies/sampling are untouched. On setup, use the exact
-    # platform lock produced and imported by the native build, not future latest.
+    wheelhouse = root / 'wheelhouse'
+    manifest = wheelhouse / 'manifest.json'
+    if manifest.is_file():
+        rows = json.loads(manifest.read_text(encoding='utf-8')).get('files', [])
+        if len(rows) != 1:
+            raise RuntimeError('Invalid bundled native wheel manifest')
+        row = rows[0]
+        name = row['name']
+        if Path(name).name != name or not name.startswith('llama_cpp_python-') or not name.endswith('.whl'):
+            raise RuntimeError('Invalid bundled native wheel path')
+        wheel = wheelhouse / name
+        if wheel.stat().st_size != row['size'] or hashlib.sha256(wheel.read_bytes()).hexdigest() != row['sha256']:
+            raise RuntimeError('Bundled native wheel checksum mismatch')
+        subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir',
+                        '--no-deps', str(wheel)], check=True)
+        options = ['--prefer-binary', '--only-binary=llama-cpp-python', '--find-links', str(wheelhouse)]
+    # On setup, install the exact tested lock; preserve installed native wheel.
     subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', *options,
                     '-r', str(requirements_file(root))], check=True)
     subprocess.run([str(python), '-c', 'import tkinter,sqlite3,torch,transformers,llama_cpp; tkinter.Tcl()'], check=True)

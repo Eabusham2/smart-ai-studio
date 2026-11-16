@@ -99,3 +99,46 @@ def test_all_bundled_runtime_versions_and_hashes_are_explicit():
     for name,asset in data['assets'].items():
         assert asset['url'].startswith('https://github.com/astral-sh/python-build-standalone/releases/download/')
         assert '/latest/' not in asset['url'] and len(asset['sha256'])==64 and asset['size']>0
+
+
+def test_archive_extraction_does_not_require_new_tarfile_filter_api(tmp_path, monkeypatch):
+    def no_extractall(*args, **kwargs):
+        pytest.fail('validated extraction must not depend on the host tarfile filter API')
+    monkeypatch.setattr(tarfile.TarFile, 'extractall', no_extractall)
+    archive = tmp_path / 'runtime.tar.gz'
+    with tarfile.open(archive, 'w:gz') as tar:
+        member = tarfile.TarInfo('python/bin/python3'); member.size = 3
+        tar.addfile(member, io.BytesIO(b'bin'))
+    builder.extract_python(archive, tmp_path / 'dest')
+    assert (tmp_path / 'dest/python/bin/python3').read_bytes() == b'bin'
+
+
+def test_archive_rejects_a_member_nested_below_an_alias(tmp_path):
+    archive = tmp_path / 'alias.tar.gz'
+    with tarfile.open(archive, 'w:gz') as tar:
+        link = tarfile.TarInfo('python/alias'); link.type = tarfile.SYMTYPE; link.linkname = 'lib'
+        tar.addfile(link)
+        file = tarfile.TarInfo('python/alias/payload'); file.size = 1
+        tar.addfile(file, io.BytesIO(b'x'))
+    with pytest.raises(RuntimeError, match='link parent'):
+        builder.extract_python(archive, tmp_path / 'dest')
+    assert not (tmp_path / 'dest').exists()
+
+
+def test_setup_checks_bundled_native_wheel_before_running_pip(tmp_path, monkeypatch):
+    (tmp_path / 'requirements.txt').write_text('llama-cpp-python==0.3.0\n')
+    wheelhouse = tmp_path / 'wheelhouse'; wheelhouse.mkdir()
+    wheel = wheelhouse / 'llama_cpp_python-0.3.0-py3-none-any.whl'; wheel.write_bytes(b'corrupt')
+    (wheelhouse / 'manifest.json').write_text(json.dumps({'files': [
+        {'name': wheel.name, 'size': 7, 'sha256': '0' * 64}
+    ]}))
+    monkeypatch.setattr(bootstrap.subprocess, 'run', lambda *a, **k: pytest.fail('corrupt wheel must not run pip'))
+    with pytest.raises(RuntimeError, match='checksum mismatch'):
+        bootstrap.pip_install(tmp_path / 'runtime', tmp_path)
+
+
+def test_package_job_does_not_cache_the_unused_host_interpreter():
+    workflow = (ROOT / '.github/workflows/ci-build-release.yml').read_text(encoding='utf-8')
+    package = workflow.split('  package:', 1)[1].split('  build-and-release:', 1)[0]
+    assert 'cache: pip' not in package
+    assert 'Build bundled runtime and test relocated first launch' in package

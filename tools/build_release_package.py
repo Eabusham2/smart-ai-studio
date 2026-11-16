@@ -32,29 +32,79 @@ def target_name():
 
 
 def extract_python(archive, destination):
-    """Validate all paths and internal links before writing executable bytes."""
-    root=Path(destination).resolve()
-    with tarfile.open(archive,'r:gz') as tar:
-        members=tar.getmembers()
-        if sum(m.size for m in members)>2*1024**3:
+    """Extract a checksum-pinned runtime without version-dependent tar filters.
+
+    Validate every member and link before writing. Never extract through a
+    symlink, apply archive ownership, or require Windows symlink privileges.
+    """
+    root = Path(destination).resolve()
+    with tarfile.open(archive, 'r:gz') as tar:
+        members = tar.getmembers()
+        if sum(m.size for m in members) > 2 * 1024**3:
             raise RuntimeError('Python archive exceeds extraction limit')
-        seen=set()
-        for m in members:
-            path=PurePosixPath(m.name)
-            if path.is_absolute() or '..' in path.parts or '\\' in m.name or ':' in m.name or not path.parts or path.parts[0]!='python':
+        entries = {}
+        links = {}
+        for member in members:
+            name = PurePosixPath(member.name)
+            if (name.is_absolute() or '..' in name.parts or '\\' in member.name
+                    or ':' in member.name or not name.parts or name.parts[0] != 'python'):
                 raise RuntimeError('Unsafe Python archive path')
-            if m.name in seen:raise RuntimeError('Duplicate Python archive path')
-            seen.add(m.name)
-            if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
+            key = str(name)
+            if key in entries:
+                raise RuntimeError('Duplicate Python archive path')
+            if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
                 raise RuntimeError('Unsupported Python archive entry')
-            if m.issym() or m.islnk():
-                link=PurePosixPath(m.linkname)
-                parent=(root/str(path.parent)) if m.issym() else root
-                resolved=(parent/str(link)).resolve()
-                if link.is_absolute() or not resolved.is_relative_to(root/'python'):
+            target = root.joinpath(*name.parts)
+            if not target.resolve().is_relative_to(root / 'python'):
+                raise RuntimeError('Python archive path escapes runtime')
+            entries[key] = member
+            if member.issym() or member.islnk():
+                link = PurePosixPath(member.linkname)
+                parent = target.parent if member.issym() else root
+                resolved = (parent / str(link)).resolve()
+                if (link.is_absolute() or '\\' in member.linkname or ':' in member.linkname
+                        or not resolved.is_relative_to(root / 'python')):
                     raise RuntimeError('Python archive link escapes runtime')
-        # All inputs are from a checksum-pinned upstream archive, prevalidated.
-        tar.extractall(root, members=members, filter='data')
+                links[key] = resolved
+        # Reject writes through even an internal alias; real runtime archives
+        # place aliases after their actual files instead of writing under them.
+        for name in entries:
+            if any(str(parent) in links for parent in PurePosixPath(name).parents):
+                raise RuntimeError('Python archive member has a link parent')
+        for member in members:
+            if member.issym() or member.islnk():
+                continue
+            target = root.joinpath(*PurePosixPath(member.name).parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(member) as source, target.open('xb') as output:
+                    shutil.copyfileobj(source, output, 1024 * 1024)
+                target.chmod(member.mode & 0o777)
+        # Resolve aliases in dependency order; never follow a missing external
+        # target or cyclic link. Windows packages need no administrator rights.
+        pending = dict(links)
+        while pending:
+            progress = False
+            for name, resolved in list(pending.items()):
+                if not resolved.exists():
+                    continue
+                target = root.joinpath(*PurePosixPath(name).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if os.name == 'nt':
+                    if resolved.is_dir():
+                        shutil.copytree(resolved, target)
+                    else:
+                        shutil.copy2(resolved, target)
+                elif entries[name].islnk():
+                    os.link(resolved, target)
+                else:
+                    target.symlink_to(os.path.relpath(resolved, target.parent), target_is_directory=resolved.is_dir())
+                del pending[name]
+                progress = True
+            if not progress:
+                raise RuntimeError('Python archive has missing or cyclic link targets')
 
 
 def fetch_runtime(target, destination):
@@ -150,7 +200,26 @@ def package(target, output, *, prepare_only=False):
         app=build/'SmartAI-Linux';code=app/'SmartAI.AppDir/usr/bin'
     runtime=code/'runtime/python'
     # Every declared app dependency is installed; no models or inference.
-    pip_install(runtime,ROOT)
+    if target.startswith('macOS'):
+        wheelhouse = code / 'wheelhouse'
+        wheelhouse.mkdir()
+        env = dict(os.environ)
+        env['CMAKE_ARGS'] = '-DGGML_METAL=on -DGGML_NATIVE=OFF'
+        subprocess.run([str(python_path(runtime)), '-m', 'pip', 'wheel', '--no-cache-dir',
+                        '--no-deps', '--no-binary=llama-cpp-python',
+                        '--wheel-dir', str(wheelhouse), 'llama-cpp-python>=0.3.0'],
+                       env=env, check=True)
+        wheels = list(wheelhouse.glob('llama_cpp_python-*.whl'))
+        if len(wheels) != 1:
+            raise RuntimeError('Expected one locally built Metal wheel')
+        with zipfile.ZipFile(wheels[0]) as wheel:
+            bad = wheel.testzip()
+            if bad:
+                raise RuntimeError('Locally built Metal wheel failed integrity: ' + bad)
+        (wheelhouse / 'manifest.json').write_text(json.dumps({
+            'files': [{'name': wheels[0].name, 'sha256': sha(wheels[0]), 'size': wheels[0].stat().st_size}]
+        }, indent=2) + '\n', encoding='utf-8')
+    pip_install(runtime, code)
     lock=subprocess.check_output([str(python_path(runtime)),'-m','pip','freeze'],text=True)
     (code/'requirements.lock.txt').write_text(lock,encoding='utf-8')
     (code/'runtime/python/.smartai-deps-ready').write_text(fingerprint(code)+'\n',encoding='utf-8')

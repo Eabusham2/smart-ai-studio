@@ -391,7 +391,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
       - name: Install Linux GUI libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb libx11-6 libxext6 libxrender1 libxft2 libgl1
