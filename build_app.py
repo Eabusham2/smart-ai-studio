@@ -267,18 +267,49 @@ def create_windows_bundle(dist_dir: str, app_name: str):
 
     # 1. Create Windows Batch Launcher (SmartAI.bat)
     bat_content = f"""@echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 set "SMARTAI_ENV=%LOCALAPPDATA%\\SmartAI\\python"
-if not exist "%SMARTAI_ENV%\\Scripts\\python.exe" (
-    echo First launch: installing Smart AI Studio dependencies...
-    py -3 -m venv "%SMARTAI_ENV%" || (echo Python 3.10+ is required & exit /b 1)
+set "SMARTAI_PYTHON=%SMARTAI_ENV%\\Scripts\\python.exe"
+if not exist "%SMARTAI_PYTHON%" (
+    echo First launch: preparing private Smart AI Studio Python environment...
+    where py >nul 2>&1 && py -3 -m venv "%SMARTAI_ENV%"
+    if not exist "%SMARTAI_PYTHON%" (
+        where python >nul 2>&1 && python -m venv "%SMARTAI_ENV%"
+    )
+    if not exist "%SMARTAI_PYTHON%" (
+        echo Python is not installed. Trying the official winget installer...
+        where winget >nul 2>&1 && winget install --id Python.Python.3.12 --exact --silent --accept-package-agreements --accept-source-agreements
+        where py >nul 2>&1 && py -3.12 -m venv "%SMARTAI_ENV%"
+    )
 )
-if not exist "%SMARTAI_ENV%\\.smartai-deps-ready" (
-    "%SMARTAI_ENV%\\Scripts\\python.exe" -m pip install -r "%~dp0requirements.txt" || exit /b 1
-    type nul > "%SMARTAI_ENV%\\.smartai-deps-ready"
+if not exist "%SMARTAI_PYTHON%" (
+    echo Unable to install Python 3.10+ automatically. Install Python and rerun SmartAI.bat.
+    pause
+    exit /b 1
 )
-"%SMARTAI_ENV%\\Scripts\\python.exe" "%~dp0app_gui.py" %*
+"%SMARTAI_PYTHON%" -c "import sys,tkinter;assert sys.version_info >= (3,10)" >nul 2>&1
+if errorlevel 1 (
+    echo Python 3.10+ with Tkinter is required. Install or update Python, then rerun.
+    pause
+    exit /b 1
+)
+for /f %%H in ('"%SMARTAI_PYTHON%" -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "%~dp0requirements.txt"') do set "SMARTAI_REQ_HASH=%%H"
+set "SMARTAI_READY_HASH="
+if exist "%SMARTAI_ENV%\\.smartai-deps-ready" (
+    set /p SMARTAI_READY_HASH=<"%SMARTAI_ENV%\\.smartai-deps-ready"
+)
+if not "!SMARTAI_READY_HASH!"=="!SMARTAI_REQ_HASH!" (
+    echo Installing or updating Smart AI Studio dependencies in a user-owned environment...
+    "%SMARTAI_PYTHON%" -m pip install -r "%~dp0requirements.txt"
+    if errorlevel 1 (
+        echo Dependency setup failed. Check the messages above, then retry.
+        pause
+        exit /b 1
+    )
+    > "%SMARTAI_ENV%\\.smartai-deps-ready" echo !SMARTAI_REQ_HASH!
+)
+"%SMARTAI_PYTHON%" "%~dp0app_gui.py" %*
 exit /b %ERRORLEVEL%
 """
     with open(os.path.join(win_dir, f"{app_name}.bat"), "w") as f:
@@ -286,18 +317,22 @@ exit /b %ERRORLEVEL%
 
     # 2. Create Windowed Silent VBS Launcher (SmartAI.vbs)
     vbs_content = f"""Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "cmd /c " & Chr(34) & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\\SmartAI.bat" & Chr(34), 0, False
+Set FSO = CreateObject("Scripting.FileSystemObject")
+Root = FSO.GetParentFolderName(WScript.ScriptFullName)
+Ready = WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\\SmartAI\\python\\.smartai-deps-ready"
+WindowStyle = 0
+If Not FSO.FileExists(Ready) Then WindowStyle = 1
+WshShell.Run Chr(34) & Root & "\\SmartAI.bat" & Chr(34), WindowStyle, False
 """
     with open(os.path.join(win_dir, f"{app_name}.vbs"), "w") as f:
         f.write(vbs_content)
 
     # 3. Create Windows Setup script
     setup_bat = f"""@echo off
-echo Installing dependencies for {app_name}...
-pip install -r requirements.txt
-echo Setup Complete! Launch by double-clicking {app_name}.vbs or {app_name}.bat
-pause
+echo Smart AI Studio will install dependencies automatically on first run.
+call "%~dp0SmartAI.bat"
 """
+
     with open(os.path.join(win_dir, "Install_Dependencies.bat"), "w") as f:
         f.write(setup_bat)
 
