@@ -24,7 +24,16 @@ def valid_rate(value):
 
 @contextmanager
 def observe_generations(callback):
-    token = _observer.set(callback)
+    previous = _observer.get()
+    if previous is not None and previous is not callback:
+        def notify(sample):
+            previous(sample)
+            callback(sample)
+    else:
+        notify = callback
+    # The GUI and per-solve metadata can observe the same real invocation;
+    # nesting must not hide live GUI measurements during a Pro search.
+    token = _observer.set(notify)
     try:
         yield
     finally:

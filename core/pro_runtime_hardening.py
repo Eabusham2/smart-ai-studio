@@ -49,21 +49,6 @@ def _active_backend_name(engine) -> str:
     return "live_unloaded"
 
 
-def _count_response_tokens(engine, text: str) -> int:
-    tokenizers = [
-        getattr(getattr(engine, "mlx_backend", None), "tokenizer", None),
-        getattr(engine, "tokenizer", None),
-    ]
-    for tok in tokenizers:
-        if tok is None or not hasattr(tok, "encode"):
-            continue
-        try:
-            return max(0, len(tok.encode(text or "")))
-        except Exception:
-            pass
-    return max(0, len((text or "").split()))
-
-
 def _rss_mb() -> float:
     try:
         import psutil
@@ -132,9 +117,13 @@ def install_pro_runtime_hardening(cls) -> None:
         )
 
     def hardened_solve(self, *args, **kwargs):
+        from core.generation_metrics import RequestMetrics, observe_generations, valid_rate
         started = time.perf_counter()
-        response, metadata = original_solve(self, *args, **kwargs)
+        measured_work = RequestMetrics()
+        with observe_generations(measured_work.update):
+            response, metadata = original_solve(self, *args, **kwargs)
         elapsed = max(1e-9, time.perf_counter() - started)
+        measurements = measured_work.snapshot()
         metadata = dict(metadata or {})
         controller = getattr(self, "controller_backend", None)
         is_strata = getattr(controller, "runtime", None) == "strata"
@@ -142,16 +131,25 @@ def install_pro_runtime_hardening(cls) -> None:
         is_native = (getattr(self, "active_backend", None) == "gguf"
                      and getattr(native, "runtime", None) == "prism_speculative")
         owner = controller if is_strata else native if is_native else None
-        generated = 0 if is_native else _count_response_tokens(self, response)
+        generated = measurements.get("tokens")
+        metadata["token_usage_available"] = type(generated) is int
+        metadata["generation_invocations"] = measurements["invocations"]
         if is_strata or is_native:
             usage = dict(getattr(owner, "last_branch_usage", {}) or {})
             if is_native and any(type(value) is not int or value < 0 for value in usage.values()):
                 usage = {}
-            generated = usage.get("completion_tokens", 0)
+            # Whole-search server usage remains authoritative when available.
+            # A deliberately stopped branch may have live sampled counters but
+            # no final server usage record; do not discard those observations.
+            if type(usage.get("completion_tokens")) is int:
+                generated = usage["completion_tokens"]
             metadata["usage"] = usage
-            metadata["token_usage_available"] = "completion_tokens" in usage
-        metadata["tokens_generated"] = generated
-        # Keep the existing end-to-end number for total Pro/query throughput.
+            metadata["token_usage_available"] = type(generated) is int
+        if type(generated) is int:
+            metadata["tokens_generated"] = generated
+        else:
+            metadata.pop("tokens_generated", None)
+        # End-to-end throughput includes all candidates, never text replay.
         metadata["tok_speed"] = generated / elapsed if generated else 0.0
         metadata["measured_wall_time_s"] = elapsed
         metadata["memory_rss_mb"] = _rss_mb()
@@ -164,23 +162,23 @@ def install_pro_runtime_hardening(cls) -> None:
                 metadata.pop("tokens_generated", None)
         metadata["backend"] = _active_backend_name(self)
 
-        # Raw decoder TPS is a different metric: MLX-LM reports it from the active
-        # autoregressive decode loop, excluding the rest of an N-branch Pro request.
-        mlx = None if is_strata or is_native else getattr(self, "mlx_backend", None)
-        try:
-            decode_tps = float(getattr(mlx, "last_tok_per_sec", 0.0) or 0.0)
-        except Exception:
-            decode_tps = 0.0
+        # Decode throughput uses this request's observations, not a stale
+        # counter from an inactive backend or a tokenizer applied to the winner.
+        observed_decode = measurements.get("decode_tps")
+        decode_tps = float(observed_decode) if valid_rate(observed_decode) else 0.0
         metadata["decode_tok_speed"] = decode_tps
         if is_native:
             telemetry = dict(native.get_speculative_telemetry() or {})
             metadata["speculative"] = telemetry
-            measured = telemetry.get("decode_tokens_per_second")
-            metadata["decode_tok_speed"] = (
-                float(measured) if type(measured) in (int, float)
-                and math.isfinite(float(measured)) and measured > 0 else 0.0)
+            if not measured_work.samples:
+                native_rate = telemetry.get("decode_tokens_per_second")
+                metadata["decode_tok_speed"] = float(native_rate) if valid_rate(native_rate) else 0.0
+        active_owner = {"mlx": getattr(self, "mlx_backend", None),
+                        "gguf": native, "controller": controller,
+                        "bitnet": getattr(self, "bitnet_backend", None)}.get(
+                            getattr(self, "active_backend", None), self)
         metadata["generation_cap_reason"] = str(
-            getattr(mlx, "last_generation_cap_reason", "") or ""
+            getattr(active_owner, "last_generation_cap_reason", "") or ""
         )
         note = str(getattr(self, "_last_context_consolidation_note", "") or "")
         if note:

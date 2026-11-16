@@ -99,8 +99,9 @@ def test_solve_overwrites_hardcoded_telemetry_with_measured_metadata():
     engine = DummyPro(use_mock=False, loaded=True)
     response, meta = engine.solve("hello")
     assert response == "one two three four"
-    assert meta["tokens_generated"] == 4
-    assert meta["tok_speed"] >= 0.0
+    assert "tokens_generated" not in meta  # Words are not model token counts.
+    assert meta["token_usage_available"] is False
+    assert meta["tok_speed"] == 0.0
     assert meta["tok_speed"] != 10.9
     assert meta["memory_rss_mb"] >= 0.0
     assert meta["memory_rss_mb"] != 1536.0
@@ -216,3 +217,28 @@ def test_exact_native_telemetry_requires_actual_counts_and_excludes_stale_mlx(mo
     else:
         assert "tokens_generated" not in meta and not meta["token_usage_available"]
         assert meta["tok_speed"] == 0.0
+
+
+def test_metadata_and_outer_gui_observer_include_every_real_branch():
+    from core.generation_metrics import TokenMeter, observe_generations
+
+    class ObservedPro(DummyPro):
+        _pro_runtime_hardening_installed = False
+        def solve(self, prompt, **kwargs):
+            for count in (5, 7, 3):
+                meter = TokenMeter()
+                meter.observe(delta=1)
+                meter.observe(count=count)
+                meter.finish()
+            return "winner of arbitrary word length", {"branch_count": 3}
+
+    install_pro_runtime_hardening(ObservedPro)
+    samples = {}
+    with observe_generations(lambda sample: samples.update({sample['id']: sample})):
+        response, meta = ObservedPro().solve("question")
+    assert meta['tokens_generated'] == 15
+    assert meta['token_usage_available'] is True
+    assert meta['generation_invocations'] == 3
+    assert meta['tok_speed'] * meta['measured_wall_time_s'] == pytest.approx(15)
+    assert len(samples) == 3 and sum(sample['tokens'] for sample in samples.values()) == 15
+    assert response == "winner of arbitrary word length"

@@ -142,3 +142,11 @@ def test_package_job_does_not_cache_the_unused_host_interpreter():
     package = workflow.split('  package:', 1)[1].split('  build-and-release:', 1)[0]
     assert 'cache: pip' not in package
     assert 'Build bundled runtime and test relocated first launch' in package
+
+
+
+def test_shipped_setup_lock_does_not_reference_the_ci_wheel_directory():
+    original = 'torch==2.2.0\nllama_cpp_python @ file:///Users/runner/build/wheelhouse/native.whl#sha256=abc\ntransformers==4.40.0\n'
+    result = builder.portable_dependency_lock(original, '0.3.37')
+    assert result == 'torch==2.2.0\nllama-cpp-python==0.3.37\ntransformers==4.40.0\n'
+    assert 'file:' not in result

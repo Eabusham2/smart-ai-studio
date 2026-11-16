@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -175,6 +176,16 @@ def split_large(path, limit=1_850_000_000):
     return [path.parent/r['name'] for r in rows]+[manifest,checksums,sh,ps]
 
 
+def portable_dependency_lock(frozen, native_version):
+    """Do not retain the CI worker's local wheel URL in a shipped setup lock."""
+    rows = []
+    for line in frozen.splitlines():
+        if re.match(r'^llama[-_]cpp[-_]python\s*@', line, flags=re.I):
+            line = 'llama-cpp-python==' + native_version
+        rows.append(line)
+    return '\n'.join(rows) + '\n'
+
+
 def package(target, output, *, prepare_only=False):
     from bootstrap_runtime import pip_install, fingerprint, python_path
     import build_app
@@ -221,6 +232,11 @@ def package(target, output, *, prepare_only=False):
         }, indent=2) + '\n', encoding='utf-8')
     pip_install(runtime, code)
     lock=subprocess.check_output([str(python_path(runtime)),'-m','pip','freeze'],text=True)
+    native_version=subprocess.check_output([
+        str(python_path(runtime)), '-c',
+        'from importlib.metadata import version; print(version("llama-cpp-python"))'
+    ], text=True).strip()
+    lock=portable_dependency_lock(lock, native_version)
     (code/'requirements.lock.txt').write_text(lock,encoding='utf-8')
     (code/'runtime/python/.smartai-deps-ready').write_text(fingerprint(code)+'\n',encoding='utf-8')
     # Prove the installed interpreter survives relocation and an empty user home.
