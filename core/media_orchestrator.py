@@ -633,6 +633,37 @@ class MediaController:
             return {"status":"error","error":"Text controller produced no alternative prompt","weights_updated":False}
         return self.call("media_rsi",{"kind":info["model_type"],"model_id":fields[1],"prompts":[fields[2],revision]},allow_update=True)
 
+    def execute_selected_branch_tool(self, answer, user_prompt):
+        """Run only the selected branch's terminal media-call, at most once.
+
+        Candidate generation itself has no tool effects. This action is run
+        after Best-of-N chooses the winner; there is no subsequent model call.
+        Existing allow_update policy and permission checks remain authoritative.
+        """
+        visible = re.sub(r"<think>.*?</think>", "", str(answer or ""), flags=re.S).strip()
+        match = re.fullmatch(r"<media_call>\s*(\{.*\})\s*</media_call>", visible, flags=re.S)
+        if match is None:
+            return None
+        self._cancelled()
+        try:
+            request = json.loads(match.group(1))
+            if not isinstance(request, dict):
+                raise ValueError("Invalid media tool request")
+            name = request.get("name")
+            arguments = request.get("arguments", {})
+            if name not in TOOL_NAMES or not isinstance(arguments, dict):
+                raise ValueError("Unsupported media tool or invalid arguments")
+            allow_update = bool(
+                name in ("media_learn", "media_rsi")
+                and re.search(r"\b(?:learn|train|fine[- ]?tune|rsi|improve\s+the\s+(?:image|video|audio)\s+model)\b", str(user_prompt), re.I)
+            )
+            with self.lock:
+                result = self.call(name, arguments, allow_update=allow_update)
+        except (ValueError, TypeError) as exc:
+            name = "media_call"
+            result = {"status": "error", "error": str(exc)}
+        return {"name": name, "result": result}
+
     def stream_solve(self, prompt, history=None, cancel_event=None):
         with self.lock:
             self._depth += 1
