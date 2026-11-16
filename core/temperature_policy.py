@@ -84,6 +84,7 @@ def install_chat(pro_module) -> None:
         history=None,
         temperatures=None,
         cancel_event=None,
+        progress_callback=None,
     ):
         n = max(1, int(branch_count))
         controller = getattr(self, "controller_backend", None)
@@ -96,6 +97,14 @@ def install_chat(pro_module) -> None:
             # branch. Never leave the previous query's totals on an early exit.
             usage_backend.last_branch_usage = {}
         cancel_options = {"cancel_event": cancel_event} if cancel_event is not None else {}
+
+        def _progress_with_offset(offset, actual_total):
+            if progress_callback is None:
+                return None
+            def report(done, _backend_total, tokens, seconds, **kwargs):
+                progress_callback(offset + done, actual_total, tokens, seconds, **kwargs)
+            return report
+
         if n <= 1:
             temps = list(temperatures) if temperatures is not None else [CHAT_N1_TEMPERATURE]
             return original_generate(
@@ -105,6 +114,7 @@ def install_chat(pro_module) -> None:
                 history=history,
                 temperatures=temps[:1],
                 **cancel_options,
+                **({"progress_callback": _progress_with_offset(0, 1)} if progress_callback is not None else {}),
             )
 
         # solve() receives N+1 temperatures from pro_ladder(): N routed curve values
@@ -125,6 +135,7 @@ def install_chat(pro_module) -> None:
             history=history,
             temperatures=routed,
             **cancel_options,
+            **({"progress_callback": _progress_with_offset(0, n + 1)} if progress_callback is not None else {}),
         )
         if ((cancel_event is not None and cancel_event.is_set())
                 or (tracks_usage and (len(branches or []) != n
@@ -143,6 +154,7 @@ def install_chat(pro_module) -> None:
                 history=history,
                 temperatures=[extra_temp],
                 **cancel_options,
+                **({"progress_callback": _progress_with_offset(n, n + 1)} if progress_callback is not None else {}),
             )
         except BaseException:
             if tracks_usage:
