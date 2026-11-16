@@ -25,6 +25,9 @@ def install_speed_control(cls) -> None:
         self.speed_status = {"status": "idle", "message": "Load a model to configure speed."}
         self._speed_cancel_event = threading.Event()
         self._speed_loading_thread = None
+        from core.lossless_speed_control import initial_options
+        self.lossless_speed_options = initial_options(self.settings)
+        self.lossless_speed_status = {"status": "idle", "message": "Prompt speedups are ready."}
 
     def active_native(self):
         controller = getattr(self, "controller_backend", None)
@@ -38,6 +41,9 @@ def install_speed_control(cls) -> None:
 
     def cancel(self):
         self._speed_cancel_event.set()
+        native = getattr(self, "gguf_backend", None)
+        if getattr(native, "runtime", None) == "prism_speculative":
+            native.cancel_generation()
 
     def configure_locked(self, enabled=True, force=False, progress=None, cancelled=None, *, reset_cancel=True):
         backend = active_native(self)
@@ -118,6 +124,12 @@ def install_speed_control(cls) -> None:
                 result = original_load(self, *args, **kwargs)
                 if isinstance(result, dict) and result.get("status") == "loaded" and not getattr(self.settings, "use_mock", False):
                     result = dict(result)
+                    from core.lossless_speed_control import apply_loaded_options
+                    try:
+                        self.lossless_speed_status = apply_loaded_options(self)
+                    except Exception as exc:
+                        self.lossless_speed_status = {"status": "error", "message": f"Optional prompt reuse unavailable: {exc}"}
+                    result["speedups"] = self.lossless_speed_status
                     result["speed"] = configure_locked(self, self.auto_speed_enabled, reset_cancel=False)
                 return result
             finally:
@@ -130,6 +142,9 @@ def install_speed_control(cls) -> None:
         if self._speed_loading_thread != threading.get_ident():
             cancel(self)
         controller = getattr(self, "controller_backend", None)
+        native = getattr(self, "gguf_backend", None)
+        if getattr(native, "runtime", None) == "prism_speculative":
+            native.cancel_generation()
         if getattr(controller, "runtime", None) == "strata":
             # A silent native prefill can hold its HTTP read for minutes. Close
             # that transport before waiting for any load/configuration lock.
@@ -152,4 +167,6 @@ def install_speed_control(cls) -> None:
     cls.unload_model = unload
     cls.configure_auto_speed = configure
     cls.cancel_speed_tuning = cancel
+    from core.lossless_speed_control import configure_speedups
+    cls.configure_lossless_speedups = configure_speedups
     cls._speed_control_installed = True

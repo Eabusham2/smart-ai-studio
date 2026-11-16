@@ -646,6 +646,9 @@ class SmartAIChatbotApp:
         backend = getattr(getattr(self, "engine", None), "controller_backend", None)
         if getattr(backend, "runtime", None) == "strata":
             return backend.owned_process_ids()
+        native = getattr(getattr(self, "engine", None), "gguf_backend", None)
+        if getattr(native, "runtime", None) == "prism_speculative":
+            return native.owned_process_ids()
         return []
 
     def _update_memory_hud_badge(self):
@@ -3413,6 +3416,10 @@ class SmartAIChatbotApp:
             return
         cached = self._model_is_cached(target_info)
 
+        if getattr(self, "_native_unload_pending", False):
+            self.btn_load_unload.configure(text="Retry unload", command=self._on_toggle_load_unload)
+            return
+
         if target_info.get("controller_runtime") == "strata":
             unload_pending = bool(getattr(self, "_strata_unload_pending", False))
             self.btn_load_unload.configure(
@@ -3494,7 +3501,9 @@ class SmartAIChatbotApp:
         is_strata = target_info.get("controller_runtime") == "strata"
         cached = self._model_is_cached(target_info)
 
-        if is_strata and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False)):
+        is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
+        if ((is_strata and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False)))
+                or (is_native and (self.is_model_loaded or getattr(self, "_native_unload_pending", False)))):
             self._unload_strata_async()
             return
 
@@ -3544,10 +3553,10 @@ class SmartAIChatbotApp:
                     # Import-time policy already decided whether custom text models may enter
                     # the catalog; runtime loading itself does not re-apply that restriction.
                     load_res = self.engine.load_model(target_info["name"], model_path=m_path, model_info=target_info)
-                    if is_strata and load_cancel.is_set() and load_res.get("status") == "loaded":
+                    if load_cancel.is_set() and load_res.get("status") == "loaded":
                         stopped = self.engine.unload_model()
                         load_res = ({"status": "cancelled"} if stopped.get("status") == "unloaded"
-                                    else {"status": "error", "error": stopped.get("error") or "Strata cleanup is incomplete. Use Retry unload."})
+                                    else {"status": "error", "error": stopped.get("error") or "Runtime cleanup is incomplete. Use Retry unload."})
                 elif model_type == "audio":
                     load_res = self.audio_engine.load_model(target_info)
                 else:
@@ -3602,6 +3611,11 @@ class SmartAIChatbotApp:
                     and getattr(backend, "runtime", None) == "strata"
                     and getattr(backend, "_manager", None) is not None
                 )
+                native = getattr(self.engine, "gguf_backend", None)
+                self._native_unload_pending = bool(
+                    not self.is_model_loaded and getattr(native, "runtime", None) == "prism_speculative"
+                    and getattr(native, "_process", None) is not None
+                )
                 self._update_memory_hud_badge()
                 self._update_model_action_buttons()
                 self._update_resource_view_metrics()
@@ -3623,10 +3637,18 @@ class SmartAIChatbotApp:
             _do_load()
 
     def _unload_strata_async(self, on_complete=None):
-        """Drain only the active owned Strata server without blocking Tk."""
+        """Drain the active owned native server without blocking Tk."""
         backend = getattr(self.engine, "controller_backend", None)
+        backend_attribute = "controller_backend"
+        pending_attribute = "_strata_unload_pending"
+        runtime_label = "Strata"
         if getattr(backend, "runtime", None) != "strata":
-            return False
+            backend = getattr(self.engine, "gguf_backend", None)
+            if getattr(backend, "runtime", None) != "prism_speculative":
+                return False
+            backend_attribute = "gguf_backend"
+            pending_attribute = "_native_unload_pending"
+            runtime_label = "Native"
         if getattr(self, "_model_load_in_progress", False):
             return True
         target_info = self.models_config[self.active_tab_id]
@@ -3635,7 +3657,7 @@ class SmartAIChatbotApp:
         self._model_loading_update = None
         self._sync_memory_watchdog(force_stop=True)
         self.cancel_event.set()
-        cancel_request = getattr(backend, "cancel_current_request", None)
+        cancel_request = getattr(backend, "cancel_current_request", None) or getattr(backend, "cancel_generation", None)
         if callable(cancel_request):
             try:
                 cancel_request()
@@ -3650,7 +3672,7 @@ class SmartAIChatbotApp:
             try:
                 # The UI guards model changes while this request is pending.
                 # A replaced backend must never be unloaded by an older request.
-                result = (self.engine.unload_model() if getattr(self.engine, "controller_backend", None) is backend
+                result = (self.engine.unload_model() if getattr(self.engine, backend_attribute, None) is backend
                           else {"status": "stale"})
             except Exception as exc:
                 result = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -3661,7 +3683,7 @@ class SmartAIChatbotApp:
                 if result.get("status") == "stale":
                     return
                 unloaded = result.get("status") == "unloaded"
-                self._strata_unload_pending = not unloaded
+                setattr(self, pending_attribute, not unloaded)
                 # A partial stop cannot remain available for chat. Keep the
                 # cleanup action visible until the owned runtime is gone.
                 self.is_model_loaded = False
@@ -3672,8 +3694,8 @@ class SmartAIChatbotApp:
                     )
                     self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}`.")
                 else:
-                    self.lbl_model_status.configure(text="⚠ Strata cleanup incomplete — Retry unload", fg=self.C["accent_red"])
-                    error = str(result.get("error") or "The owned Strata runtime has not stopped.")
+                    self.lbl_model_status.configure(text=f"⚠ {runtime_label} cleanup incomplete — Retry unload", fg=self.C["accent_red"])
+                    error = str(result.get("error") or "The owned native runtime has not stopped.")
                     self._append_ai_message(f"⚠️ **Unload incomplete**: {error}\nUse **Retry unload** before loading another model.")
                 self._update_memory_hud_badge()
                 self._update_model_action_buttons()
@@ -3685,7 +3707,7 @@ class SmartAIChatbotApp:
 
             self._event_queue.put(("model_load_complete", finish))
 
-        threading.Thread(target=worker, name="studio-strata-unload", daemon=True).start()
+        threading.Thread(target=worker, name="studio-native-unload", daemon=True).start()
         return True
 
     def _append_rendered_user_turn(self, text: str):
@@ -3715,6 +3737,10 @@ class SmartAIChatbotApp:
             return
         if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
                 and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False))):
+            self._unload_strata_async(on_complete=lambda: self._on_switch_model_tab(target_tab_id))
+            return
+        if (getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
+                and (self.is_model_loaded or getattr(self, "_native_unload_pending", False))):
             self._unload_strata_async(on_complete=lambda: self._on_switch_model_tab(target_tab_id))
             return
         self.active_tab_id = target_tab_id
@@ -3850,7 +3876,8 @@ class SmartAIChatbotApp:
             self._append_ai_message("⚠️ Could not export chat history.")
 
     def _on_memory_pressure_emergency(self, status: Dict[str, Any]):
-        if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata":
+        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
+                or getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"):
             # The external native process is counted by the owned-PID provider.
             # Honor the user's enabled cap while allowing cancellation to unblock
             # an active HTTP request before the background unload takes its lock.
@@ -3862,9 +3889,9 @@ class SmartAIChatbotApp:
             critical = status.get("used_percent", 0.0) >= 99.0 and status.get("free_gb", 1.0) < 0.10
             if cap_reached or critical:
                 if not getattr(self, "_model_unload_in_progress", False):
-                    reason = (f"Studio and its Strata runtime reached the {cap:.1f} GB RAM limit ({process_gb:.1f} GB)."
+                    reason = (f"Studio and its native runtime reached the {cap:.1f} GB RAM limit ({process_gb:.1f} GB)."
                               if cap_reached else "The system reached critical RAM pressure.")
-                    self._append_ai_message(f"🛡️ {reason} Stopping the owned Strata runtime; prepared model files are kept.")
+                    self._append_ai_message(f"🛡️ {reason} Stopping the owned native runtime; prepared model files are kept.")
                 self._unload_strata_async()
             return
         # Proactively trim transient caches without unloading active model
@@ -4481,7 +4508,8 @@ class SmartAIChatbotApp:
         self._recompute_input_height(is_focused=True)
         self._append_user_message(raw_text)
 
-        if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata":
+        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata"
+                and getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) != "prism_speculative"):
             tokens = len(user_msg.split()) * 2
             self.total_tokens_used += tokens
         self._update_telemetry()
@@ -4826,6 +4854,7 @@ class SmartAIChatbotApp:
                 info = self.models_config[self.active_tab_id]
                 strata_backend = getattr(self.engine, "controller_backend", None)
                 is_strata_stream = getattr(strata_backend, "runtime", None) == "strata"
+                is_native_stream = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
                 if self.cancel_event.is_set():
                     if is_strata_stream:
                         def cancelled_before_stream():
@@ -4887,12 +4916,12 @@ class SmartAIChatbotApp:
                     ui_pending.clear()
 
                 full_ans = "".join(accumulated).strip()
-                if not full_ans and not self.cancel_event.is_set() and not is_strata_stream:
+                if not full_ans and not self.cancel_event.is_set() and not (is_strata_stream or is_native_stream):
                     ans, meta = self.engine.solve(full_msg, history=curr_history, cancel_event=self.cancel_event)
                     full_ans = ans.strip() if ans else "I am ready. How can I help you today?"
 
                 duration_s = max(0.01, time.perf_counter() - start_time)
-                if is_strata_stream:
+                if is_strata_stream or is_native_stream:
                     # _update_telemetry reads this request's native timings or
                     # the matching Pro usage/duration, never a word estimate.
                     tok_per_sec = 0.0
@@ -4901,9 +4930,9 @@ class SmartAIChatbotApp:
                     tok_per_sec = tokens_count / duration_s
                     self.total_tokens_used += tokens_count
 
-                if is_strata_stream and (not full_ans or self.cancel_event.is_set()):
-                    notice = ("⏹ Strata generation stopped." if self.cancel_event.is_set()
-                              else "⚠ Strata completed without response text.")
+                if (is_strata_stream or is_native_stream) and (not full_ans or self.cancel_event.is_set()):
+                    notice = ("⏹ Native generation stopped." if self.cancel_event.is_set()
+                              else "⚠ Native runtime completed without response text.")
                     def finish_without_answer(message=notice):
                         self.chat_stream.configure(state="normal")
                         self.chat_stream.insert("end", f"\n{message}\n\n", "ai_msg")
@@ -5055,7 +5084,8 @@ class SmartAIChatbotApp:
         if self.is_generating:
             return
         self._append_user_message(raw_text)
-        if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata":
+        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata"
+                and getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) != "prism_speculative"):
             tokens = len(user_msg.split()) * 2
             self.total_tokens_used += tokens
         self._update_telemetry()
@@ -5069,13 +5099,17 @@ class SmartAIChatbotApp:
 
     def _on_stop_generation(self):
         self.cancel_event.set()
+        native = getattr(self.engine, "gguf_backend", None)
+        if getattr(native, "runtime", None) == "prism_speculative":
+            native.cancel_generation()
         self._set_generating_state(False)
 
     def _update_telemetry(self, tps: float = 0.0):
         curr_info = self.models_config.get(self.active_tab_id, {})
         is_strata = curr_info.get("controller_runtime") == "strata"
-        if is_strata:
-            backend = getattr(self.engine, "controller_backend", None)
+        is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
+        if is_strata or is_native:
+            backend = getattr(self.engine, "gguf_backend" if is_native else "controller_backend", None)
             generation = getattr(backend, "last_generation", None)
             completed = (isinstance(generation, dict) and generation.get("status") == "completed"
                          and not self.cancel_event.is_set() and self.is_model_loaded)
@@ -5083,7 +5117,10 @@ class SmartAIChatbotApp:
             total = usage.get("total_tokens") if isinstance(usage, dict) else None
             available = type(total) is int and total >= 0
             self.total_tokens_used = total if available else 0
-            context = backend.n_ctx() if backend is not None and self.is_model_loaded else self.max_context_window
+            context_value = getattr(backend, "n_ctx", None) if self.is_model_loaded else None
+            context = (context_value() if callable(context_value) else context_value) or self.max_context_window
+            if is_native:
+                context = min(context, getattr(backend, "context_budget_tokens", context) or context)
             self.lbl_context.configure(
                 text=(f"📊 Last request: {total:,} / {context:,} tokens" if available
                       else "📊 Last request: unavailable"),
@@ -5091,7 +5128,7 @@ class SmartAIChatbotApp:
         else:
             ctx_pct = min(100.0, (self.total_tokens_used / self.max_context_window) * 100)
             self.lbl_context.configure(text=f"📊 Context: {self.total_tokens_used:,} / {self.max_context_window:,} ({ctx_pct:.0f}%)")
-        inference_only = bool(curr_info.get("inference_only"))
+        inference_only = bool(curr_info.get("inference_only") or is_native)
         total_p = curr_info.get("raw_params", 27_400_000_000) + (0 if inference_only else self.synapses_learned_count)
         param_str = format_parameter_count(total_p)
         if hasattr(self, "lbl_params"):
@@ -5100,7 +5137,7 @@ class SmartAIChatbotApp:
             syn_str = format_added_synapses(self.synapses_learned_count)
             self.lbl_synapses.configure(text="Inference only" if inference_only else f"📈 {syn_str}")
         if hasattr(self, "lbl_tps"):
-            if is_strata:
+            if is_strata or is_native:
                 rate = None
                 suffix = "decode (last request)"
                 if completed and available:
@@ -5127,7 +5164,7 @@ class SmartAIChatbotApp:
                 self.lbl_tps.configure(
                     text=f"⚡ {rate:.1f} tok/s {suffix}" if valid_rate else "⚡ Speed: unavailable",
                 )
-            elif tps > 0:
+            elif tps > 0 and not is_native:
                 self.lbl_tps.configure(text=f"⚡ {tps:.1f} tok/s")
         if hasattr(self, "lbl_res_synapses"):
             syn_str = format_added_synapses(self.synapses_learned_count)
@@ -5213,17 +5250,20 @@ assert glyph_res["invariants_passed"] == True
 
         ent_val = meta.get("entropy", 0.0)
         mode_str = meta.get("mode", "Pro Search")
-        tps = meta.get("tok_speed", 10.9)
+        tps = meta.get("tok_speed")
         rss = meta.get("memory_rss_mb", 1024.0)
         s_score = meta.get("surprise_score", 0.0)
         r_score = meta.get("verified_reward", 0.0)
         win_idx = meta.get("winning_branch", 0)
         win_temp = meta.get("winning_temp", 0.20)
 
-        self._make_badge(hud_row, f"⚡ {tps:.1f} tok/s (PLD K=4)", self.C["accent_green"])
-        self._make_badge(hud_row, f"🧠 Entropy H={ent_val:.2f} ({mode_str})", self.C["accent_cyan"])
+        speed_text = f"⚡ {tps:.1f} tok/s" if type(tps) in (int, float) and math.isfinite(tps) else "⚡ Speed unavailable"
+        entropy_text = f"H={ent_val:.2f}" if type(ent_val) in (int, float) and math.isfinite(ent_val) else "unavailable"
+        surprise_text = f"{s_score:.2f}" if type(s_score) in (int, float) and math.isfinite(s_score) else "unavailable"
+        self._make_badge(hud_row, speed_text, self.C["accent_green"])
+        self._make_badge(hud_row, f"🧠 Entropy {entropy_text} ({mode_str})", self.C["accent_cyan"])
         self._make_badge(hud_row, f"🏆 Winner: Branch #{win_idx+1} (T={win_temp:.2f})", self.C["accent_yellow"])
-        self._make_badge(hud_row, f"🎯 Reward R={r_score:.1f} | S={s_score:.2f}", self.C["accent_purple"])
+        self._make_badge(hud_row, f"🎯 Reward R={r_score:.1f} | S={surprise_text}", self.C["accent_purple"])
         self._make_badge(hud_row, f"💾 RSS: {rss:.0f} MB", self.C["accent_orange"])
 
         # Main Paned / Treeview & Inspector
@@ -5716,6 +5756,14 @@ except Exception:
 try:
     from core.gui_speed_tuning import install_gui_speed_tuning
     install_gui_speed_tuning()
+except Exception:
+    pass
+
+
+# Exact prompt reuse and opt-in native drafting controls.
+try:
+    from core.gui_lossless_speedups import install_gui_lossless_speedups
+    install_gui_lossless_speedups()
 except Exception:
     pass
 

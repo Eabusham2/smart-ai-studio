@@ -11,6 +11,8 @@ import core._mlx_engine_base as _base
 from core._mlx_engine_base import *
 from core.kv_cache_manager import SmartKVCacheManager, compute_auto_kv_budget
 from core.controller_runtime import UniversalControllerBackend, resolve_controller_runtime
+from core.prompt_reuse import (
+    ExactPrefixStore, TokenizerMemo, cache_nbytes, cache_policy_signature, tokenizer_signature)
 
 # Older implementation logged through a module global without defining it.
 _base.logger = logging.getLogger(__name__)
@@ -94,13 +96,28 @@ def _reclaim_if_needed(mx, *, force: bool = False) -> None:
         pass
 
 
+def _local_artifact_stamp(path):
+    """Guard the interval between loading local bytes and opt-in content hashing."""
+    if not path:
+        return ()
+    try:
+        from pathlib import Path
+        root = Path(path).expanduser().resolve(strict=True)
+        files = [root] if root.is_file() else sorted(item for item in root.rglob("*") if item.is_file())
+        if not files:
+            return None
+        return tuple((str(item), (s := item.stat()).st_dev, s.st_ino, s.st_size,
+                      s.st_mtime_ns, s.st_ctime_ns) for item in files)
+    except (OSError, ValueError):
+        return None
+
+
 class MLXReasoningBackend(_base.MLXReasoningBackend):
     """Preserves native sampling/streaming while making the SmartKV policy live.
 
-    ProReasoningEngine sends a fully packed history prompt each request, so reusing a
-    previous request's raw KV tensors would duplicate context. The manager therefore
-    owns the hardware-scaled budget and a fresh prompt-cache arena per packed request;
-    conversation state itself is preserved by the app's history packer.
+    Packed history is tokenized once. Supported immutable prefill snapshots are
+    reused only for exact token prefixes, with isolated state for every decode.
+    Unknown cache formats continue through their original complete-prefill path.
 
     KV caches default to TurboQuant mixed K8/V3 on supported Apple-Silicon MLX
     runtimes. The model's native low-bit/ternary weight format is untouched.
@@ -128,6 +145,26 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self._speed_prefill_step_size = None
         self._speed_profile_context = None
         self.last_error = ""
+        self._tokenizer_memo = TokenizerMemo()
+        self._prompt_prefixes = ExactPrefixStore(max_tokens=self.max_stateful_kv_tokens)
+        self._prompt_reuse_identity = None
+        self._prompt_weight_revision = 0
+        self._lossless_speedups = {"prompt_reuse": True, "branch_prefill": True,
+                                  "tokenizer_memo": True, "persistent_cache": False,
+                                  "metal_warmup": False}
+        self.last_prompt_reused_tokens = 0
+        self.last_prompt_reuse_reason = "idle"
+        self._persistent_prompt_store = None
+        self._persistent_prompt_identity = None
+        self._prompt_disk_pristine = False
+        self._prompt_disk_model_id = None
+        self._prompt_disk_tokenizer_id = None
+        self._prompt_load_stamps = None
+        self._prompt_cache_directory = None
+        from core.mlx_warmup import SafeMLXWarmup
+        self._metal_warmup = SafeMLXWarmup()
+        from core.vlm_prompt_reuse import NativeVLMCacheReuse
+        self._vlm_prefixes = NativeVLMCacheReuse()
 
         # The GUI class is already defined when its ProReasoningEngine is constructed.
         # Install the optional top-row generation-cap control without rewriting app_gui.py.
@@ -142,6 +179,230 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         from core.native_speed import runtime_lock
         with runtime_lock(self):
             return configure_mlx_speed(self, enabled, force, progress, cancelled)
+
+    def configure_lossless_speedups(self, enabled=True, *, prompt_reuse=True,
+                                   branch_prefill=True, tokenizer_memo=True,
+                                   persistent_cache=False, cache_dir=None,
+                                   metal_warmup=False):
+        """Apply execution-only preferences; selected weights/cache policy stay fixed."""
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            self.invalidate_prompt_reuse("configuration")
+            self._lossless_speedups = {
+                "prompt_reuse": bool(enabled and prompt_reuse),
+                "branch_prefill": bool(enabled and branch_prefill),
+                "tokenizer_memo": bool(enabled and tokenizer_memo),
+                "persistent_cache": bool(enabled and persistent_cache),
+                "metal_warmup": bool(enabled and metal_warmup),
+            }
+            self._prompt_cache_directory = cache_dir
+            from core.mlx_warmup import SafeMLXWarmup
+            self._metal_warmup = SafeMLXWarmup(enabled=self._lossless_speedups["metal_warmup"])
+            return dict(self._lossless_speedups)
+
+    def invalidate_prompt_reuse(self, reason="mutation"):
+        """Call before external in-place weight/tokenizer/adapter changes, or unload."""
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            self._prompt_weight_revision += 1
+            self._prompt_reuse_identity = None
+            self._prompt_prefixes.clear()
+            self._vlm_prefixes.clear()
+            self._tokenizer_memo.clear()
+            self._persistent_prompt_identity = None
+            if self._persistent_prompt_store is not None:
+                self._persistent_prompt_store.close()
+            self._persistent_prompt_store = None
+            self._metal_warmup.close()
+            if reason not in {"configuration", "model load"}:
+                self._prompt_disk_pristine = False
+            if self.kv_cache_manager is not None:
+                self.kv_cache_manager.release()
+            self.last_prompt_reused_tokens = 0
+            self.last_prompt_reuse_reason = str(reason)
+
+    def _encode_prompt(self, prompt):
+        signature = (id(self.model), tokenizer_signature(self.tokenizer),
+                     str(self.model_path), str(self.adapter_path), self._prompt_weight_revision)
+        if signature != self._prompt_reuse_identity:
+            if self._prompt_reuse_identity is not None:
+                self._prompt_disk_pristine = False
+            self._prompt_prefixes.clear()
+            self._vlm_prefixes.clear()
+            self._tokenizer_memo.clear()
+            self._persistent_prompt_identity = None
+            self._prompt_reuse_identity = signature
+            if self.kv_cache_manager is not None and self.kv_cache_manager.model is not self.model:
+                self.kv_cache_manager = None
+        if _memory_pressure():
+            self._prompt_prefixes.clear()
+            self._vlm_prefixes.clear()
+            self._tokenizer_memo.clear()
+        return self._tokenizer_memo.encode(
+            self.tokenizer, prompt, enabled=self._lossless_speedups["tokenizer_memo"])
+
+    def prompt_reuse_telemetry(self):
+        return {"reused_tokens": self.last_prompt_reused_tokens,
+                "reason": self.last_prompt_reuse_reason,
+                "prefix_hits": self._prompt_prefixes.hits,
+                "prefix_misses": self._prompt_prefixes.misses,
+                "prefix_bytes": self._prompt_prefixes.nbytes,
+                "tokenizer_hits": self._tokenizer_memo.hits,
+                "tokenizer_misses": self._tokenizer_memo.misses,
+                **self._vlm_prefixes.telemetry(),
+                **self._metal_warmup.telemetry()}
+
+    def _vlm_reuse_kwargs(self, prepared_prompt, prefill_kwargs, *, branches=False):
+        enabled = self._lossless_speedups["prompt_reuse"] or (
+            branches and self._lossless_speedups["branch_prefill"])
+        kwargs = self._vlm_prefixes.request_kwargs(
+            self.model, self.processor, prepared_prompt,
+            prefill_step_size=prefill_kwargs.get("prefill_step_size"),
+            revision=[self._prompt_weight_revision, tokenizer_signature(self.tokenizer)],
+            enabled=enabled and not any(getattr(owner, "training", False) for owner in
+                                       (self.model, getattr(self.model, "language_model", None))),
+            memory_ok=not _memory_pressure())
+        self.last_prompt_reused_tokens = 0
+        self.last_prompt_reuse_reason = self._vlm_prefixes.last_reason
+        return kwargs
+
+    def _finish_vlm_request(self, *, completed, branches=False):
+        self._metal_warmup.touch()
+        if not completed or _memory_pressure() or (
+                not branches and not self._lossless_speedups["prompt_reuse"]):
+            self._vlm_prefixes.clear()
+
+    def _prepare_optional_warmup(self, mx):
+        from core.native_speed import runtime_lock
+        if self._metal_warmup._closed and self._lossless_speedups["metal_warmup"]:
+            from core.mlx_warmup import SafeMLXWarmup
+            self._metal_warmup = SafeMLXWarmup(enabled=True)
+        self._metal_warmup.prepare(mx=mx, runtime_lock=runtime_lock(self),
+                                   memory_ok=lambda: not _memory_pressure())
+
+    def _disk_prompt_identity(self, prefill_step_size):
+        """Opt-in disk state is allowed only for exact local, unmodified weights."""
+        if (not self._lossless_speedups["persistent_cache"] or not self._prompt_cache_directory
+                or not self._prompt_disk_pristine or self._vlm_runtime is not None
+                or self._prompt_disk_model_id != id(self.model)
+                or self._prompt_disk_tokenizer_id != id(self.tokenizer)):
+            return None
+        try:
+            from importlib.metadata import version
+            from core.persistent_prompt_cache import (
+                PersistentPromptStore, local_artifact_identity, prompt_cache_identity)
+            if self._persistent_prompt_identity is None:
+                current_stamps = (_local_artifact_stamp(self.model_path), _local_artifact_stamp(self.adapter_path))
+                if current_stamps != self._prompt_load_stamps or None in current_stamps:
+                    self._prompt_disk_pristine = False
+                    return None
+                model = local_artifact_identity(self.model_path)
+                adapter = local_artifact_identity(self.adapter_path) if self.adapter_path else None
+                if model is None or (self.adapter_path and adapter is None):
+                    return None
+                if current_stamps != (_local_artifact_stamp(self.model_path), _local_artifact_stamp(self.adapter_path)):
+                    self._prompt_disk_pristine = False
+                    return None
+                tokenizer_config = {
+                    name: getattr(self.tokenizer, name, None) for name in
+                    ("chat_template", "special_tokens_map", "bos_token_id", "eos_token_id",
+                     "add_bos_token", "add_eos_token", "init_kwargs")}
+                added = getattr(self.tokenizer, "get_added_vocab", None)
+                if callable(added):
+                    tokenizer_config["added_vocab"] = added()
+                import json
+                # Public configuration must be serializable, never an object repr.
+                json.dumps(tokenizer_config, sort_keys=True, allow_nan=False)
+                self._persistent_prompt_identity = prompt_cache_identity(
+                    model=model,
+                    tokenizer={"artifact": model,
+                               "class": type(self.tokenizer).__module__ + "." + type(self.tokenizer).__qualname__,
+                               "configuration": tokenizer_config},
+                    adapter=adapter,
+                    cache_policy="desktop-existing-turboquant-k8-v3-with-native-fallback",
+                    versions={name: version(name) for name in ("mlx", "mlx-lm", "transformers", "tokenizers")})
+                self._persistent_prompt_store = PersistentPromptStore(self._prompt_cache_directory, enabled=True)
+            return {**self._persistent_prompt_identity, "prefill_step_size": int(prefill_step_size),
+                    "prefill_snapshot_schema": 1}
+        except Exception:
+            return None
+
+    def _prepare_text_cache(self, prompt_ids, prefill_step_size, *, branches=False):
+        """Evaluate a prompt prefix once, leaving the final token for MLX-LM."""
+        import inspect
+        import importlib
+        import mlx.core as mx
+        if self.kv_cache_manager is None:
+            self.kv_cache_manager = SmartKVCacheManager(
+                self.model, max_tokens=self.max_stateful_kv_tokens)
+        arena = self.kv_cache_manager
+        arena.ensure_fresh()
+        self.last_prompt_reused_tokens = 0
+        self.last_prompt_reuse_reason = "full prefill"
+        reuse = self._lossless_speedups["prompt_reuse"] or (
+            branches and self._lossless_speedups["branch_prefill"])
+        if not reuse or len(prompt_ids) < 2 or _memory_pressure() or getattr(self.model, "training", False):
+            if _memory_pressure() or getattr(self.model, "training", False):
+                self._prompt_prefixes.clear()
+            if getattr(self.model, "training", False):
+                self._prompt_disk_pristine = False
+            return list(prompt_ids)
+        try:
+            # Check the actual generation API before evaluating any model state.
+            params = inspect.signature(importlib.import_module("mlx_lm.generate").generate_step).parameters
+            if not {"prompt_cache", "prefill_step_size"}.issubset(params):
+                raise ValueError("runtime does not expose explicit prompt-cache support")
+            cache_nbytes(arena.get_cache(), 0)
+        except (ImportError, AttributeError, TypeError, ValueError) as exc:
+            self.last_prompt_reuse_reason = str(exc)
+            return list(prompt_ids)
+        found = self._prompt_prefixes.lookup(prompt_ids, prefill_step_size)
+        if found is not None and cache_policy_signature(found[0]) != cache_policy_signature(arena.get_cache()):
+            self._prompt_prefixes.clear()
+            found = None
+        disk_identity = self._disk_prompt_identity(prefill_step_size)
+        if found is None and disk_identity is not None:
+            loaded = self._persistent_prompt_store.load(prompt_ids, disk_identity)
+            if loaded is not None:
+                tokens, cache = loaded
+                n = len(tokens)
+                if n == len(prompt_ids) - 1 or n % prefill_step_size == 0:
+                    if (cache_policy_signature(cache) == cache_policy_signature(arena.get_cache())
+                            and self._prompt_prefixes.remember(tokens, cache, prefill_step_size)):
+                        found = self._prompt_prefixes.lookup(prompt_ids, prefill_step_size)
+        offset = 0
+        if found is not None:
+            arena.cache, offset = found
+            self.last_prompt_reused_tokens = offset
+            self.last_prompt_reuse_reason = "exact token prefix"
+        # Stop retaining prefixes above budget; the full context still reaches
+        # generation. Memory pressure can release optional state at any boundary.
+        if len(prompt_ids) - 1 > self._prompt_prefixes.max_tokens:
+            return list(prompt_ids[offset:])
+        end = len(prompt_ids) - 1
+        while offset < end:
+            stop = min(end, offset + int(prefill_step_size))
+            self.model(mx.array([prompt_ids[offset:stop]]), cache=arena.get_cache())
+            mx.eval([layer.state for layer in arena.get_cache()])
+            offset = stop
+            arena.current_length = offset
+            if _memory_pressure():
+                self._prompt_prefixes.clear()
+                self.last_prompt_reuse_reason = "memory pressure; snapshot skipped"
+                return list(prompt_ids[offset:])
+        stored = self._prompt_prefixes.remember(prompt_ids[:end], arena.get_cache(), prefill_step_size)
+        if stored and not self.last_prompt_reused_tokens:
+            self.last_prompt_reuse_reason = "prefill snapshot saved"
+        if stored and disk_identity is not None:
+            self._persistent_prompt_store.save(prompt_ids[:end], arena.get_cache(), disk_identity)
+        return list(prompt_ids[offset:])
+
+    def _release_text_cache(self, *, branches=False):
+        self._metal_warmup.touch()
+        if self.kv_cache_manager is not None:
+            self.kv_cache_manager.release()
+        if (not self._lossless_speedups["prompt_reuse"] and not branches) or _memory_pressure():
+            self._prompt_prefixes.clear()
 
     def _speed_prefill_size(self) -> int:
         safe = _adaptive_prefill_step_size()
@@ -204,6 +465,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
     def load_model(self) -> bool:
         """Load native model weights with the model's required Apple-Silicon runtime."""
+        self.invalidate_prompt_reuse("model load")
+        self.kv_cache_manager = None
         self.last_error = ""
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             self.last_error = "This MLX checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."
@@ -216,6 +479,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         runtime = resolve_controller_runtime(self.model_info, str(self.model_path or ""))
         specialized_vlm = runtime in {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
+        load_stamps = (_local_artifact_stamp(self.model_path), _local_artifact_stamp(self.adapter_path))
 
         try:
             from core.memory_watchdog import SystemMemoryWatchdog
@@ -261,6 +525,14 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             )
         else:
             self.kv_cache_manager = None
+        if self.is_mlx_available:
+            after_stamps = (_local_artifact_stamp(self.model_path), _local_artifact_stamp(self.adapter_path))
+            self._prompt_disk_pristine = load_stamps == after_stamps and None not in load_stamps
+            self._prompt_load_stamps = load_stamps
+            self._prompt_disk_model_id = id(self.model)
+            self._prompt_disk_tokenizer_id = id(self.tokenizer)
+            from core.mlx_warmup import SafeMLXWarmup
+            self._metal_warmup = SafeMLXWarmup(enabled=self._lossless_speedups["metal_warmup"])
         return bool(self.is_mlx_available)
 
     def get_training_model(self):
@@ -272,6 +544,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return self.model
 
     def _run_training_method(self, method_name: str, *args, **kwargs):
+        # Invalidate even on failed/partial updates: weights may already differ.
+        if method_name in {"inject_lora_adapters", "train_mini_batch"}:
+            self.invalidate_prompt_reuse("training or adapter mutation")
         target = self.get_training_model()
         if target is None or target is self.model:
             return getattr(super(), method_name)(*args, **kwargs)
@@ -283,7 +558,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.model = wrapper
 
     def inject_lora_adapters(self, r: int = 8, scale: float = 2.0):
-        return self._run_training_method("inject_lora_adapters", r=r, scale=scale)
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            return self._run_training_method("inject_lora_adapters", r=r, scale=scale)
 
     def compute_mlx_fisher(self, anchor_texts):
         return self._run_training_method("compute_mlx_fisher", anchor_texts)
@@ -305,6 +582,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return bool(self._vlm_loader.supports_media_input(kind))
 
     def review_media_input(self, path: str, kind: str, prompt: str = ""):
+        self._vlm_prefixes.clear()
         if self._vlm_loader is None:
             return {
                 "perception_available": False,
@@ -313,12 +591,12 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return self._vlm_loader.review_media_input(path=path, kind=kind, prompt=prompt)
 
     def calculate_token_entropy(self, prompt: str) -> float:
-        if self._vlm_runtime is None:
-            return super().calculate_token_entropy(prompt)
+        if not self.is_mlx_available or self.model is None:
+            return 0.45
         try:
             import math
             import mlx.core as mx
-            tokens = self.tokenizer.encode(prompt)
+            tokens = self._encode_prompt(prompt)
             if not tokens:
                 return 0.45
             lm = getattr(self.model, "language_model", self.model)
@@ -346,13 +624,14 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return []
 
         import mlx.core as mx
+        self._prepare_optional_warmup(mx)
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
             count = max(1, min(int(branch_count), 16))
             temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
             try:
-                prompt_ids = self.tokenizer.encode(prompt)
+                prompt_ids = self._encode_prompt(prompt)
             except Exception:
                 prompt_ids = []
             effective_max = self._effective_generation_cap(
@@ -361,25 +640,38 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 prompt_token_count=len(prompt_ids),
             )
             branches = []
+            prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
             for idx in range(count):
                 temp_value = float(temps[idx % len(temps)])
                 pieces = []
                 started = time.perf_counter()
                 generated = 0
                 last = None
-                for response in vlm_stream_generate(
-                    self.model,
-                    self.processor,
-                    prompt=self._prepare_vlm_prompt(prompt, 0),
-                    image=[],
-                    max_tokens=effective_max,
-                    temperature=temp_value,
-                    top_p=top_p,
-                    **self._speed_vlm_prefill_kwargs(),
-                ):
-                    last = response
-                    generated += 1
-                    pieces.append(str(getattr(response, "text", response)))
+                iterator = None
+                completed = False
+                prefill_kwargs = self._speed_vlm_prefill_kwargs()
+                try:
+                    iterator = vlm_stream_generate(
+                        self.model,
+                        self.processor,
+                        prompt=prepared_prompt,
+                        image=[],
+                        max_tokens=effective_max,
+                        temperature=temp_value,
+                        top_p=top_p,
+                        **prefill_kwargs,
+                        **self._vlm_reuse_kwargs(prepared_prompt, prefill_kwargs, branches=True),
+                    )
+                    for response in iterator:
+                        last = response
+                        generated += 1
+                        self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
+                        pieces.append(str(getattr(response, "text", response)))
+                    completed = True
+                finally:
+                    if iterator is not None and callable(getattr(iterator, "close", None)):
+                        iterator.close()
+                    self._finish_vlm_request(completed=completed, branches=idx < count - 1)
                 elapsed = max(0.001, time.perf_counter() - started)
                 measured = float(getattr(last, "generation_tps", 0.0) or 0.0) if last is not None else 0.0
                 self.last_tok_per_sec = measured if measured > 0.0 else (generated / elapsed if generated else 0.0)
@@ -398,7 +690,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         count = max(1, min(int(branch_count), 16))
         temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
         branches = []
-        prompt_ids = self.tokenizer.encode(prompt)
+        prompt_ids = self._encode_prompt(prompt)
         effective_max = self._effective_generation_cap(
             prompt,
             max_tokens,
@@ -407,15 +699,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         def _one(temp_value: float, prefill_step_size: int) -> str:
             sampler = make_sampler(temp=float(temp_value), top_p=top_p)
-            if self.kv_cache_manager is None:
-                self.kv_cache_manager = SmartKVCacheManager(
-                    self.model,
-                    max_tokens=self.max_stateful_kv_tokens,
-                )
-            else:
-                self.kv_cache_manager.reset(purge_allocator=False)
+            branch_prompt = self._prepare_text_cache(prompt_ids, prefill_step_size, branches=True)
             kwargs = {
-                "prompt": prompt_ids,
+                "prompt": branch_prompt,
                 "max_tokens": effective_max,
                 "sampler": sampler,
                 "prefill_step_size": int(prefill_step_size),
@@ -425,24 +711,25 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             response = None
             generated = 0
             started = time.perf_counter()
+            iterator = None
             try:
                 iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
-            except TypeError:
-                kwargs.pop("prefill_step_size", None)
-                kwargs.pop("prompt_cache", None)
-                iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
-            for response in iterator:
-                generated += 1
-                try:
-                    measured = float(getattr(response, "generation_tps", 0.0) or 0.0)
-                except Exception:
-                    measured = 0.0
-                if measured > 0.0:
-                    self.last_tok_per_sec = measured
-                chunk = getattr(response, "text", None)
-                if chunk is None:
-                    chunk = str(response)
-                pieces.append(str(chunk))
+                for response in iterator:
+                    generated += 1
+                    try:
+                        measured = float(getattr(response, "generation_tps", 0.0) or 0.0)
+                    except Exception:
+                        measured = 0.0
+                    if measured > 0.0:
+                        self.last_tok_per_sec = measured
+                    chunk = getattr(response, "text", None)
+                    if chunk is None:
+                        chunk = str(response)
+                    pieces.append(str(chunk))
+            finally:
+                if iterator is not None and callable(getattr(iterator, "close", None)):
+                    iterator.close()
+                self._release_text_cache(branches=True)
 
             elapsed = max(0.001, time.perf_counter() - started)
             if self.last_tok_per_sec <= 0.0 and generated:
@@ -461,9 +748,12 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     raise
                 # Lossless OOM retry: same prompt, same sampler policy, same token
                 # budget and the same TurboQuant cache policy. Only prefill chunking changes.
+                self._prompt_prefixes.clear()
+                self._release_text_cache(branches=True)
                 _reclaim_if_needed(mx, force=True)
                 branches.append(_one(temp_value, 64))
             finally:
+                self._release_text_cache(branches=idx < count - 1)
                 _reclaim_if_needed(mx)
 
         return branches
@@ -474,9 +764,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return
 
         import mlx.core as mx
+        self._prepare_optional_warmup(mx)
 
         try:
-            prompt_ids = self.tokenizer.encode(prompt)
+            prompt_ids = self._encode_prompt(prompt)
         except Exception:
             prompt_ids = []
         prompt_len = len(prompt_ids)
@@ -493,22 +784,33 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             started = time.perf_counter()
             last = None
             self.last_tok_per_sec = 0.0
+            prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
+            prefill_kwargs = self._speed_vlm_prefill_kwargs()
+            iterator = None
+            completed = False
             try:
-                for response in vlm_stream_generate(
+                iterator = vlm_stream_generate(
                     self.model,
                     self.processor,
-                    prompt=self._prepare_vlm_prompt(prompt, 0),
+                    prompt=prepared_prompt,
                     image=[],
                     max_tokens=effective_max,
                     temperature=temperature,
                     top_p=top_p,
-                    **self._speed_vlm_prefill_kwargs(),
-                ):
+                    **prefill_kwargs,
+                    **self._vlm_reuse_kwargs(prepared_prompt, prefill_kwargs),
+                )
+                for response in iterator:
                     last = response
                     generated += 1
+                    self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
                     chunk = getattr(response, "text", None)
                     yield str(chunk if chunk is not None else response)
+                completed = True
             finally:
+                if iterator is not None and callable(getattr(iterator, "close", None)):
+                    iterator.close()
+                self._finish_vlm_request(completed=completed)
                 elapsed = max(0.001, time.perf_counter() - started)
                 measured = float(getattr(last, "generation_tps", 0.0) or 0.0) if last is not None else 0.0
                 self.last_tok_per_sec = measured if measured > 0.0 else (generated / elapsed if generated else 0.0)
@@ -518,23 +820,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return
 
         import mlx_lm
-
-        try:
-            prompt_ids = self.tokenizer.encode(prompt)
-        except Exception:
-            prompt_ids = []
-
-        # The app passes the full history-packed prompt each time. Reset only the
-        # logical TurboQuant-preferred KV state. Do not purge Metal's allocator on every
-        # request; the complete packed prompt is recomputed into the fresh cache.
-        if self.kv_cache_manager is None:
-            self.kv_cache_manager = SmartKVCacheManager(
-                self.model,
-                max_tokens=self.max_stateful_kv_tokens,
-            )
-        else:
-            self.kv_cache_manager.reset(purge_allocator=False)
-        self.kv_cache_manager.auto_compact_if_needed(prompt_len)
+        if not prompt_ids:
+            raise RuntimeError("Text prompt tokenization produced no tokens; refusing an uncounted context")
 
         try:
             from mlx_lm.sample_utils import make_sampler
@@ -555,24 +842,14 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 "sampler": sampler,
                 "prefill_step_size": int(prefill_step_size),
             }
-            try:
-                return mlx_lm.stream_generate(
-                    self.model,
-                    self.tokenizer,
-                    prompt=prompt_ids if prompt_ids else prompt,
-                    prompt_cache=self.kv_cache_manager.get_cache(),
-                    **kwargs,
-                )
-            except TypeError:
-                # Older MLX-LM may not accept an explicit prompt cache. Library-managed
-                # cache is still native/full precision and preserves the same sampler.
-                kwargs.pop("prefill_step_size", None)
-                return mlx_lm.stream_generate(
-                    self.model,
-                    self.tokenizer,
-                    prompt=prompt,
-                    **kwargs,
-                )
+            suffix = self._prepare_text_cache(prompt_ids, prefill_step_size)
+            return mlx_lm.stream_generate(
+                self.model,
+                self.tokenizer,
+                prompt=suffix,
+                prompt_cache=self.kv_cache_manager.get_cache(),
+                **kwargs,
+            )
 
         def _yield_response(resp):
             try:
@@ -602,7 +879,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 # Retry only before any token has been emitted. Rebuild a fresh cache
                 # and reduce transient prefill memory without changing cache policy,
                 # context, sampler or requested generation length.
-                self.kv_cache_manager.reset(purge_allocator=False)
+                if iterator is not None and callable(getattr(iterator, "close", None)):
+                    iterator.close()
+                self._release_text_cache()
+                self._prompt_prefixes.clear()
                 _reclaim_if_needed(mx, force=True)
                 iterator = _run_stream(_adaptive_prefill_step_size(aggressive=True))
                 for response in iterator:
@@ -612,13 +892,12 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             _base.logger.error("MLX stream_generate error: %s", exc)
             raise
         finally:
+            if iterator is not None and callable(getattr(iterator, "close", None)):
+                iterator.close()
             elapsed = max(0.001, time.perf_counter() - started)
             if self.last_tok_per_sec <= 0.0 and generated:
                 self.last_tok_per_sec = generated / elapsed
             self.last_generation_tokens = generated
             self.last_generation_seconds = elapsed
-            self.kv_cache_manager.current_length = min(
-                self.max_stateful_kv_tokens,
-                max(0, prompt_len + generated),
-            )
+            self._release_text_cache()
             _reclaim_if_needed(mx)

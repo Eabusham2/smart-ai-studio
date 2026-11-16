@@ -383,9 +383,13 @@ def install_gui_speed_tuning() -> None:
         # Tk responsive while the existing owned-unload worker performs that
         # cleanup, just as when Close arrives during a model operation.
         controller = getattr(self.engine, "controller_backend", None)
+        native = getattr(self.engine, "gguf_backend", None)
         pending = bool(getattr(self, "_model_load_in_progress", False))
-        if (not pending and getattr(controller, "runtime", None) == "strata"
-                and getattr(controller, "_manager", None) is not None
+        owned_runtime = ((getattr(controller, "runtime", None) == "strata"
+                          and getattr(controller, "_manager", None) is not None)
+                         or (getattr(native, "runtime", None) == "prism_speculative"
+                             and getattr(native, "_process", None) is not None))
+        if (not pending and owned_runtime
                 and not getattr(self, "_speed_close_cleanup_started", False)):
             self._speed_close_cleanup_started = True
             self._unload_strata_async()
@@ -393,12 +397,13 @@ def install_gui_speed_tuning() -> None:
             _status(self, "Stopping model operation before closing…")
             self.root.after(100, lambda: close_with_speed(self))
             return
-        if getattr(self, "_speed_close_cleanup_started", False) and getattr(self, "_strata_unload_pending", False):
+        if (getattr(self, "_speed_close_cleanup_started", False)
+                and (getattr(self, "_strata_unload_pending", False) or getattr(self, "_native_unload_pending", False))):
             # A failed stop keeps its owner available for retry. Do not discard
             # the window or recursively start an endless series of stop jobs.
             self._speed_close_requested = False
             self._speed_close_cleanup_started = False
-            _status(self, "Strata cleanup is incomplete. Use Retry unload, then close Studio.")
+            _status(self, "Native cleanup is incomplete. Use Retry unload, then close Studio.")
             return
         self._speed_ui_closed = True
         poll_id = getattr(self, "_speed_poll_id", None)

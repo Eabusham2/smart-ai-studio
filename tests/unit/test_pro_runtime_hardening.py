@@ -138,6 +138,22 @@ def test_failed_strata_shutdown_keeps_registration_until_successful_retry():
     assert not is_model_registered_loaded("strata://gyro-s")
 
 
+def test_failed_native_shutdown_keeps_registered_files_and_owner_until_retry():
+    engine = DummyPro(use_mock=False, loaded=False)
+    engine.load_model("Pinned native", model_path="local/pinned.gguf", backend="gguf")
+    native = SimpleNamespace(runtime="prism_speculative", model=object())
+    engine.gguf_backend = native
+    engine.unload_error = True
+    assert engine.unload_model()["status"] == "error"
+    assert engine.gguf_backend is native
+    assert is_model_registered_loaded("local/pinned.gguf")
+    assert is_model_registered_loaded("Pinned native")
+    engine.unload_error = False
+    assert engine.unload_model()["status"] == "unloaded"
+    assert not is_model_registered_loaded("local/pinned.gguf")
+    assert not is_model_registered_loaded("Pinned native")
+
+
 @pytest.mark.parametrize("usage", [{}, {"completion_tokens": 83, "prompt_tokens": 120, "total_tokens": 203}])
 def test_strata_telemetry_uses_native_usage_and_owned_process_memory(monkeypatch, usage):
     from core.memory_watchdog import SystemMemoryWatchdog
@@ -170,4 +186,33 @@ def test_strata_telemetry_uses_native_usage_and_owned_process_memory(monkeypatch
     else:
         assert "tokens_generated" not in meta
         assert meta["token_usage_available"] is False
+        assert meta["tok_speed"] == 0.0
+
+
+@pytest.mark.parametrize("usage", [None, {}, {"completion_tokens": 4, "prompt_tokens": 10, "total_tokens": 14}])
+def test_exact_native_telemetry_requires_actual_counts_and_excludes_stale_mlx(monkeypatch, usage):
+    from core.memory_watchdog import SystemMemoryWatchdog
+    observed = []
+    def memory(owned_pids=None):
+        observed.append(owned_pids)
+        return {"total_allocated_gb": 3.0}
+    monkeypatch.setattr(SystemMemoryWatchdog, "get_detailed_memory_breakdown", memory)
+    engine = DummyPro(use_mock=False, loaded=True)
+    engine.active_backend = "gguf"
+    engine.gguf_backend = SimpleNamespace(
+        runtime="prism_speculative", last_branch_usage=usage,
+        owned_process_ids=lambda: [42],
+        get_speculative_telemetry=lambda: {"mode": "lookup", "decode_tokens_per_second": 12.5},
+    )
+    engine.mlx_backend = SimpleNamespace(last_tok_per_sec=999.0, last_generation_cap_reason="stale")
+    response, meta = engine.solve("hello")
+    assert meta["backend"] == "prism_speculative"
+    assert meta["decode_tok_speed"] == 12.5 and meta["generation_cap_reason"] == ""
+    assert meta["memory_rss_mb"] == 3 * 1024 and observed == [[42]]
+    assert meta["speculative"]["mode"] == "lookup"
+    if usage:
+        assert meta["tokens_generated"] == 4 and meta["token_usage_available"]
+        assert meta["tok_speed"] * meta["measured_wall_time_s"] == pytest.approx(4)
+    else:
+        assert "tokens_generated" not in meta and not meta["token_usage_available"]
         assert meta["tok_speed"] == 0.0

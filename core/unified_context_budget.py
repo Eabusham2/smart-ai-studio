@@ -36,11 +36,16 @@ def install(cls) -> None:
     if getattr(cls, "_unified_context_budget_installed", False):
         return
 
-    def remaining_context_for_generation(self, prompt: str, requested: int) -> int:
-        try:
-            prompt_tokens = len(self.tokenizer.encode(prompt))
-        except Exception:
-            prompt_tokens = 0
+    def remaining_context_for_generation(self, prompt: str, requested: int,
+                                         prompt_token_count: Optional[int] = None) -> int:
+        if prompt_token_count is not None:
+            prompt_tokens = max(0, int(prompt_token_count))
+        else:
+            try:
+                encode = getattr(self, "_encode_prompt", self.tokenizer.encode)
+                prompt_tokens = len(encode(prompt))
+            except Exception:
+                prompt_tokens = 0
 
         selected = int(getattr(self, "context_budget_tokens", 0) or 0)
         if selected <= 0:
