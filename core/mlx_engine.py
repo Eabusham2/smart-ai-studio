@@ -619,6 +619,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         temperature=0.75,
         top_p: float = 0.92,
         progress_callback=None,
+        stop_at_tool_boundary: bool = False,
     ):
         """Generate Pro branches without silent quality-reducing fallbacks."""
         if not self.is_mlx_available or self.model is None:
@@ -626,6 +627,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         import mlx.core as mx
         self._prepare_optional_warmup(mx)
+        from core.tool_boundary_stop import ToolBoundaryStopper
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
@@ -650,6 +652,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 last = None
                 iterator = None
                 completed = False
+                boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
                 prefill_kwargs = self._speed_vlm_prefill_kwargs()
                 try:
                     iterator = vlm_stream_generate(
@@ -669,7 +672,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                         if progress_callback is not None:
                             progress_callback(idx, count, generated, time.perf_counter() - started, finished=False)
                         self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
-                        pieces.append(str(getattr(response, "text", response)))
+                        piece = str(getattr(response, "text", response))
+                        pieces.append(piece)
+                        if boundary is not None and boundary.feed(piece):
+                            pieces = [boundary.text]
+                            break
                     completed = True
                 finally:
                     if iterator is not None and callable(getattr(iterator, "close", None)):
@@ -713,6 +720,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 "prompt_cache": self.kv_cache_manager.get_cache(),
             }
             pieces = []
+            boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
             response = None
             generated = 0
             started = time.perf_counter()
@@ -732,7 +740,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     chunk = getattr(response, "text", None)
                     if chunk is None:
                         chunk = str(response)
-                    pieces.append(str(chunk))
+                    piece = str(chunk)
+                    pieces.append(piece)
+                    if boundary is not None and boundary.feed(piece):
+                        pieces = [boundary.text]
+                        break
             finally:
                 if iterator is not None and callable(getattr(iterator, "close", None)):
                     iterator.close()
