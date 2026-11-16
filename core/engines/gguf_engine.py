@@ -469,12 +469,20 @@ class GGUFReasoningBackend:
         top_p: float = 0.92,
         image_bytes: Optional[bytes] = None
     ) -> Generator[str, None, None]:
-        """Yields live streamed tokens from GGUF inference."""
+        """Stream GGUF output and report only model-backed token measurements."""
         if self.model is None:
             return
 
+        self.last_tok_per_sec = None
+        self.last_generation_tokens = None
+        started = time.perf_counter()
+        first_token = None
+        last_token = None
+        usage_tokens = None
+        iterator = None
+        completed = False
         try:
-            stream = self.model(
+            iterator = self.model(
                 prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -482,12 +490,36 @@ class GGUFReasoningBackend:
                 stream=True,
                 stop=["<|im_end|>", "</s>", "\nuser", "\nHuman:"]
             )
-            for chunk in stream:
-                token = chunk["choices"][0]["text"]
-                if token:
-                    yield token
+            for event in iterator:
+                if isinstance(event, dict):
+                    usage = event.get("usage")
+                    if isinstance(usage, dict) and type(usage.get("completion_tokens")) is int:
+                        usage_tokens = usage["completion_tokens"]
+                    choices = event.get("choices") or [{}]
+                    text = str(choices[0].get("text", "") or "")
+                else:
+                    text = str(event)
+                if text:
+                    now = time.perf_counter()
+                    if first_token is None:
+                        first_token = now
+                    last_token = now
+                    yield text
+            completed = True
         except Exception:
             return
+        finally:
+            if iterator is not None:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+            if completed and type(usage_tokens) is int and usage_tokens >= 0:
+                self.last_generation_tokens = usage_tokens
+                # First-token latency and steady decode throughput are distinct.
+                # Model-reported token count is authoritative; a chunk isn't a token.
+                elapsed = max(1e-9, time.perf_counter() - started)
+                self.last_generation_seconds = elapsed
+                self.last_tok_per_sec = usage_tokens / elapsed if usage_tokens else None
 
     def calculate_token_entropy(self, prompt: str) -> float:
         """Calculates Shannon entropy from GGUF next-token logits."""
