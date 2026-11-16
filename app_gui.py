@@ -4928,6 +4928,7 @@ class SmartAIChatbotApp:
                     # Pro is explicitly enabled by the user. Each completed
                     # candidate reports its real token count when available.
                     completed_branches = 0
+                    actual_branch_total = pro_branch_count
                     measured_tokens = 0
                     counts_available = True
 
@@ -4935,7 +4936,8 @@ class SmartAIChatbotApp:
                     last_pro_ui_at = 0.0
 
                     def _branch_done(done, total, tokens, seconds, finished=True):
-                        nonlocal completed_branches, measured_tokens, counts_available
+                        nonlocal completed_branches, measured_tokens, counts_available, actual_branch_total
+                        actual_branch_total = int(total)
                         nonlocal first_pro_token_at, last_pro_ui_at
                         now = time.perf_counter()
                         if not finished:
@@ -4994,8 +4996,9 @@ class SmartAIChatbotApp:
                         return
                     accumulated.append(str(answer))
                     self.last_metadata = branch_meta
+                    self.engine._last_stream_pro_meta = branch_meta
                     pro_summary = (
-                        f"🌿 Pro search: {completed_branches}/{pro_branch_count} branches complete"
+                        f"🌿 Pro search: {completed_branches}/{actual_branch_total} branches complete"
                         f" · winner #{int(branch_meta.get('winning_branch', 0)) + 1}"
                     )
                 else:
@@ -5008,6 +5011,10 @@ class SmartAIChatbotApp:
                     )
                     count_events = 0
                     first_event_at = None
+                    # Do not run automatic entropy-routed N=8/16 searches for a
+                    # GUI turn when the explicit Pro checkbox is unchecked.
+                    previous_force_single = getattr(self.engine, "_gui_force_single_stream", False)
+                    self.engine._gui_force_single_stream = True
                     iterator = self.multimodal.stream_solve(
                         full_msg, history=curr_history, cancel_event=self.cancel_event
                     )
@@ -5038,9 +5045,12 @@ class SmartAIChatbotApp:
                                 ui_pending.clear()
                                 last_ui_flush = now
                     finally:
-                        close = getattr(iterator, "close", None)
-                        if callable(close):
-                            close()
+                        try:
+                            close = getattr(iterator, "close", None)
+                            if callable(close):
+                                close()
+                        finally:
+                            self.engine._gui_force_single_stream = previous_force_single
 
                 if ui_pending:
                     _schedule_stream_insert("".join(ui_pending))
