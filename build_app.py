@@ -30,10 +30,19 @@ for candidate in "$SMARTAI_VENV/bin/python" "$(command -v python3 || true)" /opt
     fi
 done
 if [ -z "$SMARTAI_PYTHON" ]; then
-    echo "Python 3.10+ with Tkinter is required. Install a native Python, then run Install_Dependencies.command."
+    echo "Python 3.10+ with Tkinter is required. Install a native Python, then relaunch."
     exit 1
 fi
-exec "$SMARTAI_PYTHON" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
+# Prefer the dependencies packaged with the portable macOS release.
+SMARTAI_VENDOR="$SMARTAI_CODE_DIR/vendor/python3.10"
+if [ -d "$SMARTAI_VENDOR" ] && "$SMARTAI_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 10)' 2>/dev/null; then
+    export PYTHONPATH="$SMARTAI_VENDOR${PYTHONPATH:+:$PYTHONPATH}"
+    exec "$SMARTAI_PYTHON" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
+fi
+if [ ! -f "$SMARTAI_VENV/.smartai-deps-ready" ]; then
+    /bin/bash "$SMARTAI_CODE_DIR/Install_Dependencies.command" || exit 1
+fi
+exec "$SMARTAI_VENV/bin/python" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
 '''
     install = r'''#!/usr/bin/env bash
 set -e
@@ -61,7 +70,7 @@ if [ "$SMARTAI_ARCH" = arm64 ]; then
     SMARTAI_BUILD_ARGS=(--no-binary=llama-cpp-python)
 fi
 "$SMARTAI_VENV/bin/python" -m pip install "${SMARTAI_BUILD_ARGS[@]}" -r "$SMARTAI_CODE_DIR/requirements.txt"
-echo "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command."
+touch "$SMARTAI_VENV/.smartai-deps-ready"\necho "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command."
 '''
     for name, content in (("launch_studio.sh", launch), ("Install_Dependencies.command", install)):
         path = os.path.join(app_code_dir, name)
@@ -257,21 +266,26 @@ def create_windows_bundle(dist_dir: str, app_name: str):
 
     # 1. Create Windows Batch Launcher (SmartAI.bat)
     bat_content = f"""@echo off
+setlocal
 cd /d "%~dp0"
-echo ======================================================================
-echo   Launching {app_name}
-echo ======================================================================
-python app_gui.py %*
-if %ERRORLEVEL% NEQ 0 (
-    python3 app_gui.py %*
+set "SMARTAI_ENV=%LOCALAPPDATA%\\SmartAI\\python"
+if not exist "%SMARTAI_ENV%\\Scripts\\python.exe" (
+    echo First launch: installing Smart AI Studio dependencies...
+    py -3 -m venv "%SMARTAI_ENV%" || (echo Python 3.10+ is required & exit /b 1)
 )
+if not exist "%SMARTAI_ENV%\\.smartai-deps-ready" (
+    "%SMARTAI_ENV%\\Scripts\\python.exe" -m pip install -r "%~dp0requirements.txt" || exit /b 1
+    type nul > "%SMARTAI_ENV%\\.smartai-deps-ready"
+)
+"%SMARTAI_ENV%\\Scripts\\python.exe" "%~dp0app_gui.py" %*
+exit /b %ERRORLEVEL%
 """
     with open(os.path.join(win_dir, f"{app_name}.bat"), "w") as f:
         f.write(bat_content)
 
     # 2. Create Windowed Silent VBS Launcher (SmartAI.vbs)
     vbs_content = f"""Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "python app_gui.py", 0, False
+WshShell.Run "cmd /c """" & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\\SmartAI.bat"""""", 0, False
 """
     with open(os.path.join(win_dir, f"{app_name}.vbs"), "w") as f:
         f.write(vbs_content)
@@ -313,8 +327,18 @@ def create_linux_bundle(dist_dir: str, app_name: str):
 
     # 1. Create AppRun script
     apprun_content = f"""#!/bin/sh
-HERE="$(dirname "$(readlink -f "${{0}}")")"
-exec python3 "$HERE/usr/bin/app_gui.py" "$@"
+set -eu
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SMARTAI_CODE_DIR="$HERE/usr/bin"
+SMARTAI_ENV="${{XDG_DATA_HOME:-$HOME/.local/share}}/SmartAI/python"
+if [ ! -x "$SMARTAI_ENV/bin/python" ]; then
+    python3 -m venv "$SMARTAI_ENV" || {{ echo "Python 3 with venv is required" >&2; exit 1; }}
+fi
+if [ ! -f "$SMARTAI_ENV/.smartai-deps-ready" ]; then
+    "$SMARTAI_ENV/bin/python" -m pip install -r "$SMARTAI_CODE_DIR/requirements.txt" || exit 1
+    touch "$SMARTAI_ENV/.smartai-deps-ready"
+fi
+exec "$SMARTAI_ENV/bin/python" "$SMARTAI_CODE_DIR/app_gui.py" "$@"
 """
     apprun_path = os.path.join(appdir, "AppRun")
     with open(apprun_path, "w") as f:
