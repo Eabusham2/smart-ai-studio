@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -34,6 +35,13 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
         {"name": "SmartAI-macOS-arm64.zip.part001", "size": 4},
     ]}
     (dist / "SmartAI-macOS-arm64.bundle.json").write_text(json.dumps(manifest), encoding="utf-8")
+    # The extra Apple Silicon NoAdmin kit and independently verified SHA256 are
+    # mandatory, alongside the *existing* three-platform/Setup/native packages.
+    kit_name = "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip"
+    kit_payload = b"verified no-admin portable kit"
+    (dist / kit_name).write_bytes(kit_payload)
+    (dist / (kit_name + ".sha256")).write_text(
+        f"{hashlib.sha256(kit_payload).hexdigest()}  {kit_name}\n", encoding="ascii")
     for name in ("Reassemble-SmartAI-macOS-arm64.command", "SmartAI-Windows.zip",
                  "SmartAI-Linux-x86_64.tar.gz", "SmartAI-Unix-POSIX.tar.gz",
                  "SmartAI-native-cpu-Linux-X64.zip", "SmartAI-native-metal-macOS-ARM64.zip"):
@@ -59,6 +67,13 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
         assets = [item for item in assets if item["name"] != "SmartAI-Windows-x86_64-portable.zip"]
     elif fault == "missing_native":
         assets = [item for item in assets if item["name"] != "SmartAI-native-cpu-Linux-X64.zip"]
+    elif fault == "missing_noadmin_kit":
+        assets = [item for item in assets if item["name"] != "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip"]
+    elif fault == "missing_noadmin_receipt":
+        assets = [item for item in assets if item["name"] != "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256"]
+    elif fault == "bad_noadmin_receipt":
+        (dist / "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256").write_text(
+            "0" * 64 + "  SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip\n", encoding="ascii")
     elif fault == "wrong_size":
         assets[0]["size"] += 1
     elif fault == "upload_in_progress":
@@ -101,9 +116,12 @@ new AsyncFunction('github', 'context', 'core', 'require', script)(github, contex
   .then(() => process.stdout.write(JSON.stringify({calls, error: null})))
   .catch(error => process.stdout.write(JSON.stringify({calls, error: error.message})));
 """
+    # Replace exact, unique harness markers only. Broad `.replace("SHA", ..)`
+    # previously corrupted the release gate's literal "SHA256" error text.
     harness = (harness.replace("SCRIPT", json.dumps(final_script()))
                .replace("ASSETS", json.dumps(assets)).replace("FAULT", json.dumps(fault))
-               .replace("SHA", json.dumps(SHA)))
+               .replace("const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, sha: SHA};",
+                        "const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, sha: " + json.dumps(SHA) + "};"))
     result = subprocess.run(
         [node, "-e", harness], cwd=tmp_path,
         # The first Node process on a hosted Windows runner can spend more than
@@ -133,7 +151,7 @@ def test_successful_release_removes_only_obsolete_packages_and_moves_exact_rolli
     assert order.index("assets") < order.index("delete") < order.index("update") < order.index("getRef")
 
 
-@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "wrong_size", "upload_in_progress", "duplicate_part"])
+@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "missing_noadmin_kit", "missing_noadmin_receipt", "bad_noadmin_receipt", "wrong_size", "upload_in_progress", "duplicate_part"])
 def test_incomplete_replacement_neither_deletes_legacy_download_nor_moves_tag(tmp_path, fault):
     result = run_release_gate(tmp_path, fault=fault)
     assert result["error"]
@@ -160,7 +178,10 @@ def test_tag_readback_must_confirm_the_exact_packaged_sha(tmp_path):
 
 def test_provenance_gate_runs_after_all_uploads_and_missing_package_is_fatal():
     source = WORKFLOW.read_text(encoding="utf-8")
-    assert source.index("- name: Stream Both Bonsai") < source.index("- name: Publish or Update GitHub Release")
+    assert source.index("- name: Stream Both Bonsai") < source.index("- name: Build no-admin Apple Silicon portable kit") < source.index("- name: Publish or Update GitHub Release")
+    assert all(target in source for target in ("Linux-x86_64", "Windows-x86_64", "macOS-arm64"))
+    assert "SmartAI-native-" in source
+    assert "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip" in source
     assert source.index("- name: Publish or Update GitHub Release") < source.index(f"- name: {STEP_NAME}")
     assert 'python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"' in source
     assert ",check=True)" in source
