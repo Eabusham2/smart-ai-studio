@@ -126,7 +126,7 @@ def test_full_portable_install_succeeds_offline_without_admin_or_python(tmp_path
     result=subprocess.run(['/bin/bash',str(script)],env=env,capture_output=True,
                           text=True,timeout=90)
     assert result.returncode == 0, (result.stdout,result.stderr)
-    app=tmp_path/'installed with spaces'/'2'*12/'SmartAI.app'/'Contents'/'Resources'/'app'
+    app=tmp_path / 'installed with spaces' / ('2' * 12) / 'SmartAI.app' / 'Contents' / 'Resources' / 'app'
     assert (app/'runtime/python/bin/python3').exists()
     for repo in REPOS:
         base=app/'preloaded_models'/repo.replace('/','--')
