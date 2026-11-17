@@ -33,6 +33,11 @@ for _backend in (MLXReasoningBackend, GGUFReasoningBackend, PrismGGUFReasoningBa
     install_native_runtime_lock(_backend)
 install_speed_control(ProReasoningEngine)
 
+# Outermost wrapper: adapter restoration, runtime locks and speed hooks must
+# all execute on the same OS thread that created the MLX model/Metal streams.
+from core.mlx_thread_owner import install_mlx_thread_ownership
+install_mlx_thread_ownership(MLXReasoningBackend)
+
 __all__ = [
     "EntropyRouter",
     "GroundTruthVerifier",

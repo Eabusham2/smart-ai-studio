@@ -201,12 +201,20 @@ class AwakeOnlineConsolidator:
                 save_path=getattr(self.engine, "adapter_path", None),
             )
 
-            try:
-                import mlx.core as mx
-                if isinstance(updated_adapters, dict) and updated_adapters:
+            if isinstance(updated_adapters, dict) and updated_adapters:
+                def materialize_adapters():
+                    import mlx.core as mx
                     mx.eval(*list(updated_adapters.values()))
-            except Exception:
-                pass
+                on_mlx = getattr(self.engine, "run_on_mlx_owner", None)
+                # Materialize tensors on the exact thread where the trained
+                # model created them, not on the background consolidator.
+                if callable(on_mlx):
+                    on_mlx(materialize_adapters)
+                else:
+                    try:
+                        materialize_adapters()
+                    except ImportError:
+                        pass
 
             if not isinstance(param_drift, (int, float)) or float(param_drift) <= 0.0:
                 raise RuntimeError("awake consolidation produced no measurable parameter update")

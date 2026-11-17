@@ -522,8 +522,12 @@ class ProReasoningEngine:
                 pass
             self.tokenizer = None
 
+        # MLX-owned caches must be purged by the thread that created their
+        # Metal stream. The MLX backend's unload_model already does this.
+        mlx_owned_cache_purged = False
         if getattr(self, "mlx_backend", None) is not None:
             backend = self.mlx_backend
+            mlx_owned_cache_purged = getattr(backend, "_mlx_owner", None) is not None
             try:
                 unload = getattr(backend, "unload_model", None)
                 if callable(unload):
@@ -573,15 +577,17 @@ class ProReasoningEngine:
             self.speculative_engine.draft_model = None
             self.speculative_engine.tokenizer = None
 
-        # Instant Purge of Apple MLX Metal cache & cache limits
-        try:
-            import mlx.core as mx
-            if hasattr(mx, "clear_cache"):
-                mx.clear_cache()
-            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-                mx.metal.clear_cache()
-        except Exception:
-            pass
+        # Never clear MLX's GPU allocator a second time from Tk/the caller.
+        # Model-owned caches were already released on the MLX owner thread.
+        if not mlx_owned_cache_purged:
+            try:
+                import mlx.core as mx
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                    mx.metal.clear_cache()
+            except ImportError:
+                pass
 
         # Clear PyTorch CUDA / MPS cache
         try:

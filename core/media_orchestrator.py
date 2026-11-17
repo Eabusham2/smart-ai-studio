@@ -231,6 +231,11 @@ class MediaController:
                     if getattr(consolidator, "is_consolidating", False):
                         raise RuntimeError("Text consolidation is active; media pause postponed")
                 runtime_lock = getattr(backend, "_runtime_model_lock", None)
+                # MLX has its own serial OS-thread owner. Holding its RLock on
+                # this media thread while requesting an owner-thread unload
+                # would deadlock because RLocks are thread-local.
+                if callable(getattr(backend, "run_on_mlx_owner", None)):
+                    runtime_lock = None
                 with runtime_lock if runtime_lock is not None else nullcontext():
                     yield
             finally:
@@ -268,19 +273,27 @@ class MediaController:
             try:
                 if backend is not None:
                     if backend_name == "mlx":
-                        import mlx.core as mx
-                        from mlx.utils import tree_flatten
-                        weights = [(n, w) for n, w in tree_flatten(backend.model.trainable_parameters()) if "lora" in n.lower()]
-                        if weights:
+                        def snapshot_mlx_adapters():
+                            import mlx.core as mx
+                            from mlx.utils import tree_flatten
+                            weights = [(n, w) for n, w in tree_flatten(backend.model.trainable_parameters())
+                                       if "lora" in n.lower()]
+                            if not weights:
+                                return None
                             directory = Path(get_portable_data_dir()) / "media_resume"
                             directory.mkdir(parents=True, exist_ok=True)
-                            checkpoint = directory / (uuid.uuid4().hex + ".safetensors")
-                            mx.save_safetensors(str(checkpoint), dict(weights))
-                            saved = mx.load(str(checkpoint))
-                            if set(saved) != {n for n, _w in weights} or not all(bool(mx.array_equal(saved[n], w).item()) for n,w in weights):
+                            destination = directory / (uuid.uuid4().hex + ".safetensors")
+                            mx.save_safetensors(str(destination), dict(weights))
+                            saved = mx.load(str(destination))
+                            if set(saved) != {n for n, _w in weights} or not all(
+                                    bool(mx.array_equal(saved[n], w).item()) for n, w in weights):
                                 raise RuntimeError("Text adapter snapshot validation failed; not unloading")
+                            return destination
+                        # Even a read/compare can evaluate a lazy tensor. Keep
+                        # all GPU work on the model's original owner thread.
+                        checkpoint = backend.run_on_mlx_owner(snapshot_mlx_adapters)
+                        if checkpoint is not None:
                             engine.lora_adapter_path = str(checkpoint)
-                            del saved, weights
                     self._notify("Temporarily pausing text to make RAM available for media; conversation history is retained.")
                     watchdog = getattr(self.app, "watchdog", None)
                     if watchdog is not None:
@@ -310,16 +323,18 @@ class MediaController:
                         engine.active_input_modalities = set(original_input_modalities)
                         resumed = getattr(engine, "mlx_backend", None)
                         if checkpoint:
-                            import mlx.core as mx
-                            from mlx.utils import tree_flatten
                             if resumed is None or resumed.model is None:
                                 raise RuntimeError("Restored text backend is missing")
-                            expected = mx.load(str(checkpoint))
-                            actual = dict(tree_flatten(resumed.model.trainable_parameters()))
-                            if not all(n in actual and bool(mx.array_equal(w, actual[n]).item()) for n,w in expected.items()):
-                                raise RuntimeError("Restored learned text tensors do not match the saved snapshot")
+                            def verify_restored_adapters():
+                                import mlx.core as mx
+                                from mlx.utils import tree_flatten
+                                expected = mx.load(str(checkpoint))
+                                actual = dict(tree_flatten(resumed.model.trainable_parameters()))
+                                if not all(n in actual and bool(mx.array_equal(w, actual[n]).item())
+                                           for n, w in expected.items()):
+                                    raise RuntimeError("Restored learned text tensors do not match the saved snapshot")
+                            resumed.run_on_mlx_owner(verify_restored_adapters)
                             resumed.adapter_path = original_adapter
-                            del actual, expected
                         self._notify("Text model restored; continuing with the same conversation.")
                     except Exception as exc:
                         try:

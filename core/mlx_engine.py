@@ -583,6 +583,13 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 pass
             return {"status": "unloaded"}
 
+    def run_on_mlx_owner(self, operation, *args, **kwargs):
+        """Perform a model-owned GPU operation without evaluating arrays elsewhere."""
+        owner = getattr(self, "_mlx_owner", None)
+        if owner is None:
+            raise RuntimeError("MLX model owner is unavailable; load the model first")
+        return owner.call(operation, *args, **kwargs)
+
     def get_training_model(self):
         """Return the real causal language module used for text Learn/RSI updates."""
         if self._vlm_runtime is not None:

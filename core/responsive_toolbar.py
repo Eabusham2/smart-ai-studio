@@ -65,12 +65,38 @@ def install_responsive_toolbar(app, left, right):
             pending = True
             header.after_idle(reflow)
 
+    def set_control_visible(widget, visible=True, *, before=None):
+        """Register late-added actions with the SAME responsive hit-test layout.
+
+        Eval and other additive controls are created after this header. If
+        they use ``pack`` over a placed row, they can steal clicks from Reset.
+        """
+        nonlocal previous
+        if widget.master not in (left, right):
+            raise ValueError("Responsive toolbar can only manage its own controls")
+        widgets = groups[0][1] if widget.master is left else groups[1][1]
+        if widget in widgets:
+            widgets.remove(widget)
+        # Never let the old geometry manager keep an invisible overlay on top
+        # of the model's Load/Reset/Pro buttons.
+        widget.pack_forget()
+        widget.place_forget()
+        if visible:
+            index = widgets.index(before) if before in widgets else len(widgets)
+            widgets.insert(index, widget)
+        previous = None
+        schedule()
+
+    app._responsive_toolbar_set_visible = set_control_visible
     header.bind("<Configure>", schedule, add="+")
     selector = getattr(app, "model_var", None)
     if selector is not None and hasattr(selector, "trace_add"):
         selector.trace_add("write", lambda *_: schedule())
 
+    timer_id = None
+
     def watch_requested_sizes():
+        nonlocal timer_id
         # Status badges and load buttons change labels without a <Configure>
         # event because their place size is held fixed. Poll their requested
         # sizes cheaply, and reflow only if something actually changed.
@@ -80,7 +106,18 @@ def install_responsive_toolbar(app, left, right):
         sizes = tuple(w.winfo_reqwidth() for _, widgets in groups for w in widgets)
         if previous != (available, sizes):
             schedule()
-        header.after(160, watch_requested_sizes)
+        timer_id = header.after(160, watch_requested_sizes)
 
+    def destroy(event):
+        nonlocal timer_id
+        if event.widget is header and timer_id is not None:
+            try:
+                header.after_cancel(timer_id)
+            except tk.TclError:
+                pass
+            timer_id = None
+
+    import tkinter as tk
+    header.bind("<Destroy>", destroy, add="+")
     schedule()
-    header.after(160, watch_requested_sizes)
+    timer_id = header.after(160, watch_requested_sizes)

@@ -54,7 +54,12 @@ def install_gui_eval_panel() -> None:
             mapped = bool(btn.winfo_ismapped())
         except Exception:
             mapped = False
-        if is_text and not mapped:
+        place_control = getattr(self, "_responsive_toolbar_set_visible", None)
+        if callable(place_control):
+            # This button is added by the Eval extension after the main header
+            # layout has installed. Joining that layout preserves hit targets.
+            place_control(btn, is_text, before=self.btn_load_unload)
+        elif is_text and not mapped:
             try:
                 btn.pack(side="left", padx=2, before=self.btn_load_unload)
             except Exception:
