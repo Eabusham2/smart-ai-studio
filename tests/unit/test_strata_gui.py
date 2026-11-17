@@ -362,16 +362,19 @@ def test_strata_send_does_not_add_word_estimate_to_reported_usage(app, method):
         app._on_send_message()
     else:
         app._run_queued_task("A question with several words", "Question")
-    assert app.total_tokens_used == 43
+    # An old completed request cannot be reported as this new request's usage.
+    assert app.total_tokens_used == 0
+    assert app.lbl_context.cget("text") == "📊 Last request: unavailable"
     assert len(app.pending) == 1
 
 
-def test_native_telemetry_preserves_existing_counter_and_speed_behavior(app):
+def test_native_telemetry_clears_stale_word_estimate_and_keeps_measured_speed(app):
     app.active_tab_id = "native"
     app.engine.controller_backend = None
     app._update_telemetry(5.0)
-    assert app.total_tokens_used == 777
-    assert app.lbl_context.cget("text").startswith("📊 Context: 777 /")
+    # No backend prompt-token count: do not carry the previous 777-token guess.
+    assert app.total_tokens_used == 0
+    assert app.lbl_context.cget("text") == "📊 Context: measuring / 32,768"
     assert app.lbl_tps.cget("text") == "⚡ 5.0 tok/s"
 
 

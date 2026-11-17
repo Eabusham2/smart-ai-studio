@@ -594,6 +594,7 @@ class SmartAIChatbotApp:
         self.tools.set_workspace_dir(None)
         self.total_tokens_used = 0
         self._last_context_snapshot = None  # actual request input/output counts
+        self._telemetry_request_pending = False
         self.max_context_window = get_auto_context_window_size()
         self.synapses_learned_count = 0.0
         self.synapses_learned_m = 0.0
@@ -4581,6 +4582,8 @@ class SmartAIChatbotApp:
         # Do not invent token usage from word counts: native tokenizer or real
         # server usage reports will supply the actual prompt count.
         self._last_context_snapshot = None
+        self._telemetry_request_pending = True
+        self._live_generation_snapshot = None
         self._update_telemetry()
 
         self._set_generating_state(True)
@@ -5206,6 +5209,7 @@ class SmartAIChatbotApp:
                             self.thinking_expanded.pop(tid, None)
                             self.thinking_meta.pop(tid, None)
                         self._last_context_snapshot = (prompt_count, chosen_completion)
+                        self._telemetry_request_pending = False
                         if pro_summary:
                             self.chat_stream.insert("end", pro_summary + "\n\n", "ai_msg")
 
@@ -5357,6 +5361,8 @@ class SmartAIChatbotApp:
         # Do not invent token usage from word counts: native tokenizer or real
         # server usage reports will supply the actual prompt count.
         self._last_context_snapshot = None
+        self._telemetry_request_pending = True
+        self._live_generation_snapshot = None
         self._update_telemetry()
 
         self._set_generating_state(True)
@@ -5386,7 +5392,8 @@ class SmartAIChatbotApp:
             backend = getattr(self.engine, "gguf_backend" if is_native else "controller_backend", None)
             generation = getattr(backend, "last_generation", None)
             completed = (isinstance(generation, dict) and generation.get("status") == "completed"
-                         and not self.cancel_event.is_set() and self.is_model_loaded)
+                         and not self.cancel_event.is_set() and self.is_model_loaded
+                         and not getattr(self, "_telemetry_request_pending", False))
             usage = generation.get("usage") if completed else None
             total = usage.get("total_tokens") if isinstance(usage, dict) else None
             available = type(total) is int and total >= 0
@@ -5396,26 +5403,43 @@ class SmartAIChatbotApp:
         )
         limit = context_limit(curr_info, self.engine, self.max_context_window)
         summary = getattr(self, "_last_context_snapshot", None)
-        if not self.is_model_loaded:
-            prompt_count, selected_count = None, None
-        elif isinstance(summary, tuple) and len(summary) == 2:
-            prompt_count, selected_count = summary
-        elif getattr(self, "is_generating", False):
-            # During a new request, old server usage is not a new prompt count.
-            owner = backend or getattr(self.engine, {
-                "mlx": "mlx_backend", "controller": "controller_backend",
-                "gguf": "gguf_backend", "bitnet": "bitnet_backend",
-            }.get(getattr(self.engine, "active_backend", None), "mlx_backend"), None)
-            live_count = getattr(owner, "last_prompt_token_count", None)
-            prompt_count = live_count if measured_int(live_count) else None
-            selected_count = None
+        if is_strata or is_native:
+            # Strata/native servers are authoritative for the *last completed
+            # request*. This is not the sum of all speculative Pro branches.
+            # Never substitute a previous request's counters after a stop or
+            # on an incomplete response, nor infer tokens from the text.
+            if completed and available:
+                self.total_tokens_used = total
+                if measured_int(limit) and limit > 0:
+                    label = f"📊 Last request: {total:,} / {limit:,} tokens"
+                else:
+                    label = f"📊 Last request: {total:,} tokens (limit unavailable)"
+                self.lbl_context.configure(text=label)
+            else:
+                self.total_tokens_used = 0
+                self.lbl_context.configure(text="📊 Last request: unavailable")
         else:
-            prompt_count, selected_count = observed_prompt_tokens(self.engine), None
-        self.total_tokens_used = (
-            prompt_count + (selected_count if measured_int(selected_count) else 0)
-            if measured_int(prompt_count) else 0
-        )
-        self.lbl_context.configure(text=context_label(prompt_count, limit, completion_tokens=selected_count))
+            if not self.is_model_loaded:
+                prompt_count, selected_count = None, None
+            elif isinstance(summary, tuple) and len(summary) == 2:
+                prompt_count, selected_count = summary
+            elif getattr(self, "is_generating", False):
+                # Do not treat stale counters from a previous request as live.
+                owner = backend or getattr(self.engine, {
+                    "mlx": "mlx_backend", "controller": "controller_backend",
+                    "gguf": "gguf_backend", "bitnet": "bitnet_backend",
+                }.get(getattr(self.engine, "active_backend", None), "mlx_backend"), None)
+                live_count = getattr(owner, "last_prompt_token_count", None)
+                prompt_count = live_count if measured_int(live_count) else None
+                selected_count = None
+            else:
+                prompt_count, selected_count = observed_prompt_tokens(self.engine), None
+            self.total_tokens_used = (
+                prompt_count + (selected_count if measured_int(selected_count) else 0)
+                if measured_int(prompt_count) else 0
+            )
+            self.lbl_context.configure(text=context_label(
+                prompt_count, limit, completion_tokens=selected_count))
         inference_only = bool(curr_info.get("inference_only") or is_native)
         total_p = curr_info.get("raw_params", 27_400_000_000) + (0 if inference_only else self.synapses_learned_count)
         param_str = format_parameter_count(total_p)
