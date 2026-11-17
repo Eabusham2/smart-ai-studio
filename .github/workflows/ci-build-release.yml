@@ -263,8 +263,14 @@ jobs:
           $tclTarget = Join-Path $pythonHome 'tcl\tcl8.6'
           $tkTarget = Join-Path $pythonHome 'tcl\tk8.6'
           New-Item -ItemType Directory -Force -Path $tclTarget,$tkTarget | Out-Null
-          Copy-Item -Path (Join-Path $tclSource '*') -Destination $tclTarget -Recurse -Force
-          Copy-Item -Path (Join-Path $tkSource '*') -Destination $tkTarget -Recurse -Force
+          # One side is the selected interpreter's own complete library.
+          # Copying it onto itself errors on Windows PowerShell; preserve it.
+          if ([IO.Path]::GetFullPath($tclSource).TrimEnd('\\') -ine [IO.Path]::GetFullPath($tclTarget).TrimEnd('\\')) {
+            Copy-Item -Path (Join-Path $tclSource '*') -Destination $tclTarget -Recurse -Force
+          }
+          if ([IO.Path]::GetFullPath($tkSource).TrimEnd('\\') -ine [IO.Path]::GetFullPath($tkTarget).TrimEnd('\\')) {
+            Copy-Item -Path (Join-Path $tkSource '*') -Destination $tkTarget -Recurse -Force
+          }
           $env:TCL_LIBRARY = $tclTarget
           $env:TK_LIBRARY = $tkTarget
           "TCL_LIBRARY=$tclTarget" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
