@@ -43,6 +43,10 @@ def install_responsive_toolbar(app, left, right):
             for widget in widgets:
                 if widget is getattr(app, "lbl_model_status", None):
                     widget.configure(wraplength=max(96, min(260, available - 24)))
+                if widget is getattr(app, "btn_model_menu", None):
+                    # Extremely long imported model names remain readable
+                    # on narrow windows instead of clipping inside the menu.
+                    widget.configure(wraplength=max(130, available - 28))
                 width = min(widget.winfo_reqwidth(), available - 8)
                 height = widget.winfo_reqheight()
                 if x > 3 and x + width + 3 > available:
@@ -62,4 +66,21 @@ def install_responsive_toolbar(app, left, right):
             header.after_idle(reflow)
 
     header.bind("<Configure>", schedule, add="+")
+    selector = getattr(app, "model_var", None)
+    if selector is not None and hasattr(selector, "trace_add"):
+        selector.trace_add("write", lambda *_: schedule())
+
+    def watch_requested_sizes():
+        # Status badges and load buttons change labels without a <Configure>
+        # event because their place size is held fixed. Poll their requested
+        # sizes cheaply, and reflow only if something actually changed.
+        if not header.winfo_exists():
+            return
+        available = max(160, header.winfo_width() - 22)
+        sizes = tuple(w.winfo_reqwidth() for _, widgets in groups for w in widgets)
+        if previous != (available, sizes):
+            schedule()
+        header.after(160, watch_requested_sizes)
+
     schedule()
+    header.after(160, watch_requested_sizes)

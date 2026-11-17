@@ -100,4 +100,19 @@ def test_top_bar_never_clips_and_aligns_consistently_during_resize():
         for widget in (app.chk_auto_speed, app.btn_speed_tune, app.btn_speed_cancel,
                        app.btn_lossless_speedups):
             assert widget.winfo_x() + widget.winfo_width() <= bar.winfo_width()
+
+    # Model names, memory badges, and load-status labels can grow without a
+    # window resize. Their live requested widths must trigger reflow too.
+    import time
+    root.geometry("1050x800")
+    root.update()
+    app.model_var.set("Bonsai 2 Ternary EXTREMELY LONG IMPORTED MODEL LABEL")
+    app.lbl_model_status.configure(
+        text="Loaded Bonsai 2 — quantized runtime initializing extra context and media modules"
+    )
+    time.sleep(0.22)
+    root.update()
+    for widget in (app.btn_model_menu, app.lbl_model_status, app.chk_pro_branches):
+        assert widget.winfo_width() >= widget.winfo_reqwidth() - 3
+        assert widget.winfo_x() + widget.winfo_width() <= widget.master.winfo_width() + 2
     root.destroy()
