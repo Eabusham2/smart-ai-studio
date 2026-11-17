@@ -217,11 +217,41 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # Windows Python 3.10's hosted toolcache can be missing the Tcl/Tk
+      # ttk/xpTheme.tcl script, even while _tkinter is installed. The Python
+      # 3.11 toolkit has a complete compatible Tk 8.6 script tree. Prime it
+      # first, then restore the requested 3.10 Python for the real test run.
+      - name: Prepare Windows Tk 8.6 source
+        if: runner.os == 'Windows' && matrix.python-version == '3.10'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
+
+      - name: Repair missing Windows Python 3.10 Tk scripts and verify GUI
+        if: runner.os == 'Windows' && matrix.python-version == '3.10'
+        shell: pwsh
+        run: |
+          $pythonHome = (python -c "import sys; assert sys.version_info[:2] == (3, 10); print(sys.prefix)").Trim()
+          $tkTarget = Join-Path $pythonHome 'tcl\tk8.6'
+          $tkSource = $null
+          foreach ($version in (Get-ChildItem (Join-Path $env:RUNNER_TOOL_CACHE 'Python') -Directory | Where-Object Name -Like '3.11.*' | Sort-Object Name -Descending)) {
+            $candidate = Join-Path $version.FullName 'x64\tcl\tk8.6'
+            if (Test-Path (Join-Path $candidate 'ttk\xpTheme.tcl')) {
+              $tkSource = $candidate
+              break
+            }
+          }
+          if (-not $tkSource) { throw 'No complete Tk 8.6 scripts in the Windows Python 3.11 toolkit.' }
+          New-Item -ItemType Directory -Path $tkTarget -Force | Out-Null
+          Copy-Item -Path (Join-Path $tkSource '*') -Destination $tkTarget -Recurse -Force
+          # Keep the GUI lifecycle test active; fail here if the runner is still broken.
+          python -c "import tkinter as tk; root = tk.Tk(); root.withdraw(); root.destroy(); print('Windows Python 3.10 real Tk GUI initialized')"
 
       - name: Install Linux GUI Dependencies
         if: runner.os == 'Linux'
