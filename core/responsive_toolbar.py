@@ -1,70 +1,70 @@
-"""Tk top bar reflows existing controls, never hides Pro mode when resized."""
+"""Compact left-aligned responsive header for the existing Tk controls.
+
+Each group occupies its own full-width row and wraps internally.  Never
+request a grid column wider than the available header width or stretch chips
+across the window. All existing widgets, callbacks, and Tk variables survive.
+"""
 from __future__ import annotations
 
 
 def install_responsive_toolbar(app, left, right):
     parent = app.hud_bar
-    left_widgets = list(left.pack_slaves())
-    right_widgets = list(right.pack_slaves())
-    # A model can be generating while the window is resized. Preserve widgets,
-    # commands and Tk variables; reposition only (no re-creation).
+    groups = (
+        (left, list(left.pack_slaves())),
+        (right, list(right.pack_slaves())),
+    )
     pro = getattr(app, "chk_pro_branches", None)
-    if pro in right_widgets:
-        right_widgets.remove(pro)
-        right_widgets.insert(0, pro)
-    for widget in left_widgets + right_widgets:
-        widget.pack_forget()
-    for box in (left, right):
-        box.pack_forget()
+    if pro is not None and pro in groups[1][1]:
+        controls = groups[1][1]
+        controls.remove(pro)
+        controls.insert(0, pro)
 
-    previous = None
-    scheduled = False
-
-    def flow(widgets, available):
-        row = col = used = 0
+    for frame, widgets in groups:
         for widget in widgets:
-            # Wrap long status badges, rather than clipping their text.
-            if widget is getattr(app, "lbl_model_status", None):
-                widget.configure(wraplength=max(130, min(360, available - 28)))
-            width = widget.winfo_reqwidth() + 12
-            if col and used + width > available:
-                row += 1
-                col = used = 0
-            widget.grid(row=row, column=col, padx=3, pady=2, sticky="w")
-            used += width
-            col += 1
+            widget.pack_forget()
+        frame.pack_forget()
+        # Separate rows: a wide model selector can never push the action bar
+        # beyond the right edge or cause the other controls to justify.
+        frame.pack(side="top", fill="x", anchor="w", padx=2, pady=1)
+        frame.grid_columnconfigure(0, weight=0)
+
+    previous_width = None
+    pending = False
 
     def reflow():
-        nonlocal previous, scheduled
-        scheduled = False
+        nonlocal pending, previous_width
+        pending = False
         if not parent.winfo_exists():
             return
-        available = max(240, app.root.winfo_width() - 38)
-        if previous is not None and abs(previous - available) < 9:
+        # Use the actual header width (not the root window width). Include
+        # its outer padding and allow enough room for borders on each row.
+        available = max(160, parent.winfo_width() - 24)
+        if available == previous_width:
             return
-        previous = available
-        for widget in left_widgets + right_widgets:
-            widget.grid_forget()
-        for box in (left, right):
-            box.grid_forget()
-        # Left controls flow by themselves if even the brand/model row is long.
-        flow(left_widgets, available)
-        left_width = sum(w.winfo_reqwidth() + 12 for w in left_widgets)
-        right_width = sum(w.winfo_reqwidth() + 12 for w in right_widgets)
-        together = left_width + right_width <= available
-        left.grid(row=0, column=0, sticky="w", padx=2, pady=1)
-        right.grid(row=0 if together else 1, column=1 if together else 0,
-                   columnspan=1 if together else 2, sticky="w", padx=2, pady=1)
-        flow(right_widgets, max(240, available - left_width - 8) if together else available)
-        parent.grid_columnconfigure(0, weight=1 if together else 0)
+        previous_width = available
+        for frame, widgets in groups:
+            for widget in widgets:
+                widget.grid_forget()
+            row, column, used = 0, 0, 0
+            for widget in widgets:
+                if widget is getattr(app, "lbl_model_status", None):
+                    widget.configure(wraplength=max(90, min(260, available - 30)))
+                width = widget.winfo_reqwidth() + 10
+                if column and used + width > available:
+                    row += 1
+                    column = 0
+                    used = 0
+                widget.grid(row=row, column=column, sticky="w", padx=3, pady=2)
+                used += width
+                column += 1
 
-    def changed(event=None):
-        nonlocal scheduled
-        if event is not None and event.widget is not app.root:
+    def schedule(event=None):
+        nonlocal pending
+        if event is not None and event.widget is not parent:
             return
-        if not scheduled:
-            scheduled = True
-            app.root.after_idle(reflow)
+        if not pending:
+            pending = True
+            parent.after_idle(reflow)
 
-    app.root.bind("<Configure>", changed, add="+")
-    changed()
+    parent.bind("<Configure>", schedule, add="+")
+    schedule()
