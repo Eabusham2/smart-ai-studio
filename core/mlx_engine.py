@@ -513,7 +513,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
             self.is_mlx_available = self.model is not None and self.tokenizer is not None
         except Exception as exc:
-            _base.logger.error("MLX model load failed: %s", exc)
+            _base.logger.exception("MLX model load failed (full traceback)")
             failure = str(exc)
             try:
                 self.unload_model()  # Drop partial model and cache owners on failed load.
