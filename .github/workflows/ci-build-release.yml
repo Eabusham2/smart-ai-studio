@@ -594,6 +594,24 @@ jobs:
             --archive-name SmartAI-macOS-arm64.zip \
             --upload-tag "$RELEASE_TAG"
 
+      - name: Build no-admin Apple Silicon portable kit with both preloaded models
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
+        run: |
+          # The app + both model repositories are already in the split archive
+          # verified above. Reuse those exact SHA256 parts; uploading them twice
+          # would waste ~18 GB and risks two mismatched release variants.
+          python tools/build_macos_noadmin_portable.py \
+            --manifest dist/SmartAI-macOS-arm64.bundle.json \
+            --assembler dist/Reassemble-SmartAI-macOS-arm64.command \
+            --output-dir dist \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --commit "$GITHUB_SHA"
+          cd dist
+          /usr/bin/shasum -a 256 -c SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256
+
       - name: Upload Build Artifacts to Workflow Run
         uses: actions/upload-artifact@v4
         with:
@@ -621,7 +639,29 @@ jobs:
               if path.is_file():
                   subprocess.run(['gh','release','upload',os.environ['RELEASE_TAG'],str(path),'--clobber'],check=True)
           PYUPLOAD
-          gh release edit "$RELEASE_TAG" --title "$RELEASE_TITLE" --draft=false --latest
+          # Keep the extra no-admin download option discoverable in the
+          # published release, without suggesting it contains a second 18GB copy.
+          cat > smartai-release-notes.md <<'SMARTAI_RELEASE_NOTES'
+          ## Smart AI Studio — full release
+
+          **Mac (Apple Silicon): no-admin portable option**
+          Download `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip` and its
+          `.sha256` receipt. Unzip it and open the included
+          `Install-and-Launch-SmartAI-NoAdmin.command` (or run it with `/bin/bash`).
+          It downloads the release's already-verified multipart Mac ZIP, which
+          contains the complete app, embedded Python/dependencies and BOTH Bonsai 2
+          model snapshots. Extraction goes to `~/Applications/SmartAI-Portable/`.
+          No administrator credentials, Homebrew, Xcode, or system Python required.
+          Both model snapshots are available offline after installation;
+          inference still requires compatible Apple Silicon, MLX and memory.
+          Allow at least 55 GB free space for assembly and extraction.
+
+          The normal macOS, Windows, Linux, native runtime and Setup downloads
+          remain available. Macs with insufficient unified memory may not run
+          both 27B models simultaneously. Gatekeeper may require a normal
+          user-level approval of this unsigned app; it is not disabled by the kit.
+          SMARTAI_RELEASE_NOTES
+          gh release edit "$RELEASE_TAG" --title "$RELEASE_TITLE" --notes-file smartai-release-notes.md --draft=false --latest
 
       - name: Verify Release Assets and Update Rolling Tag
         if: success()
@@ -648,6 +688,19 @@ jobs:
               return { name: part.name, size: part.size };
             });
             for (const name of ['SmartAI-macOS-arm64.bundle.json', 'Reassemble-SmartAI-macOS-arm64.command']) {
+              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
+            }
+            // The additional NoAdmin kit must be exactly this workflow's
+            // inspected model manifest and checksum-verified release asset.
+            const kitName = 'SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip';
+            const receiptName = kitName + '.sha256';
+            const kitBytes = await fs.readFile(`dist/${kitName}`);
+            const kitDigest = require('crypto').createHash('sha256').update(kitBytes).digest('hex');
+            const kitReceipt = (await fs.readFile(`dist/${receiptName}`, 'utf8')).trim();
+            if (kitReceipt !== `${kitDigest}  ${kitName}`) {
+              throw new Error('No-admin portable release kit has an invalid SHA256 receipt');
+            }
+            for (const name of [kitName, receiptName]) {
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
             }
             for (const target of ['Linux-x86_64', 'Windows-x86_64', 'macOS-arm64']) {

@@ -266,6 +266,14 @@ bundle Python and dependencies; setup packages install dependencies into a priva
 user directory on first launch. No pretrained model is executed by the package
 smoke check.
 
+**Apple Silicon no-admin portable:** The release also provides
+`SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip`. It assembles the existing
+SHA256-verified split Mac ZIP (which includes bundled Python/dependencies and
+both original Bonsai 2 MLX model snapshots) into `~/Applications` without
+administrator rights, Homebrew, or Xcode. The first assembly downloads the
+release parts; model weights are available offline afterward. See
+[No-admin macOS portable instructions](docs/macos-noadmin-portable.md).
+
 
 Generate standalone release distribution bundles for macOS, Windows, and Linux:
 ```bash
