@@ -288,7 +288,7 @@ speed** off does not disable the memory placement needed to load the model.
 
 ## Native Auto speed: use it
 
-**Auto speed** is enabled by default. Load an already selected model normally.
+**Auto speed** is always enabled in the desktop application. The previous on/off checkbox has been replaced with a read-only status indicator. Load an already selected model normally.
 On a supported runtime, Studio either restores a matching measured profile or
 runs a bounded comparison in the model-loading worker. Progress appears beside
 the speed controls. Model switching uses the same background loader so the UI
@@ -296,17 +296,16 @@ and Cancel button remain responsive.
 
 **Retune** repeats the comparison on the loaded model. **Cancel** stops at a safe
 native token/run boundary and keeps the previously working execution settings.
-Turning **Auto speed** off restores the original native execution defaults.
-The checkbox preference is merged into the existing app preferences, preserving
-saved memory limits and other settings.
+The automatic tuner retains the original native settings if no measured improvement is available.
+The application preserves existing preferences such as memory limits; legacy saved Auto speed off values are ignored.
 
 The default measurement budget is **90 seconds**. This is cooperative: a single
 native prefill or token evaluation already in progress must finish before Python
 can observe cancellation or expiry. A slower model can therefore return
 "time budget reached" without obtaining a new profile. This does not prevent
 normal inference. Developers may set `SMARTAI_SPEED_TUNE_SECONDS` between 15 and
-600, or set `SMARTAI_AUTO_SPEED=0` for an initial default of off. A saved desktop
-checkbox preference takes precedence over that initial environment default.
+600, and continues to preserve a saved working profile. The desktop UI always enables Auto speed;
+there is no per-session off switch.
 
 ## Native settings that are measured
 

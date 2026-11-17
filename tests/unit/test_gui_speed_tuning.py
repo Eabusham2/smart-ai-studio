@@ -234,15 +234,16 @@ def test_cancel_keeps_ui_responsive_and_restores_disabled_states(monkeypatch, tm
     assert app.sent == 1
 
 
-def test_saved_off_is_loaded_before_model_load_and_memory_cap_can_be_off(monkeypatch, tmp_path):
+def test_saved_off_is_overridden_by_forced_auto_speed_and_memory_cap_can_be_off(monkeypatch, tmp_path):
     (tmp_path / "prefs.json").write_text('{"speed_tuning":{"enabled":false}}')
     app, _pending, _module = make_app(monkeypatch, tmp_path)
-    assert app.auto_speed_var.get() is False
-    assert app.engine.auto_speed_enabled is False
+    assert app.auto_speed_var.get() is True
+    assert app.engine.auto_speed_enabled is True
+    assert app.chk_auto_speed.cget("text") == "Auto speed ✓ On"
     app._memory_limit_enabled = False
     app.root.tick()
     assert app.engine.speed_memory_limit_gb is None
-    assert app.lbl_speed_status.cget("text") == "Auto speed is off."
+    assert app.lbl_speed_status.cget("text") == "Auto speed is ready for the next model load."
 
 
 def test_ui_rejects_tuning_during_eval(monkeypatch, tmp_path):

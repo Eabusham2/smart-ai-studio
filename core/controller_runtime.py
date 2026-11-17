@@ -255,7 +255,18 @@ class UniversalControllerBackend:
         return self.is_loaded
 
     def _load_jang_vlm(self) -> bool:
-        from jang_tools.loader import load_jang_vlm_model
+        # JANG-Hadamard has input-side rotations and mixed packed/float weights.
+        # The generic MLX affine QuantizedLinear route raises uint32/float32
+        # errors (or silently generates incorrect output) for this checkpoint.
+        try:
+            from vmlx_engine.utils.jang_loader import load_jang_vlm_model
+        except ImportError as exc:
+            raise RuntimeError(
+                "This CRACK JANG-Hadamard model requires the compatible vMLX "
+                "loader (vmlx >= 1.6.84 on Python 3.11+ / Apple Silicon). "
+                "The stock MLX and older generic JANG loader cannot safely "
+                "execute this mixed packed checkpoint."
+            ) from exc
         source = resolve_local_snapshot(self.model_path)
         loaded = load_jang_vlm_model(source)
         if not isinstance(loaded, tuple) or len(loaded) < 2:
@@ -289,17 +300,20 @@ class UniversalControllerBackend:
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Could not import bundled runtime: {module_file}")
         module = importlib.util.module_from_spec(spec)
+        from core.repository_runtime_imports import repository_runtime_imports
         old_path = list(sys.path)
         try:
             sys.path.insert(0, str(runtime_dir))
-            spec.loader.exec_module(module)
+            # vision_artifact imports `Packed` from its sibling runtime.py,
+            # not from an unrelated installed module named `runtime`.
+            with repository_runtime_imports(runtime_dir):
+                spec.loader.exec_module(module)
+                loader = getattr(module, loader_name, None)
+                if not callable(loader):
+                    raise RuntimeError(f"Bundled runtime has no callable {loader_name}()")
+                loaded = loader(source)
         finally:
             sys.path[:] = old_path
-
-        loader = getattr(module, loader_name, None)
-        if not callable(loader):
-            raise RuntimeError(f"Bundled runtime has no callable {loader_name}()")
-        loaded = loader(source)
         if not isinstance(loaded, tuple) or len(loaded) < 2:
             raise RuntimeError("Bundled runtime loader did not return model + processor")
         self.model, self.processor = loaded[:2]

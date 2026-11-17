@@ -1576,6 +1576,8 @@ class SmartAIChatbotApp:
             bg=self.C["bg_hud"], fg=self.C["btn_fg"], padx=4
         )
         self.lbl_model_status.pack(side="left")
+        from core.responsive_toolbar import install_responsive_toolbar
+        install_responsive_toolbar(self, left_box, right_box)
 
     def _refresh_model_menu(self):
         """Rebuild the model dropdown with built-ins, custom models, and HF-fetch removal actions."""
@@ -5879,19 +5881,19 @@ assert glyph_res["invariants_passed"] == True
         modal = tk.Toplevel(self.root)
         modal.title("💾 System & AI Model Memory Telemetry")
         modal.geometry("560x420")
-        modal.configure(bg=self.C["bg_main"])
+        modal.configure(bg=self.C["bg_app"])
         modal.transient(self.root)
         modal.grab_set()
 
-        hdr = tk.Frame(modal, bg=self.C["bg_header"], padx=16, pady=12)
+        hdr = tk.Frame(modal, bg=self.C["bg_hud"], padx=16, pady=12)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="📊 Live Memory Allocation Profile", font=_FONT_TITLE_BOLD, bg=self.C["bg_header"], fg=self.C["text_primary"]).pack(anchor="w")
-        tk.Label(hdr, text="Dynamic Unified RAM scaling & real-time Metal allocation telemetry", font=_FONT_SMALL, bg=self.C["bg_header"], fg=self.C["text_muted"]).pack(anchor="w")
+        tk.Label(hdr, text="📊 Live Memory Allocation Profile", font=_FONT_TITLE, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
+        tk.Label(hdr, text="Dynamic Unified RAM scaling & real-time Metal allocation telemetry", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(anchor="w")
 
-        body = tk.Frame(modal, bg=self.C["bg_main"], padx=16, pady=12)
+        body = tk.Frame(modal, bg=self.C["bg_app"], padx=16, pady=12)
         body.pack(fill="both", expand=True)
 
-        lbl_info = tk.Label(body, text="", font=_FONT_CODE, bg=self.C["bg_chat"], fg=self.C["text_primary"], justify="left", padx=12, pady=12, relief="flat", bd=1)
+        lbl_info = tk.Label(body, text="", font=_FONT_MONO, bg=self.C["bg_chat"], fg=self.C["text_main"], justify="left", padx=12, pady=12, relief="flat", bd=1)
         lbl_info.pack(fill="both", expand=True)
 
         def _refresh_telemetry():
@@ -5900,7 +5902,7 @@ assert glyph_res["invariants_passed"] == True
                 text = (
                     f"• App Process Resident (RSS) : {mem['app_rss_gb']:.2f} GB (Python GUI & Runtime)\n"
                     f"• Model Metal Active Tensor  : {mem['model_metal_active_gb']:.2f} GB (Weights in RAM)\n"
-                    f"• Model Metal Peak Buffer    : {mem['model_metal_peak_gb']:.2f} GB (Rollout Peak)\n"
+                    f"• Model Metal Peak Buffer    : {mem['model_metal_peak_gb']:.2f} GB (Historical Peak)\n"
                     f"• Metal Cache Memory         : {mem['model_metal_cache_gb']:.2f} GB (Dynamic Cache Pool)\n"
                     f"─────────────────────────────────────────────────────────────\n"
                     f"• Total App + Model Memory   : {mem['total_allocated_gb']:.2f} GB\n"
@@ -5910,15 +5912,15 @@ assert glyph_res["invariants_passed"] == True
                     f"• RAM Allocation Strategy    : {mem['allocation_strategy']}\n"
                     f"• Dynamic Scaling Status     : Active (Elastic on-demand KV expansion)"
                 )
-                lbl_info.configure(text=text)
-            except Exception:
-                pass
+                lbl_info.configure(text=text, wraplength=max(280, modal.winfo_width() - 70))
+            except Exception as exc:
+                lbl_info.configure(text=f"Memory telemetry unavailable: {type(exc).__name__}: {exc}")
             if modal.winfo_exists():
                 modal.after(1000, _refresh_telemetry)
 
         _refresh_telemetry()
 
-        footer = tk.Frame(modal, bg=self.C["bg_header"], padx=16, pady=10)
+        footer = tk.Frame(modal, bg=self.C["bg_hud"], padx=16, pady=10)
         footer.pack(fill="x")
 
         def _trim_cache():
@@ -5926,9 +5928,9 @@ assert glyph_res["invariants_passed"] == True
             _refresh_telemetry()
 
         btn_trim = tk.Button(
-            footer, text="🧹 Trim Cache", font=_FONT_SMALL_BOLD,
-            bg=self.C["accent_primary"], fg="#FFFFFF",
-            activebackground=self.C["accent_hover"], activeforeground="#FFFFFF",
+            footer, text="🧹 Trim Cache", font=_FONT_TINY_BOLD,
+            bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"],
+            activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"],
             relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
             command=_trim_cache
         )

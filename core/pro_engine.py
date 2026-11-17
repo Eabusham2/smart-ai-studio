@@ -522,44 +522,50 @@ class ProReasoningEngine:
                 pass
             self.tokenizer = None
 
-        if hasattr(self, "mlx_backend") and self.mlx_backend is not None:
+        if getattr(self, "mlx_backend", None) is not None:
+            backend = self.mlx_backend
             try:
-                invalidate = getattr(self.mlx_backend, "invalidate_prompt_reuse", None)
-                if callable(invalidate):
-                    invalidate("unload")
-                if hasattr(self.mlx_backend, "model") and self.mlx_backend.model is not None:
-                    del self.mlx_backend.model
-                    self.mlx_backend.model = None
-                if hasattr(self.mlx_backend, "tokenizer") and self.mlx_backend.tokenizer is not None:
-                    del self.mlx_backend.tokenizer
-                    self.mlx_backend.tokenizer = None
-                if hasattr(self.mlx_backend, "processor") and self.mlx_backend.processor is not None:
-                    del self.mlx_backend.processor
-                    self.mlx_backend.processor = None
-                self.mlx_backend.is_mlx_available = False
-            except Exception:
-                pass
+                unload = getattr(backend, "unload_model", None)
+                if callable(unload):
+                    unload()
+                else:
+                    invalidate = getattr(backend, "invalidate_prompt_reuse", None)
+                    if callable(invalidate):
+                        invalidate("unload")
+                    backend.model = None
+                    backend.tokenizer = None
+                    backend.processor = None
+                    backend.kv_cache_manager = None
+                    backend._vlm_loader = None
+                    backend.is_mlx_available = False
+            except Exception as exc:
+                return {"status": "error", "unloaded": False, "model": old_model,
+                        "backend": "mlx", "error": f"MLX cleanup failed: {exc}"}
             self.mlx_backend = None
+            del backend
 
         if hasattr(self, "controller_backend") and self.controller_backend is not None:
             try:
                 self.controller_backend.unload_model()
-            except Exception:
-                pass
+            except Exception as exc:
+                return {"status": "error", "unloaded": False, "model": old_model,
+                        "backend": "controller_backend", "error": str(exc)}
             self.controller_backend = None
 
         if hasattr(self, "gguf_backend") and self.gguf_backend is not None:
             try:
                 self.gguf_backend.unload_model()
-            except Exception:
-                pass
+            except Exception as exc:
+                return {"status": "error", "unloaded": False, "model": old_model,
+                        "backend": "gguf_backend", "error": str(exc)}
             self.gguf_backend = None
 
         if hasattr(self, "bitnet_backend") and self.bitnet_backend is not None:
             try:
                 self.bitnet_backend.unload_model()
-            except Exception:
-                pass
+            except Exception as exc:
+                return {"status": "error", "unloaded": False, "model": old_model,
+                        "backend": "bitnet_backend", "error": str(exc)}
             self.bitnet_backend = None
 
         if hasattr(self, "speculative_engine") and self.speculative_engine is not None:

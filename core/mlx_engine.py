@@ -514,7 +514,12 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.is_mlx_available = self.model is not None and self.tokenizer is not None
         except Exception as exc:
             _base.logger.error("MLX model load failed: %s", exc)
-            self.last_error = str(exc)
+            failure = str(exc)
+            try:
+                self.unload_model()  # Drop partial model and cache owners on failed load.
+            except Exception as cleanup_error:
+                failure += f" (partial-load cleanup: {cleanup_error})"
+            self.last_error = failure
             self.is_mlx_available = False
             return False
 
@@ -534,6 +539,47 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             from core.mlx_warmup import SafeMLXWarmup
             self._metal_warmup = SafeMLXWarmup(enabled=self._lossless_speedups["metal_warmup"])
         return bool(self.is_mlx_available)
+
+    def unload_model(self):
+        """Release *all* model owners, including nested VLM and KV references.
+
+        Clearing only ``self.model`` left ``_vlm_loader.model`` and
+        ``kv_cache_manager.model`` alive in unified memory. A real failure is
+        propagated to the caller rather than displaying a false unloaded state.
+        """
+        import gc
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            self.invalidate_prompt_reuse("unload")
+            loader = self._vlm_loader
+            if loader is not None:
+                unload = getattr(loader, "unload_model", None)
+                if callable(unload):
+                    unload()
+            self.kv_cache_manager = None
+            self._vlm_loader = None
+            self._vlm_runtime = None
+            self.model = None
+            self.processor = None
+            self.tokenizer = None
+            self.is_mlx_available = False
+            self._prompt_disk_model_id = None
+            self._prompt_disk_tokenizer_id = None
+            self._prompt_load_stamps = None
+            self.last_generation_tokens = 0
+            self.last_tok_per_sec = 0.0
+            del loader
+            gc.collect()
+            try:
+                import mlx.core as mx
+                clear = getattr(mx, "clear_cache", None)
+                if not callable(clear):
+                    clear = getattr(getattr(mx, "metal", None), "clear_cache", None)
+                if callable(clear):
+                    clear()
+            except ImportError:
+                pass
+            return {"status": "unloaded"}
 
     def get_training_model(self):
         """Return the real causal language module used for text Learn/RSI updates."""

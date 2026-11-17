@@ -157,7 +157,7 @@ def install_gui_speed_tuning() -> None:
     def _save_preference(self) -> None:
         try:
             save_auto_speed_preference(
-                mod.APP_PREFS_FILE, bool(self.engine.auto_speed_enabled),
+                mod.APP_PREFS_FILE, True,
             )
         except (OSError, ValueError, TypeError) as exc:
             _status(self, f"Speed setting applied; preference could not be saved: {exc}")
@@ -219,15 +219,16 @@ def install_gui_speed_tuning() -> None:
         _sync_memory_limit(self)
         reason = speed_busy_reason(self)
         if reason:
-            self.auto_speed_var.set(bool(self.engine.auto_speed_enabled))
+            self.auto_speed_var.set(True)
             _status(self, reason)
             return
         if not _is_text(self):
-            self.auto_speed_var.set(bool(self.engine.auto_speed_enabled))
+            self.auto_speed_var.set(True)
             _status(self, "Auto speed applies to supported text models.")
             return
+        enabled = True  # Retune remains optional, disabling Auto speed does not.
         if not getattr(self, "is_model_loaded", False):
-            self.engine.auto_speed_enabled = bool(enabled)
+            self.engine.auto_speed_enabled = True
             _status(self, "Auto speed is ready for the next model load." if enabled else "Auto speed is off.")
             _save_preference(self)
             return
@@ -239,7 +240,6 @@ def install_gui_speed_tuning() -> None:
         self._speed_ui_running = True
         self._speed_cancel_event.clear()
         _lock_controls(self, True)
-        self.chk_auto_speed.configure(state="disabled")
         self.btn_speed_tune.configure(state="disabled")
         self.btn_speed_cancel.configure(state="normal")
         is_strata = getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
@@ -270,7 +270,7 @@ def install_gui_speed_tuning() -> None:
                     _status(self, value)
                 elif kind == "done":
                     self._speed_ui_running = False
-                    self.auto_speed_var.set(bool(self.engine.auto_speed_enabled))
+                    self.auto_speed_var.set(True)
                     if isinstance(value, dict):
                         _status(self, format_speed_status(value))
                         if value.get("status") not in {"busy", "cancelled", "failed", "error"}:
@@ -282,9 +282,9 @@ def install_gui_speed_tuning() -> None:
         active = speed_tuning_active(self)
         closing = bool(getattr(self, "_speed_close_requested", False))
         _lock_controls(self, active or bool(getattr(self, "_model_load_in_progress", False)) or closing)
-        enabled = bool(getattr(self.engine, "auto_speed_enabled", True))
+        enabled = True
         busy = bool(speed_busy_reason(self)) or closing
-        self.chk_auto_speed.configure(state="disabled" if busy or not _is_text(self) else "normal")
+        self.engine.auto_speed_enabled = True
         self.btn_speed_tune.configure(
             state="normal" if enabled and not busy and _is_text(self) and self.is_model_loaded else "disabled",
             text=("Check placement" if getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata" else "Retune"),
@@ -314,9 +314,8 @@ def install_gui_speed_tuning() -> None:
         self._speed_control_states = {}
         self._speed_locked_loaded = None
         self._speed_last_engine_status = {}
-        enabled = load_auto_speed_preference(
-            mod.APP_PREFS_FILE, bool(getattr(self.engine, "auto_speed_enabled", True)),
-        )
+        # Auto speed is always enabled. Saved older off preferences are ignored.
+        enabled = True
         self.engine.auto_speed_enabled = enabled
         _sync_memory_limit(self)
         self._speed_last_engine_status = dict(getattr(self.engine, "speed_status", {}) or {})
@@ -324,12 +323,10 @@ def install_gui_speed_tuning() -> None:
         self.speed_tuning_bar = tk.Frame(self.main_container, bg=self.C["bg_hud"])
         self.speed_tuning_bar.pack(fill="x", side="top", padx=10, pady=(0, 4))
         font = getattr(mod, "_FONT_TINY_BOLD")
-        self.chk_auto_speed = tk.Checkbutton(
-            self.speed_tuning_bar, text="Auto speed", variable=self.auto_speed_var,
-            command=lambda: _run(self, enabled=bool(self.auto_speed_var.get()), force=False),
-            font=font, bg=self.C["bg_hud"], fg=self.C["text_main"],
-            activebackground=self.C["bg_hud"], activeforeground=self.C["text_main"],
-            selectcolor=self.C["btn_bg"], highlightthickness=0,
+        # Read-only indicator replaces the former option; no disable control.
+        self.chk_auto_speed = tk.Label(
+            self.speed_tuning_bar, text="Auto speed ✓ On", font=font,
+            bg=self.C["bg_hud"], fg=self.C["text_main"],
         )
         self.chk_auto_speed.pack(side="left", padx=(2, 6))
         button_style = dict(
@@ -362,11 +359,7 @@ def install_gui_speed_tuning() -> None:
         result = original_theme(self)
         if hasattr(self, "speed_tuning_bar"):
             self.speed_tuning_bar.configure(bg=self.C["bg_hud"])
-            self.chk_auto_speed.configure(
-                bg=self.C["bg_hud"], fg=self.C["text_main"],
-                activebackground=self.C["bg_hud"], activeforeground=self.C["text_main"],
-                selectcolor=self.C["btn_bg"],
-            )
+            self.chk_auto_speed.configure(bg=self.C["bg_hud"], fg=self.C["text_main"])
             self.lbl_speed_status.configure(bg=self.C["bg_hud"], fg=self.C["text_muted"])
             for button in (self.btn_speed_tune, self.btn_speed_cancel):
                 button.configure(
