@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -192,6 +192,120 @@ def test_stream_does_not_prefetch_past_visible_token_or_mark_cancelled_request_c
         assert finished == [(owner.call(threading.get_ident), False)]
     finally:
         owner.shutdown()
+
+
+def test_desktop_load_tune_speedups_reload_unload_never_cross_thread_lock(fake_stream_packages):
+    """Reproduce the macOS hang at 'Comparing native execution settings'.
+
+    Fake model weights only. MLX owns an RLock and its outer wrapper dispatches
+    work to a different OS thread, exactly as the production desktop does.
+    """
+    from core.native_speed import install_native_runtime_lock
+    from core.speed_control import install_speed_control
+
+    class OwnedBackend:
+        def __init__(self):
+            self.model = object()
+            self._runtime_model_lock = threading.RLock()
+            self.events = []
+            self._mlx_owner = None
+            self._mlx_owner_init_lock = threading.Lock()
+
+        def run_on_mlx_owner(self, function, *args, **kwargs):
+            return self._mlx_owner.call(function, *args, **kwargs)
+
+        def load_model(self):
+            with self._runtime_model_lock:
+                self.events.append(("load", threading.get_ident()))
+            return True
+
+        def configure_auto_speed(self, **kwargs):
+            with self._runtime_model_lock:
+                self.events.append(("tune", threading.get_ident()))
+                return {"status": "baseline", "message": "Original settings retained."}
+
+        def configure_lossless_speedups(self, **kwargs):
+            with self._runtime_model_lock:
+                self.events.append(("speedups", threading.get_ident()))
+                return dict(kwargs)
+
+        def unload_model(self):
+            with self._runtime_model_lock:
+                self.events.append(("unload", threading.get_ident()))
+                self.model = None
+            return {"status": "unloaded"}
+
+    # Same wrapper ordering as core/__init__.py: native lock, then MLX owner.
+    install_native_runtime_lock(OwnedBackend)
+    install_mlx_thread_ownership(OwnedBackend)
+
+    class DesktopEngine:
+        def __init__(self):
+            self.settings = SimpleNamespace(use_mock=False)
+            self.active_backend = None
+            self.mlx_backend = None
+
+        def load_model(self):
+            result = self.unload_model()
+            assert result["status"] == "unloaded"
+            self.mlx_backend = OwnedBackend()
+            self.active_backend = "mlx"
+            assert self.mlx_backend.load_model() is True
+            return {"status": "loaded"}
+
+        def unload_model(self):
+            if self.mlx_backend is not None:
+                assert self.mlx_backend.unload_model()["status"] == "unloaded"
+            self.mlx_backend = None
+            self.active_backend = None
+            return {"status": "unloaded"}
+
+    install_speed_control(DesktopEngine)
+    engine = DesktopEngine()
+    main = threading.get_ident()
+
+    def bounded(operation):
+        outcomes = []
+        done = threading.Event()
+
+        def worker():
+            try:
+                outcomes.append((True, operation()))
+            except BaseException as exc:
+                outcomes.append((False, exc))
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        assert done.wait(3), "Deadlock: caller holds MLX RLock while waiting for its owner"
+        thread.join(1)
+        ok, value = outcomes[0]
+        if not ok:
+            raise value
+        return value
+
+    first = bounded(engine.load_model)
+    assert first["status"] == "loaded"
+    assert first["speed"]["status"] == "baseline"
+    backend = engine.mlx_backend
+    assert [k for k, _ in backend.events] == ["load", "speedups", "tune"]
+    assert len({thread_id for _, thread_id in backend.events}) == 1
+    assert backend.events[0][1] != main
+
+    assert bounded(lambda: engine.configure_auto_speed(force=True))["status"] == "baseline"
+    assert bounded(lambda: engine.configure_lossless_speedups(
+        {"prompt_reuse": False}))["status"] == "configured"
+    assert backend.events[-2][0] == "tune"
+    assert backend.events[-1][0] == "speedups"
+
+    second = bounded(engine.load_model)
+    assert second["status"] == "loaded" and second["speed"]["status"] == "baseline"
+    assert backend.events[-1][0] == "unload"
+    assert len({thread_id for _, thread_id in backend.events}) == 1
+    replacement = engine.mlx_backend
+    assert bounded(engine.unload_model)["status"] == "unloaded"
+    assert replacement.events[-1][0] == "unload"
 
 
 def test_no_model_code_is_executed_on_tk_main_thread(fake_stream_packages):

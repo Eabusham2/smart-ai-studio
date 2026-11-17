@@ -5,7 +5,7 @@ import functools
 import os
 import threading
 
-from core.native_speed import runtime_lock
+from core.native_speed import runtime_lock, uses_mlx_thread_owner
 
 
 def install_speed_control(cls) -> None:
@@ -73,6 +73,12 @@ def install_speed_control(cls) -> None:
         lock = runtime_lock(backend)
         if not lock.acquire(blocking=False):
             return {"status": "busy", "message": "Wait for inference or learning to finish before tuning."}
+        # Check the busy state under the existing lock, but never keep an
+        # MLX-owned RLock on the load/UI thread while dispatching to its owner.
+        # That owner acquires this same lock for the native tune operation.
+        held = not uses_mlx_thread_owner(backend)
+        if not held:
+            lock.release()
         previous_enabled = self.auto_speed_enabled
         try:
             self.auto_speed_enabled = bool(enabled)
@@ -104,7 +110,8 @@ def install_speed_control(cls) -> None:
             return dict(self.speed_status)
         finally:
             self.speed_tuning_active = False
-            lock.release()
+            if held:
+                lock.release()
 
     def configure(self, enabled=True, force=False, progress=None, cancelled=None):
         if not self._model_lock.acquire(blocking=False):
@@ -151,10 +158,12 @@ def install_speed_control(cls) -> None:
             controller.cancel_current_request()
         with self._model_lock:
             backend = active_native(self)
-            if backend is not None:
+            if backend is not None and not uses_mlx_thread_owner(backend):
                 with runtime_lock(backend):
                     result = original_unload(self, *args, **kwargs)
             else:
+                # The MLX owner's queue serializes teardown behind GPU work.
+                # Holding its RLock from here would block the owner forever.
                 result = original_unload(self, *args, **kwargs)
             if isinstance(result, dict) and result.get("status") == "error":
                 self.speed_status = {"status": "error", "message": result.get("error", "Model unload failed.")}

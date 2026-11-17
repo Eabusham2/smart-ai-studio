@@ -68,6 +68,18 @@ def runtime_lock(backend):
     return lock
 
 
+def uses_mlx_thread_owner(backend) -> bool:
+    """Return whether native calls are dispatched to a separate MLX OS thread.
+
+    The backend's RLock is acquired INSIDE that owner. A caller that holds the
+    same lock while waiting for a dispatched method will deadlock; RLock is
+    reentrant only within one thread. This remains true before an owner has
+    been allocated and after unload, so inspect the installed wrapper rather
+    than the optional instance's current _mlx_owner value.
+    """
+    return bool(getattr(type(backend), "_mlx_thread_ownership_installed", False))
+
+
 def install_native_runtime_lock(cls) -> None:
     """Share a lock between native inference, training, unloading and tuning.
 

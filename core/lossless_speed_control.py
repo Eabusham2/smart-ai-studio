@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from core.native_speed import runtime_lock
+from core.native_speed import runtime_lock, uses_mlx_thread_owner
 
 
 DEFAULT_OPTIONS = {
@@ -110,6 +110,12 @@ def configure_speedups(engine, options):
             acquired = backend_lock.acquire(blocking=False)
             if not acquired:
                 return {"status": "busy", "message": "Finish the current generation or learning task first."}
+            if uses_mlx_thread_owner(backend):
+                # The configured MLX method is dispatched to the thread that
+                # owns this same RLock; release the busy probe before dispatch.
+                # The owner queue serializes the change with active inference.
+                backend_lock.release()
+                acquired = False
         previous = getattr(engine, "lossless_speed_options", DEFAULT_OPTIONS)
         native_changed = any(selected[key] != previous[key] for key in (
             "speculative_mode", "speculative_server_path", "draft_model_path",
