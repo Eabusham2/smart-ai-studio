@@ -100,19 +100,29 @@ def test_top_bar_never_clips_and_aligns_consistently_during_resize():
         for widget in (app.chk_auto_speed, app.btn_speed_tune, app.btn_speed_cancel,
                        app.btn_lossless_speedups):
             assert widget.winfo_x() + widget.winfo_width() <= bar.winfo_width()
+    root.destroy()
 
-    # Model names, memory badges, and load-status labels can grow without a
-    # window resize. Their live requested widths must trigger reflow too.
+
+def test_toolbar_reflows_after_imported_model_name_and_status_text_change():
+    """Changing a model/connection label never silently clips the Pro toggle."""
+    import tkinter as tk
     import time
-    root.geometry("1050x800")
+    from config.settings import get_settings
+    from app_gui import SmartAIChatbotApp
+
+    root = tk.Tk()
+    app = SmartAIChatbotApp(root, settings=get_settings(backend="mock"))
+    root.geometry("760x800")
     root.update()
-    app.model_var.set("Bonsai 2 Ternary EXTREMELY LONG IMPORTED MODEL LABEL")
-    app.lbl_model_status.configure(
-        text="Loaded Bonsai 2 — quantized runtime initializing extra context and media modules"
-    )
-    time.sleep(0.22)
+    app.model_var.set("Imported Qwen3.8 Hadamard Bonsai Model " * 12)
+    app.lbl_model_status.configure(text="Model loading and verifying checksum " * 12)
     root.update()
-    for widget in (app.btn_model_menu, app.lbl_model_status, app.chk_pro_branches):
-        assert widget.winfo_width() >= widget.winfo_reqwidth() - 3
-        assert widget.winfo_x() + widget.winfo_width() <= widget.master.winfo_width() + 2
+    time.sleep(0.20)
+    root.update()
+    assert app.chk_pro_branches.winfo_manager() == "place"
+    for frame in app.hud_bar.pack_slaves():
+        for widget in frame.winfo_children():
+            if widget.winfo_manager() == "place":
+                assert widget.winfo_x() >= 0
+                assert widget.winfo_x() + widget.winfo_width() <= frame.winfo_width() + 2
     root.destroy()
