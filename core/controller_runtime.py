@@ -311,7 +311,12 @@ class UniversalControllerBackend:
                 loader = getattr(module, loader_name, None)
                 if not callable(loader):
                     raise RuntimeError(f"Bundled runtime has no callable {loader_name}()")
-                loaded = loader(source)
+                if module_name == "vision_artifact":
+                    from core.mlx_repo_config_compat import compatible_qwen35_configs
+                    with compatible_qwen35_configs():
+                        loaded = loader(source)
+                else:
+                    loaded = loader(source)
         finally:
             sys.path[:] = old_path
         if not isinstance(loaded, tuple) or len(loaded) < 2:
