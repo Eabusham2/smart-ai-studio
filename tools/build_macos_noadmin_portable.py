@@ -107,7 +107,7 @@ if [ -e "$APP_DIR" ]; then
   exit 1
 fi
 
-/usr/bin/mkdir -p "$CACHE" "$INSTALL_ROOT"
+/bin/mkdir -p "$CACHE" "$INSTALL_ROOT"
 LIST="$CACHE/.smartai-manifest-parts-$$"
 trap '/bin/rm -f "$LIST"' EXIT
 # The OS-bundled JXA runtime parses JSON. No Python, jq or third-party tools.
@@ -166,7 +166,7 @@ done < "$LIST"
 )
 
 STAGING="$INSTALL_ROOT/.SmartAI-portable-__SHA__-$$"
-/usr/bin/mkdir -p "$STAGING"
+/bin/mkdir -p "$STAGING"
 cleanup() {
   /bin/rm -rf "$STAGING"
 }

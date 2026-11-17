@@ -126,9 +126,13 @@ class MLXThreadOwner:
             yield from fn(*args, **kwargs)
             return
 
-        output: queue.Queue = queue.Queue(maxsize=48)
+        # No unseen token prefetch: native completion must only happen after the
+        # UI has actually consumed the preceding token. Otherwise cancelling
+        # after the first visible piece can incorrectly retain a finished KV.
+        output: queue.Queue = queue.Queue(maxsize=1)
         stopped = threading.Event()
         finished = threading.Event()
+        advance = threading.Event()
 
         def publish(kind, payload=None):
             while not stopped.is_set():
@@ -146,6 +150,14 @@ class MLXThreadOwner:
                     if stopped.is_set():
                         break
                     publish("item", item)
+                    # Wait until the UI explicitly requests its next token.
+                    # Cancellation wakes this wait so native generator.close()
+                    # executes on the original Metal owner thread.
+                    while not stopped.is_set() and not advance.wait(0.05):
+                        pass
+                    advance.clear()
+                    if stopped.is_set():
+                        break
             except BaseException as exc:
                 publish("error", exc)
             finally:
@@ -170,10 +182,12 @@ class MLXThreadOwner:
                 if kind == "error":
                     raise payload
                 yield payload
+                advance.set()
         finally:
             # A closed UI stream must never leave a blocked producer queue or
             # close its native generator from Tk's thread.
             stopped.set()
+            advance.set()
             finished.wait(timeout=2.0)
 
     def shutdown(self):

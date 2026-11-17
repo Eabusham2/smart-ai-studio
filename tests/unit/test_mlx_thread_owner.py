@@ -166,6 +166,34 @@ def test_cancellation_while_producer_backpressured_does_not_deadlock(fake_stream
     owner.shutdown()
 
 
+def test_stream_does_not_prefetch_past_visible_token_or_mark_cancelled_request_complete(fake_stream_packages):
+    """Cancellation after the first displayed token must not complete prefetch."""
+    owner = MLXThreadOwner()
+    advanced = []
+    finished = []
+
+    def native_stream():
+        completed = False
+        try:
+            advanced.append("first")
+            yield "one"
+            advanced.append("second")
+            yield "two"
+            completed = True
+        finally:
+            finished.append((threading.get_ident(), completed))
+
+    try:
+        stream = owner.stream(native_stream)
+        assert next(stream) == "one"
+        time.sleep(0.06)  # The old queue could drain all native tokens here.
+        assert advanced == ["first"], "MLX generated output the UI had not requested"
+        stream.close()
+        assert finished == [(owner.call(threading.get_ident), False)]
+    finally:
+        owner.shutdown()
+
+
 def test_no_model_code_is_executed_on_tk_main_thread(fake_stream_packages):
     """Actual MLX backend method wrappers are installed, not only test dummies."""
     from core.mlx_engine import MLXReasoningBackend

@@ -77,9 +77,13 @@ def test_no_admin_kit_contains_two_models_manifest_and_executable_scripts(tmp_pa
         assert 'sudo ' not in launcher and '/usr/bin/sudo' not in launcher
         assert 'curl' in launcher and '/usr/bin/shasum' in launcher
         assert 'SMARTAI_PORTABLE_OFFLINE' in launcher
+        assert '/bin/mkdir -p' in launcher and '/usr/bin/mkdir' not in launcher
         script = tmp_path / LAUNCHER
         script.write_text(launcher, encoding='utf-8')
-        subprocess.run(['/bin/bash', '-n', str(script)], check=True)
+        # Windows verifies archive, manifest, permissions and source; it has no
+        # /bin/bash or macOS executable environment.
+        if os.name == 'posix':
+            subprocess.run(['/bin/bash', '-n', str(script)], check=True)
 
 
 def test_rejects_missing_model_or_bad_part_hash(tmp_path):
