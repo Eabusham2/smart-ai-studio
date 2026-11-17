@@ -309,10 +309,10 @@ def install_gui_lossless_speedups() -> None:
                 self._lossless_speedups_bar = parent
             self.btn_lossless_speedups = tk.Button(parent, text="Speedups…",
                                                    command=lambda: open_dialog(self), **button_style(self))
-            # Right-side packing keeps the entry point visible beside the
-            # existing expanding speed-status label even in a narrow window.
+            # Keep this action next to Retune/Cancel. The long status label
+            # gets the remaining width rather than pushing Speedups offscreen.
             status_label = getattr(self, "lbl_speed_status", None)
-            pack_options = {"side": "right", "padx": (6, 2)}
+            pack_options = {"side": "left", "padx": (0, 10)}
             if status_label is not None and parent is getattr(self, "speed_tuning_bar", None):
                 pack_options["before"] = status_label
             self.btn_lossless_speedups.pack(**pack_options)

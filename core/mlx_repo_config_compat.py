@@ -32,7 +32,13 @@ def compatible_qwen35_configs():
         original = ModelConfig.from_dict
 
         def normalized(cls, params):
-            cfg = original(params)
+            # MLX-VLM 0.5.0 directly instantiates ModelConfig from the raw
+            # JSON dict. Pre-convert nested configs BEFORE __post_init__ runs:
+            # some releases dereference text_config.model_type there.
+            typed = dict(params)
+            typed["text_config"] = _typed(typed.get("text_config"), TextConfig)
+            typed["vision_config"] = _typed(typed.get("vision_config"), VisionConfig)
+            cfg = original(typed)
             if isinstance(cfg, dict):
                 cfg = cls(**cfg)
             cfg.text_config = _typed(cfg.text_config, TextConfig)

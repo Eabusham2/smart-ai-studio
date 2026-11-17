@@ -136,6 +136,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_generation_cap_reason = ""
         self.last_effective_max_tokens = None
         self.last_model_context_limit = None
+        self.last_prompt_token_count = None
         self.last_tok_per_sec = 0.0
         self.last_generation_tokens = 0
         self.last_generation_seconds = 0.0
@@ -567,6 +568,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self._prompt_disk_tokenizer_id = None
             self._prompt_load_stamps = None
             self.last_generation_tokens = 0
+            self.last_prompt_token_count = None
             self.last_tok_per_sec = 0.0
             del loader
             gc.collect()
@@ -685,6 +687,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 prompt_ids = self._encode_prompt(prompt)
             except Exception:
                 prompt_ids = []
+            self.last_prompt_token_count = len(prompt_ids) if prompt_ids else None
             effective_max = self._effective_generation_cap(
                 prompt,
                 max_tokens,
@@ -754,6 +757,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
         branches = []
         prompt_ids = self._encode_prompt(prompt)
+        self.last_prompt_token_count = len(prompt_ids)
         effective_max = self._effective_generation_cap(
             prompt,
             max_tokens,
@@ -849,6 +853,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         except Exception:
             prompt_ids = []
         prompt_len = len(prompt_ids)
+        self.last_prompt_token_count = prompt_len if prompt_ids else None
 
         effective_max = self._effective_generation_cap(
             prompt,

@@ -217,12 +217,18 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Windows Python 3.10's hosted toolcache can be missing the Tcl/Tk
-      # ttk/xpTheme.tcl script, even while _tkinter is installed. The Python
-      # 3.11 toolkit has a complete compatible Tk 8.6 script tree. Prime it
-      # first, then restore the requested 3.10 Python for the real test run.
-      - name: Prepare Windows Tk 8.6 source
-        if: runner.os == 'Windows' && matrix.python-version == '3.10'
+      # Windows toolcache occasionally contains incomplete Tcl/Tk 8.6 scripts:
+      # Python 3.10 lacks ttk/xpTheme.tcl, while Python 3.11 may lack a
+      # readable tcl8.6/init.tcl. Prepare both versions and use the complete
+      # library halves with the requested Python rather than skipping GUI tests.
+      - name: Prepare Windows Python 3.10 Tcl source
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Prepare Windows Python 3.11 Tk source
+        if: runner.os == 'Windows'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -233,25 +239,37 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
 
-      - name: Repair missing Windows Python 3.10 Tk scripts and verify GUI
-        if: runner.os == 'Windows' && matrix.python-version == '3.10'
+      - name: Repair Windows Tcl/Tk and verify real GUI initialization
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $pythonHome = (python -c "import sys; assert sys.version_info[:2] == (3, 10); print(sys.prefix)").Trim()
-          $tkTarget = Join-Path $pythonHome 'tcl\tk8.6'
+          $pythonHome = (python -c "import sys; print(sys.prefix)").Trim()
+          $versions = Get-ChildItem (Join-Path $env:RUNNER_TOOL_CACHE 'Python') -Directory
+          $tclSource = $null
           $tkSource = $null
-          foreach ($version in (Get-ChildItem (Join-Path $env:RUNNER_TOOL_CACHE 'Python') -Directory | Where-Object Name -Like '3.11.*' | Sort-Object Name -Descending)) {
-            $candidate = Join-Path $version.FullName 'x64\tcl\tk8.6'
-            if (Test-Path (Join-Path $candidate 'ttk\xpTheme.tcl')) {
-              $tkSource = $candidate
-              break
+          foreach ($version in ($versions | Sort-Object Name -Descending)) {
+            $tclCandidate = Join-Path $version.FullName 'x64\tcl\tcl8.6'
+            $tkCandidate = Join-Path $version.FullName 'x64\tcl\tk8.6'
+            if ($version.Name -like '3.10.*' -and (Test-Path (Join-Path $tclCandidate 'init.tcl'))) {
+              $tclSource = $tclCandidate
+            }
+            if ($version.Name -like '3.11.*' -and (Test-Path (Join-Path $tkCandidate 'ttk\xpTheme.tcl'))) {
+              $tkSource = $tkCandidate
             }
           }
-          if (-not $tkSource) { throw 'No complete Tk 8.6 scripts in the Windows Python 3.11 toolkit.' }
-          New-Item -ItemType Directory -Path $tkTarget -Force | Out-Null
+          if (-not $tclSource -or -not $tkSource) {
+            throw 'Complete Tcl/Tk 8.6 sources unavailable in Windows Python toolcache.'
+          }
+          $tclTarget = Join-Path $pythonHome 'tcl\tcl8.6'
+          $tkTarget = Join-Path $pythonHome 'tcl\tk8.6'
+          New-Item -ItemType Directory -Force -Path $tclTarget,$tkTarget | Out-Null
+          Copy-Item -Path (Join-Path $tclSource '*') -Destination $tclTarget -Recurse -Force
           Copy-Item -Path (Join-Path $tkSource '*') -Destination $tkTarget -Recurse -Force
-          # Keep the GUI lifecycle test active; fail here if the runner is still broken.
-          python -c "import tkinter as tk; root = tk.Tk(); root.withdraw(); root.destroy(); print('Windows Python 3.10 real Tk GUI initialized')"
+          $env:TCL_LIBRARY = $tclTarget
+          $env:TK_LIBRARY = $tkTarget
+          "TCL_LIBRARY=$tclTarget" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TK_LIBRARY=$tkTarget" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          python -c "import tkinter as tk; root=tk.Tk(); root.withdraw(); root.destroy(); print('Real Tk 8.6 GUI initialized with matrix Python')"
 
       - name: Install Linux GUI Dependencies
         if: runner.os == 'Linux'

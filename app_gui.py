@@ -593,6 +593,7 @@ class SmartAIChatbotApp:
         self.workspace_dir: Optional[str] = None
         self.tools.set_workspace_dir(None)
         self.total_tokens_used = 0
+        self._last_context_snapshot = None  # actual request input/output counts
         self.max_context_window = get_auto_context_window_size()
         self.synapses_learned_count = 0.0
         self.synapses_learned_m = 0.0
@@ -919,15 +920,17 @@ class SmartAIChatbotApp:
         try:
             screen_w = self.root.winfo_screenwidth()
             screen_h = self.root.winfo_screenheight()
-            init_w = max(1360, min(1600, int(screen_w * 0.90)))
-            init_h = max(860, min(1000, int(screen_h * 0.88)))
+            # Never make the starting window wider than its screen. The header
+            # reflows for compact/Retina-scaled desktops instead of clipping.
+            init_w = min(max(760, int(screen_w * 0.90)), max(640, screen_w - 28))
+            init_h = min(max(620, int(screen_h * 0.88)), max(500, screen_h - 52))
             x = max(10, (screen_w - init_w) // 2)
             y = max(10, (screen_h - init_h) // 2)
             self.root.geometry(f"{init_w}x{init_h}+{x}+{y}")
         except Exception:
             self.root.geometry("1380x880")
 
-        self.root.minsize(1050, 680)
+        self.root.minsize(760, 600)
         self.root.configure(bg=self.C["bg_app"])
 
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.png")
@@ -2333,6 +2336,7 @@ class SmartAIChatbotApp:
         # Interactive Thinking Dropdown Tags (Pure B&W Pill)
         stream.tag_configure("think_dropdown_btn", foreground=self.C["btn_fg"], font=_FONT_TINY_BOLD, background=self.C["btn_bg"])
         stream.tag_configure("think_body", foreground=fg_main, font=_FONT_SMALL, background=self.C["bg_thinking"])
+        stream.tag_configure("reply_stats", foreground=fg_muted, font=_FONT_TINY)
 
         # Tool Pill Tags (Pure B&W Pill)
         stream.tag_configure("tool_pill", foreground=self.C["btn_fg"], font=_FONT_TINY_BOLD, background=self.C["btn_bg"])
@@ -3757,6 +3761,7 @@ class SmartAIChatbotApp:
             self._unload_strata_async(on_complete=lambda: self._on_switch_model_tab(target_tab_id))
             return
         self.active_tab_id = target_tab_id
+        self._last_context_snapshot = None
         target_info = self.models_config[target_tab_id]
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
@@ -4308,7 +4313,8 @@ class SmartAIChatbotApp:
             self.thinking_expanded[think_id] = False
 
             speed_str = f" • {tok_per_sec:.1f} tok/s" if tok_per_sec > 0 else ""
-            t_toks = thinking_tokens or max(24, len(clean_thinking.split()) * 2)
+            # Do not turn words into fake model tokens. Only show a backend count.
+            t_toks = thinking_tokens if type(thinking_tokens) is int and thinking_tokens > 0 else None
 
             self.thinking_meta[think_id] = {
                 "duration_s": duration_s,
@@ -4318,7 +4324,8 @@ class SmartAIChatbotApp:
 
             btn_tag = f"tag_btn_{think_id}"
             self.chat_stream.insert(
-                "end", f"  ▶ 💭 Thought for {duration_s:.1f}s ({t_toks} tokens{speed_str}) [Click to Expand]  ",
+                "end", f"  ▶ 💭 Thought for {duration_s:.1f}s"
+                f"{f' ({t_toks} tokens)' if t_toks is not None else ''}{speed_str} [Click to Expand]  ",
                 ("think_dropdown_btn", btn_tag)
             )
             self.chat_stream.insert("end", "\n\n")
@@ -4367,6 +4374,42 @@ class SmartAIChatbotApp:
         if code_id in self.code_snippets:
             self._open_in_canvas(self.code_snippets[code_id])
 
+    def _collapse_completed_stream_thinking(self, stream_mark, live_ids, elapsed_s):
+        """Close finished reasoning immediately; retain a clickable full transcript.
+
+        Called on the Tk thread after inserting streamed text. A complete
+        </think> is necessary: split tags or unfinished thought stay visible
+        until the producer actually closes the reasoning section.
+        """
+        stream = self.chat_stream
+        cursor = stream_mark
+        while True:
+            start = stream.search("<think>", cursor, stopindex="end-1c", exact=True)
+            if not start:
+                return
+            stop = stream.search("</think>", f"{start}+7c", stopindex="end-1c", exact=True)
+            if not stop:
+                return
+            content = stream.get(f"{start}+7c", stop).strip()
+            end = stream.index(f"{stop}+8c")
+            stream.delete(start, end)
+            if not content:
+                cursor = start
+                continue
+            self._think_counter += 1
+            tid = f"think_{self._think_counter}"
+            self.thinking_cache[tid] = content
+            self.thinking_expanded[tid] = False
+            self.thinking_meta[tid] = {"duration_s": float(elapsed_s), "tokens": None, "speed_str": ""}
+            live_ids.append(tid)
+            tag = f"tag_btn_{tid}"
+            pill = f"  ▶ 💭 Thought for {elapsed_s:.1f}s [Click to Expand]  "
+            stream.insert(start, pill, ("think_dropdown_btn", tag))
+            end_pill = stream.index(f"{start}+{len(pill)}c")
+            stream.insert(end_pill, "\n\n")
+            stream.tag_bind(tag, "<Button-1>", lambda event, thought_id=tid: self._on_toggle_thinking_dropdown(thought_id))
+            cursor = stream.index(f"{end_pill}+2c")
+
     def _on_toggle_thinking_dropdown(self, think_id: str):
         if think_id not in self.thinking_cache:
             return
@@ -4376,7 +4419,8 @@ class SmartAIChatbotApp:
         content = self.thinking_cache[think_id]
         meta = self.thinking_meta.get(think_id, {})
         duration_s = meta.get("duration_s", 0.2)
-        t_toks = meta.get("tokens", len(content.split()))
+        t_toks = meta.get("tokens")
+        token_hint = f" ({t_toks} tokens)" if type(t_toks) is int and t_toks >= 0 else ""
         speed_str = meta.get("speed_str", "")
 
         self.chat_stream.configure(state="normal")
@@ -4388,7 +4432,7 @@ class SmartAIChatbotApp:
         if btn_ranges:
             arrow = "▼" if not is_exp else "▶"
             action_lbl = "[Click to Collapse]" if not is_exp else "[Click to Expand]"
-            new_btn_text = f"  {arrow} 💭 Thought for {duration_s:.1f}s ({t_toks} tokens{speed_str}) {action_lbl}  "
+            new_btn_text = f"  {arrow} 💭 Thought for {duration_s:.1f}s{token_hint}{speed_str} {action_lbl}  "
             start_pos = btn_ranges[0]
             self.chat_stream.delete(btn_ranges[0], btn_ranges[1])
             self.chat_stream.insert(start_pos, new_btn_text, ("think_dropdown_btn", btn_tag))
@@ -4534,10 +4578,9 @@ class SmartAIChatbotApp:
         self._recompute_input_height(is_focused=True)
         self._append_user_message(raw_text)
 
-        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata"
-                and getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) != "prism_speculative"):
-            tokens = len(user_msg.split()) * 2
-            self.total_tokens_used += tokens
+        # Do not invent token usage from word counts: native tokenizer or real
+        # server usage reports will supply the actual prompt count.
+        self._last_context_snapshot = None
         self._update_telemetry()
 
         self._set_generating_state(True)
@@ -4932,6 +4975,8 @@ class SmartAIChatbotApp:
                 # 2. Yield tokens in real time. Paint the UI in tiny batches so
                 # Tkinter does not steal CPU / flood its event queue once decode gets fast.
                 ui_pending: List[str] = []
+                live_think_ids = []
+                think_scan_tail = [""]
                 last_ui_flush = time.perf_counter()
 
                 def _schedule_stream_insert(text_batch: str):
@@ -4941,6 +4986,13 @@ class SmartAIChatbotApp:
                         try:
                             self.chat_stream.configure(state="normal")
                             self.chat_stream.insert("end", c, "ai_msg")
+                            # A complete closing tag collapses the finished
+                            # reasoning immediately, even while answer streams.
+                            recent = think_scan_tail[0] + c
+                            think_scan_tail[0] = recent[-15:]
+                            if "</think>" in recent:
+                                self._collapse_completed_stream_thinking(
+                                    mark_name, live_think_ids, time.perf_counter() - start_time)
                             self.chat_stream.configure(state="disabled")
                             self._scroll_chat_to_bottom()
                         except Exception:
@@ -5120,6 +5172,19 @@ class SmartAIChatbotApp:
                     # never a fabricated fallback or a completed saved reply.
                     return
 
+                # Per-response totals are from observed model tokens, not words.
+                from core.gui_response_telemetry import response_footer, observed_prompt_tokens
+                stat_snapshot = measurements.snapshot()
+                stats_footer = response_footer(stat_snapshot, pro=pro_active)
+                prompt_count = observed_prompt_tokens(self.engine)
+                # A single measured invocation consumed prompt + sampled output.
+                # Pro search and tool handoffs must not add losing candidates to
+                # the actual context occupancy: show prompt-only in those cases.
+                chosen_completion = (stat_snapshot.get("tokens")
+                                     if stat_snapshot.get("invocations") == 1
+                                     and stat_snapshot.get("all_counts_available")
+                                     and not pro_active else None)
+
                 # 3. Finalize markdown styling and collapsible thinking pill
                 def _finalize_ai_msg(text=full_ans, dur=duration_s, tps=tok_per_sec):
                     try:
@@ -5134,6 +5199,13 @@ class SmartAIChatbotApp:
                         except Exception:
                             pass
 
+                        # The live temporary pills belong to the raw stream
+                        # being replaced. The final render creates permanent ones.
+                        for tid in live_think_ids:
+                            self.thinking_cache.pop(tid, None)
+                            self.thinking_expanded.pop(tid, None)
+                            self.thinking_meta.pop(tid, None)
+                        self._last_context_snapshot = (prompt_count, chosen_completion)
                         if pro_summary:
                             self.chat_stream.insert("end", pro_summary + "\n\n", "ai_msg")
 
@@ -5186,6 +5258,7 @@ class SmartAIChatbotApp:
                                         self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
                                         self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
 
+                        self.chat_stream.insert("end", "\n" + stats_footer + "\n\n", "reply_stats")
                         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
                             self.chat_history[self.active_tab_id].append({"role": "assistant", "content": main_body})
 
@@ -5230,6 +5303,13 @@ class SmartAIChatbotApp:
     def _set_generating_state(self, generating: bool):
         self.is_generating = generating
         if generating:
+            self._last_context_snapshot = None
+            owner = getattr(self.engine, {
+                "mlx": "mlx_backend", "controller": "controller_backend",
+                "gguf": "gguf_backend", "bitnet": "bitnet_backend",
+            }.get(getattr(self.engine, "active_backend", None), "mlx_backend"), None)
+            if owner is not None and hasattr(owner, "last_prompt_token_count"):
+                owner.last_prompt_token_count = None
             self.cancel_event.clear()
             if hasattr(self, 'lbl_tps'):
                 self.lbl_tps.configure(text='⚡ Preparing first token…')
@@ -5274,10 +5354,9 @@ class SmartAIChatbotApp:
         if self.is_generating:
             return
         self._append_user_message(raw_text)
-        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) != "strata"
-                and getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) != "prism_speculative"):
-            tokens = len(user_msg.split()) * 2
-            self.total_tokens_used += tokens
+        # Do not invent token usage from word counts: native tokenizer or real
+        # server usage reports will supply the actual prompt count.
+        self._last_context_snapshot = None
         self._update_telemetry()
 
         self._set_generating_state(True)
@@ -5300,6 +5379,9 @@ class SmartAIChatbotApp:
         curr_info = self.models_config.get(self.active_tab_id, {})
         is_strata = curr_info.get("controller_runtime") == "strata"
         is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
+        completed = available = False
+        generation = None
+        backend = None
         if is_strata or is_native:
             backend = getattr(self.engine, "gguf_backend" if is_native else "controller_backend", None)
             generation = getattr(backend, "last_generation", None)
@@ -5308,18 +5390,32 @@ class SmartAIChatbotApp:
             usage = generation.get("usage") if completed else None
             total = usage.get("total_tokens") if isinstance(usage, dict) else None
             available = type(total) is int and total >= 0
-            self.total_tokens_used = total if available else 0
-            context_value = getattr(backend, "n_ctx", None) if self.is_model_loaded else None
-            context = (context_value() if callable(context_value) else context_value) or self.max_context_window
-            if is_native:
-                context = min(context, getattr(backend, "context_budget_tokens", context) or context)
-            self.lbl_context.configure(
-                text=(f"📊 Last request: {total:,} / {context:,} tokens" if available
-                      else "📊 Last request: unavailable"),
-            )
+
+        from core.gui_response_telemetry import (
+            context_label, context_limit, measured_int, observed_prompt_tokens,
+        )
+        limit = context_limit(curr_info, self.engine, self.max_context_window)
+        summary = getattr(self, "_last_context_snapshot", None)
+        if not self.is_model_loaded:
+            prompt_count, selected_count = None, None
+        elif isinstance(summary, tuple) and len(summary) == 2:
+            prompt_count, selected_count = summary
+        elif getattr(self, "is_generating", False):
+            # During a new request, old server usage is not a new prompt count.
+            owner = backend or getattr(self.engine, {
+                "mlx": "mlx_backend", "controller": "controller_backend",
+                "gguf": "gguf_backend", "bitnet": "bitnet_backend",
+            }.get(getattr(self.engine, "active_backend", None), "mlx_backend"), None)
+            live_count = getattr(owner, "last_prompt_token_count", None)
+            prompt_count = live_count if measured_int(live_count) else None
+            selected_count = None
         else:
-            ctx_pct = min(100.0, (self.total_tokens_used / self.max_context_window) * 100)
-            self.lbl_context.configure(text=f"📊 Context: {self.total_tokens_used:,} / {self.max_context_window:,} ({ctx_pct:.0f}%)")
+            prompt_count, selected_count = observed_prompt_tokens(self.engine), None
+        self.total_tokens_used = (
+            prompt_count + (selected_count if measured_int(selected_count) else 0)
+            if measured_int(prompt_count) else 0
+        )
+        self.lbl_context.configure(text=context_label(prompt_count, limit, completion_tokens=selected_count))
         inference_only = bool(curr_info.get("inference_only") or is_native)
         total_p = curr_info.get("raw_params", 27_400_000_000) + (0 if inference_only else self.synapses_learned_count)
         param_str = format_parameter_count(total_p)
@@ -5387,6 +5483,7 @@ class SmartAIChatbotApp:
         self.chat_stream.delete("1.0", "end")
         self.chat_stream.configure(state="disabled")
         self.total_tokens_used = 0
+        self._last_context_snapshot = None
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
             self.chat_history[self.active_tab_id].clear()
         self._update_telemetry()
