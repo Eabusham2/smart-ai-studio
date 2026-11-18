@@ -144,7 +144,7 @@ def test_legacy_cuda_dispatch_preserves_original_loader_and_handles(tmp_path, mo
     assert engine.active_backend is None and engine.model is None and engine.tokenizer is None
 
 
-@pytest.mark.parametrize("tiny_controller", [96], indirect=True)
+@pytest.mark.parametrize("tiny_controller", [(96, "cpu")], indirect=True)
 def test_original_direct_handles_drive_real_logits_and_generation_on_cpu(tiny_controller, tmp_path, monkeypatch):
     """Exercise the raw CUDA route with real CPU tensors in place of the unavailable GPU."""
     import torch

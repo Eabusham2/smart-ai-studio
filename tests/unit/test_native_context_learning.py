@@ -20,17 +20,27 @@ def tiny_controller(tmp_path, monkeypatch, request):
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
     from tokenizers.pre_tokenizers import Whitespace
+    variant = getattr(request, "param", 16)
+    cpu_reference = isinstance(variant, tuple)
+    if cpu_reference:
+        variant, device = variant
+        assert device == "cpu"
+        # These reference tests replay CPU dropout or generate CPU token IDs.
+        # Keep both AutoModel and independently loaded PEFT adapters on that device.
+        monkeypatch.setattr("core.transformers_placement.transformers_memory_limits",
+                            lambda *args, **kwargs: {"cpu": 1024 ** 3})
+        monkeypatch.setattr("peft.peft_model.infer_device", lambda: "cpu")
     original_threads = torch.get_num_threads()
     rng_state = torch.random.get_rng_state()
     torch.set_num_threads(1)
     torch.manual_seed(29)
     base = tmp_path / "small-causal"
-    if getattr(request, "param", None) == "split_queries":
+    if variant == "split_queries":
         model = tf.LlamaForCausalLM(tf.LlamaConfig(vocab_size=16, max_position_embeddings=96, hidden_size=24,
                                   intermediate_size=48, num_hidden_layers=2, num_attention_heads=3,
                                   num_key_value_heads=1, bos_token_id=1, eos_token_id=2))
     else:
-        model = tf.GPT2LMHeadModel(tf.GPT2Config(vocab_size=16, n_positions=getattr(request, "param", 16), n_embd=24,
+        model = tf.GPT2LMHeadModel(tf.GPT2Config(vocab_size=16, n_positions=variant, n_embd=24,
                                                  n_layer=1, n_head=2, bos_token_id=1, eos_token_id=2))
     model.save_pretrained(base)
     vocabulary = {"[UNK]": 0, "[BOS]": 1, "[EOS]": 2, "color": 3, "slate": 4,
@@ -44,6 +54,8 @@ def tiny_controller(tmp_path, monkeypatch, request):
     try:
         assert backend.load_model()
         assert backend.training_ready()
+        if cpu_reference:
+            assert {p.device.type for p in backend.model.parameters()} == {"cpu"}
         yield backend
     finally:
         backend.unload_model()

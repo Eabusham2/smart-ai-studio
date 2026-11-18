@@ -97,18 +97,40 @@ def test_hybrid_keeps_unavailable_backend_read_only(tmp_path):
     assert backend.train_calls == 0 and not backend.learning_state.current_manifest()
 
 
-@pytest.mark.parametrize("tiny_controller", [96], indirect=True)
+@pytest.mark.parametrize("tiny_controller", [(96, "cpu")], indirect=True)
 def test_hybrid_serving_model_commits_original_then_reward_updates(tiny_controller):
     """Exercise both optimizers and their shared checkpoint chain on real CPU PEFT."""
+    from core.learning_data import iter_probe_windows
+    from core.legacy_torch_learning import controller_training_example
     from core.test_time_learning import OnlineLearning
     import torch
 
     backend = tiny_controller
+    # Without a model-owned template, the original trainer uses ChatML delimiters
+    # and the serving probe uses plain text. Persist one template for both reloads.
+    template = (
+        "{% for m in messages %}{{ m['role'] + ': ' + m['content'] + '\\n' }}{% endfor %}"
+        "{% if add_generation_prompt %}{{ 'assistant: ' }}{% endif %}"
+    )
+    backend.tokenizer.chat_template = template
+    backend.tokenizer.save_pretrained(backend.model_path)
     backend.unload_model()
     backend.learning_implementation = "hybrid"
     assert backend.load_model()
+    assert {p.device.type for p in backend.model.parameters()} == {"cpu"}
+    tokenizer = backend.tokenizer
+    assert tokenizer.chat_template == template
+    prompt, answer = "vault color", "slate"
+    prefix, full = controller_training_example(tokenizer, prompt, answer)
+    prefix_ids = tokenizer(prefix)["input_ids"]
+    probe, = iter_probe_windows(tokenizer, prompt, answer)
+    assert tuple(prefix_ids) == probe.input_ids[:probe.loss_start]
+    training_targets = tuple(tokenizer(full)["input_ids"][len(prefix_ids):])
+    assert training_targets == probe.input_ids[probe.loss_start:]
+    assert training_targets == (tokenizer.convert_tokens_to_ids(answer),)
+
     service = HybridAwakeOnlineConsolidator(backend, lambda_ewc=0)
-    update = service.train_pairs([{"prompt": "vault color", "completion": "slate"}], mode="rsi",
+    update = service.train_pairs([{"prompt": prompt, "completion": answer}], mode="rsi",
                                  steps=1, learning_rate=.001)
     assert update["training_metrics"]["training_algorithm"] == "original_completion_adamw"
     assert update["parameter_drift_l2"] > 0 and Path(update["adapter_saved_to"]).is_dir()
@@ -124,5 +146,9 @@ def test_hybrid_serving_model_commits_original_then_reward_updates(tiny_controll
     assert policy["reward_logprob_contrast_gain"] > 0
     manifest = backend.learning_state.current_manifest()
     assert manifest["parent"] == update["generation"]
+    final_score = backend.score_learning_probe(prompt, answer)
     backend.unload_model()
     assert backend.load_model() and backend.learning_state.current_manifest() == manifest
+    assert {p.device.type for p in backend.model.parameters()} == {"cpu"}
+    assert backend.tokenizer.chat_template == template
+    assert backend.score_learning_probe(prompt, answer) == pytest.approx(final_score)

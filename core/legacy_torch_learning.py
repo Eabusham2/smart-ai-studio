@@ -66,21 +66,45 @@ class LegacyControllerTrainer(LegacyCompletionTrainer):
 
 
 def completion_rows_fit(trainer, tokenizer, rows, limit, cancel_event):
-    """The original optimizer is appropriate only if every row retains an answer in one window."""
+    """Select Hybrid's original optimizer only for complete, probe-compatible rows."""
+    from core.learning_data import format_training_row
+
+    options = dict(truncation=True, max_length=limit + 1, return_tensors="pt")
+
+    def canonical_ids(text):
+        return tokenizer(text, add_special_tokens=False, **options)["input_ids"][0]
+
     for row in rows:
         check_cancelled(cancel_event)
         prompt, completion = str(row.get("prompt") or "").strip(), str(row.get("completion") or "").strip()
         if not prompt or not completion:
             return False
         prefix, full = trainer._format_training_example(tokenizer, prompt, completion)
-        options = dict(truncation=True, max_length=limit + 1, return_tensors="pt")
         full_ids = tokenizer(full, **options)["input_ids"][0]
         if not 2 <= len(full_ids) <= limit:
             return False
         prefix_ids = tokenizer(prefix, **options)["input_ids"][0]
-        if len(prefix_ids) >= len(full_ids) or not full_ids[:len(prefix_ids)].equal(prefix_ids):
-            # Separate tokenization can merge the last prompt piece with the
-            # first answer piece or add EOS. Use the bounded mask in that case.
+        boundary = len(prefix_ids)
+        if not 0 < boundary < len(full_ids) or not full_ids[:boundary].equal(prefix_ids):
+            return False
+
+        # Probes encode the cue and raw answer without additional special tokens.
+        # The original formatter can invent ChatML or omit earlier conversation turns.
+        answer = str(row["completion"])
+        messages = row.get("messages")
+        if messages is not None and (not isinstance(messages, (list, tuple)) or not messages
+                                     or messages[-1].get("content") != answer):
+            return False
+        canonical_full, canonical_prefix = format_training_row(tokenizer, row)
+        if not prefix_ids.equal(canonical_ids(canonical_prefix)):
+            return False
+        probe_ids = canonical_ids(canonical_prefix + answer)
+        if not boundary < len(probe_ids) <= len(full_ids) or not full_ids[:len(probe_ids)].equal(probe_ids):
+            # A merge across the answer boundary also changes the effective cue.
+            return False
+        if len(full_ids) > len(probe_ids) and not full_ids.equal(canonical_ids(canonical_full)):
+            # The original trainer may also supervise the model template's terminator.
+            # Require the rendered model-owned suffix to account for any extra tokens.
             return False
     return True
 

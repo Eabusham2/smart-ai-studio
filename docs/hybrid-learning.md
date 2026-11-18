@@ -8,6 +8,8 @@ Hybrid uses the original per-row update behavior for compatible ordinary lessons
 
 The precise numerical path depends on the backend and request. MLX ordinary examples use the original ChatML objective and fresh AdamW updates, with bounded accumulation when a source row must be split. Native and Transformers completion-only lessons can use the original completion-masked per-row optimizer. Explicit masks, weights, prompt-wide supervision and long rows retain the handling required to learn the intended targets. Query-only adaptation and reward-based objectives use their specialized update paths. Checkpoint metadata identifies the selected algorithm.
 
+Before choosing the original native update, Hybrid checks that its conditioning tokens agree with the prefix used by the learning and recall path. When those formats differ, including an untemplated causal model or an incompatible multi-turn template, Hybrid uses the bounded managed update with the same acceptance checks.
+
 Original and managed choices keep their existing algorithms. Their public constructors and explicit backend selections remain available. Hybrid adds its own orchestration and state; it does not convert an existing original or managed checkpoint in place.
 
 | Choice | Learning and memory behavior | Saved state |

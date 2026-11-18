@@ -8,6 +8,7 @@ import pytest
 from tests.unit.test_native_context_learning import tiny_controller
 
 
+@pytest.mark.parametrize("tiny_controller", [(16, "cpu")], indirect=True)
 @pytest.mark.parametrize("managed_store", [True, False], ids=["scoped-store", "original-directory"])
 def test_direct_controller_matches_original_adamw_step_for_step(tiny_controller, tmp_path, managed_store):
     import torch
@@ -21,6 +22,7 @@ def test_direct_controller_matches_original_adamw_step_for_step(tiny_controller,
         del backend.learning_state
         backend.adapter_path = str(tmp_path / "original-peft")
     model = backend._ensure_transformers_lora()
+    assert {p.device.type for p in model.parameters()} == {"cpu"}
     reference = copy.deepcopy(model)
     rows = [{"prompt": "What color", "completion": "slate"}, {"prompt": "the vault", "completion": "red"}]
     for _ in range(2):

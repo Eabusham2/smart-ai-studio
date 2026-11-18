@@ -8,6 +8,14 @@ import pytest
 from tests.unit.test_native_context_learning import tiny_controller
 
 
+@pytest.fixture
+def native_parent(tiny_controller):
+    # GGUF and BitNet reopen the tokenizer from their parent checkpoint.
+    tiny_controller.tokenizer.chat_template = "{% for m in messages %}{{ m.content }} {% endfor %}"
+    tiny_controller.tokenizer.save_pretrained(tiny_controller.model_path)
+    return tiny_controller.model_path
+
+
 def load_hybrid(backend):
     backend.unload_model()
     backend.learning_implementation = "hybrid"
@@ -17,12 +25,14 @@ def load_hybrid(backend):
     return backend
 
 
+@pytest.mark.parametrize("tiny_controller", [(16, "cpu")], indirect=True)
 def test_hybrid_original_updates_match_and_validation_controls_publication(tiny_controller):
     import torch
     from core.legacy_torch_learning import LegacyControllerTrainer, update_legacy_lora
 
     backend = load_hybrid(tiny_controller)
     model = backend._ensure_transformers_lora()
+    assert {p.device.type for p in model.parameters()} == {"cpu"}
     reference = copy.deepcopy(model)
     rows = [{"prompt": "vault color", "completion": "slate"}, {"prompt": "the vault", "completion": "red"}]
     rng = torch.random.get_rng_state()
@@ -141,17 +151,17 @@ def test_hybrid_keeps_specialized_query_and_reward_optimizers(tiny_controller, o
 
 @pytest.mark.parametrize("tiny_controller", ["split_queries"], indirect=True)
 @pytest.mark.parametrize("kind", ["gguf", "bitnet"])
-def test_standalone_hybrid_conversions_preserve_original_artifacts(kind, tiny_controller, tmp_path, monkeypatch):
+def test_standalone_hybrid_conversions_preserve_original_artifacts(kind, native_parent, tmp_path, monkeypatch):
     from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
     from core.gguf_lora_trainer import GGUFLoRATrainer
 
     root = tmp_path / "artifacts"
     if kind == "gguf":
-        trainer = GGUFLoRATrainer(model_path="selected.gguf", base_model_id=tiny_controller.model_path,
+        trainer = GGUFLoRATrainer(model_path="selected.gguf", base_model_id=native_parent,
                                   adapter_root=str(root), rank=2, alpha=2)
         convert = "_convert_to_gguf"
     else:
-        trainer = BitNetRebuildTrainer(base_model_id=tiny_controller.model_path, runtime_root=str(tmp_path),
+        trainer = BitNetRebuildTrainer(base_model_id=native_parent, runtime_root=str(tmp_path),
                                       deploy_root=str(root), rank=2, alpha=2)
         monkeypatch.setattr(trainer, "_training_runtime_available", lambda: True)
         convert = "_convert_merged_checkpoint"
@@ -173,7 +183,7 @@ def test_standalone_hybrid_conversions_preserve_original_artifacts(kind, tiny_co
 
 @pytest.mark.parametrize("tiny_controller", ["split_queries"], indirect=True)
 @pytest.mark.parametrize("kind", ["gguf", "bitnet"])
-def test_hybrid_native_serving_candidate_controls_commit_and_rollback(kind, tiny_controller, tmp_path, monkeypatch):
+def test_hybrid_native_serving_candidate_controls_commit_and_rollback(kind, native_parent, tmp_path, monkeypatch):
     """Train real CPU PEFT tensors, then exercise the public native backend with a converter/serving double."""
     import hashlib
     from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
@@ -186,7 +196,7 @@ def test_hybrid_native_serving_candidate_controls_commit_and_rollback(kind, tiny
     root = tmp_path / "native"
     selected = tmp_path / "base.gguf"
     write_gguf(selected)
-    source = tiny_controller.model_path
+    source = native_parent
     if kind == "gguf":
         backend = GGUFReasoningBackend(str(selected), adapter_root=str(root), training_base_model_id=source)
         trainer, convert = GGUFLoRATrainer, "_convert_to_gguf"
