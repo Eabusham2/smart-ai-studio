@@ -151,46 +151,57 @@ def test_real_pro_winner_alone_enters_next_pass_with_full_routing_and_usage():
     assert request.snapshot()["tokens"] == 32 and request.snapshot()["invocations"] == 10
 
 
-def test_refinement_at_physical_context_boundary_keeps_whole_request_and_refuses_truncation():
+@pytest.mark.parametrize("branches", [1, 9])
+def test_full_window_selected_draft_survives_unfit_refinement(branches, monkeypatch):
     from core.best_work import BEST_WORK_GUIDE
     question = "Keep the final constraint: report in metres."
     history = [{"role": "system", "content": "Preserve the complete question."}]
     selected = "X" * 380
+    lost = "unselected candidate"
     decoded = []
-    entropies = []
+    packed_inputs = []
     class Model:
         def tokenize(self, text, **kwargs):
             return list(text)
         def n_ctx(self):
             return 4096
         def __call__(self, prompt, **kwargs):
-            decoded.append(prompt)
-            assert kwargs["max_tokens"] >= len(selected)
-            yield {"choices": [{"text": selected}]}
+            decoded.append(kwargs)
+            assert kwargs["max_tokens"] == len(selected)
+            text = lost if branches > 1 and len(decoded) == 1 else selected
+            yield {"choices": [{"text": text}], "usage": {"completion_tokens": len(text)}}
 
-    def entropy(prompt):
-        entropies.append(prompt)
-        return 0.1
-
-    engine = _gguf_engine(Model(), entropy)
-    packed = engine._format_prompt_with_history(question, [{"role": "system", "content": BEST_WORK_GUIDE}, *history])
-    engine._context_budget_tokens = len(packed.encode()) + 400
+    engine = _gguf_engine(Model(), lambda _: 0.1 if branches == 1 else 0.5)
+    format_prompt = engine._format_prompt_with_history
+    def pack(prompt, turns):
+        packed = format_prompt(prompt, turns)
+        packed_inputs.append(packed)
+        return packed
+    monkeypatch.setattr(engine, "_format_prompt_with_history", pack)
+    packed = pack(question, [{"role": "system", "content": BEST_WORK_GUIDE}, *history])
+    engine._context_budget_tokens = len(packed.encode()) + len(selected)
     ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
-    visible = []
-    with pytest.raises(RuntimeError, match="refusing truncation"):
-        for text in stream_best_work(ctrl, question, history):
-            visible.append(text)
-    assert not visible and len(decoded) == 1
-    assert question in entropies[-1] and selected in entropies[-1] and history[0]["content"] in entropies[-1]
-    assert [row["completed"] for row in ctrl.last_best_work_metadata["pass_summaries"]] == [True, False]
+    events = []
+    assert list(stream_best_work(ctrl, question, history, status_callback=events.append)) == [selected]
+    assert len(decoded) == branches
+    assert [call["temperature"] for call in decoded] == pro_ladder(8 if branches > 1 else 1)
+    assert question in packed_inputs[-1] and selected in packed_inputs[-1] and lost not in packed_inputs[-1]
+    assert history[0]["content"] in packed_inputs[-1]
+    assert [event for event in events if event["kind"] == "refinement_skipped"] == [
+        {"stage": 1, "pass_index": 2, "passes": 2, "final": True,
+         "kind": "refinement_skipped", "reason": "context_limit", "selected_pass": 1}]
+    meta = ctrl.last_best_work_metadata
+    assert meta["passes_requested"] == 2 and meta["passes_completed"] == meta["total_passes_completed"] == 1
+    assert [row["completed"] for row in meta["pass_summaries"]] == [True, False]
+    assert meta["pass_summaries"][1]["skip_reason"] == "context_limit"
+    tokens = len(selected) if branches == 1 else len(selected) * 8 + len(lost)
+    assert meta["pass_usage"] == {"invocations": branches, "tokens": tokens}
     assert history == [{"role": "system", "content": "Preserve the complete question."}]
     assert not engine._best_work_stop_at_tools
 
 
-@pytest.mark.parametrize("tiny_controller", [512], indirect=True)
-def test_real_cpu_transformers_decoder_consumes_previous_sampled_answer(tiny_controller, monkeypatch, tmp_path):
-    # The tiny model samples one word per pass. Every visible vocabulary entry
-    # is terminal so the test observes native EOS independent of sampled text.
+@pytest.fixture
+def cpu_decoder(tiny_controller, monkeypatch, tmp_path):
     model_path = tiny_controller.model_path
     tiny_controller.unload_model()
     monkeypatch.setattr("core.transformers_placement.transformers_memory_limits",
@@ -202,10 +213,6 @@ def test_real_cpu_transformers_decoder_consumes_previous_sampled_answer(tiny_con
         assert engine.load_model("Tiny local decoder", model_path=model_path, backend="torch")["status"] == "loaded"
         backend = engine.controller_backend
         assert {p.device.type for p in backend.model.parameters()} == {"cpu"}
-        terminal_ids = sorted(set(backend.tokenizer.get_vocab().values()) - {0, 1, 2})
-        backend.model.generation_config.eos_token_id = terminal_ids
-        backend.model.generation_config.suppress_tokens = sorted(set(range(backend.model.config.vocab_size))
-                                                                - set(terminal_ids))
         samples = []
         generate = backend.model.generate
         def record(**kwargs):
@@ -214,21 +221,63 @@ def test_real_cpu_transformers_decoder_consumes_previous_sampled_answer(tiny_con
             samples.append((input_ids, result[0, len(input_ids):].tolist()))
             return result
         monkeypatch.setattr(backend.model, "generate", record)
-        ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
-        question = "What is the vault color?"
-        text = "".join(stream_best_work(ctrl, question))
-        assert len(samples) == 2 and all(len(output) == 1 for _, output in samples)
-        first_input, first_answer = samples[0]
-        second_input, second_answer = samples[1]
-        # In the review prompt, one quoted draft stands between the original
-        # request and the assistant generation delimiter. Check its real ID.
-        assert len(second_input) > len(first_input)
-        draft = backend.tokenizer.decode(first_answer, skip_special_tokens=True)
-        from core.best_work import BEST_WORK_GUIDE, _refinement_prompt
-        packed = engine._format_prompt_with_history(_refinement_prompt(question, draft),
-                                                    [{"role": "system", "content": BEST_WORK_GUIDE}])
-        assert second_input == backend.tokenizer.encode(packed)
-        assert text == backend.tokenizer.decode(second_answer, skip_special_tokens=True)
-        assert ctrl.last_best_work_metadata["pass_usage"] == {"invocations": 2, "tokens": 2}
+        yield engine, samples
     finally:
         engine.unload_model()
+
+
+@pytest.mark.parametrize("tiny_controller", [512], indirect=True)
+def test_real_cpu_transformers_decoder_consumes_previous_sampled_answer(cpu_decoder):
+    # Every visible vocabulary entry is terminal so the model stops naturally
+    # after one word per pass, independent of the specific answer it samples.
+    engine, samples = cpu_decoder
+    backend = engine.controller_backend
+    terminal_ids = sorted(set(backend.tokenizer.get_vocab().values()) - {0, 1, 2})
+    backend.model.generation_config.eos_token_id = terminal_ids
+    backend.model.generation_config.suppress_tokens = sorted(set(range(backend.model.config.vocab_size))
+                                                            - set(terminal_ids))
+    ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
+    question = "What is the vault color?"
+    text = "".join(stream_best_work(ctrl, question))
+    assert len(samples) == 2 and all(len(output) == 1 for _, output in samples)
+    first_input, first_answer = samples[0]
+    second_input, second_answer = samples[1]
+    # In the review prompt, one quoted draft stands between the original
+    # request and the assistant generation delimiter. Check its real ID.
+    assert len(second_input) > len(first_input)
+    draft = backend.tokenizer.decode(first_answer, skip_special_tokens=True)
+    from core.best_work import BEST_WORK_GUIDE, _refinement_prompt
+    packed = engine._format_prompt_with_history(_refinement_prompt(question, draft),
+                                                [{"role": "system", "content": BEST_WORK_GUIDE}])
+    assert second_input == backend.tokenizer.encode(packed)
+    assert text == backend.tokenizer.decode(second_answer, skip_special_tokens=True)
+    assert ctrl.last_best_work_metadata["pass_usage"] == {"invocations": 2, "tokens": 2}
+
+
+@pytest.mark.parametrize("tiny_controller", [512], indirect=True)
+def test_real_cpu_full_physical_window_returns_entire_selected_sample(cpu_decoder):
+    from core.context_memory import ContextOverflow
+
+    engine, samples = cpu_decoder
+    backend = engine.controller_backend
+    capacity = backend.model.config.n_positions
+    engine._context_budget_tokens = capacity
+    # Sample real words through the entire physical window, including the last
+    # position. Exclude special tokens so early EOS cannot mask this boundary.
+    words = {idx for token, idx in backend.tokenizer.get_vocab().items() if token.isalpha()}
+    backend.model.generation_config.suppress_tokens = sorted(set(range(backend.model.config.vocab_size)) - words)
+    ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
+    question = "What is the vault color?"
+    text = "".join(stream_best_work(ctrl, question))
+    assert len(samples) == 1
+    input_ids, output_ids = samples[0]
+    assert len(input_ids) + len(output_ids) == capacity
+    assert text == backend.tokenizer.decode(output_ids, skip_special_tokens=True)
+    meta = ctrl.last_best_work_metadata
+    assert meta["pass_usage"] == {"invocations": 1, "tokens": len(output_ids)}
+    assert meta["passes_requested"] == 2 and meta["passes_completed"] == 1
+    assert meta["pass_summaries"][1]["skip_reason"] == "context_limit"
+    # A new request without a completed candidate retains the real error.
+    with pytest.raises(ContextOverflow):
+        list(stream_best_work(ctrl, "vault " * capacity))
+    assert len(samples) == 1

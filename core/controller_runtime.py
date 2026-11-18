@@ -218,6 +218,8 @@ class UniversalControllerBackend:
         self._offload_directory: Optional[str] = None
 
     def load_model(self) -> bool:
+        self.learning_migration_status = None
+        self._loaded_legacy_deployment = None
         if self.runtime in ("mlx_vlm", "mlx-vlm"):
             return self._load_mlx_vlm()
         if self.runtime in ("jang_vlm", "jang-vlm"):
@@ -425,20 +427,17 @@ class UniversalControllerBackend:
         # transactionally on every model load so learned chat state survives restarts.
         key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
         eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
-        from core.learning_state import bind_learning_state
+        from core.learning_state import bind_learning_state, select_legacy_checkpoint
         legacy_root = os.path.abspath(eval_root) if eval_root else os.path.join(get_portable_data_dir(), "controller_lora")
         legacy_path = os.path.join(legacy_root, key)
         state_root = os.path.join(legacy_root, "learned_memory")
         store = bind_learning_state(self, model_path=source, model_info=self.model_info,
                                     state_root=state_root, adapter_format="peft")
         self._loaded_learning_checkpoint = self.adapter_path = store.current_checkpoint()
-        model_scope = getattr(getattr(store, "scope", None), "kind", "model") == "model"
-        if model_scope and self.adapter_path is None and os.path.isfile(os.path.join(legacy_path, "adapter_config.json")):
-            selected = self.model_info.get("legacy_adapter_path")
-            if not selected or os.path.realpath(selected) != os.path.realpath(legacy_path):
-                raise RuntimeError("Existing controller LoRA has no base-model fingerprint; refusing to omit or apply it. "
-                                   "Explicitly select the legacy adapter for this base to migrate it: " + legacy_path)
-            self.adapter_path = legacy_path
+        legacy = select_legacy_checkpoint(self, store, self.adapter_path, legacy_path,
+                                          self.model_info.get("legacy_adapter_path"), "peft")
+        if legacy:
+            self.adapter_path = legacy
         if self.adapter_path:
             try:
                 from peft import PeftModel
@@ -460,6 +459,7 @@ class UniversalControllerBackend:
         self.is_loaded = True
         self.is_mlx_available = False
         self.can_train = self.training_ready()
+        self._loaded_legacy_deployment = legacy
         return True
 
     def training_ready(self) -> bool:

@@ -170,7 +170,8 @@ def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(wo
     assert any(isinstance(w, tk.Text) for w in widgets)
 
 
-def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(work_app):
+@pytest.mark.parametrize('capacity_fallback', [False, True])
+def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(work_app, capacity_fallback):
     from core.generation_metrics import TokenMeter
     app = work_app
     app.is_model_loaded = True
@@ -182,6 +183,9 @@ def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(wor
 
     def stream(prompt, history=None, cancel_event=None, progress_callback=None, decision_callback=None):
         calls.append((prompt, history))
+        if capacity_fallback and len(calls) == 2:
+            from core.context_memory import ContextOverflow
+            raise ContextOverflow('Refinement cannot fit the complete draft')
         decision_callback({'kind': 'route', 'total': 1, 'branch_count': 1})
         meter = TokenMeter()
         try:
@@ -215,9 +219,18 @@ def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(wor
     assert len(calls) == 2 and 'HIDDEN FIRST DRAFT' in calls[1][0]
     assert 'Explain the result.' in calls[1][0]
     visible = app.chat_stream.get('1.0', 'end')
-    assert 'HIDDEN FIRST DRAFT' not in visible and visible.count('Published answer.') == 1
-    assert app.last_metadata['passes_completed'] == 2
-    assert app._live_generation_snapshot['tokens'] == 5
-    assert app._live_generation_snapshot['invocations'] == 2
     labels = [w.cget('text') for w in _descendants(app.chat_stream) if isinstance(w, tk.Label)]
-    assert any('pass 2/2' in label and 'complete' in label for label in labels)
+    if capacity_fallback:
+        assert visible.count('HIDDEN FIRST DRAFT') == 1 and 'Published answer.' not in visible
+        assert app.last_metadata['passes_completed'] == 1
+        assert app.last_metadata['pass_usage'] == {'invocations': 1, 'tokens': 2}
+        assert app._live_generation_snapshot['tokens'] == 2
+        assert app._live_generation_snapshot['invocations'] == 1
+        assert any('used pass 1/2' in label and 'refinement reached Context' in label for label in labels)
+        assert not any('pass 2/2' in label and 'complete' in label for label in labels)
+    else:
+        assert 'HIDDEN FIRST DRAFT' not in visible and visible.count('Published answer.') == 1
+        assert app.last_metadata['passes_completed'] == 2
+        assert app._live_generation_snapshot['tokens'] == 5
+        assert app._live_generation_snapshot['invocations'] == 2
+        assert any('pass 2/2' in label and 'complete' in label for label in labels)

@@ -697,10 +697,10 @@ class MediaController:
             self._depth += 1
             self.busy = True
             try:
-                # Project the GUI archive before either route copies the history
-                # or prepends its system guide. Tool continuations stay local.
+                # Best Work projects archives at its public entry point so it
+                # also retains the original request for tool authorization.
                 from core.context_memory import ChatArchive
-                if isinstance(history, ChatArchive):
+                if not best_work_enabled and isinstance(history, ChatArchive):
                     from core.awake_auto_hook import prepare_awake_request
                     try:
                         prompt, history = prepare_awake_request(self.app.engine, prompt, history, cancel_event)

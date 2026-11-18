@@ -30,7 +30,10 @@ class TranscriptTurn(dict):
         self.turn_id = turn_id
 
     def copy(self):
-        return type(self)(self, self.turn_id)
+        copied = type(self)(self, self.turn_id)
+        if hasattr(self, "_capacity_recovery"):
+            copied._capacity_recovery = self._capacity_recovery
+        return copied
 
 
 class ChatArchive(Sequence):
@@ -184,6 +187,34 @@ class ChatArchive(Sequence):
         with self._active_rows(ledger, head) as (_, rows):
             while page := rows.fetchmany(page_size):
                 yield [self._decode(row) for row in page]
+
+    def active_turns_after(self, turn_id, current_receipt, page_size=16):
+        """Walk later active rows once, releasing the ledger before each training attempt."""
+        if not 1 <= integer_index(page_size) <= 1024:
+            raise ValueError("page_size must be between 1 and 1024")
+        with closing(sqlite3.connect(self.path)) as db:
+            row = db.execute("SELECT seq FROM chat_archive WHERE tab=? AND turn_id=?", (self.tab, turn_id)).fetchone()
+            if row is None:
+                return
+            after = row[0]
+            _, end = self._watermark(db)
+        while after < end:
+            ledger, head = current_receipt()
+            if head:
+                with self._active_query(ledger, head) as db:
+                    rows = db.execute("SELECT a.seq,a.turn_id,a.message " + self._active_filter
+                                      + " AND a.seq>? AND a.seq<=? ORDER BY a.seq LIMIT ?",
+                                      (self.tab, after, end, page_size)).fetchall()
+            else:
+                with closing(sqlite3.connect(self.path)) as db:
+                    rows = db.execute("SELECT seq,turn_id,message FROM chat_archive WHERE tab=? "
+                                      "AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                                      (self.tab, after, end, page_size)).fetchall()
+            if not rows:
+                return
+            after = rows[-1][0]
+            for _, key, message in rows:
+                yield self._decode((key, message))
 
     def _watermark(self, db, schema=""):
         return db.execute(f"""SELECT epoch,(SELECT coalesce(max(seq),0) FROM {schema}chat_archive

@@ -265,7 +265,7 @@ Test coverage and platform-specific verification may vary by branch and environm
 
 ## 📦 Multi-Platform Packaging
 
-**Best Work** runs two sequential inference passes by default, refining the selected draft through the existing router and verifier. Only the final pass displays an answer or executes its selected tool. Set **Best Work passes** in **Branches…** to change the count; **1** keeps the original single-pass behavior.
+**Best Work** runs two sequential inference passes by default, refining the selected draft through the existing router and verifier. Only the final selection displays an answer or executes its selected tool. If refinement cannot fit, the completed prior draft is returned with a clear status. Set **Best Work passes** in **Branches…** to change the count; **1** keeps the original single-pass behavior.
 
 Release packages and Best Work behavior are documented in
 [Best Work handoffs and packaging](docs/best-work-handoffs.md). Portable packages

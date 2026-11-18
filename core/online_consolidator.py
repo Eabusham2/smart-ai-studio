@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from core.context_memory import (ChatArchive, ContextOverflow, RetirementLedger, TranscriptTurn, completed_groups,
                                  iter_completed_exchanges, oldest_completed_chunk, working_history)
-from core.learning_recall import (RecallBank, ReplayBank, SegmentedRecall, StreamCursorBank, check_cancel,
+from core.learning_recall import (PromptTooLong, RecallBank, ReplayBank, SegmentedRecall, StreamCursorBank, check_cancel,
                                   generation_room, needs_segmented_recall, passes_recall, retirement_probes)
 from core.training_memory import backend_label, process_rss_mb, release_training_memory
 from memory.anchor_dataset import get_anchor_dataset, get_anchor_texts
@@ -137,6 +137,7 @@ class AwakeOnlineConsolidator:
         self.total_param_shift = 0.0
         self.last_result = {}
         self.last_error = ""
+        self._attempt = threading.local()
         self._ledger = None
 
     def _retirement_ledger(self, store):
@@ -214,7 +215,8 @@ class AwakeOnlineConsolidator:
         success = self.consolidate_chunk_sync(evicted_chunk)
         return (retained_history, True) if success else (active, False)
 
-    def consolidate_chunk_sync(self, chunk, *, cancel_event=None, mode="awake"):
+    def consolidate_chunk_sync(self, chunk, *, cancel_event=None, mode="awake", raise_operational_errors=False):
+        self._attempt.candidate_rejected = False
         if not chunk:
             return False
         try:
@@ -225,6 +227,7 @@ class AwakeOnlineConsolidator:
                 result = self.train_pairs(self._conversation_training_pairs(turns), turns=turns,
                                           cancel_event=cancel_event, mode=mode)
             if result["turns_retired"] != len(chunk):
+                self._attempt.candidate_rejected = True
                 self.last_error = result["retirement_reason"]
                 return False
             mark = getattr(self.db, "mark_traces_consolidated", None)
@@ -235,9 +238,18 @@ class AwakeOnlineConsolidator:
                     logger.warning("The adapter committed, but the optional trace log could not be marked: %s", error)
             return True
         except Exception as error:
+            self._attempt.candidate_rejected = isinstance(error, (LearningValidationError, PromptTooLong))
             self.last_error = str(error)
             logger.warning("%s consolidation retained the original dialogue: %s", mode, error)
+            if raise_operational_errors and not self._attempt.candidate_rejected:
+                raise
             return False
+
+    def consolidate_for_capacity(self, chunk, *, cancel_event=None):
+        if not self._real_training_ready():
+            self._attempt.candidate_rejected = False
+            return False
+        return self.consolidate_chunk_sync(chunk, cancel_event=cancel_event, raise_operational_errors=True)
 
     def _run_shadow_consolidation(self, chunk):
         """Compatibility with the conversation-teach evaluation entry point."""
@@ -297,11 +309,44 @@ class AwakeOnlineConsolidator:
             raise RuntimeError("The complete document could not be recalled. Its source was retained.")
         return key
 
-    def _archive_pages(self, archive, page_size=16):
+    def _current_receipt(self):
         store = getattr(self.engine, "learning_state", None)
         head = self._loaded_head(store) if store is not None else None
-        ledger = self._retirement_ledger(store) if head else None
-        return archive.iter_active_pages(ledger, head, page_size=page_size)
+        return self._retirement_ledger(store) if head else None, head
+
+    def _archive_pages(self, archive, page_size=16):
+        return archive.iter_active_pages(*self._current_receipt(), page_size=page_size)
+
+    def recover_after_rejected_chunk(self, history, chunk, active, count, budget, measure, cancel_event):
+        """At the hard limit, try disjoint later exchanges once and keep the newest in text."""
+        retired = 0
+        if not getattr(self._attempt, "candidate_rejected", False):
+            return active, count, retired
+        last_failed_id = chunk[-1].turn_id
+        if isinstance(history, ChatArchive):
+            rows = history.active_turns_after(last_failed_id, self._current_receipt)
+        else:
+            rows = iter(history)
+            for turn in rows:
+                if getattr(turn, "turn_id", None) == last_failed_id:
+                    break
+        original_error = self.last_error
+        previous = None
+        for group in iter_completed_exchanges(rows):
+            check_cancel(cancel_event)
+            if previous:
+                if self.consolidate_for_capacity(previous, cancel_event=cancel_event):
+                    retired += len(previous)
+                    active, count = measure()
+                    if count < budget:
+                        break
+                elif not self._attempt.candidate_rejected:
+                    break
+            previous = group
+        check_cancel(cancel_event)
+        if count >= budget and not self.last_error:
+            self.last_error = original_error
+        return active, count, retired
 
     def pending_exchanges(self, history):
         if not isinstance(history, ChatArchive):
@@ -362,6 +407,8 @@ class AwakeOnlineConsolidator:
                 self.last_error = str(exc)
                 active, count, exhausted = preview(archive.iter_pages(page_size=16))
                 if not exhausted or count >= budget:
+                    if isinstance(exc, (OSError, sqlite3.Error)):
+                        raise
                     raise ContextOverflow(f"Original transcript retained. Active context requires at least {count} "
                                           f"tokens with a budget of {budget}. {exc}") from exc
                 return active
@@ -381,10 +428,24 @@ class AwakeOnlineConsolidator:
                     chunk = self._sleep_chunk(chain.from_iterable(pages), len(active))
                 finally:
                     pages.close()
-            if chunk and self.consolidate_chunk_sync(chunk, cancel_event=cancel_event):
+            attempt = self.consolidate_for_capacity if count >= budget else self.consolidate_chunk_sync
+            if chunk and attempt(chunk, cancel_event=cancel_event):
                 continue
             check_cancel(cancel_event)
             if count >= budget:
+                if chunk:
+                    def measure():
+                        active, count, _ = preview(self._archive_pages(archive))
+                        return active, count
+                    active, count, _ = self.recover_after_rejected_chunk(
+                        archive, chunk, active, count, budget, measure, cancel_event)
+                    if count < budget:
+                        # The GUI next adds its guide and checks this working
+                        # copy again. Only re-enter recovery if it actually
+                        # fills the window. A fresh archive read has no marker.
+                        if active:
+                            active[0]._capacity_recovery = {"prepared": True}
+                        return active
                 detail = self.last_error if chunk else "No complete ordinary exchange can be retired."
                 raise ContextOverflow(f"Active context requires at least {count} tokens with a budget of {budget}. "
                                    f"Original transcript retained. {detail}")
@@ -615,7 +676,7 @@ class AwakeOnlineConsolidator:
                 try:
                     metrics["retirement_checks"] = len(new_checks)
                     passed = bool(new_checks) and passes_recall(candidate, new_checks, cancel_event)
-                except InterruptedError:
+                except (OSError, sqlite3.Error, MemoryError):
                     raise
                 except Exception as exc:
                     logger.info("Could not verify full exchange recall: %s", exc)
@@ -662,7 +723,7 @@ class AwakeOnlineConsolidator:
                 try:
                     checks = recall_plan.checks() if recall_plan else retirement_probes(backend, turns, cancel_event)
                     new_checks = bank.stage(update_id, parent_head, checks)
-                except InterruptedError:
+                except (OSError, sqlite3.Error, MemoryError):
                     raise
                 except Exception as exc:
                     logger.info("Could not construct full exchange recall probes: %s", exc)

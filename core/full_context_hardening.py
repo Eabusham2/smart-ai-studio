@@ -38,10 +38,10 @@ def install(cls) -> None:
                 continue
             # Preserve the old protection against feeding product warning UI text back
             # into the model. This is not user conversation content.
-            if "weights are not currently loaded" in content or "Click '⬇️ Download" in content:
+            if role == "assistant" and ("weights are not currently loaded" in content or "Click '⬇️ Download" in content):
                 continue
             messages.append({"role": role, "content": content})
-        if not messages or messages[-1].get("content") != prompt:
+        if not messages or messages[-1]["role"] != "user" or messages[-1]["content"] != prompt:
             messages.append({"role": "user", "content": prompt})
 
         if tok is not None and hasattr(tok, "apply_chat_template"):

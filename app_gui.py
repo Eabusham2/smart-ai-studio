@@ -3566,7 +3566,57 @@ class SmartAIChatbotApp:
             return {**restored, "legacy_import_note": f"Adapter import failed: {reason}. Restored the original model."}
         return {"status": "error", "error": f"Adapter import failed: {reason}. Base reload failed: {restored.get('error')}"}
 
-    def _on_toggle_load_unload(self, *, _skip_download: bool = False, _legacy_adapter_path=None):
+    def _pending_legacy_learning(self):
+        """Return a loader-discovered legacy state only on the same model and scope."""
+        pending = getattr(self, "_legacy_learning_migrations", {}).get(self.active_tab_id)
+        info = self.models_config.get(self.active_tab_id, {})
+        scope = getattr(self.engine, "learning_scope", None)
+        if (not pending or pending.get("model_name") != info.get("name")
+                or pending.get("model_path") != str(info.get("model_path") or info.get("repo_id"))
+                or getattr(scope, "kind", "model") != "model"
+                or pending.get("format") not in {"gguf", "bitnet", "peft"}
+                or not pending.get("path")):
+            return None
+        return pending
+
+    def _reload_legacy_learning(self, info, model_path, selected, adapter_format, load_cancel):
+        """Retry the original loader with an explicitly selected existing learned state."""
+        if load_cancel.is_set():
+            return {"status": "cancelled"}
+        if adapter_format not in {"gguf", "bitnet", "peft"}:
+            raise ValueError("Unsupported legacy learned-state format.")
+        if getattr(getattr(self.engine, "learning_scope", None), "kind", "model") != "model":
+            raise ValueError("Restore the previous learned state in its model-wide scope first.")
+        selected = os.path.abspath(selected)
+        exists = (os.path.isdir(selected) and os.path.isfile(os.path.join(selected, "adapter_config.json"))
+                  if adapter_format == "peft" else os.path.isfile(selected))
+        if not exists:
+            raise ValueError("The previous learned state is no longer available at the selected path.")
+        options = dict(info, legacy_adapter_path=selected)
+        try:
+            result = self.engine.load_model(info["name"], model_path=model_path, model_info=options)
+            if load_cancel.is_set():
+                stopped = self.engine.unload_model()
+                return {"status": "cancelled"} if stopped.get("status") == "unloaded" else stopped
+            backend_name = {"gguf": "gguf_backend", "bitnet": "bitnet_backend", "peft": "controller_backend"}[adapter_format]
+            backend = getattr(self.engine, backend_name, None)
+            restored = getattr(backend, "adapter_path", None)
+            if (result.get("status") == "loaded" and restored
+                    and os.path.realpath(restored) == os.path.realpath(selected)
+                    and (getattr(backend, "model", None) is not None or getattr(backend, "is_loaded", False))):
+                return {**result, "legacy_import_note": f"Loaded the previous learned state from {selected}. "
+                        "The source remains unchanged. The next validated learning update saves a model-specific checkpoint."}
+            reason = str(result.get("error") or "The loader did not restore the selected learned state.")
+        except Exception as error:
+            reason = str(error)
+        stopped = self.engine.unload_model()
+        if stopped.get("status") != "unloaded":
+            reason += " Runtime cleanup is incomplete; use Retry unload."
+        return {"status": "error", "error": reason,
+                "learning_migration": {"status": "legacy_adapter_required", "format": adapter_format, "path": selected}}
+
+    def _on_toggle_load_unload(self, *, _skip_download: bool = False, _legacy_adapter_path=None,
+                               _legacy_adapter_format=None):
         learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
         if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
             return
@@ -3576,6 +3626,7 @@ class SmartAIChatbotApp:
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
         target_info = self.models_config[self.active_tab_id]
+        load_tab_id = self.active_tab_id
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
         repo_id = str(target_info.get("repo_id") or "")
@@ -3634,7 +3685,11 @@ class SmartAIChatbotApp:
                     # Import-time policy already decided whether custom text models may enter
                     # the catalog; runtime loading itself does not re-apply that restriction.
                     if _legacy_adapter_path:
-                        load_res = self._reload_legacy_mlx(target_info, m_path, _legacy_adapter_path, load_cancel)
+                        if _legacy_adapter_format:
+                            load_res = self._reload_legacy_learning(target_info, m_path, _legacy_adapter_path,
+                                                                    _legacy_adapter_format, load_cancel)
+                        else:
+                            load_res = self._reload_legacy_mlx(target_info, m_path, _legacy_adapter_path, load_cancel)
                     else:
                         load_res = self.engine.load_model(target_info["name"], model_path=m_path, model_info=target_info)
                     if load_cancel.is_set() and load_res.get("status") == "loaded":
@@ -3653,6 +3708,14 @@ class SmartAIChatbotApp:
                 self._model_load_in_progress = False
                 self._model_loading_update = None
                 self.engine._model_load_cancelled = None
+                migrations = getattr(self, "_legacy_learning_migrations", None)
+                if migrations is None:
+                    migrations = self._legacy_learning_migrations = {}
+                migration = load_res.get("learning_migration") or {}
+                if migration.get("status") == "legacy_adapter_required":
+                    migrations[load_tab_id] = {**migration, "model_name": target_info["name"], "model_path": str(m_path)}
+                elif load_res.get("status") == "loaded":
+                    migrations.pop(load_tab_id, None)
                 if popup:
                     try:
                         popup.destroy()
@@ -3695,6 +3758,9 @@ class SmartAIChatbotApp:
                         text=f"⚠ Load Failed ({target_info['short_name']})", fg=self.C["accent_red"]
                     )
                     self._append_ai_message(f"⚠️ **Load failed**: {error}")
+                    if migration.get("status") == "legacy_adapter_required":
+                        self._append_ai_message("Your previous learned state is still saved. Open **Memory Explorer** "
+                                                "and choose **Restore learned state…** on its original base model.")
 
                 backend = getattr(self.engine, "controller_backend", None)
                 self._strata_unload_pending = bool(
@@ -5087,7 +5153,7 @@ class SmartAIChatbotApp:
                 self._best_work_final_rate = None
                 pro_summary = None
                 best_work_ui = {"label": None, "panel": None, "done": 0, "total": 0,
-                                "pass_index": 1, "passes": 1}
+                                "pass_index": 1, "passes": 1, "refinement_skipped": False}
                 self._live_generation_snapshot = None
                 self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
@@ -5166,6 +5232,7 @@ class SmartAIChatbotApp:
                     if kind == "pass":
                         best_work_ui["pass_index"] = int(event["pass_index"])
                         best_work_ui["passes"] = int(event["passes"])
+                        best_work_ui["refinement_skipped"] = False
                         best_work_ui["done"] = best_work_ui["total"] = 0
                         if best_work_ui["passes"] > 1:
                             pro_active = True
@@ -5173,6 +5240,12 @@ class SmartAIChatbotApp:
                             value = "🌿 Best Work · " + ("final response" if event.get("final") else "refining draft")
                         else:
                             value = None
+                    elif kind == "refinement_skipped":
+                        best_work_ui["pass_index"] = int(event["selected_pass"])
+                        best_work_ui["passes"] = int(event["passes"])
+                        best_work_ui["refinement_skipped"] = True
+                        pro_active = self._best_work_mode = True
+                        value = "🌿 Best Work · keeping completed draft; refinement reached Context"
                     elif kind == "route":
                         if total > 1:
                             best_work_ui["done"] = 0
@@ -5283,8 +5356,12 @@ class SmartAIChatbotApp:
                     self._live_generation_snapshot = snapshot
                     self._best_work_final_rate = snapshot.get("wall_tps") if pro_active else None
                 if pro_active and not self.cancel_event.is_set():
-                    complete_label = _pass_label(
-                        f"🌿 Best Work {best_work_ui['total']}/{best_work_ui['total']} · complete")
+                    if best_work_ui["refinement_skipped"]:
+                        complete_label = (f"🌿 Best Work · complete · used pass {best_work_ui['pass_index']}/"
+                                          f"{best_work_ui['passes']} (refinement reached Context)")
+                    else:
+                        complete_label = _pass_label(
+                            f"🌿 Best Work {best_work_ui['total']}/{best_work_ui['total']} · complete")
                     self.root.after(0, lambda text=complete_label: _paint_best_work(text))
 
                 if ui_pending:
@@ -5936,6 +6013,31 @@ assert glyph_res["invariants_passed"] == True
                     modal.destroy()
                     self._on_toggle_load_unload(_skip_download=True, _legacy_adapter_path=selected)
             tk.Button(memory_bar, text="Import MLX adapter…", command=_import_legacy,
+                      bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat").pack(side="right", padx=3)
+
+        pending_legacy = self._pending_legacy_learning()
+        if pending_legacy and not self.is_model_loaded:
+            restore_bar = tk.Frame(modal, bg=self.C["bg_hud"])
+            restore_bar.pack(fill="x", padx=16, pady=(0, 8))
+            tk.Label(restore_bar,
+                     text=f"Previous learned state: {pending_legacy['path']}\n"
+                          f"Restore it only with its original base model: {pending_legacy['model_name']}.",
+                     justify="left", wraplength=520, font=_FONT_SMALL,
+                     bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(side="left", fill="x", expand=True)
+
+            def _restore_legacy_learning():
+                if (self.active_tab_id != tab_id or self._pending_legacy_learning() != pending_legacy
+                        or self.is_model_loaded or self.is_generating or self.multimodal.busy
+                        or getattr(service, "is_consolidating", False)
+                        or getattr(self, "_model_load_in_progress", False)
+                        or getattr(self, "_speed_ui_running", False)):
+                    messagebox.showinfo("Restore learned state", "Finish active work and reopen Memory Explorer on the original model.", parent=modal)
+                    return
+                modal.destroy()
+                self._on_toggle_load_unload(_skip_download=True, _legacy_adapter_path=pending_legacy["path"],
+                                            _legacy_adapter_format=pending_legacy["format"])
+
+            tk.Button(restore_bar, text="Restore learned state…", command=_restore_legacy_learning,
                       bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat").pack(side="right", padx=3)
 
         # Search and Filter Toolbar

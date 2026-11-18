@@ -2,8 +2,8 @@
 
 ## Choosing the number of passes
 
-With **Best Work** checked, Studio runs **two sequential inference passes per
-stage** by default. The first pass produces a draft. The second receives the
+With **Best Work** checked, Studio requests **two sequential inference passes
+per stage** by default. The first pass produces a draft. The second receives the
 request, its conversation history, and the first pass's selected draft. It
 reviews that draft and generates the complete response shown in chat. With three
 or more passes, each refinement receives the immediately preceding winner. The
@@ -33,8 +33,10 @@ boundary. Fenced code, inline examples, and thinking text remain ordinary
 candidate content. Intermediate winners enter the next pass as quoted draft
 data. A proposed call in a draft has no tool result and grants no authorization.
 
-Only the final pass streams the selected response to chat. If it requests a
-tool, Studio displays the selected text and invocation, checks cancellation and
+The final pass streams the selected response to chat. If a refinement cannot
+fit, the most recent completed winner becomes the final selection for that
+stage. If the selection requests a tool, Studio displays the text and
+invocation, checks cancellation and
 authorization against the original user request, and dispatches the permitted action.
 Studio adds the actual result to the conversation and starts a fresh stage
 with the configured number of passes. For example, with two passes, a response
@@ -52,10 +54,20 @@ actual results.
 Chat and Pro use the remaining **Context** window for generation until EOS,
 a tool boundary, cancellation, or the model's context limit. A refinement must
 fit the complete request, its active history, and the quoted prior draft with
-room for generation. If the packed input exceeds that budget, Studio reports
-the context error. It preserves the request and draft in full during this check.
-Use one pass when the original request fits but there is too little room for a
-refinement.
+room for generation. Each pass may use the entire remaining window. If a
+completed draft fills it, Studio returns that draft in full and the progress
+card identifies the skipped refinement. A draft with a selected tool call
+follows the same authorization and handoff rules.
+
+The desktop and direct `stream_best_work` entry points both prepare a stored
+chat archive against the active model checkpoint before copying turns into a
+pass. Verified retirement keeps older exchanges in the archive for display or
+export while freeing space in the model's working history.
+
+When the first request in a stage exceeds the active window after eligible
+history consolidation, Studio reports the context error. The same applies if a
+refinement has already displayed text when a capacity failure occurs. This
+keeps the original request intact and avoids splicing two responses together.
 
 Usage includes actual decoder invocations across every pass, candidate, and tool
 stage. Token totals come from sampled IDs or runtime-reported counters. Missing
@@ -68,7 +80,9 @@ counters when its stream omits them.
 per-stage pass target in `passes_requested`, progress for the current stage in
 `passes_completed`, and the request-wide total in `total_passes_completed`.
 `pass_summaries` reports individual passes and `pass_usage` aggregates observed
-invocations and token counts across the request.
+invocations and token counts across the request. A skipped refinement records
+`completed=False`, `skip_reason="context_limit"`, and `selected_pass` in its
+summary. Replaying the earlier winner leaves its original token count intact.
 
 ## Release formats
 

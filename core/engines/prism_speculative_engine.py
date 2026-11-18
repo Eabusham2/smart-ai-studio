@@ -23,6 +23,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Generator, List, Optional
 
+from core.context_memory import ContextOverflow
 from core.speculative_runtime import (
     EXACTNESS_CONTRACT,
     SpeculativePlan,
@@ -32,6 +33,10 @@ from core.speculative_runtime import (
     speculative_arguments,
     validate_runtime_receipt,
 )
+
+
+class NativeContextOverflow(ContextOverflow, ValueError):
+    """The native tokenizer rejected the request before completion."""
 
 
 class _CancellableSocketReader(io.RawIOBase):
@@ -450,11 +455,11 @@ class PrismSpeculativeReasoningBackend:
             budget = self.context_budget_tokens
             effective_context = min(self.n_ctx, budget) if type(budget) is int and budget > 0 else self.n_ctx
             if prompt_tokens >= effective_context:
-                raise ValueError("Prompt exhausts the selected context; no prompt was truncated")
+                raise NativeContextOverflow("Prompt exhausts the selected context; no prompt was truncated")
             if type(budget) is int and budget > 0:
                 payload["n_predict"] = min(int(max_tokens), effective_context - prompt_tokens)
             elif prompt_tokens + int(max_tokens) > effective_context:
-                raise ValueError("Prompt plus requested output exceeds the selected context; no prompt or output budget was truncated")
+                raise NativeContextOverflow("Prompt plus requested output exceeds the selected context; no prompt or output budget was truncated")
             try:
                 connection = self._connect(1800.0)
             except RuntimeError:

@@ -260,3 +260,153 @@ def test_refinement_keeps_structured_user_metadata_in_history():
     turn = {"role": "user", "content": "Read this diagram", "attachments": ["diagram.png"]}
     assert list(stream_best_work(ctrl, turn["content"], [turn])) == ["answer"]
     assert turn in ctrl.app.engine.contexts[1][1]
+
+
+def _unfit_refinement(_):
+    from core.context_memory import ContextOverflow
+    raise ContextOverflow("Packed input leaves no room for generation")
+
+
+def test_capacity_fallback_uses_latest_completed_winner_and_stops_remaining_passes():
+    ctrl, events = controller([["first draft"], ["complete second draft"], _unfit_refinement])
+    statuses = []
+    assert list(stream_best_work(ctrl, "request", passes=5, status_callback=statuses.append)) == [
+        "complete second draft"]
+    assert [entry for entry in events if entry[0] == "closed"] == [("closed", 0), ("closed", 1), ("closed", 2)]
+    meta = ctrl.last_best_work_metadata
+    assert meta["passes_requested"] == 5 and meta["total_passes_completed"] == meta["passes_completed"] == 2
+    assert [p["completed"] for p in meta["pass_summaries"]] == [True, True, False]
+    assert statuses[-1]["kind"] == "refinement_skipped" and statuses[-1]["selected_pass"] == 2
+
+
+@pytest.mark.parametrize("budget", [0, 2])
+def test_capacity_fallback_reuses_tool_budget_display_and_duplicate_guard(budget):
+    draft = "Plan " + CALL + "guessed tool result"
+    ctrl, events = controller([[draft], _unfit_refinement, [draft], _unfit_refinement])
+    statuses = []
+    stream = stream_best_work(ctrl, "Read file", status_callback=statuses.append, max_tool_calls=budget)
+    assert next(stream) == "Plan "
+    if budget:
+        assert "Calling read_file" in next(stream)
+    assert not any(e[0] == "execute" for e in events)
+    remainder = "".join(stream)
+    if budget:
+        assert "ACTUAL disk data" in remainder and "Duplicate tool request blocked" in remainder
+        assert sum(e[0] == "execute" for e in events) == 1
+        for _, turns, _ in ctrl.app.engine.contexts[2:]:
+            assert any("ACTUAL disk data" in turn["content"] for turn in turns)
+            assert all("guessed tool result" not in turn["content"] for turn in turns)
+        assert [event["stage"] for event in statuses if event["kind"] == "refinement_skipped"] == [1, 2]
+        assert all(event["pass_index"] == 1 and event["final"] for event in statuses if event["kind"] == "executing")
+    else:
+        assert "tool-call limit" in remainder and all(e[0] != "execute" for e in events)
+    assert "guessed tool result" not in remainder
+
+
+def test_capacity_fallback_uses_only_original_request_for_tool_authorization():
+    write = '<tool_call>{"name":"write_file","arguments":{}}</tool_call>'
+    ctrl, events = controller([["Write the file. " + write], _unfit_refinement, ["Final answer"], _unfit_refinement])
+    ctrl.app.tools.list_available_tools = lambda: [{"name": "write_file"}]
+    text = "".join(stream_best_work(ctrl, "Tell me about seals"))
+    assert "requires an explicit user request" in text
+    assert text.endswith("Final answer") and not any(event[0] == "execute" for event in events)
+
+
+@pytest.mark.parametrize("point", ["skip_event", "displayed_text", "displayed_invocation"])
+def test_capacity_fallback_cancellation_and_close_cannot_dispatch(point):
+    ctrl, events = controller([["Plan " + CALL], _unfit_refinement])
+    cancelled = threading.Event()
+    def status(event):
+        if point == "skip_event" and event["kind"] == "refinement_skipped":
+            cancelled.set()
+    stream = stream_best_work(ctrl, "Read a file", cancel_event=cancelled, status_callback=status)
+    if point == "displayed_text":
+        assert next(stream) == "Plan "
+        stream.close()
+    elif point == "displayed_invocation":
+        assert next(stream) == "Plan " and "Calling read_file" in next(stream)
+        cancelled.set()
+    assert list(stream) == []
+    assert not any(e[0] == "execute" for e in events)
+    assert [e[1] for e in events if e[0] == "closed"] == [0, 1]
+    assert not ctrl.app.engine._best_work_raw_winner
+
+
+@pytest.mark.parametrize("failure", ["original", "after_streaming", "ordinary_error"])
+def test_capacity_fallback_never_masks_original_or_unrelated_error_or_splices_answers(failure):
+    from core.context_memory import ContextOverflow
+
+    problem = (RuntimeError("Packed input leaves no room for generation")
+               if failure == "ordinary_error" else ContextOverflow("physical capacity"))
+    def fail(_):
+        if failure == "after_streaming":
+            yield "partial final output"
+        raise problem
+    ctrl, events = controller([fail] if failure == "original" else [["earlier draft"], fail])
+    statuses = []
+    visible = []
+    with pytest.raises(type(problem)) as error:
+        for piece in stream_best_work(ctrl, "request", status_callback=statuses.append):
+            visible.append(piece)
+    assert error.value is problem
+    assert visible == (["partial final output"] if failure == "after_streaming" else [])
+    assert all(event["kind"] != "refinement_skipped" for event in statuses)
+    assert not any(e[0] == "execute" for e in events)
+
+
+def test_tool_result_starts_a_fresh_stage_without_a_stale_fallback_draft():
+    from core.context_memory import ContextOverflow
+
+    ctrl, events = controller([[CALL], _unfit_refinement, _unfit_refinement])
+    output = []
+    with pytest.raises(ContextOverflow):
+        for piece in stream_best_work(ctrl, "Read file"):
+            output.append(piece)
+    assert "".join(output).count("Calling read_file") == 1
+    assert "".join(output).count("ACTUAL disk data") == 1
+    assert sum(e[0] == "execute" for e in events) == 1
+    meta = ctrl.last_best_work_metadata
+    assert meta["stage"] == 2 and meta["passes_completed"] == 0
+    assert meta["total_passes_completed"] == 1 and "skip_reason" not in meta["pass_summaries"][-1]
+
+
+@pytest.mark.parametrize("projection", [False, True])
+def test_direct_best_work_projects_archive_before_copying_and_preserves_transcript(tmp_path, monkeypatch, projection):
+    from core.context_memory import ActiveChatHistory, ChatArchive
+    from core.online_consolidator import AwakeOnlineConsolidator
+    from tests.unit.context_backend_fixture import TransactionalBackend
+    from tests.unit.test_persistent_context_memory import add_pair
+
+    archive = ChatArchive(tmp_path / "chat.db", "chat")
+    add_pair(archive, 9)
+    retired = {row.turn_id for row in archive}
+    backend = TransactionalBackend(tmp_path)
+    service = AwakeOnlineConsolidator(backend)
+    monkeypatch.setattr("core.online_consolidator.release_training_memory", lambda _: {})
+    assert service.sleep(archive)["turns_retired"] == len(retired)
+    archive.append({"role": "system", "content": "Preserve this instruction."})
+    archive.append({"role": "user", "content": "What is the label?"})
+    original = list(archive)
+    store = backend.learning_state
+    head = store.current_manifest()["metadata"]["memory"]["retirement_head"]
+    history = ActiveChatHistory(archive, service._retirement_ledger(store), head) if projection else archive
+
+    ctrl, _ = controller([["Selected answer."], _unfit_refinement])
+    engine = ctrl.app.engine
+    engine.active_backend = "controller"
+    engine.controller_backend = backend
+    engine.awake_consolidator = service
+    engine._context_budget_tokens = 512
+    engine._format_prompt_with_history = lambda question, rows: " ".join(row["content"] for row in rows) + " " + question
+
+    decode = ChatArchive._decode
+    def active_rows_only(row):
+        assert row[0] not in retired, "Best Work materialized a retired archive row"
+        return decode(row)
+    with monkeypatch.context() as mp:
+        mp.setattr(ChatArchive, "_decode", staticmethod(active_rows_only))
+        assert list(stream_best_work(ctrl, "What is the label?", history)) == ["Selected answer."]
+    assert [turn.turn_id for turn in archive] == [turn.turn_id for turn in original]
+    assert list(archive) == original
+    assert original[-2:] == engine.contexts[0][1][-2:]
+    assert all("cedar9" not in str(turns) for _, turns, _ in engine.contexts)

@@ -6,8 +6,10 @@ This record covers the expanded online workflows, packed Bonsai adapters, scoped
 
 | Run | Result | Measured duration |
 | --- | --- | --- |
-| Final unit suite after sequential Best Work and compatibility repairs, with bitsandbytes present; two GUI modules run separately | **1,467 passed, 2 skipped, 58 subtests passed** | 179.58 s |
-| Final real Tk tests: sequential passes, controls, original handoffs, both Sleep sources, scope changes and archive paging | **11 passed** | 3.97 s |
+| Final preservation suite after capacity recovery, legacy upgrades and evaluation isolation; bitsandbytes present and two GUI modules run separately | **1,507 passed, 2 skipped, 58 subtests passed** | 230.45 s |
+| Final real Tk tests: sequential passes and capacity recovery, native/PEFT legacy restores, original handoffs, both Sleep sources, scope changes and archive paging | **19 passed** | 4.35 s |
+| Previous unit suite after sequential Best Work and compatibility repairs, with bitsandbytes present; two GUI modules run separately | **1,467 passed, 2 skipped, 58 subtests passed** | 179.58 s |
+| Previous real Tk tests: sequential passes, controls, original handoffs, both Sleep sources, scope changes and archive paging | **11 passed** | 3.97 s |
 | Previous expanded unit suite with bitsandbytes present | **1,435 passed, 2 skipped, 58 subtests passed** | 145.36 s |
 | Previous real Tk tests: original handoff, paging/learning panel and unloaded-model Sleep dialog | **7 passed** | 2.37 s |
 | Dedicated native-learning and release-gate follow-up, including real MLX CPU and Torch | **141 passed, 5 subtests passed** | 35.85 s |
@@ -48,6 +50,16 @@ Standalone GGUF/BitNet `train(data)` again publishes to its historical deploymen
 The comparison with `d3cead010685a04c95e97b2469c07fa3de627156` removes no tracked files. Four previous test names changed to reflect real factor-axis validation, explicit legacy imports and managed transactional state; their relevant behavior is tested under the current interfaces. Internals were refactored, so this is a behavioral compatibility claim supported by tests, not a claim that every older source line is unchanged.
 
 The preceding branch revision `b345eb860c3ce926dc662bb58efd12cfd3f098c4` passed [all required CI jobs](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44235167538), including 133 tests on native MLX CPU and 133 on native MLX Metal and both native C++ jobs. The sequential-pass and additional compatibility changes require a fresh CI run on their own commit before promotion.
+
+### Follow-up context and checkpoint preservation
+
+The `5fffc8f4708628ee7e81cc6f188e41e0c0424d96` revision passed [fresh branch CI](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44239425924) and [PR CI](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44241656394): all six full-platform suites, 139 native tests plus five subtests on both MLX CPU and Metal, and both native compiler jobs. PR review then reproduced an additional Best Work failure: the first draft could fill the available window and remain hidden when refinement overflowed. The fix returns the complete prior draft only for a typed capacity rejection before new text is displayed. Ordinary decoder errors still propagate. A real CPU model test fills all 512 positions and verifies the entire returned sample and its actual single invocation. Direct archive entry points also project committed retirement receipts before copying history. These follow-up repairs require a fresh green CI run on their own commit before merge.
+
+Upgrade tests cover the older GGUF/BitNet deployment paths and Transformers PEFT directories through the normal public loader. The GUI can explicitly restore the discovered state on its original model, while wrong paths, changed scopes, invalid tensors and incomplete runtime startup cannot report success. A real tiny PEFT test continues from the legacy factors into a managed successor and verifies the legacy source bytes remain unchanged.
+
+Eval tests cover fresh startup and resume while a desktop MLX generation exists. The run-specific state root never reads that desktop generation. The actual phase export routine writes only its dedicated mutable run export, leaving both desktop and run-local committed generation hashes valid. The fixture uses CPU safetensors for the export operation; it does not claim a full 27B Metal benchmark.
+
+The hard-capacity recovery path can try later disjoint completed exchanges when the oldest group fails validation. It retains the failed source and newest exchange, visits each later candidate at most once, and stops when enough context is available. Its archive iterator uses a fixed end sequence and bounded pages without holding a database read over model training. User/system messages quoting an unloaded-model warning are preserved, and a matching preceding assistant answer no longer suppresses the next user request. The actual assistant UI-warning filter remains available.
 
 ## Environment
 

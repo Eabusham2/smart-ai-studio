@@ -103,20 +103,25 @@ class AppEvalEngineAdapter:
     def __init__(self, config: Dict[str, Any], run_dir: str):
         self.config = dict(config)
         info = dict(config.get("model_info") or {})
+        # A catalog entry can describe a legacy seed selected in the desktop.
+        # The benchmark owns its initial model state and its resume checkpoints.
+        info.pop("legacy_adapter_path", None)
         self.model_info = info
         self.backend_key = ""
 
         # This process is eval-only, so give MLX a run-local adapter without
         # changing the normal app's persistent adapter or native runtime/cache.
         settings = get_settings()
-        settings.lora_adapter_path = os.path.join(
+        self.mlx_adapter_export = os.path.abspath(os.path.join(
             run_dir, "backend_state", "mlx", "adapters.safetensors"
-        )
+        ))
+        settings.lora_adapter_path = self.mlx_adapter_export
         settings.database_path = os.path.join(run_dir, "memory.db")
         self.pro = ProReasoningEngine(
             settings=settings,
             lora_adapter_path=settings.lora_adapter_path,
         )
+        self.pro.mlx_learning_state_root = str(Path(self.mlx_adapter_export).parent / "learned_memory")
 
         model_path = _resolve_cached_path(info)
         result = self.pro.load_model(
@@ -297,11 +302,14 @@ def install(runtime_module, phase4_module, cls) -> None:
         )
         self._app_eval_backend_key = self.engine.backend_key
         self._app_eval_logical_model_key = _logical_model_key(self.engine)
-        backend_adapter = str(
-            getattr(self.engine.backend, "adapter_path", "") or ""
-        )
-        if backend_adapter:
-            phase4_module.RSI_ADAPTER_PATH = backend_adapter
+        if self.engine.backend_key == "mlx":
+            # Phase 3/3B overwrite this export in place. Committed generations
+            # are immutable, including a generation just restored within this run.
+            phase4_module.RSI_ADAPTER_PATH = self.engine.mlx_adapter_export
+        else:
+            backend_adapter = str(getattr(self.engine.backend, "adapter_path", "") or "")
+            if backend_adapter:
+                phase4_module.RSI_ADAPTER_PATH = backend_adapter
         os.makedirs(run_dir, exist_ok=True)
         print(
             f"[APP EVAL] model={self._eval_target_model_label} "

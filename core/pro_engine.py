@@ -315,6 +315,24 @@ class ProReasoningEngine:
                 external = getattr(self, "_model_load_cancelled", None)
                 return bool((event and event.is_set()) or (external and external()))
 
+            loading_backend = None
+
+            def migration_details(*, loaded=False):
+                # A native backend can select a file and still fail to start its
+                # runtime. A successful result is required to acknowledge a seed.
+                if loaded:
+                    path = getattr(loading_backend, "_loaded_legacy_deployment", None)
+                    if isinstance(path, str) and path == getattr(loading_backend, "adapter_path", None):
+                        kind = "peft" if target_backend == "controller" else target_backend
+                        status = {"status": "legacy_adapter_loaded", "path": path, "format": kind}
+                        loading_backend.learning_migration_status = status
+                        return {"learning_migration": status.copy()}
+                else:
+                    status = getattr(loading_backend, "learning_migration_status", None)
+                    if isinstance(status, dict) and status.get("status") == "legacy_adapter_required":
+                        return {"learning_migration": status.copy()}
+                return {}
+
             try:
                 # 0. Architecture-specific controller adapter (VLM/audio-language/etc.)
                 if target_backend == "controller":
@@ -323,6 +341,7 @@ class ProReasoningEngine:
                         model_path=target_path,
                         model_info=info,
                     )
+                    loading_backend = self.controller_backend
                     if direct_torch:
                         self.controller_backend.direct_torch_generation = True
                         self.controller_backend.direct_cuda = direct_cuda
@@ -360,6 +379,7 @@ class ProReasoningEngine:
                             "input_modalities": sorted(self.active_input_modalities),
                             "trainable": bool(getattr(self.controller_backend, "can_train", False)),
                             "memory_placement": dict(getattr(self.controller_backend, "memory_placement", {}) or {}),
+                            **migration_details(loaded=True),
                         }
                     if controller_runtime == "strata":
                         return {
@@ -368,7 +388,8 @@ class ProReasoningEngine:
                             "error": self.controller_backend.last_error or "Strata could not prepare the selected model.",
                         }
                     return {"status": "error", "model": model_name, "backend": controller_runtime,
-                            "path": target_path, "error": "The selected runtime did not load a usable model."}
+                            "path": target_path, "error": "The selected runtime did not load a usable model.",
+                            **migration_details()}
 
                 # 1. Native Apple Silicon MLX
                 if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -379,6 +400,8 @@ class ProReasoningEngine:
                         model_info=info,
                     )
                     self.mlx_backend.learning_scope = getattr(self, "learning_scope", None)
+                    if getattr(self, "mlx_learning_state_root", None) is not None:
+                        self.mlx_backend.learning_state_root = self.mlx_learning_state_root
                     if self.mlx_backend.load_model():
                         self.mlx_engine = self.mlx_backend
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -437,6 +460,7 @@ class ProReasoningEngine:
                         **native_options,
                     )
                     self.gguf_backend.learning_scope = getattr(self, "learning_scope", None)
+                    loading_backend = self.gguf_backend
                     load_options = {"cancelled": load_cancelled} if server_path else {}
                     if self.gguf_backend.load_model(**load_options):
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -448,11 +472,13 @@ class ProReasoningEngine:
                             "path": target_path,
                             "trainable": bool(self.gguf_backend.training_ready()),
                             "memory_placement": dict(getattr(self.gguf_backend, "memory_placement", {}) or {}),
+                            **migration_details(loaded=True),
                         }
                     return {
                         "status": "cancelled" if server_path and load_cancelled() and getattr(self.gguf_backend, "_process", None) is None else "error",
                         "model": model_name, "backend": "gguf", "path": target_path,
                         "error": getattr(self.gguf_backend, "last_error", "") or "The native runtime could not load this GGUF model.",
+                        **migration_details(),
                     }
 
                 # 3. Microsoft bitnet.cpp — real 1.58-bit inference runtime.
@@ -468,6 +494,7 @@ class ProReasoningEngine:
                         if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                     )
                     self.bitnet_backend.learning_scope = getattr(self, "learning_scope", None)
+                    loading_backend = self.bitnet_backend
                     if self.bitnet_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
                             self.awake_consolidator.engine = self.bitnet_backend
@@ -477,6 +504,7 @@ class ProReasoningEngine:
                             "backend": "bitnet",
                             "path": self.bitnet_backend.model_path,
                             "trainable": bool(self.bitnet_backend.training_ready()),
+                            **migration_details(loaded=True),
                         }
                     return {
                         "status": "error",
@@ -484,6 +512,7 @@ class ProReasoningEngine:
                         "backend": "bitnet",
                         "path": target_path,
                         "error": "Official bitnet.cpp runtime/model could not be prepared for this BitNet checkpoint.",
+                        **migration_details(),
                     }
 
                 return {"status": "not_downloaded", "model": model_name, "backend": target_backend, "path": target_path}
@@ -495,7 +524,8 @@ class ProReasoningEngine:
                         "model": model_name, "backend": "strata", "path": target_path,
                         "error": getattr(self.controller_backend, "last_error", "") or str(e),
                     }
-                return {"status": "error", "model": model_name, "error": str(e), "path": target_path}
+                return {"status": "error", "model": model_name, "error": str(e), "path": target_path,
+                        **migration_details()}
 
     def unload_model(self) -> Dict[str, Any]:
         """Release the current model before replacement and report stop failures.

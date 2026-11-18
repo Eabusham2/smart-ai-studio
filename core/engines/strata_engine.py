@@ -12,15 +12,39 @@ import http.client
 import ipaddress
 import json
 import math
+import re
 import socket
 import threading
 import time
 from typing import Any, Callable, Generator, Optional
 from urllib.parse import urlsplit
 
+from core.context_memory import ContextOverflow
+
 
 class StrataError(RuntimeError):
     """The owned Strata service failed or returned an invalid response."""
+
+
+class StrataContextOverflow(ContextOverflow, StrataError):
+    """Strata rejected the packed chat before starting its stream."""
+
+
+def _context_rejection(error):
+    if not isinstance(error, dict):
+        return False
+    if error.get("code") == "context_length_exceeded" or error.get("type") == "exceed_context_size_error":
+        return True
+    message = error.get("message")
+    if not isinstance(message, str):
+        return False
+    # Some releases return invalid_request_error for both context and other
+    # input failures. Match their specific preflight messages in that case.
+    message = message.casefold().removeprefix("request exceeds the context window: ")
+    return (message.rstrip(".") == "prompt exceeds the context window"
+            or re.match(r"prompt \(\d+ tokens\) (?:leaves no room to answer in the context|"
+                        r"\+ max tokens \(\d+\) exceeds the context) \([1-9]\d*\)(?:;|$)",
+                        message) is not None)
 
 
 class StrataCancelled(StrataError):
@@ -265,7 +289,7 @@ class StrataReasoningBackend:
         except (UnicodeError, ValueError):
             raise StrataError("Strata returned malformed JSON.") from None
 
-    def _response_json(self, response) -> Any:
+    def _response_json(self, response, *, chat_preflight=False) -> Any:
         raw = response.read(self.MAX_JSON_BYTES + 1)
         if len(raw) > self.MAX_JSON_BYTES:
             raise StrataError("Strata returned an oversized JSON response.")
@@ -273,7 +297,10 @@ class StrataReasoningBackend:
         if response.status != 200:
             error = value.get("error", {}) if isinstance(value, dict) else {}
             message = error.get("message", "Request rejected.") if isinstance(error, dict) else error
-            raise StrataError(f"Strata request failed (HTTP {response.status}): {self._safe_message(message)}")
+            detail = f"Strata request failed (HTTP {response.status}): {self._safe_message(message)}"
+            if chat_preflight and response.status == 400 and _context_rejection(error):
+                raise StrataContextOverflow(detail)
+            raise StrataError(detail)
         return value
 
     def load_model(self, progress=None, cancelled=None, context_tokens=None) -> bool:
@@ -465,7 +492,7 @@ class StrataReasoningBackend:
             try:
                 with self._request("POST", "/v1/chat/completions", payload, cancelled) as (response, active):
                     if response.status != 200:
-                        self._response_json(response)
+                        self._response_json(response, chat_preflight=True)
                     if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "text/event-stream":
                         raise StrataError("Strata did not return an event stream.")
                     for chunk in self._events(response, active):

@@ -570,6 +570,25 @@ def bind_learning_state(backend, *, model_path=None, model_info=None, state_root
     return store
 
 
+def select_legacy_checkpoint(backend, store, current, legacy_path, selected, adapter_format):
+    """Require explicit confirmation of the old, unfingerprinted model-wide artifact."""
+    backend.learning_migration_status = None
+    if current or getattr(getattr(store, "scope", None), "kind", "model") != "model":
+        return None
+    legacy = Path(legacy_path).absolute()
+    marker = legacy / "adapter_config.json" if adapter_format == "peft" else legacy
+    if not marker.is_file():
+        if selected:
+            raise RuntimeError(f"The selected legacy checkpoint is missing from its original location: {legacy}")
+        return None
+    if not selected or Path(selected).resolve() != legacy.resolve():
+        backend.learning_migration_status = {"status": "legacy_adapter_required", "format": adapter_format,
+                                            "path": str(legacy)}
+        raise RuntimeError("The existing learned artifact has no verified model identity. "
+                           f"Confirm this checkpoint on its original base model: {legacy}")
+    return str(legacy)
+
+
 def validate_checkpoint(backend, path, *, allow_legacy=False) -> dict | None:
     store = getattr(backend, "learning_state", None)
     if store is None:

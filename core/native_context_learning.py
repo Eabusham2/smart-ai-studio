@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.learning_state import bind_learning_state, model_identity
+from core.learning_state import bind_learning_state, model_identity, select_legacy_checkpoint
 from core.torch_context_learning import check_cancelled, default_validation, validate_candidate
 
 
@@ -81,17 +81,14 @@ def select_deployment(backend, base_path, root, kind, legacy_path):
     store = bind_learning_state(backend, model_path=base_path, model_info=info, **options)
     current = store.current_checkpoint()
     backend._loaded_legacy_deployment = None
-    model_scope = getattr(getattr(store, "scope", None), "kind", "model") == "model"
-    if model_scope and current is None and Path(legacy_path).is_file():
-        selected = getattr(backend, "legacy_adapter_path", None)
-        if selected and Path(selected).resolve() == Path(legacy_path).resolve():
-            checker = getattr(backend, "_check_deployment_format", None)
-            if checker is not None:
-                checker(legacy_path)
-            backend._loaded_legacy_deployment = str(Path(legacy_path).absolute())
-            return backend._loaded_legacy_deployment
-        raise RuntimeError("The existing learned artifact has no verified model identity. "
-                           "Keep it for explicit migration before enabling parameter learning: " + str(legacy_path))
+    legacy = select_legacy_checkpoint(backend, store, current, legacy_path,
+                                      getattr(backend, "legacy_adapter_path", None), kind)
+    if legacy:
+        checker = getattr(backend, "_check_deployment_format", None)
+        if checker is not None:
+            checker(legacy)
+        backend._loaded_legacy_deployment = legacy
+        return legacy
     return current
 
 

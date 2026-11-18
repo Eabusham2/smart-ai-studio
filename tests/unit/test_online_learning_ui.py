@@ -2,6 +2,7 @@
 import threading
 import tkinter as tk
 from tkinter import ttk
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,3 +154,91 @@ def test_sleep_keeps_verified_episode_queue_and_chat_modes_separate(app, monkeyp
     assert len(observed) == 2
     text = ''.join(w.get('1.0', 'end') for w in descendants(modal) if isinstance(w, tk.Text))
     assert 'reopen this panel' in text
+
+
+@pytest.mark.parametrize('adapter_format', ['gguf', 'bitnet', 'peft'])
+@pytest.mark.parametrize('incompatible', [False, True])
+def test_gui_restores_previous_native_and_controller_learning(app, tmp_path, monkeypatch, adapter_format, incompatible):
+    from core.memory_scopes import LearningScope
+
+    selected = tmp_path / ('peft' if adapter_format == 'peft' else 'previous.gguf')
+    if adapter_format == 'peft':
+        selected.mkdir()
+        artifact = selected / 'adapter_config.json'
+    else:
+        artifact = selected
+    artifact.write_bytes(b'original learned state')
+    tab = app.active_tab_id
+    app.models_config[tab] = dict(app.models_config[tab], name='Original base', short_name='Original',
+                                 model_type='text', model_path=str(tmp_path / 'base'), repo_id='')
+    info = dict(app.models_config[tab])
+    app.is_model_loaded = False
+    app.engine.learning_scope = LearningScope('model')
+    calls = []
+    backend = SimpleNamespace(model=None, is_loaded=False, adapter_path=None)
+    backend.unload_model = lambda: None
+    attr = {'gguf': 'gguf_backend', 'bitnet': 'bitnet_backend', 'peft': 'controller_backend'}[adapter_format]
+    monkeypatch.setattr(app.engine, attr, backend)
+    monkeypatch.setattr(app, '_model_is_cached', lambda _info: True)
+    monkeypatch.setattr(app, '_show_model_loading_popup', lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(app, '_sync_memory_watchdog', lambda *args, **kwargs: None)
+
+    def load(name, **kwargs):
+        calls.append((name, kwargs))
+        path = kwargs['model_info'].get('legacy_adapter_path')
+        if path and not incompatible:
+            backend.model, backend.is_loaded, backend.adapter_path = object(), True, path
+            return {'status': 'loaded', 'trainable': True,
+                    'learning_migration': {'status': 'legacy_adapter_loaded', 'format': adapter_format, 'path': path}}
+        return {'status': 'error', 'error': 'shape mismatch' if path else 'Legacy state requires selection',
+                'learning_migration': {'status': 'legacy_adapter_required', 'format': adapter_format, 'path': str(selected)}}
+
+    monkeypatch.setattr(app.engine, 'load_model', load)
+    monkeypatch.setattr(app.engine, 'unload_model', lambda: {'status': 'unloaded'})
+    app._on_toggle_load_unload(_skip_download=True)
+    assert not app.is_model_loaded
+    assert app._pending_legacy_learning()['path'] == str(selected)
+    app._on_open_memory_explorer()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    button = next(w for w in descendants(modal) if isinstance(w, tk.Button)
+                  and w.cget('text') == 'Restore learned state…')
+    button.invoke()
+    assert len(calls) == 2
+    assert all(name == 'Original base' and 'backend' not in kwargs
+               and kwargs['model_path'] == info['model_path'] for name, kwargs in calls)
+    assert calls[1][1]['model_info'] == dict(info, legacy_adapter_path=str(selected))
+    assert app.models_config[tab] == info and artifact.read_bytes() == b'original learned state'
+    text = app.chat_stream.get('1.0', 'end')
+    if incompatible:
+        assert not app.is_model_loaded and app._pending_legacy_learning()
+        assert 'shape mismatch' in text and 'Loaded the previous learned state' not in text
+    else:
+        assert app.is_model_loaded and app._pending_legacy_learning() is None
+        assert 'Loaded the previous learned state' in text
+
+
+def test_legacy_recovery_cannot_follow_a_changed_model_or_scope(app, tmp_path, monkeypatch):
+    from core.memory_scopes import LearningScope
+
+    tab = app.active_tab_id
+    info = app.models_config[tab]
+    pending = {'status': 'legacy_adapter_required', 'format': 'gguf', 'path': str(tmp_path / 'old.gguf'),
+               'model_name': info['name'], 'model_path': str(info.get('model_path') or info.get('repo_id'))}
+    app._legacy_learning_migrations = {tab: pending}
+    app.engine.learning_scope = LearningScope('model')
+    app.is_model_loaded = False
+    app._on_open_memory_explorer()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    button = next(w for w in descendants(modal) if isinstance(w, tk.Button)
+                  and w.cget('text') == 'Restore learned state…')
+    notices, loads = [], []
+    monkeypatch.setattr('app_gui.messagebox.showinfo', lambda *args, **kwargs: notices.append(args))
+    monkeypatch.setattr(app, '_on_toggle_load_unload', lambda **kwargs: loads.append(kwargs))
+    app.engine.learning_scope = LearningScope('project', 'another')
+    button.invoke()
+    assert notices and not loads and app._pending_legacy_learning() is None
+    app.engine.learning_scope = LearningScope('model')
+    assert app._pending_legacy_learning() == pending
+    app.models_config[tab] = dict(info, model_path=str(tmp_path / 'different-model'))
+    button.invoke()
+    assert len(notices) == 2 and not loads and app._pending_legacy_learning() is None

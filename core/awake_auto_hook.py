@@ -117,7 +117,7 @@ def _selected_context_budget(engine) -> int:
     return effective
 
 
-def _formatted_token_count(engine, formatted_prompt: str) -> int:
+def _formatted_token_count(engine, formatted_prompt: str, *, budget: Optional[int] = None) -> int:
     backend = _active_trainable_backend(engine)
     tokenizer = getattr(backend, "tokenizer", None) if backend is not None else None
 
@@ -125,6 +125,8 @@ def _formatted_token_count(engine, formatted_prompt: str) -> int:
     if callable(encode):
         try:
             return max(0, len(encode(formatted_prompt)))
+        except MemoryError:
+            raise
         except Exception:
             pass
 
@@ -132,6 +134,8 @@ def _formatted_token_count(engine, formatted_prompt: str) -> int:
     if callable(tokenize):
         try:
             return max(0, len(tokenize(formatted_prompt.encode("utf-8"))))
+        except MemoryError:
+            raise
         except Exception:
             pass
 
@@ -142,11 +146,19 @@ def _formatted_token_count(engine, formatted_prompt: str) -> int:
                 0,
                 int(counter([{"role": "user", "content": formatted_prompt}])),
             )
+        except MemoryError:
+            raise
         except Exception:
             pass
 
     # Conservative final estimate only when a real tokenizer facade is unavailable.
-    return max(1, len(str(formatted_prompt)) // 4)
+    estimate = max(1, len(str(formatted_prompt)) // 4)
+    if budget is not None and estimate >= budget:
+        # Preserve the refusal when only an estimate is available, but never
+        # advertise it as a tokenizer-confirmed overflow to a recovery caller.
+        raise RuntimeError(f"Packed prompt is estimated at {estimate:,} tokens with active Context "
+                           f"{budget:,}; the exact token count is unavailable. Refusing truncation.")
+    return estimate
 
 
 def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
@@ -166,10 +178,10 @@ def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
         backend.context_budget_tokens = context_budget
         return context_budget
     context_budget = _selected_context_budget(engine)
-    prompt_tokens = _formatted_token_count(engine, formatted_prompt)
+    prompt_tokens = _formatted_token_count(engine, formatted_prompt, budget=context_budget)
     remaining = int(context_budget) - int(prompt_tokens)
     if remaining <= 0:
-        raise RuntimeError(
+        raise ContextOverflow(
             f"Packed prompt requires {prompt_tokens:,} tokens but active Context is "
             f"{context_budget:,}; refusing truncation."
         )
@@ -239,7 +251,7 @@ def prepare_awake_request(engine, prompt, history, cancel_event=None):
     budget = _selected_context_budget(engine)
     backend._learning_context_budget_tokens = budget
     def count(text, rows):
-        return _formatted_token_count(engine, engine._format_prompt_with_history(text, rows))
+        return _formatted_token_count(engine, engine._format_prompt_with_history(text, rows), budget=budget)
 
     archive = isinstance(history, ChatArchive)
     if archive and not callable(getattr(service, "prepare_archive", None)):
@@ -380,7 +392,15 @@ def install_awake_auto_learning(cls) -> None:
         if (isinstance(original_history, list) and not isinstance(original_history, ChatArchive)
                 and len(original_history) != len(history)):
             original_history[:] = history
-        if current_tokens < trigger_tokens:
+        # Copies used by the GUI and Best Work share a single-use marker.
+        # A later request reusing either working list gets normal watermarks.
+        recovered = False
+        for turn in history or ():
+            marker = getattr(turn, "_capacity_recovery", None)
+            if marker is not None:
+                recovered = marker.pop("prepared", False) or recovered
+                del turn._capacity_recovery
+        if current_tokens < trigger_tokens or (recovered and current_tokens < context_budget):
             self._last_context_consolidation_note = (
                 f"Context {context_budget:,}: prompt/history {current_tokens:,}; "
                 f"generation may use the remaining {max(0, context_budget-current_tokens):,} tokens until EOS."
@@ -410,15 +430,36 @@ def install_awake_auto_learning(cls) -> None:
                     working_history(retained), getattr(consolidator, "evict_ratio", 0.40), keep_recent=False)
             if not chunk:
                 break
+            strict_attempt = getattr(consolidator, "consolidate_for_capacity", None) if current_tokens >= context_budget else None
             try:
-                if cancel_event is None:
+                if callable(strict_attempt):
+                    learned = strict_attempt(chunk, cancel_event=cancel_event)
+                elif cancel_event is None:
                     learned = bool(consolidator.consolidate_chunk_sync(chunk))
                 else:
                     learned = bool(consolidator.consolidate_chunk_sync(chunk, cancel_event=cancel_event))
             except Exception:
+                if cancel_event is not None and cancel_event.is_set():
+                    return retained
+                if callable(strict_attempt):
+                    raise
                 learned = False
             if not learned:
                 # Never remove dialogue that was not successfully consolidated.
+                # Recovery may learn later exchanges while keeping this source.
+                recover = getattr(consolidator, "recover_after_rejected_chunk", None)
+                if current_tokens >= context_budget and callable(recover):
+                    def measure():
+                        projected = consolidator.active_history(retained)
+                        return projected, packed_token_count(projected)
+                    try:
+                        retained, current_tokens, additional = recover(
+                            retained, chunk, retained, current_tokens, context_budget, measure, cancel_event)
+                    except InterruptedError:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return retained
+                        raise
+                    consolidated_turns += additional
                 break
             consolidated_turns += len(chunk)
             retained = candidate_retained
@@ -480,6 +521,11 @@ def install_awake_auto_learning(cls) -> None:
         if cancel_event is not None and cancel_event.is_set():
             return
 
+        # An entropy probe can itself run a model forward. Check the complete
+        # active request first, even on runtimes with no awake trainer.
+        formatted = self._format_prompt_with_history(prompt, history)
+        remaining = _remaining_generation_tokens(self, formatted)
+
         # Preserve the historical chat decision point: entropy chooses N=1/8/16.
         native = getattr(self, "gguf_backend", None)
         if bool(getattr(self, "_gui_force_single_stream", False)):
@@ -496,8 +542,7 @@ def install_awake_auto_learning(cls) -> None:
             entropy = None
             mode = f"Native (N={branch_count})"
         else:
-            routing_prompt = (self._format_prompt_with_history(prompt, history)
-                              if getattr(self, "_best_work_route_with_history", False) else prompt)
+            routing_prompt = formatted if getattr(self, "_best_work_route_with_history", False) else prompt
             entropy = float(self.calculate_token_entropy(routing_prompt))
             mode, branch_count = self.router.route(entropy, has_test_cases=False)
 
@@ -506,8 +551,6 @@ def install_awake_auto_learning(cls) -> None:
                                "total": int(branch_count) + (1 if int(branch_count) > 1 else 0)})
 
         if int(branch_count) <= 1:
-            formatted = self._format_prompt_with_history(prompt, history)
-            remaining = _remaining_generation_tokens(self, formatted)
             previous_max = getattr(self.settings, "max_new_tokens", None)
             self.settings.max_new_tokens = int(remaining)
             try:
