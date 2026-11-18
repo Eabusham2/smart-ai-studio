@@ -854,3 +854,32 @@ The feature branch is not a master rewrite. It is an additive/surgical hardening
 
 No known useful branch-only behavior was intentionally discarded during this audit. Old behavior was excluded only where the current branch is newer/safer or where the old behavior conflicts with explicit requirements.
 
+## 23. Persistent learning and sequential Best Work (PR #17)
+
+Studio can save what a supported text model learns during use and restore it when the same model and memory scope are loaded again. The text archive, the model's active input and its learned weights have separate lifetimes. For example, clearing a project chat clears its transcript and leaves its accepted adapter available for the next conversation. [Getting started with the update](persistent-learning-update.md)
+
+### Chat, Learn and Sleep
+
+At 80% of the selected Context budget, Awake can train on older, complete exchanges and work toward 60%. Studio checks parameter changes and retention before committing an update. Retiring an exchange from the active input also requires source-free reconstruction and question-answer checks. A model can pass the parameter checks while the original exchange still needs to occupy context. The full SQLite transcript remains available for paging and export. System instructions, tool exchanges and unfinished turns stay in text. If the protected input exceeds the physical window, Studio reports the limit. [Chat consolidation and recall](parametric-memory.md)
+
+**Sleep EWC** offers **Verified episodes (original Sleep/EWC)** and **Current chat exchanges**. The original queue can run with an empty chat. It prioritizes verified solutions by surprise, replays anchors and acknowledges trained rows after the checkpoint is durable. Current-chat Sleep can study one batch below the Awake threshold. **Learn** uses retrieved or attached sources and checks a verbatim evidence span. Attachments retain the 16,000-character synthesis excerpt alongside streamed ingestion for longer sources. **RSI** trains the model's own revision with a generic instruction and keeps benchmark questions, expected answers and verdicts out of that training row.
+
+### Selecting and restoring memory
+
+Open **Memory DB** to reach **Memory Explorer → Learning & saved memory…**, choose **Check model support**, and select **Run learning task**. The panel also supports document ingestion with resumable progress, evidence selection, few-shot examples, query-only updates, reward-based practice and learning from candidate solutions. The default scope is the model. Named sessions and projects keep independent checkpoints. **Temporary practice** restores the previous scope afterward. The document catalog can pin a validated generation and use its recalled answer during ordinary solving. [Workflows, scopes and API examples](test-time-learning.md)
+
+Managed generations record the base-model identity and adapter format. To upgrade an older checkpoint without a base fingerprint, select its original model and use **Import MLX adapter…** for a raw MLX file, or **Restore learned state…** for the detected GGUF adapter, BitNet rebuild or Transformers PEFT directory. The next accepted update creates a model-bound successor and preserves the original artifact.
+
+### Routing, tools and deployment limits
+
+Enable **Pro branches** for the **Best Work** workflow, which defaults to two sequential passes per stage. Each pass uses the existing branch router and selection logic. Only the selected final answer can dispatch an authorized tool. Its actual result starts a fresh stage. If a refinement cannot fit before displaying output, Studio can use the preceding completed winner. Set **Branches → Best Work passes** to **1** and choose **Apply passes** for the original single pass. Ordinary streaming and media tool handoffs remain available. [Pass selection, tool execution and telemetry](best-work-handoffs.md)
+
+| Loaded runtime | Conditions for parameter learning |
+| --- | --- |
+| MLX on Apple Silicon | Compatible language adapters. Supported Bonsai 2 and CRACK packed layouts can train terminal query and down projections. Existing head-only checkpoints retain their layout. |
+| Transformers on CPU, CUDA or MPS | A compatible causal model, trainable PEFT targets and resident placement that supports gradients. Disk-offloaded models remain inference-only. |
+| GGUF and Prism | A verified local training parent, a working LoRA converter and successful scoring on the deployed candidate. Speculative Prism also requires a verified native adapter API. |
+| BitNet | A compatible local BF16 parent, working conversion and quantization, and scoring the rebuilt model in bitnet.cpp. |
+| Strata and media generators | Strata serves text within its native context. Image, audio and video generation keep their own workflows. These paths do not expose the text parameter updates above. |
+
+Desktop Eval stores learned state under the evaluation run. MLX phase exports have a dedicated writable path. PEFT updates, GGUF adapters and BitNet rebuilds use their backend's run-local generations. CI exercised real small-model MLX CPU and Metal updates. Full 27B recall, throughput and peak memory still require measurements on the target checkpoint and hardware. [Validation record](validation/test-time-learning.md) · [Merged PR #17](https://github.com/Eabusham2/smart-ai-studio/pull/17) · [PR CI run](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44245506268) · [Release run](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44248039808)

@@ -111,3 +111,40 @@ python -m pytest tests/live -q --timeout=600
 ## Hardware work not executed here
 
 The real Bonsai 2 and Bonsai 2 CRACK 27B checkpoints, Apple Silicon/Metal, native GGUF conversion/runtime artifacts, and BitNet quantization toolchain were unavailable on this host. Consequently this change has **no measured claim** about those models' final recall accuracy, speedup, peak Metal/GPU memory, or full native deployment quality. The runnable target evaluator and explicit backend capability checks remain part of the delivery. See [the Apple Silicon evaluation instructions](../parametric-memory.md#measure-recall-on-apple-silicon).
+
+## Merged revision and published release (PR #17)
+
+This entry records the completed GitHub runs for [PR #17](https://github.com/Eabusham2/smart-ai-studio/pull/17), verified on November 18, 2026. The preceding entries remain the historical record of the local and intermediate branch checks. The feature branch was merged into `master` as [`5dbed0c0d216feecbefecfedb34eb97bf2583c5b`](https://github.com/Eabusham2/smart-ai-studio/commit/5dbed0c0d216feecbefecfedb34eb97bf2583c5b).
+
+### Final CI on the merged implementation
+
+[PR CI run 44245506268](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44245506268) completed successfully on head `20e4525c36f940bcad12960dd1dd388309c980f2`. Its checkout merged that head into unchanged base `d3cead010685a04c95e97b2469c07fa3de627156`. The published merge retained both parents and the exact tested file tree, `21d59848a1a709d44d6e0a14384d3b11e2bcc4a6`.
+
+| CI lane | Tests passed | Tests skipped | Subtests passed |
+| --- | ---: | ---: | ---: |
+| Linux / Python 3.10 | 1,533 | 12 | 58 |
+| Linux / Python 3.11 | 1,532 | 13 | 58 |
+| macOS / Python 3.10 | 1,544 | 1 | 58 |
+| macOS / Python 3.11 | 1,544 | 1 | 58 |
+| Windows / Python 3.10 | 1,526 | 19 | 58 |
+| Windows / Python 3.11 | 1,524 | 21 | 58 |
+| Native MLX CPU | 139 | 0 | 5 |
+| Native MLX Metal | 139 | 0 | 5 |
+
+The native logs verified `Device(cpu, 0)` and `Device(gpu, 0)` respectively. Both executed all four packed-layout cases, including the `mlx_repo_vlm` and `jang_vlm` layouts, checkpoint restoration and rejected-update rollback, and VLM rotary-position-state isolation. The CPU tests took 27.01 seconds and the Metal tests 46.85 seconds. These are test-suite times, not model throughput measurements. The six platform lanes also retained the existing live integration coverage. Their unavailable integrations appear as skips. The runs overlap and their counts are not additive.
+
+The final local checks recorded above were **1,507 passed, 2 skipped and 58 passing subtests**, plus the separate **19-test real Tk run**. Native artifact provenance and reuse gates passed. This follow-up did not alter native runtime source; the workflow retained the verified CPU and Metal compiler artifacts for packaging.
+
+### Preservation fixes and review feedback
+
+The final revision preserves completed Best Work answers when a later refinement cannot fit before displaying text. A real CPU decoder test fills all 512 available positions and checks that the complete prior sample is returned with one actual decoder invocation. GUI and tool-handoff tests cover the same recovery without duplicate display or action. This addresses the [Codex review finding](https://github.com/Eabusham2/smart-ai-studio/pull/17#discussion_r4609443016), whose thread was resolved. The automated review receipt refers to the earlier `5fffc8f` revision; a second automated review of the final head is not asserted.
+
+Additional regression coverage preserves legacy GGUF/BitNet/PEFT restoration, MLX evaluation and desktop checkpoint isolation, the original 80%→60% policy on later requests, protected and unrecallable text during hard-capacity recovery, and direct Best Work archive projection. Comparison with the original base removed no tracked files. Internals changed; compatibility is established for the exercised behaviors, not every possible input or deployment.
+
+### Release completion
+
+[Release run 44248039808](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44248039808) completed successfully for merge `5dbed0c`. Its merge gate verified the successful PR run, then the Windows x86-64, Linux x86-64 and macOS ARM64 package jobs passed their relocated launch checks. The final publisher passed its package/asset checks and published **Smart AI Studio — Rolling Release (5dbed0c)** at the [rolling release page](https://github.com/Eabusham2/smart-ai-studio/releases/tag/latest). At verification, the release was public and contained 37 uploaded, nonempty assets, including setup/portable packages, checksum and assembly files, both native runtime archives, and the macOS no-admin kit. The rolling tag may advance after this recorded revision.
+
+Package checks do not execute a pretrained model. Bundling the two Bonsai model snapshots does not establish their inference or training performance. The native MLX results above exercise smaller real packed models on CPU and Metal; **full Bonsai 2/CRACK 27B recall, throughput and peak-memory measurements remain unexecuted**. Strata remains inference-only, and native learning bridges still require compatible parent weights and deployment toolchains. These limits continue to apply to the published release.
+
+For desktop steps and links to the detailed workflows, see [Using persistent learning in Studio](../persistent-learning-update.md).
