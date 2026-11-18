@@ -148,3 +148,44 @@ def test_unloaded_selection_and_early_failure_leave_model_lifecycle_intact(tmp_p
         engine.set_learning_implementation("legacy")
     assert engine.is_model_loaded and engine.unloads == 0
     assert engine.settings.learning_implementation == "managed"
+
+
+def test_three_implementations_restore_independent_scope_session_and_weights(tmp_path):
+    engine = SwitchEngine(tmp_path, "hybrid")
+    hybrid_scope = LearningScope("project", "hybrid P")
+    managed_scope = LearningScope("project", "managed P")
+    engine.learning_scope = hybrid_scope
+    engine.load_model("fixture", "fixture/source", backend="fixture")
+    hybrid_session = engine.awake_consolidator.session_id
+    hybrid = save(engine.awake_consolidator.engine, b"hybrid")
+    engine.set_learning_implementation("managed")
+    assert engine.learning_scope == LearningScope() and engine.awake_consolidator.engine.adapter_path is None
+    engine.set_learning_scope(managed_scope)
+    managed_session = engine.awake_consolidator.session_id
+    managed = save(engine.awake_consolidator.engine, b"managed")
+    engine.set_learning_implementation("legacy")
+    assert engine.learning_scope == LearningScope() and engine.awake_consolidator.engine.adapter_path is None
+    legacy = save(engine.awake_consolidator.engine, b"legacy")
+    for mode, scope, session, saved in (("hybrid", hybrid_scope, hybrid_session, hybrid),
+                                        ("managed", managed_scope, managed_session, managed),
+                                        ("legacy", LearningScope(), None, legacy)):
+        result = engine.set_learning_implementation(mode)
+        assert result["learning_implementation"] == mode and engine.learning_scope == scope
+        assert getattr(engine.awake_consolidator, "session_id", None) == session
+        assert engine.awake_consolidator.engine.adapter_path == str(saved)
+    assert managed_session != hybrid_session
+
+
+def test_unvisited_loaded_model_prefers_saved_scope_and_visited_scope_wins(tmp_path):
+    engine = SwitchEngine(tmp_path, "legacy")
+    engine.load_model("fixture", "fixture/source", backend="fixture")
+    preferred = LearningScope("project", "saved from previous session")
+    engine.set_learning_implementation("hybrid", preferred_scope=preferred)
+    assert engine.learning_scope == preferred
+    assert engine.awake_consolidator.engine.learning_state.scope == preferred
+    saved = save(engine.awake_consolidator.engine, b"hybrid")
+    engine.set_learning_implementation("managed")
+    assert engine.learning_scope == LearningScope()
+    engine.set_learning_implementation("hybrid", preferred_scope=LearningScope("project", "different model"))
+    assert engine.learning_scope == preferred
+    assert engine.awake_consolidator.engine.adapter_path == str(saved)

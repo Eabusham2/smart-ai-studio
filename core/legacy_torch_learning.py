@@ -65,10 +65,31 @@ class LegacyControllerTrainer(LegacyCompletionTrainer):
     _format_training_example = staticmethod(controller_training_example)
 
 
+def completion_rows_fit(trainer, tokenizer, rows, limit, cancel_event):
+    """The original optimizer is appropriate only if every row retains an answer in one window."""
+    for row in rows:
+        check_cancelled(cancel_event)
+        prompt, completion = str(row.get("prompt") or "").strip(), str(row.get("completion") or "").strip()
+        if not prompt or not completion:
+            return False
+        prefix, full = trainer._format_training_example(tokenizer, prompt, completion)
+        options = dict(truncation=True, max_length=limit + 1, return_tensors="pt")
+        full_ids = tokenizer(full, **options)["input_ids"][0]
+        if not 2 <= len(full_ids) <= limit:
+            return False
+        prefix_ids = tokenizer(prefix, **options)["input_ids"][0]
+        if len(prefix_ids) >= len(full_ids) or not full_ids[:len(prefix_ids)].equal(prefix_ids):
+            # Separate tokenization can merge the last prompt piece with the
+            # first answer piece or add EOS. Use the bounded mask in that case.
+            return False
+    return True
+
+
 def update_legacy_lora(model, tokenizer, data, *, trainer, learning_rate, steps, max_length,
-                       output_directory, before=None, cancel_event=None):
+                       output_directory, before=None, cancel_event=None, fisher=None, ewc_strength=0.0):
     """Apply one optimizer step per example, with a fresh optimizer on every call."""
     import torch
+    from core.torch_context_learning import backward_ewc
 
     rows = [item for item in data or () if str(item.get("prompt") or "").strip()
             and str(item.get("completion") or "").strip()]
@@ -107,6 +128,8 @@ def update_legacy_lora(model, tokenizer, data, *, trainer, learning_rate, steps,
                 if loss is None or not torch.isfinite(loss):
                     raise RuntimeError("Legacy completion training produced a non-finite loss")
                 loss.backward()
+                if fisher:
+                    backward_ewc(named, before, fisher, ewc_strength)
                 optimizer.step()
                 supervised += int((labels[:, 1:] != -100).sum().item())
                 updates += 1

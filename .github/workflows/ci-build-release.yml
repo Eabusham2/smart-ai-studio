@@ -382,8 +382,15 @@ jobs:
           assert all(c.find('skipped') is None for c in cases), 'Packed native MLX tests cannot be skipped'
           parity = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
                     if 'test_mlx_learning_implementations' in c.get('classname', '')]
-          assert len(parity) >= 7, 'Original MLX algorithms and namespace isolation must be exercised'
+          assert len(parity) >= 13, 'Original and hybrid MLX algorithms and namespace isolation must be exercised'
           assert all(c.find('skipped') is None for c in parity), 'Original MLX parity tests cannot be skipped'
+          protected = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
+                       if 'test_mlx_adapter_persistence' in c.get('classname', '')
+                       and c.get('name', '').startswith((
+                           'test_training_export_protects_foreign_generations_and_rolls_back',
+                           'test_own_current_generation_reference_publishes_only_a_successor'))]
+          assert len(protected) >= 9, 'Every implementation must protect its immutable checkpoints'
+          assert all(c.find('skipped') is None for c in protected), 'Immutable checkpoint protection tests cannot be skipped'
           PY
       - name: Preserve native learning results
         if: always()

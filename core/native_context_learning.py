@@ -13,7 +13,8 @@ from core.torch_context_learning import check_cancelled, default_validation, val
 
 
 @contextmanager
-def native_training_output(trainer, output_directory, destination, previous_peft, cancel_event, data, objective):
+def native_training_output(trainer, output_directory, destination, previous_peft, cancel_event, data, objective,
+                           *, learning_mode="managed"):
     """Give managed callers their stage and standalone callers the historical cumulative files."""
     if output_directory is not None:
         output = Path(output_directory)
@@ -24,9 +25,14 @@ def native_training_output(trainer, output_directory, destination, previous_peft
             trainer.peft_dir, trainer.cancel_event, trainer._legacy_training = previous_dir, previous_cancel, previous_mode
         return
 
-    from core.learning_state import _process_commit_lock
+    from core.learning_state import _process_commit_lock, implementation_state_root
     from core.training_lineage import standalone_training_parent
 
+    if learning_mode == "hybrid":
+        root = implementation_state_root(destination.parent, learning_mode)
+        destination = root / destination.name
+        if previous_peft is not None and Path(previous_peft).resolve() != (root / "peft").resolve():
+            raise ValueError("Standalone hybrid training requires its own previous checkpoint")
     if objective == "causal_lm":
         data = [row for row in data or () if str(row.get("prompt") or "").strip() and str(row.get("completion") or "").strip()]
         if not data:
@@ -111,7 +117,9 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         from core.reward_adaptation import reward_advantages
         reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
     store = backend.learning_state
-    txn = store.begin(metadata=learning_metadata, inherit_metadata=learning_mode == "managed")
+    from core.learning_state import check_hybrid_store
+    check_hybrid_store(store, learning_mode)
+    txn = store.begin(metadata=learning_metadata, inherit_metadata=learning_mode != "legacy")
     original_metadata = backend.adapters
     unloaded = False
     try:
@@ -121,7 +129,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         check_cancelled(cancel_event)
         # Merging and quantization can erase a BF16 update. Standalone
         # callers also validate behavior on the actual served deployment.
-        if learning_mode == "managed" and validation_callback is None:
+        if learning_mode != "legacy" and validation_callback is None:
             validation_callback = default_validation(backend, data, objective=objective, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
         trainer.allow_parent_download = learning_mode == "legacy"
         lineage = backend._verify_training_parent(trainer)
@@ -136,7 +144,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
             )
         else:
             metrics, drift, touched, deployment = trainer.train(
-                data, learning_mode="managed", output_directory=txn.directory,
+                data, learning_mode=learning_mode, output_directory=txn.directory,
                 previous_peft=(Path(previous).parent / "peft") if previous else None,
                 learning_rate=learning_rate, steps=steps, fisher_matrix=fisher_matrix,
                 lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
@@ -156,7 +164,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         backend._candidate_deployment = deployment
         if not backend.load_model():
             raise RuntimeError("Candidate deployment could not be loaded: " + str(getattr(backend, "last_error", "")))
-        evidence = (validate_candidate(backend, validation_callback, cancel_event) if learning_mode == "managed"
+        evidence = (validate_candidate(backend, validation_callback, cancel_event) if learning_mode != "legacy"
                     else {"method": "deployment_reload"})
         check_cancelled(cancel_event)
         txn.commit(Path(deployment).name, metadata={"metrics": metrics, "validation": evidence, "drift_l2": drift},

@@ -83,7 +83,7 @@ def test_projected_daemon_gains_lifecycle_telemetry_without_old_architecture_rew
     from core.online_consolidator import AwakeOnlineConsolidator, ManagedAwakeOnlineConsolidator
     from core.pro_engine import ProReasoningEngine
 
-    original = ProReasoningEngine(settings=Settings(use_mock=True))
+    original = ProReasoningEngine(settings=Settings(use_mock=True, learning_implementation="legacy"))
     managed = ProReasoningEngine(settings=Settings(use_mock=True, learning_implementation="managed"))
     assert type(original.awake_consolidator) is AwakeOnlineConsolidator
     assert original.awake_consolidator.engine is original.mlx_engine

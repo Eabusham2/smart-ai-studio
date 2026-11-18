@@ -102,7 +102,8 @@ def test_frozen_query_spans_match_original_logits_and_change_only_queries(llama)
     assert not any(p.grad is not None for p in llama.parameters())
 
 
-def test_native_mlx_fixed_kv_updates_only_query():
+@pytest.mark.parametrize("learning_mode", ["managed", "hybrid"])
+def test_native_mlx_fixed_kv_updates_only_query(learning_mode):
     mx = pytest.importorskip("mlx.core", reason="Requires the native MLX runtime")
     llama = pytest.importorskip("mlx_lm.models.llama")
     from core._mlx_engine_base import MLXReasoningBackend
@@ -124,12 +125,14 @@ def test_native_mlx_fixed_kv_updates_only_query():
     for start, stop in spans:
         expected = nn.losses.cross_entropy(original[:, start:stop], ids[:, start + 1:stop + 1], reduction="mean")
         assert scorer(backend.model, start, stop).item() == pytest.approx(expected.item(), abs=1e-5)
-    backend.inject_lora_adapters()
+    backend.inject_lora_adapters(learning_mode=learning_mode)
     before = dict(tree_flatten(backend.model.parameters()))
-    updated, drift = backend.train_mini_batch({}, [], objective="query_only", context_text=context, steps=2,
+    updated, drift = backend.train_mini_batch({}, [], learning_mode=learning_mode, objective="query_only", context_text=context, steps=2,
                                               max_window_tokens=4, max_context_tokens=16,
                                               validation_callback=lambda candidate: True)
     assert drift > 0 and backend.last_learning_metrics["kv_prefills"] == 1
+    if learning_mode == "hybrid":
+        assert backend.last_learning_metrics["training_algorithm"] == "managed_query_only"
     changed = [k for k, v in tree_flatten(backend.model.parameters()) if not mx.array_equal(v, before[k]).item()]
     assert changed and all("q_proj.lora_" in k for k in changed)
 

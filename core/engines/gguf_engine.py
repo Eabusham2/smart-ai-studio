@@ -199,6 +199,8 @@ class GGUFReasoningBackend:
             )
             if getattr(self, "learning_implementation", None) == "legacy":
                 return trainer.can_prepare_legacy()
+            if getattr(self, "learning_implementation", None) == "hybrid":
+                return trainer.can_prepare(hybrid=True)
             return bool(trainer.can_prepare())
         except Exception:
             return False

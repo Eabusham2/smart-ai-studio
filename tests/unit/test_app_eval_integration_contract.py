@@ -70,7 +70,7 @@ def test_eval_state_is_isolated_but_native_runtime_cache_remains_shared():
 
 
 @pytest.mark.parametrize("resume", [False, True])
-@pytest.mark.parametrize("implementation", [None, "legacy", "managed"])
+@pytest.mark.parametrize("implementation", [None, "legacy", "managed", "hybrid"])
 def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, request, resume, implementation):
     from config.settings import Settings
     from core import pro_engine
@@ -103,6 +103,8 @@ def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, r
     state_root = export.parent / "learned_memory"
     if implementation == "legacy":
         state_root /= "legacy-implementation"
+    elif implementation == "hybrid":
+        state_root /= "hybrid-implementation"
     run_store = LearningStateStore(identity, state_root=state_root)
     if resume:
         commit(run_store, b"eval-resume-weights")

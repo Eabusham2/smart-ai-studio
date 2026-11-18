@@ -47,7 +47,7 @@ def test_original_algorithm_bodies_match_pre_merge_version(path, name, expected)
 def test_settings_restore_original_defaults(monkeypatch):
     monkeypatch.delenv("BEST_WORK_PASSES", raising=False)
     monkeypatch.delenv("LEARNING_IMPLEMENTATION", raising=False)
-    settings = Settings()
+    settings = Settings(learning_implementation="legacy")
     assert settings.best_work_passes == 1
     assert settings.learning_implementation == "legacy"
 

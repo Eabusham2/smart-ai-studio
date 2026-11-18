@@ -1,4 +1,4 @@
-"""The default desktop Sleep control still runs the original standalone EWC daemon."""
+"""The original desktop Sleep choice still runs the standalone EWC daemon."""
 
 from collections import defaultdict
 from types import SimpleNamespace
@@ -10,7 +10,7 @@ from memory.db import EpisodicMemoryDB
 
 
 def test_original_sleep_action_uses_daemon_and_stale_dialog_cannot_start_it(tmp_path, monkeypatch):
-    settings = Settings(database_path=str(tmp_path / "episodes.sqlite3"), use_mock=True)
+    settings = Settings(database_path=str(tmp_path / "episodes.sqlite3"), use_mock=True, learning_implementation="legacy")
     assert settings.learning_implementation == "legacy"
     db = EpisodicMemoryDB(db_path=settings.database_path)
     episode_ids = [db.log_interaction(f"prompt-{i}", "answer", verified_reward=1, surprise_score=0.7)

@@ -1,5 +1,7 @@
 # Original and managed implementations
 
+> **Current default:** A third **hybrid** choice now starts by default, and **Pro branches** starts enabled. The original and managed implementations described below remain separately selectable. The earlier default values in this restoration record describe the preceding update; [Hybrid learning](hybrid-learning.md) documents the current selection and how it combines the two paths.
+
 Studio restores the original algorithms from commit `d3cead010685a04c95e97b2469c07fa3de627156`, before PR #17, as working implementations alongside the persistent-learning features. **The default is `legacy` learning and one Best Work pass.** Selecting a new feature no longer requires replacing the original implementation.
 
 ## Choose the behavior

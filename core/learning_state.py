@@ -553,6 +553,24 @@ class LearningTransaction:
             self.abort()
 
 
+IMPLEMENTATION_DIRECTORIES = {"legacy": "legacy-implementation", "hybrid": "hybrid-implementation"}
+
+
+def implementation_state_root(base_root, mode):
+    directory = IMPLEMENTATION_DIRECTORIES.get(mode)
+    return base_root / directory if directory else base_root
+
+
+def check_hybrid_store(store, mode):
+    """Require a mode switch before crossing the hybrid checkpoint namespace."""
+    if store is None:
+        return
+    base = getattr(store, "implementation_base_root", None)
+    hybrid_store = base is not None and store.root == implementation_state_root(base, "hybrid")
+    if (mode == "hybrid") != hybrid_store:
+        raise ValueError("Switch the loaded learning implementation before crossing the hybrid checkpoint namespace")
+
+
 def bind_learning_state(backend, *, model_path=None, model_info=None, state_root=None, adapter_format="mlx", scope=None) -> LearningStateStore:
     root = _state_root(state_root)
     existing = getattr(backend, "learning_state", None)
@@ -561,8 +579,7 @@ def bind_learning_state(backend, *, model_path=None, model_info=None, state_root
     if isinstance(existing, LearningStateStore) and root == existing.root:
         root = getattr(existing, "implementation_base_root", root)
     base_root = root
-    if getattr(backend, "learning_implementation", None) == "legacy":
-        root = root / "legacy-implementation"
+    root = implementation_state_root(base_root, getattr(backend, "learning_implementation", None))
     identity = model_identity(
         model_path or getattr(backend, "model_path", None) or getattr(backend, "hf_repo_id", None),
         model_info if model_info is not None else getattr(backend, "model_info", None),

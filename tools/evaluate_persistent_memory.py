@@ -93,7 +93,7 @@ def _load_engine(job, target):
     state_directory = os.environ.get("SMARTAI_DATA_DIR")
     if not state_directory:
         raise RuntimeError("The evaluation worker requires an isolated state directory")
-    settings = get_settings(backend="mlx", learning_implementation="managed", use_mock=False, live_mode=True, auto_download=False,
+    settings = get_settings(backend="mlx", learning_implementation=job.get("learning_implementation", "managed"), use_mock=False, live_mode=True, auto_download=False,
                             lora_adapter_path=None,
                             database_path=str(Path(state_directory) / "evaluation.sqlite3"))
     engine = ProReasoningEngine(settings=settings)
@@ -137,6 +137,7 @@ def worker(job_path: Path, target: str, stage: str, cycle: int, output: Path):
     engine = _load_engine(job, target)
     start = time.monotonic()
     result = {"target": target, "stage": stage, "cycle": cycle, "pid": os.getpid(),
+              "learning_implementation": job.get("learning_implementation", "managed"),
               "runtime": getattr(engine.mlx_backend, "_vlm_runtime", None), "model": TARGETS[target]["repo_id"]}
     try:
         backend = engine.mlx_backend
@@ -242,6 +243,7 @@ def evaluate_target(job_file, target, cycles, minimum_accuracy):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=[*TARGETS, "both"], default="both")
+    parser.add_argument("--learning-implementation", choices=("managed", "hybrid"), default="managed")
     parser.add_argument("--bonsai-path")
     parser.add_argument("--crack-path")
     parser.add_argument("--allow-download", action="store_true", help="Allow downloading missing selected snapshots")
@@ -267,6 +269,7 @@ def main():
     directory = Path(args.output_dir).resolve() / uuid4().hex
     directory.mkdir(parents=True)
     job = {"facts": make_facts(args.seed, args.cycles, args.facts_per_cycle), "seed": args.seed,
+           "learning_implementation": args.learning_implementation,
            "answer_tokens": args.answer_tokens, "context_tokens": args.context_tokens,
            "allow_download": args.allow_download,
            "paths": {key: str(Path(value).expanduser().resolve()) if value else None

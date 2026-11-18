@@ -40,6 +40,8 @@ def parser():
     result.add_argument("--model-path", required=True, help="Existing local model directory or native artifact")
     result.add_argument("--model-name", default="Local online-learning model")
     result.add_argument("--backend", choices=("mlx", "torch", "cpu", "cuda", "mps", "gguf", "bitnet", "controller"), required=True)
+    result.add_argument("--learning-implementation", choices=("managed", "hybrid"), default="managed",
+                        help="Persistent task implementation; the existing CLI default stays managed")
     result.add_argument("--target", choices=("bonsai2", "bonsai2-crack"))
     result.add_argument("--model-info", help="Optional local JSON with exact runtime and training-parent metadata")
     result.add_argument("--scope", choices=("model", "session", "project"), default="model")
@@ -84,7 +86,7 @@ def main(argv=None):
         if not isinstance(supplied, dict):
             raise ValueError("Model metadata must be an object")
         info.update(supplied)
-    settings_options = dict(backend=args.backend, learning_implementation="managed", use_mock=False, live_mode=True,
+    settings_options = dict(backend=args.backend, learning_implementation=args.learning_implementation, use_mock=False, live_mode=True,
                             auto_download=False, lora_adapter_path=None)
     if args.state_dir:
         settings_options["database_path"] = str(Path(os.environ["SMARTAI_DATA_DIR"]) / "learning.sqlite3")

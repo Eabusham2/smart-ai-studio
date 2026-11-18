@@ -437,7 +437,7 @@ def stream_best_work(controller, prompt, history=None, cancel_event=None,
         # list-history implementation side by side.
         if isinstance(history, (ChatArchive, ActiveChatHistory)):
             service = getattr(controller.app.engine, "awake_consolidator", None)
-            if getattr(service, "learning_implementation", None) == "managed":
+            if getattr(service, "learning_implementation", None) in {"managed", "hybrid"}:
                 yield from stream_best_work_sequential(
                     controller, prompt, history, cancel_event, progress_callback,
                     status_callback, max_tool_calls, route_with_history, passes)

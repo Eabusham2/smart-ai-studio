@@ -743,6 +743,8 @@ class PrismSpeculativeReasoningBackend:
         from core.gguf_lora_trainer import GGUFLoRATrainer
         trainer = GGUFLoRATrainer(model_path=self.model_path, base_model_id=self.training_base_model_id,
                                   adapter_root=self.adapter_root, memory_limit_gb=self.memory_limit_gb)
+        if getattr(self, "learning_implementation", None) == "hybrid":
+            return trainer.can_prepare(hybrid=True)
         return trainer.can_prepare()
 
     def can_train(self) -> bool:

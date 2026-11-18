@@ -47,9 +47,10 @@ def show_online_learning(app):
     implementation_bar.pack(fill="x", pady=(0, 8))
     implementation_var = tk.StringVar(value=getattr(app.settings, "learning_implementation", "legacy"))
     ttk.Label(implementation_bar, text="Learning implementation:").pack(side="left")
-    ttk.Combobox(implementation_bar, textvariable=implementation_var, values=("legacy", "managed"),
+    ttk.Combobox(implementation_bar, textvariable=implementation_var, values=("legacy", "managed", "hybrid"),
                  width=12, state="readonly").pack(side="left", padx=5)
-    ttk.Label(frame, text="legacy: original Awake/Learn/RSI and Sleep daemon. managed: persistent context learning.\n"
+    ttk.Label(frame, text="legacy: original learning. managed: persistent context learning.\n"
+              "hybrid: original updates with persistent memory and validation.\n"
               "Changing implementation reloads a resident model. Each implementation keeps its own saved weights and chat.",
               wraplength=810, justify="left").pack(anchor="w", pady=(0, 8))
 
@@ -136,7 +137,7 @@ def show_online_learning(app):
                 result = operation()
                 events.put(("done", (result, changed_scope, changed_implementation)))
             except Exception as error:
-                events.put(("done", ({"status": "error", "error": str(error)}, False, False)))
+                events.put(("done", ({"status": "error", "error": str(error)}, changed_scope, changed_implementation)))
 
         def drain():
             nonlocal running
@@ -157,17 +158,24 @@ def show_online_learning(app):
                     implementation_button.configure(state="normal")
                     log(json.dumps(result, ensure_ascii=False, indent=2, default=str))
                     app.is_model_loaded = bool(app.engine.is_model_loaded)
-                    if implementation_changed and result.get("status") not in {"error", "unchanged"}:
+                    if implementation_changed:
+                        implementation_var.set(app.settings.learning_implementation)
+                        selected_scope = app.engine.learning_scope
+                        scope_var.set(selected_scope.kind if selected_scope.kind in {"model", "session", "project"} else "model")
+                        key_var.set(selected_scope.key if selected_scope.kind in {"session", "project"} else "")
+                    if implementation_changed and result.get("status") in {"loaded", "selected"}:
                         from core.memory_preferences import save_learning_implementation
                         try:
-                            save_learning_implementation(app.settings.database_path, result["learning_implementation"])
+                            save_learning_implementation(app.settings.database_path, result["learning_implementation"],
+                                                         scope=selected_scope)
                         except (ValueError, OSError, sqlite3.Error) as error:
                             log(f"Implementation changed, but its startup selection could not be saved: {error}")
                         app._learning_implementation_changed(result["previous_implementation"])
-                    if scope_changed and result.get("status") != "error":
+                    if scope_changed and result.get("status") in {"loaded", "selected", "unchanged"}:
                         from core.memory_preferences import save_memory_preference
                         try:
-                            save_memory_preference(app.settings.database_path, app.engine.learning_scope)
+                            save_memory_preference(app.settings.database_path, app.engine.learning_scope,
+                                                   implementation=app.settings.learning_implementation)
                         except (ValueError, OSError, sqlite3.Error) as error:
                             log(f"Memory changed, but its startup selection could not be saved: {error}")
                         for tab in app.chat_history:
@@ -211,8 +219,12 @@ def show_online_learning(app):
     run_button.pack(side="left")
     def apply_implementation():
         selected = implementation_var.get()
-        start(lambda: app.engine.set_learning_implementation(selected, cancel_event=app.cancel_event),
-              changed_implementation=True)
+        def switch():
+            from core.memory_preferences import load_memory_preference
+            preferred = load_memory_preference(app.settings.database_path, implementation=selected)
+            return app.engine.set_learning_implementation(selected, cancel_event=app.cancel_event,
+                                                          preferred_scope=preferred)
+        start(switch, changed_implementation=True)
 
     implementation_button = ttk.Button(implementation_bar, text="Apply implementation", command=apply_implementation)
     implementation_button.pack(side="right")

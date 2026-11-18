@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import threading
 from copy import copy
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -24,7 +25,7 @@ from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
 from core.learning_sources import extract_learning_text, iter_attachment_positions, iter_learning_files, learning_media_kinds, source_snapshot
 from core.test_time_learning import OnlineLearning
-from core.online_consolidator import ManagedAwakeOnlineConsolidator
+from core.online_consolidator import HybridAwakeOnlineConsolidator, ManagedAwakeOnlineConsolidator
 from core.learning_implementation import get_learning_implementation, learning_mode_kwargs
 from core.training_memory import backend_label, process_rss_mb
 from core.training_memory import release_training_memory_on_owner as release_training_memory
@@ -34,6 +35,7 @@ from memory.db import EpisodicMemoryDB
 
 class ManagedAutonomousLearner:
     learning_implementation = "managed"
+    consolidator_class = ManagedAwakeOnlineConsolidator
 
     def __init__(
         self,
@@ -59,7 +61,7 @@ class ManagedAutonomousLearner:
     def _source_blob(cls, research: Optional[Dict[str, Any]]) -> str:
         if not research:
             return ""
-        if cls.learning_implementation == "managed" and research.get("selected_source_text"):
+        if cls.learning_implementation != "legacy" and research.get("selected_source_text"):
             return str(research["selected_source_text"])
         parts = []
         for key in ("source_text", "crawl_report", "search_report"):
@@ -330,14 +332,14 @@ class ManagedAutonomousLearner:
 
         claim = str(obj.get("claim", "")).strip()
         evidence = str(obj.get("evidence", "")).strip()
-        passed = bool(claim and len(evidence) >= 12 and self._evidence_matches(evidence, source))
-        if not passed:
+        witness = self._source_witness(evidence, source) if claim and len(evidence) >= 12 else ""
+        if not witness:
             return False, "✗ Source verification failed: evidence was not a verbatim source span.", 0.0
 
-        self._verified_lesson = (topic, synthesis, evidence)
+        self._verified_lesson = (topic, synthesis, witness)
         return (
             True,
-            f"✓ Source-grounded verification passed ({len(evidence)} evidence characters matched verbatim).",
+            f"✓ Source-grounded verification passed ({len(witness)} evidence characters matched verbatim).",
             1.0,
         )
 
@@ -345,14 +347,18 @@ class ManagedAutonomousLearner:
     def _evidence_matches(evidence, source):
         return evidence in source
 
+    def _source_witness(self, evidence, source):
+        return evidence if self._evidence_matches(evidence, source) else ""
+
     def _consolidation_service(self):
         backend = self._require_live_trainable_backend()
         service = getattr(self.engine, "awake_consolidator", None)
         if service is None:
-            service = ManagedAwakeOnlineConsolidator(backend, lambda_ewc=float(self.settings.ewc_lambda))
+            service = self.consolidator_class(backend, lambda_ewc=float(self.settings.ewc_lambda))
             self.engine.awake_consolidator = service
-        if getattr(service, "learning_implementation", None) == "legacy":
-            raise RuntimeError("Load the managed learning implementation before starting a managed lesson")
+        expected = self.consolidator_class.learning_implementation
+        if getattr(service, "learning_implementation", "managed") != expected:
+            raise RuntimeError(f"Load the {expected} learning implementation before starting a {expected} lesson")
         if service.engine is not backend:
             raise RuntimeError("The loaded model changed before learning could begin")
         return service
@@ -682,6 +688,59 @@ class LegacyAutonomousLearner(ManagedAutonomousLearner):
         )
 
 
+class HybridAutonomousLearner(ManagedAutonomousLearner):
+    """Verify original-style lessons and commit them through the hybrid checkpoint trainer."""
+
+    learning_implementation = "hybrid"
+    consolidator_class = HybridAwakeOnlineConsolidator
+
+    def __init__(self, engine=None, tools=None, db=None, settings=None):
+        super().__init__(engine=engine, tools=tools, db=db, settings=settings)
+        self._lesson_lock = threading.RLock()
+
+    def self_test_and_verify(self, topic, research=None, synthesis=None):
+        with self._lesson_lock:
+            return super().self_test_and_verify(topic, research, synthesis)
+
+    def _lesson_source(self, research, topic):
+        # Preserve a full original-size excerpt when it fits. For larger reports
+        # the managed selector searches the entire source, including its suffix.
+        source = self._source_blob(research)
+        if research.get("source_path") or len(source) <= 16000:
+            return source[:16000]
+        return super()._lesson_source(research, topic)
+
+    def _source_witness(self, evidence, source):
+        if evidence in source:
+            return evidence
+        # Case folding can expand one character, e.g. ß -> ss. Only accept full
+        # original character boundaries, and store the actual quoted source text.
+        needle = evidence.casefold()
+        folded = source.casefold()
+        start = folded.find(needle)
+        if start == -1:
+            return ""
+        boundaries = {0: 0}
+        offset = 0
+        for index, char in enumerate(source, 1):
+            offset += len(char.casefold())
+            boundaries[offset] = index
+        while start != -1:
+            end = start + len(needle)
+            if start in boundaries and end in boundaries and boundaries[end] - boundaries[start] >= 12:
+                return source[boundaries[start]:boundaries[end]]
+            start = folded.find(needle, start + 1)
+        return ""
+
+    def consolidate_parameters(self, topic, completion_text, reward=1.0, *, cancel_event=None):
+        with self._lesson_lock:
+            witness = self._verified_lesson
+            if (not math.isfinite(reward) or reward < 1.0
+                    or witness is None or witness[:2] != (topic, completion_text)):
+                return {"status": "skipped", "reason": "Learning trace was not source-verified.", "parameter_drift_l2": 0.0}
+            return super().consolidate_parameters(topic, completion_text, 1.0, cancel_event=cancel_event)
+
+
 AutonomousLearner = LegacyAutonomousLearner
 
 
@@ -689,5 +748,6 @@ def make_autonomous_learner(engine=None, tools=None, db=None, settings=None, *, 
     settings = settings or getattr(engine, "settings", None) or get_settings()
     selected = get_learning_implementation(implementation if implementation is not None
                                            else getattr(settings, "learning_implementation", None))
-    cls = ManagedAutonomousLearner if selected == "managed" else LegacyAutonomousLearner
+    classes = {"legacy": LegacyAutonomousLearner, "managed": ManagedAutonomousLearner, "hybrid": HybridAutonomousLearner}
+    cls = classes[selected]
     return cls(engine=engine, tools=tools, db=db, settings=settings)

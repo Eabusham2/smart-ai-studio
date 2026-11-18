@@ -10,6 +10,7 @@ import ast
 import os
 import re
 import sys
+import threading
 import tempfile
 from pathlib import Path
 from core.training_memory import release_training_memory
@@ -36,6 +37,7 @@ class BitNetRebuildTrainer(LegacyCompletionTrainer):
         self.training_source = None
         self.cancel_event = None
         self._legacy_training = False
+        self._train_lock = threading.RLock()
         self.quantization = None
         self.peft_dir = self.deploy_root / "peft"
         self.learned_model_path = self.deploy_root / "learned-i2_s.gguf"
@@ -355,15 +357,17 @@ class BitNetRebuildTrainer(LegacyCompletionTrainer):
         if "fisher_matrix" in options or "lambda_ewc" in options:
             if learning_mode == "legacy":
                 raise ValueError("Standalone Fisher regularization requires the managed learning mode")
-            learning_mode = learning_mode or "managed"
+            if learning_mode is None and getattr(self, "learning_implementation", None) != "hybrid":
+                learning_mode = "managed"
         routing = options
         if learning_mode == "legacy":
             # A serving backend stages even historical updates before hot-reload.
             routing = {key: value for key, value in options.items()
                        if key not in {"output_directory", "previous_peft", "cancel_event"}}
         mode = resolve_learning_mode(self, learning_mode, routing)
-        return self._train(data, learning_mode=mode, learning_rate=learning_rate, steps=steps,
-                           max_length=max_length, **options)
+        with self._train_lock:
+            return self._train(data, learning_mode=mode, learning_rate=learning_rate, steps=steps,
+                               max_length=max_length, **options)
 
     def _train(
         self, data, *, learning_mode, output_directory=None, previous_peft=None, learning_rate=1e-4,
@@ -378,7 +382,8 @@ class BitNetRebuildTrainer(LegacyCompletionTrainer):
         if output_directory is None and self.quantization is None:
             self.quantization = "i2_s"  # Historical standalone rebuild format.
         destination = self.deploy_root / f"learned-{self.quantization}.gguf"
-        with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data, objective) as stage:
+        with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data,
+                                    objective, learning_mode=learning_mode) as stage:
             output, previous_peft, published, data = stage
             self.cancel_event = cancel_event
             self._legacy_training = learning_mode == "legacy"
@@ -397,6 +402,7 @@ class BitNetRebuildTrainer(LegacyCompletionTrainer):
                 else:
                     metrics, drift = update_lora(
                         model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
+                        hybrid_trainer=self if learning_mode == "hybrid" else None,
                         fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
                         previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
                         reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,

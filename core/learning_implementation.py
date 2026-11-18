@@ -14,8 +14,8 @@ _MANAGED_TRAINING_OPTIONS = {
 def get_learning_implementation(value=None):
     if value is None:
         return "legacy"
-    if value not in ("legacy", "managed"):
-        raise ValueError(f"Unknown learning implementation {value!r}. Choose 'legacy' or 'managed'.")
+    if value not in ("legacy", "managed", "hybrid"):
+        raise ValueError(f"Unknown learning implementation {value!r}. Choose 'legacy', 'managed' or 'hybrid'.")
     return value
 
 
@@ -28,7 +28,7 @@ def resolve_learning_mode(owner, explicit, kwargs):
             raise ValueError("These options require managed learning: " + ", ".join(sorted(requested)))
         return mode
     if requested:
-        return "managed"
+        return "hybrid" if getattr(owner, "learning_implementation", None) == "hybrid" else "managed"
     configured = getattr(owner, "learning_implementation", None)
     if configured is None and getattr(owner, "learning_state", None) is not None:
         return "managed"

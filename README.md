@@ -1,5 +1,7 @@
 <div align="center">
 
+> **Current defaults — Hybrid + Pro branches:** The third learning choice, **hybrid**, combines original update behavior with persistent memory, validation and context retirement. **Pro branches** starts enabled. The **legacy** and **managed** choices remain available with their separate saved states; Best Work still starts at one pass. This update supersedes the default selection described in the earlier restoration note below. See [Hybrid learning](docs/hybrid-learning.md).
+
 > **Original implementations restored:** Studio now starts with the original learning algorithms and one-pass Best Work. The newer persistent-learning mode and multiple sequential passes remain available through **Learning & saved memory… → Learning implementation → managed** and **Branches → Best Work passes**. See [Original and managed implementations](docs/original-and-managed-learning.md) for the behavior and checkpoint separation. Historical descriptions below of automatic managed learning or two default passes apply only when those features are selected.
 
 # 🧠 Smart AI Studio

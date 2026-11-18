@@ -78,7 +78,8 @@ def _verify_implementation(engine, mode, scope, runtime, binding, info):
     if store is None:
         return
     base_root = binding[1]
-    expected_root = base_root / "legacy-implementation" if mode == "legacy" else base_root
+    from core.learning_state import implementation_state_root
+    expected_root = implementation_state_root(base_root, mode)
     if store.scope != scope or store.root != expected_root:
         raise RuntimeError("The reloaded model identity, memory scope or storage root differs from the selection")
     current = store.current_checkpoint()
@@ -138,7 +139,7 @@ def install_memory_runtime(cls):
         self._memory_load_spec = None
         self._implementation_scopes = {}
         self._implementation_seeds = {}
-        self._managed_session_id = None
+        self._implementation_sessions = {}
         self._owned_request_stores = {}
         self._temporary_scope_depth = 0
         self.memory_auto_recall = True
@@ -225,8 +226,8 @@ def install_memory_runtime(cls):
             finally:
                 self._memory_routing_active = False
 
-    def set_implementation(self, implementation, *, cancel_event=None):
-        """Select the original or managed algorithm through the normal model loader."""
+    def set_implementation(self, implementation, *, cancel_event=None, preferred_scope=None):
+        """Reload the selected model with its implementation-specific scope and learned weights."""
         from core.learning_implementation import get_learning_implementation
         from core.online_consolidator import make_online_consolidator
         selected = get_learning_implementation(implementation)
@@ -266,13 +267,16 @@ def install_memory_runtime(cls):
                 _verify_implementation(self, previous, previous_scope, runtime, binding, info)
             previous_checkpoint = _live_checkpoint(backend) if loaded else None
             remember_seed = bool(previous_checkpoint and store is not None and not store.current_checkpoint())
-            selected_scope = (self._implementation_scopes.get(model_key, LearningScope())
-                              if selected == "managed" else LearningScope())
+            preferred = as_scope(preferred_scope)
+            if preferred.kind not in {"model", "session", "project"}:
+                raise ValueError("A preferred memory scope must be model, session or project")
+            selected_scope = (self._implementation_scopes.get((model_key, selected), preferred)
+                              if selected != "legacy" else LearningScope())
             replacement = make_online_consolidator(
                 None if loaded else backend, getattr(service, "db", None),
                 max_context=getattr(service, "max_context", 8192),
                 evict_ratio=getattr(service, "evict_ratio", .40), lambda_ewc=getattr(service, "lambda_ewc", 400.0),
-                session_id=self._managed_session_id, implementation=selected)
+                session_id=self._implementation_sessions.get((model_key, selected)), implementation=selected)
             replacement.watermark_tokens = getattr(service, "watermark_tokens", replacement.watermark_tokens)
             if loaded:
                 require_status(self.unload_model(), "unloaded", "The previous runtime could not unload")
@@ -327,9 +331,9 @@ def install_memory_runtime(cls):
                 if loaded:
                     self.lora_adapter_path = global_seed
                     self._model_load_cancelled = old_cancel
-            if previous == "managed":
-                self._implementation_scopes[model_key] = previous_scope
-                self._managed_session_id = getattr(service, "session_id", None)
+            if previous != "legacy":
+                self._implementation_scopes[(model_key, previous)] = previous_scope
+                self._implementation_sessions[(model_key, previous)] = getattr(service, "session_id", None)
             seed_key = model_key, previous, previous_scope
             if remember_seed:
                 # Return to the caller's explicitly selected, uncommitted raw adapter.

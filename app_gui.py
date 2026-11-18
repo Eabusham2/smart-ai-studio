@@ -597,8 +597,9 @@ class SmartAIChatbotApp:
         # No model is resident yet. The ordinary loader will bind this saved
         # namespace before looking up any learned generation.
         try:
-            if getattr(self.settings, "learning_implementation", "legacy") == "managed":
-                self.engine.learning_scope = load_memory_preference(self.settings.database_path)
+            if getattr(self.settings, "learning_implementation", "legacy") in {"managed", "hybrid"}:
+                self.engine.learning_scope = load_memory_preference(
+                    self.settings.database_path, implementation=self.settings.learning_implementation)
         except (ValueError, OSError, sqlite3.Error) as error:
             print(f"Saved memory selection could not be read: {error}")
         self.audio_engine = AudioGenerationEngine()
@@ -1501,7 +1502,7 @@ class SmartAIChatbotApp:
         self.btn_branch_vis.pack(side="left", padx=2)
 
         # Single user control; the original entropy router chooses N=1/8/16.
-        self.pro_branches_var = tk.BooleanVar(value=False)
+        self.pro_branches_var = tk.BooleanVar(value=True)
         self.chk_pro_branches = tk.Checkbutton(
             right_box, text="Pro branches", variable=self.pro_branches_var,
             font=_FONT_TINY_BOLD, bg=self.C["bg_hud"], fg=self.C["btn_fg"],
@@ -3909,10 +3910,13 @@ class SmartAIChatbotApp:
         self._show_transcript_page()
 
     def _open_tab_history(self, tab, cached=None):
-        if (getattr(self.settings, "learning_implementation", "legacy") == "managed"
+        implementation = getattr(self.settings, "learning_implementation", "legacy")
+        if (implementation in {"managed", "hybrid"}
                 and self.models_config[tab].get("model_type", "text") == "text"):
             scope = getattr(self.engine, "learning_scope", None)
             key = tab if scope is None or scope.kind == "model" else f"{tab}:scope:{scope.scope_id}"
+            if implementation == "hybrid":
+                key = f"hybrid:{key}"
             if isinstance(cached, ChatArchive) and cached.path == self.settings.database_path and cached.tab == key:
                 return cached
             return ChatArchive(self.settings.database_path, key)
@@ -6212,7 +6216,7 @@ assert glyph_res["invariants_passed"] == True
         service = getattr(self.engine, "awake_consolidator", None)
         mode = getattr(getattr(self, "settings", None), "learning_implementation",
                        getattr(service, "learning_implementation", "legacy"))
-        if mode == "managed":
+        if mode in {"managed", "hybrid"}:
             return SmartAIChatbotApp._on_open_managed_sleep_consolidation_panel(self)
         return SmartAIChatbotApp._on_open_legacy_sleep_consolidation_panel(self)
 

@@ -9,6 +9,7 @@ from functools import lru_cache
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 from core.training_memory import release_training_memory
 from core.legacy_torch_learning import LegacyCompletionTrainer, set_legacy_padding_token, update_legacy_lora
@@ -133,6 +134,7 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
         self.gguf_adapter_path = os.path.join(self.adapter_root, "adapter.gguf")
         self.cancel_event = None
         self._legacy_training = False
+        self._train_lock = threading.RLock()
         self.memory_limit_gb = memory_limit_gb
         self.rank = int(rank)
         self.alpha = int(alpha)
@@ -171,12 +173,12 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
         except Exception:
             return False
 
-    def _training_budgets(self, torch, legacy):
+    def _training_budgets(self, torch, include_xpu):
         from core.transformers_placement import transformers_memory_limits
 
         budgets = transformers_memory_limits(torch, self.memory_limit_gb)
         xpu = getattr(torch, "xpu", None)
-        if legacy and not torch.cuda.is_available() and xpu is not None and xpu.is_available():
+        if include_xpu and not torch.cuda.is_available() and xpu is not None and xpu.is_available():
             # The pre-PR QLoRA loader let Accelerate place weights on Intel
             # accelerators. Measure each device before admitting a training graph.
             for index in range(xpu.device_count()):
@@ -189,7 +191,7 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
                     budgets[f"xpu:{index}"] = usable
         return budgets
 
-    def _training_placement(self, source, *, legacy=None):
+    def _training_placement(self, source, *, legacy=None, hybrid=False):
         import torch
 
         weights = list(Path(source).glob("*.safetensors")) or list(Path(source).glob("pytorch_model*.bin"))
@@ -198,16 +200,16 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
             raise RuntimeError("The selected training parent contains no weight data")
         if legacy is None:
             legacy = self._legacy_training
-        budgets = self._training_budgets(torch, legacy)
+        budgets = self._training_budgets(torch, legacy or hybrid)
         # Prefer a resident CPU or Metal parent whenever it fits. A published
         # device tag alone does not establish support for a GQA projection's
         # width, double quantization, or the backward kernel on this machine.
         rejected = []
-        prefer_nf4 = legacy and self._training_backend_available()
+        extended_nf4 = (legacy or hybrid) and self._training_backend_available()
         accelerators = {device: size for device, size in budgets.items()
                         if isinstance(device, int) or str(device).startswith("xpu:")}
         required = weight_bytes * 0.6 + 512 * 1024**2
-        if prefer_nf4 and len(accelerators) > 1 and sum(accelerators.values()) > required:
+        if extended_nf4 and len(accelerators) > 1 and sum(accelerators.values()) > required:
             # The original QLoRA loader used Accelerate's auto map. Preserve
             # sharded training without claiming an untested NF4 device.
             try:
@@ -220,7 +222,7 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
         for device in sorted(budgets, key=lambda d: d == "cpu"):
             available = budgets[device]
             resident = available > weight_bytes * 2 + 512 * 1024**2
-            if device in {"cpu", "mps"} and resident and not prefer_nf4:
+            if device in {"cpu", "mps"} and resident and not (legacy and extended_nf4):
                 return device, "resident"
             if available > required:
                 try:
@@ -236,14 +238,14 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
             reason += ". NF4 unavailable (" + ", ".join(rejected) + ")"
         raise RuntimeError(reason)
 
-    def can_prepare(self, *, legacy=False) -> bool:
+    def can_prepare(self, *, legacy=False, hybrid=False) -> bool:
         if not os.path.isfile(self.model_path) or not self.base_model_id:
             return False
         try:
             import transformers  # noqa: F401
             import peft  # noqa: F401
             source = local_training_parent(self.base_model_id)
-            self._training_placement(source, legacy=legacy)
+            self._training_placement(source, legacy=legacy, hybrid=hybrid)
         except Exception:
             return False
         return bool(shutil.which("git") or (Path(os.getenv("LLAMA_CPP_DIR", "")) / "convert_lora_to_gguf.py").is_file())
@@ -291,16 +293,19 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
 
         return target_modules
 
-    def _load_trainable_model(self):
+    def _load_trainable_model(self, *, hybrid=False):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
         source = self.training_source or local_training_parent(self.base_model_id)
-        device, self.training_mode = self._training_placement(source)
+        if hybrid:
+            device, self.training_mode = self._training_placement(source, hybrid=True)
+        else:
+            device, self.training_mode = self._training_placement(source)
         options = {"device_map": {"": device}, "torch_dtype": "auto"}
         if device == "auto":
-            budgets = self._training_budgets(torch, self._legacy_training)
+            budgets = self._training_budgets(torch, self._legacy_training or hybrid)
             # Accelerate accepts integer indices for accelerator memory caps.
             limits = {int(d.split(":")[1]) if isinstance(d, str) and d.startswith("xpu:") else d: size
                       for d, size in budgets.items()}
@@ -383,15 +388,17 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
         if "fisher_matrix" in options or "lambda_ewc" in options:
             if learning_mode == "legacy":
                 raise ValueError("Standalone Fisher regularization requires the managed learning mode")
-            learning_mode = learning_mode or "managed"
+            if learning_mode is None and getattr(self, "learning_implementation", None) != "hybrid":
+                learning_mode = "managed"
         routing = options
         if learning_mode == "legacy":
             # A serving backend stages even historical updates before hot-reload.
             routing = {key: value for key, value in options.items()
                        if key not in {"output_directory", "previous_peft", "cancel_event"}}
         mode = resolve_learning_mode(self, learning_mode, routing)
-        return self._train(data, learning_mode=mode, learning_rate=learning_rate, steps=steps,
-                           max_length=max_length, **options)
+        with self._train_lock:
+            return self._train(data, learning_mode=mode, learning_rate=learning_rate, steps=steps,
+                               max_length=max_length, **options)
 
     def _train(
         self, data, *, learning_mode, output_directory=None, previous_peft=None, learning_rate=1e-4,
@@ -404,7 +411,8 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
         from core.native_context_learning import native_training_output
 
         destination = Path(self.gguf_adapter_path)
-        with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data, objective) as stage:
+        with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data,
+                                    objective, learning_mode=learning_mode) as stage:
             output, previous_peft, published, data = stage
             self.cancel_event = cancel_event
             self._legacy_training = learning_mode == "legacy"
@@ -413,7 +421,10 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
                 raise RuntimeError("The active deployment is missing its cumulative PEFT checkpoint")
             self.peft_dir = previous_peft or peft_path
             check_cancelled(cancel_event)
-            model, tokenizer = self._load_trainable_model()
+            if learning_mode == "hybrid":
+                model, tokenizer = self._load_trainable_model(hybrid=True)
+            else:
+                model, tokenizer = self._load_trainable_model()
             try:
                 if learning_mode == "legacy":
                     metrics, drift = update_legacy_lora(
@@ -423,6 +434,7 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
                 else:
                     metrics, drift = update_lora(
                         model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
+                        hybrid_trainer=self if learning_mode == "hybrid" else None,
                         fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
                         previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
                         reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,

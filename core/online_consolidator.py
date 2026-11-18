@@ -692,7 +692,8 @@ class ManagedAwakeOnlineConsolidator:
             check_cancel()
             return {"accepted": True, **metrics}
 
-        metadata = {"update_id": update_id, "mode": mode, "memory": new_memory,
+        implementation_metadata = {"learning_implementation": "hybrid"} if self.learning_implementation == "hybrid" else {}
+        metadata = {**implementation_metadata, "update_id": update_id, "mode": mode, "memory": new_memory,
                     "expected_parent": (manifest or {}).get("generation")}
         if objective == "reward_policy":
             from core.reward_adaptation import rollout_audit
@@ -733,7 +734,7 @@ class ManagedAwakeOnlineConsolidator:
                 lambda_ewc=strength, anchor_texts=fisher_anchors,
                 learning_rate=learning_rate, steps=steps, cancel_event=cancel_event,
                 validation_callback=validate, learning_metadata=metadata, **options,
-                **learning_mode_kwargs(backend.train_mini_batch, "managed"),
+                **learning_mode_kwargs(backend.train_mini_batch, self.learning_implementation),
             )
             # Backends check finite drift and verify persisted native tensors before
             # publishing. Verify that this exact transaction became durable.
@@ -757,7 +758,8 @@ class ManagedAwakeOnlineConsolidator:
         if not touched and isinstance(updated, dict):
             touched = int(updated.get("trainable_parameters_touched", 0))
         checkpoint = Path(store.directory) / "generations" / committed["generation"] / committed["checkpoint"]
-        return {"status": "success", "mode": mode, "generation": committed["generation"],
+        hybrid_metrics = ("training_algorithm", "optimizer_steps") if self.learning_implementation == "hybrid" else ()
+        return {**implementation_metadata, "status": "success", "mode": mode, "generation": committed["generation"],
                 "objective": objective, "identity_digest": store.identity_digest, "scope": store.scope.record, "memories_consolidated": len(pairs),
                 "parameter_drift_l2": drift, "trainable_parameters_touched": touched,
                 "trainable_parameters_m": touched / 1_000_000, "ram_before_mb": ram,
@@ -766,8 +768,22 @@ class ManagedAwakeOnlineConsolidator:
                 "training_metrics": {k: backend_metrics[k] for k in (
                     "training_windows", "trained_windows", "supervised_tokens", "optimizer_resumed",
                     "updated_projection", "kv_prefills", "cached_context_tokens", "group_size",
-                    "adapter_target") if k in backend_metrics},
+                    "adapter_target", *hybrid_metrics) if k in backend_metrics},
                 "adapter_saved_to": str(checkpoint), "execution_time_seconds": time.monotonic() - start, **metrics}
+
+
+class HybridAwakeOnlineConsolidator(ManagedAwakeOnlineConsolidator):
+    """Run the selected backend's hybrid optimizer through one validated transaction."""
+
+    learning_implementation = "hybrid"
+
+    def _real_training_ready(self):
+        if not super()._real_training_ready():
+            return False
+        if not learning_mode_kwargs(self.engine.train_mini_batch, "hybrid"):
+            self.last_error = "The loaded trainer does not expose a hybrid learning implementation"
+            return False
+        return True
 
 
 # The original public constructor retains the original learning behavior.
@@ -778,6 +794,8 @@ def make_online_consolidator(mlx_engine, memory_db=None, max_context=8192, water
                              evict_ratio=0.40, lambda_ewc=400.0, *, session_id=None, implementation=None):
     """Construct the selected chat consolidation service for this model."""
     args = mlx_engine, memory_db, max_context, watermark, evict_ratio, lambda_ewc
-    if get_learning_implementation(implementation) == "managed":
-        return ManagedAwakeOnlineConsolidator(*args, session_id=session_id)
-    return LegacyAwakeOnlineConsolidator(*args)
+    selected = get_learning_implementation(implementation)
+    if selected == "legacy":
+        return LegacyAwakeOnlineConsolidator(*args)
+    cls = HybridAwakeOnlineConsolidator if selected == "hybrid" else ManagedAwakeOnlineConsolidator
+    return cls(*args, session_id=session_id)

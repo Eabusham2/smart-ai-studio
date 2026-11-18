@@ -220,11 +220,21 @@ def save_adamw(optimizer, named, directory):
     save_file(tensors, Path(directory) / _OPTIMIZER_FILE, metadata={"schema": _OPTIMIZER_SCHEMA})
 
 
+def backward_ewc(named, before, fisher, strength):
+    import torch
+    for name, diagonal_tensor in fisher.items():
+        p = named[name]
+        delta = p.float() - before[name].to(device=p.device, dtype=torch.float32)
+        importance = diagonal_tensor.to(device=p.device, dtype=torch.float32)
+        ((strength / 2) * (importance * delta.square()).sum()).backward()
+
+
 def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
                 fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, before=None, anchor_texts=None,
                 previous_directory=None, output_directory=None, objective='causal_lm',
                 supervise_prompt=True, row_weights=None, context_text=None, max_context_tokens=2048,
-                reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0):
+                reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
+                hybrid_trainer=None):
     """Optimize each source window, measure actual drift, leave the base frozen.
 
     Caller owns the live-tensor rollback snapshot for an in-process model. The
@@ -272,22 +282,37 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
         if not fisher:
             raise ValueError("Requested EWC has no positive diagonal Fisher importance")
 
+    method_metrics = {}
+    if hybrid_trainer is not None:
+        from core.legacy_torch_learning import completion_rows_fit, update_legacy_lora
+
+        original_rows = (objective == "causal_lm" and not supervise_prompt and row_weights is None
+                         and all(value == 1 for value in weights)
+                         and completion_rows_fit(hybrid_trainer, tokenizer, rows, limit, cancel_event))
+        if original_rows:
+            try:
+                metrics, drift = update_legacy_lora(
+                    model, tokenizer, rows, trainer=hybrid_trainer, learning_rate=rate,
+                    steps=steps, max_length=max_tokens, output_directory=output_directory, before=before,
+                    cancel_event=cancel_event, fisher=fisher, ewc_strength=strength,
+                )
+                metrics.update(learning_mode="hybrid", training_algorithm="original_completion_adamw",
+                               objective=objective, training_windows=len(rows),
+                               ewc_lambda=strength, ewc_used=bool(fisher), fisher_tensors=len(fisher))
+                return metrics, drift
+            finally:
+                model.eval()
+        algorithm = "managed_causal_windows" if objective == "causal_lm" else "managed_" + objective
+        method_metrics.update(learning_mode="hybrid", training_algorithm=algorithm)
+
     optimizer = torch.optim.AdamW(all_named.values(), lr=rate, weight_decay=0.0)
     resumed = restore_adamw(optimizer, all_named, previous_directory)
     windows = tokens = updates = 0
-    method_metrics = {}
     inactive = [p for name, p in all_named.items() if name not in named]
-
-    def penalize():
-        for name, diagonal_tensor in fisher.items():
-            p = named[name]
-            delta = p.float() - before[name].to(device=p.device, dtype=torch.float32)
-            importance = diagonal_tensor.to(device=p.device, dtype=torch.float32)
-            ((strength / 2) * (importance * delta.square()).sum()).backward()
 
     def step():
         nonlocal updates
-        penalize()
+        backward_ewc(named, before, fisher, strength)
         norm = torch.nn.utils.clip_grad_norm_(named.values(), max_norm=1.0, error_if_nonfinite=True)
         if objective != "causal_lm" and norm.item() == 0:
             if objective == "reward_policy" and updates:

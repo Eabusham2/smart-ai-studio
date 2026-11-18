@@ -51,7 +51,7 @@ def test_implementation_control_preserves_both_transcripts_and_original_default_
     show_online_learning(app)
     modal = next(child for child in app.root.winfo_children() if isinstance(child, tk.Toplevel))
     chooser = next(widget for widget in descendants(modal)
-                   if isinstance(widget, ttk.Combobox) and tuple(widget.cget("values")) == ("legacy", "managed"))
+                   if isinstance(widget, ttk.Combobox) and tuple(widget.cget("values")) == ("legacy", "managed", "hybrid"))
     apply = next(widget for widget in descendants(modal)
                  if isinstance(widget, ttk.Button) and widget.cget("text") == "Apply implementation")
 
@@ -83,6 +83,19 @@ def test_implementation_control_preserves_both_transcripts_and_original_default_
     select("legacy")
     assert app.chat_history[app.active_tab_id] is original
     assert original[0]["content"] == "Original conversation"
+    select("hybrid")
+    combined = app.chat_history[app.active_tab_id]
+    assert combined is not archived and list(combined) == []
+    assert combined.tab.startswith("hybrid:")
+    combined.append({"role": "user", "content": "Hybrid conversation"})
+    select("managed")
+    assert app.chat_history[app.active_tab_id] is archived
+    assert archived[0]["content"] == "Managed conversation"
+    select("legacy")
+    assert app.chat_history[app.active_tab_id] is original
+    select("hybrid")
+    assert app.chat_history[app.active_tab_id] is combined
+    assert combined[0]["content"] == "Hybrid conversation"
 
 
 def test_switching_models_in_legacy_reopens_managed_text_for_the_destination_scope(tmp_path, monkeypatch):
@@ -328,3 +341,60 @@ def test_legacy_recovery_cannot_follow_a_changed_model_or_scope(app, tmp_path, m
     app.models_config[tab] = dict(info, model_path=str(tmp_path / 'different-model'))
     button.invoke()
     assert len(notices) == 2 and not loads and app._pending_legacy_learning() is None
+
+
+def test_implementation_control_restores_its_scope_fields_and_keeps_both_startup_selections(app, monkeypatch):
+    from core.memory_preferences import (
+        load_learning_implementation, load_memory_preference, save_memory_preference,
+    )
+    from core.memory_scopes import LearningScope
+
+    # This hybrid preference was saved in another desktop session. The running
+    # engine has never entered hybrid and has no in-memory scope hint for it.
+    db = app.settings.database_path
+    managed, hybrid = LearningScope("project", "managed M"), LearningScope("session", "hybrid H")
+    save_memory_preference(db, hybrid, implementation="hybrid")
+    app.engine.load_model("fixture", backend="mock")
+    app.engine.awake_consolidator.engine = None  # A mock load has no resident MLX adapter to swap.
+    show_online_learning(app)
+    modal = next(child for child in app.root.winfo_children() if isinstance(child, tk.Toplevel))
+    controls = list(descendants(modal))
+    chooser = next(w for w in controls if isinstance(w, ttk.Combobox) and tuple(w.cget("values")) == ("legacy", "managed", "hybrid"))
+    scope = next(w for w in controls if isinstance(w, ttk.Combobox) and tuple(w.cget("values")) == ("model", "session", "project"))
+    key = next(w for w in controls if isinstance(w, ttk.Entry) and not isinstance(w, ttk.Combobox))
+
+    def apply(label):
+        next(w for w in controls if isinstance(w, ttk.Button) and w.cget("text") == label).invoke()
+        def poll():
+            if app.is_generating:
+                app.root.after(10, poll)
+            else:
+                app.root.quit()
+        app.root.after(10, poll)
+        timeout = app.root.after(3000, app.root.quit)
+        app.root.mainloop()
+        app.root.after_cancel(timeout)
+        assert not app.is_generating
+
+    scope.set(managed.kind)
+    key.insert(0, managed.key)
+    apply("Apply memory")
+    assert load_memory_preference(db) == managed, [w.get("1.0", "end") for w in controls if isinstance(w, tk.Text)]
+    for target, expected in (("hybrid", hybrid), ("legacy", LearningScope()), ("managed", managed)):
+        chooser.set(target)
+        apply("Apply implementation")
+        assert load_learning_implementation(db) == target
+        assert app.engine.learning_scope == expected
+        assert (scope.get(), key.get()) == (expected.kind, expected.key)
+    assert load_memory_preference(db, implementation=load_learning_implementation(db)) == managed
+    assert load_memory_preference(db, implementation="hybrid") == hybrid
+
+    def interrupted(*args, **kwargs):
+        raise InterruptedError("selection cancelled")
+
+    monkeypatch.setattr(app.engine, "set_learning_implementation", interrupted)
+    chooser.set("hybrid")
+    apply("Apply implementation")
+    assert chooser.get() == "managed" and load_learning_implementation(db) == "managed"
+    assert (scope.get(), key.get()) == (managed.kind, managed.key)
+    assert load_memory_preference(db, implementation="hybrid") == hybrid

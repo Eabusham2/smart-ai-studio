@@ -147,6 +147,19 @@ def _descendants(widget):
         yield from _descendants(child)
 
 
+def test_hybrid_and_pro_branches_are_on_by_default_without_changing_pass_count(work_app):
+    from core.online_consolidator import HybridAwakeOnlineConsolidator
+    app = work_app
+    assert app.settings.learning_implementation == "hybrid"
+    assert isinstance(app.engine.awake_consolidator, HybridAwakeOnlineConsolidator)
+    assert app.pro_branches_var.get() is True
+    assert app.settings.best_work_passes == 1
+    app.chk_pro_branches.invoke()
+    assert app.pro_branches_var.get() is False
+    app.chk_pro_branches.invoke()
+    assert app.pro_branches_var.get() is True
+
+
 def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(work_app):
     from tkinter import ttk
     app = work_app

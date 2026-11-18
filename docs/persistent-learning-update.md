@@ -1,5 +1,7 @@
 # Using persistent learning in Studio
 
+> **Hybrid update:** Studio now starts with **hybrid** learning and **Pro branches** enabled. Hybrid includes the persistent-memory workflows below and keeps its own weights and transcript. The explicit **managed** option remains available with its existing state. The original **legacy** option also remains available. The earlier restoration-default note below is retained as history. [Hybrid learning and current defaults](hybrid-learning.md)
+
 > **Current selection:** The steps below describe **managed** persistent learning. First open **Memory DB → Learning & saved memory…**, select **managed** under **Learning implementation**, and click **Apply implementation**. The application now defaults to the original **legacy** algorithms and **one** Best Work pass; choose two or more passes explicitly. Both implementations remain available. [Restoration and compatibility guide](original-and-managed-learning.md)
 
 Studio can carry information from an earlier conversation into a later one by saving changes to a model's adapter, a small set of trainable parameters. The chat archive keeps the original wording for reading and export. The model still has a finite **Context** window for the current instructions, active conversation and answer.

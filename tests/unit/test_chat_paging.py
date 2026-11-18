@@ -62,3 +62,28 @@ def test_gui_scope_preference_survives_restart_and_never_saves_request(tmp_path)
     with pytest.raises(ValueError, match="durable"):
         save_memory_preference(path, LearningScope.request())
     assert load_memory_preference(path) == selected
+
+
+def test_saving_gui_scope_and_implementation_restores_each_original_key_atomically(tmp_path):
+    from core.memory_preferences import (
+        load_learning_implementation, load_memory_preference, save_learning_implementation, save_memory_preference,
+    )
+    from core.memory_scopes import LearningScope
+
+    db = tmp_path / "scope.sqlite3"
+    managed = LearningScope("project", "managed project")
+    hybrid = LearningScope("session", "hybrid session")
+    save_memory_preference(db, managed)  # Simulate an existing pre-hybrid installation.
+    assert load_memory_preference(db, implementation="hybrid") == LearningScope()
+    save_learning_implementation(db, "hybrid", scope=hybrid)
+    assert load_memory_preference(db, implementation=load_learning_implementation(db)) == hybrid
+    assert load_memory_preference(db) == managed
+    save_learning_implementation(db, "managed", scope=managed)
+    assert load_memory_preference(db, implementation=load_learning_implementation(db)) == managed
+    assert load_memory_preference(db, implementation="hybrid") == hybrid
+    with pytest.raises(ValueError):
+        save_learning_implementation(db, "hybrid", scope=LearningScope.request())
+    assert load_learning_implementation(db) == "managed"
+    assert load_memory_preference(db, implementation="hybrid") == hybrid
+    save_memory_preference(db, LearningScope(), implementation="legacy")
+    assert load_memory_preference(db) == managed

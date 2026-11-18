@@ -604,8 +604,12 @@ class UniversalControllerBackend:
         if objective == "reward_policy":
             from core.reward_adaptation import reward_advantages
             reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
-        store = self.learning_state
-        txn = store.begin(metadata=learning_metadata, inherit_metadata=learning_mode == "managed")
+        store = getattr(self, "learning_state", None)
+        if store is None:
+            raise RuntimeError("Load the controller before starting a validated learning update")
+        from core.learning_state import check_hybrid_store
+        check_hybrid_store(store, learning_mode)
+        txn = store.begin(metadata=learning_metadata, inherit_metadata=learning_mode != "legacy")
         before = {}
         base_trainability = []
         original_model = self.model
@@ -615,15 +619,15 @@ class UniversalControllerBackend:
             if store.current_checkpoint() != self._loaded_learning_checkpoint:
                 raise RuntimeError("Reload the latest committed controller checkpoint before learning")
             check_cancelled(cancel_event)
-            if learning_mode == "managed" and validation_callback is None:
+            if learning_mode != "legacy" and validation_callback is None:
                 validation_callback = default_validation(self, data, objective=objective, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
             if not getattr(original_model, "peft_config", None):
                 base_trainability = [(p, p.requires_grad) for p in original_model.parameters()]
             model = self._ensure_transformers_lora(legacy=learning_mode == "legacy")
             named = lora_parameters(model)
             before = {name: param.detach().cpu().clone() for name, param in named.items()}
+            from core.legacy_torch_learning import LegacyControllerTrainer, update_legacy_lora
             if learning_mode == "legacy":
-                from core.legacy_torch_learning import LegacyControllerTrainer, update_legacy_lora
                 metrics, drift = update_legacy_lora(
                     model, self.tokenizer, data, trainer=LegacyControllerTrainer,
                     learning_rate=learning_rate, steps=steps, max_length=512,
@@ -633,6 +637,7 @@ class UniversalControllerBackend:
             else:
                 metrics, drift = update_lora(
                     model, self.tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_window_tokens,
+                    hybrid_trainer=LegacyControllerTrainer if learning_mode == "hybrid" else None,
                     reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
                     objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
                     context_text=context_text, max_context_tokens=max_context_tokens,

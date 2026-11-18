@@ -90,7 +90,8 @@ def test_runner_supplies_one_raw_vlm_question_on_owner_and_honors_rendered_budge
     assert backend.context_budget_tokens == 70 and seeds == [7]
 
 
-def test_worker_settings_cannot_inherit_user_database_or_adapter(monkeypatch, tmp_path):
+@pytest.mark.parametrize("implementation", [None, "managed", "hybrid"])
+def test_worker_settings_cannot_inherit_user_database_or_adapter(monkeypatch, tmp_path, implementation):
     from config import settings as settings_module
     from core import pro_engine
 
@@ -108,7 +109,10 @@ def test_worker_settings_cannot_inherit_user_database_or_adapter(monkeypatch, tm
             return {"status": "loaded", "backend": "mlx"}
 
     monkeypatch.setattr(pro_engine, "ProReasoningEngine", Engine)
-    engine = evaluation._load_engine({"paths": {"bonsai2": str(tmp_path)},
-                                      "context_tokens": 4096}, "bonsai2")
+    job = {"paths": {"bonsai2": str(tmp_path)}, "context_tokens": 4096}
+    if implementation is not None:
+        job["learning_implementation"] = implementation
+    engine = evaluation._load_engine(job, "bonsai2")
     assert engine.settings.database_path == str(state_directory / "evaluation.sqlite3")
     assert engine.settings.lora_adapter_path is None
+    assert engine.settings.learning_implementation == (implementation or "managed")

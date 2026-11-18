@@ -139,32 +139,61 @@ def resume_optimizer(backend, optimizer, txn, learning_rate):
     return True
 
 
-def _commit_with_export(backend, txn, checkpoint, details, save_path, cancel_event):
+def _inside_learning_state(path):
+    # A standalone caller has no store root, and its destination can be in
+    # another model's namespace, on a different drive, or under a custom root.
+    for directory in (path, *path.parents):
+        if directory.parent.name == "generations" and (directory / "manifest.json").is_file():
+            return True
+        # A transaction creates its store and lock before staging the first
+        # generation. Protect it even in the interval before manifest publication.
+        if (len(directory.name) == 64 and all(c in "0123456789abcdef" for c in directory.name)
+                and (directory / "generations").is_dir()
+                and ((directory / "commit.lock").is_file() or (directory / "request.json").is_file())):
+            return True
+    return False
+
+
+def _external_export_target(backend, txn, save_path):
+    from core.learning_state import IMPLEMENTATION_DIRECTORIES
+
+    if not save_path:
+        return None
+    supplied = Path(save_path).expanduser()
+    target = supplied.resolve()
+    entry = supplied.parent.resolve() / supplied.name
+    protected = _inside_learning_state(target) or (entry != target and _inside_learning_state(entry))
+    if txn is not None:
+        root = getattr(txn.store, "implementation_base_root", txn.store.root)
+        if target.is_relative_to(root):
+            parts = target.relative_to(root).parts
+            if parts and parts[0] in IMPLEMENTATION_DIRECTORIES.values():
+                parts = parts[1:]
+            if parts and (parts[0] in {"scopes", "identity_cache", "export_locks"}
+                          or len(parts[0]) == 64 and all(c in "0123456789abcdef" for c in parts[0])):
+                protected = True
+    if protected:
+        # Earlier callers passed the live adapter_path back as save_path.
+        # Publish its successor without exporting over the immutable parent.
+        current = getattr(backend, "_last_managed_checkpoint", None)
+        if txn is not None and current and Path(current).resolve() == target:
+            owned = txn.store.current_checkpoint()
+            if owned and Path(owned).resolve() == target:
+                return None
+        raise ValueError("An external MLX save path cannot overwrite managed learning state")
+    return target
+
+
+def _commit_with_export(backend, txn, checkpoint, details, target, cancel_event):
     """Keep the caller's standalone copy and verified managed generation consistent on failure."""
-    from core.learning_state import (
-        _fsync_directory, _fsync_staged_file, _process_commit_lock, write_checkpoint_manifest,
-    )
+    from core.learning_state import _fsync_directory, _fsync_staged_file, _process_commit_lock, write_checkpoint_manifest
     import hashlib
 
-    target = Path(save_path).expanduser().resolve() if save_path else None
-    protected_root = getattr(txn.store, "implementation_base_root", txn.store.root)
-    if target is not None and target.is_relative_to(protected_root):
-        parts = target.relative_to(protected_root).parts
-        if parts and parts[0] == "legacy-implementation":
-            parts = parts[1:]
-        managed = parts and (parts[0] in {"scopes", "identity_cache", "export_locks"}
-                             or len(parts[0]) == 64 and all(c in "0123456789abcdef" for c in parts[0]))
-        if managed:
-            # Earlier callers passed the live adapter_path back as save_path.
-            # That immutable generation remains a recoverable parent.
-            current = getattr(backend, "_last_managed_checkpoint", None)
-            if not current or Path(current).resolve() != target:
-                raise ValueError("An external MLX save path cannot overwrite managed learning state")
-            target = None
     if target is None:
         return txn.commit(checkpoint=checkpoint.name, metadata=details, cancel_event=cancel_event)
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    protected_root = getattr(txn.store, "implementation_base_root", txn.store.root)
     lock = protected_root / "export_locks" / hashlib.sha256(os.fsencode(target)).hexdigest()
     lock.mkdir(parents=True, exist_ok=True)
     with _process_commit_lock(lock), tempfile.TemporaryDirectory(dir=target.parent) as temporary:
@@ -199,6 +228,7 @@ def persist_candidate(backend, candidate, save_path, txn, metadata, metrics, can
 
     if txn is None and not save_path:
         return
+    export_target = _external_export_target(backend, txn, save_path)
     store = getattr(backend, "learning_state", None)
     provenance = {}
     if store is not None:
@@ -212,7 +242,7 @@ def persist_candidate(backend, candidate, save_path, txn, metadata, metrics, can
         "head" if getattr(getattr(backend.model, "lm_head", None), "_smartai_output_lora", False)
         else "packed_terminal" if any(getattr(m, "_smartai_packed_lora", False) for _, m in backend.model.named_modules())
         else "legacy")
-    destination = txn.directory / "adapters.safetensors" if txn is not None else Path(save_path)
+    destination = txn.directory / "adapters.safetensors" if txn is not None else Path(save_path).expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=destination.parent, suffix=".next.safetensors", delete=False) as out:
         staging = Path(out.name)
@@ -236,7 +266,7 @@ def persist_candidate(backend, candidate, save_path, txn, metadata, metrics, can
             if source is not None:
                 details["imported_adapter"] = source
             cancel_if_requested(cancel_event)
-            _commit_with_export(backend, txn, destination, details, save_path, cancel_event)
+            _commit_with_export(backend, txn, destination, details, export_target, cancel_event)
             backend._last_managed_checkpoint = str(destination)
             backend._mlx_parent_generation = txn.generation
         backend.adapter_path = str(destination)
