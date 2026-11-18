@@ -90,7 +90,14 @@ class StrataReasoningBackend:
     MAX_EVENT_BYTES = 1024 * 1024
     token_count_kind = "conservative_utf8_estimate"
     entropy_kind = "unavailable"
+    # The managed release has no model parameter API. Upstream tracks the
+    # missing GET/POST /lora-adapters in Niko1221/Strata#3260. A successful
+    # chat or model-list response cannot authorize dropping source turns.
     can_train = False
+    learning_unavailable_reason = (
+        "Strata v0.2.8 serves the selected packed weights and exposes no verified "
+        "LoRA registration, parameter update, or authenticated candidate reload API."
+    )
     is_mlx_available = False
     input_modalities = {"text"}
 
@@ -654,7 +661,7 @@ class StrataReasoningBackend:
                 "gain_pct": 0.0, "measured": False}
 
     def train_mini_batch(self, *args, **kwargs):
-        raise NotImplementedError("Persistent training is not available through Strata's inference API.")
+        raise NotImplementedError(self.learning_unavailable_reason)
 
     def supports_media_input(self, kind: str) -> bool:
         return False

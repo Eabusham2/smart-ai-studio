@@ -8,6 +8,7 @@ import unittest
 from config.settings import get_settings
 from core.autonomous_learner import AutonomousLearner
 from memory.db import EpisodicMemoryDB
+from tests.unit.context_backend_fixture import TransactionalBackend
 
 
 SOURCE_SENTENCE = "Raft uses a replicated log and majority quorum to commit entries safely."
@@ -33,37 +34,10 @@ class NoResultTools:
         return False, ""
 
 
-class FakeArray:
-    def __init__(self, size=2_000_000):
-        self.size = size
-
-
-class FakeMLXBackend:
-    def __init__(self, adapter_path):
-        self.model = object()
-        self.tokenizer = object()
-        self.is_mlx_available = True
-        self.adapter_path = adapter_path
-        self.adapters = {"lora": FakeArray()}
-        self.train_calls = 0
-
-    def compute_mlx_fisher(self, anchors):
-        return {"lora": FakeArray()}
-
-    def train_mini_batch(self, adapters, data, **kwargs):
-        self.train_calls += 1
-        save_path = kwargs.get("save_path")
-        if save_path:
-            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-            with open(save_path, "wb") as f:
-                f.write(b"real-test-adapter")
-        self.adapters = {"lora": FakeArray()}
-        return self.adapters, 0.0125
-
 
 class FakeEngine:
     def __init__(self, adapter_path):
-        self.mlx_backend = FakeMLXBackend(adapter_path)
+        self.mlx_backend = TransactionalBackend(os.path.dirname(adapter_path))
         self.lora_adapter_path = adapter_path
 
     def solve(self, prompt, **kwargs):
@@ -154,7 +128,7 @@ class TestAutonomousLearnMode(unittest.TestCase):
         self.assertGreater(result["parameter_drift_l2"], 0.0)
         self.assertGreater(result["trainable_parameters_m"], 0.0)
         self.assertEqual(self.engine.mlx_backend.train_calls, 1)
-        self.assertTrue(os.path.exists(self.adapter_path))
+        self.assertTrue(os.path.isfile(result["adapter_saved_to"]))
         stats = self.db.get_stats()
         self.assertGreaterEqual(stats["total_interactions"], 1)
         self.assertEqual(stats["unconsolidated_verified"], 0)
@@ -175,6 +149,11 @@ class TestAutonomousLearnMode(unittest.TestCase):
         # always-on chat consolidator: one verified Learn update, then one distinct
         # self-generated RSI update on the already-updated model.
         self.assertEqual(self.engine.mlx_backend.train_calls, 2)
+
+        rsi_batch = self.engine.mlx_backend.received_batches[-1]
+        self.assertEqual(len(rsi_batch), 1)
+        self.assertNotIn("quorum", rsi_batch[0]["prompt"])
+        self.assertNotIn("reward", rsi_batch[0])
 
         stage_names = [x[0] for x in stages]
         for expected in ("init", "crawling", "synthesizing", "verifying", "rsi", "consolidating", "done"):

@@ -263,7 +263,7 @@ def stream_best_work(controller, prompt, history=None, cancel_event=None,
         raise ValueError("Tool-call budget must be a nonnegative integer or None")
     engine = controller.app.engine
     original_prompt = str(prompt)
-    turns = [dict(turn) for turn in (history or [])]
+    turns = [turn.copy() for turn in (history or [])]
     if not any(turn.get("role") == "system" and turn.get("content") == BEST_WORK_GUIDE for turn in turns):
         turns.insert(0, {"role": "system", "content": BEST_WORK_GUIDE})
     executed = set()

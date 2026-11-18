@@ -7,8 +7,11 @@ for an explicitly requested external-service integration run.
 from __future__ import annotations
 
 import ipaddress
+import http.client
 import os
 import socket
+import urllib.parse
+import urllib.request
 
 
 def _local_host(host):
@@ -35,6 +38,78 @@ def pytest_sessionstart(session):
     def refuse_external(host):
         if not _local_host(host):
             raise OSError("External network is disabled for model-free tests; mock the service")
+
+    def refuse_external_url(url):
+        host = urllib.parse.urlsplit(str(url)).hostname
+        if host is not None:
+            refuse_external(host)
+
+    # A loopback HTTP proxy can otherwise forward an external URL without the
+    # socket layer ever seeing its remote hostname. Reject the destination
+    # before creating a tunnel or writing a request, including redirects.
+    original_tunnel = http.client.HTTPConnection.set_tunnel
+    original_request = http.client.HTTPConnection.putrequest
+    original_open = urllib.request.OpenerDirector.open
+
+    def set_tunnel(connection, host, *args, **kwargs):
+        refuse_external(host)
+        return original_tunnel(connection, host, *args, **kwargs)
+
+    def putrequest(connection, method, url, *args, **kwargs):
+        refuse_external_url(url)
+        return original_request(connection, method, url, *args, **kwargs)
+
+    def open_url(opener, fullurl, *args, **kwargs):
+        refuse_external_url(getattr(fullurl, "full_url", fullurl))
+        return original_open(opener, fullurl, *args, **kwargs)
+
+    http.client.HTTPConnection.set_tunnel = set_tunnel
+    http.client.HTTPConnection.putrequest = putrequest
+    urllib.request.OpenerDirector.open = open_url
+
+    try:
+        import requests.adapters
+    except ImportError:
+        pass
+    else:
+        original_send = requests.adapters.HTTPAdapter.send
+
+        def send_request(adapter, request, *args, **kwargs):
+            refuse_external_url(request.url)
+            return original_send(adapter, request, *args, **kwargs)
+
+        requests.adapters.HTTPAdapter.send = send_request
+
+    try:
+        import httpx
+    except ImportError:
+        pass
+    else:
+        original_httpx_send = httpx.Client.send
+        original_httpx_async_send = httpx.AsyncClient.send
+        original_httpx_transport = httpx.HTTPTransport.handle_request
+        original_httpx_async_transport = httpx.AsyncHTTPTransport.handle_async_request
+
+        def send_httpx(client, request, *args, **kwargs):
+            refuse_external_url(request.url)
+            return original_httpx_send(client, request, *args, **kwargs)
+
+        async def send_httpx_async(client, request, *args, **kwargs):
+            refuse_external_url(request.url)
+            return await original_httpx_async_send(client, request, *args, **kwargs)
+
+        def handle_httpx(transport, request):
+            refuse_external_url(request.url)
+            return original_httpx_transport(transport, request)
+
+        async def handle_httpx_async(transport, request):
+            refuse_external_url(request.url)
+            return await original_httpx_async_transport(transport, request)
+
+        httpx.Client.send = send_httpx
+        httpx.AsyncClient.send = send_httpx_async
+        httpx.HTTPTransport.handle_request = handle_httpx
+        httpx.AsyncHTTPTransport.handle_async_request = handle_httpx_async
 
     def resolve(host, *args, **kwargs):
         refuse_external(host)

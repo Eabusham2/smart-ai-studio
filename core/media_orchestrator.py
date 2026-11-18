@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sqlite3
 import shlex
 import threading
 import types
@@ -689,6 +690,22 @@ class MediaController:
             self._depth += 1
             self.busy = True
             try:
+                # Project the GUI archive before either route copies the history
+                # or prepends its system guide. Tool continuations stay local.
+                from core.context_memory import ChatArchive
+                if isinstance(history, ChatArchive):
+                    service = getattr(self.app.engine, "awake_consolidator", None)
+                    from core.awake_auto_hook import _active_trainable_backend
+                    backend = _active_trainable_backend(self.app.engine)
+                    runtime = getattr(backend, "runtime", None)
+                    if (service is not None and service.engine is backend and backend is not None
+                            and runtime != "strata"):
+                        try:
+                            if runtime != "prism_speculative" or service._real_training_ready():
+                                history = service.active_history(history)
+                        except (RuntimeError, ValueError, OSError, sqlite3.Error):
+                            # The awake hook will retain text and report the exact reason.
+                            history = list(history)
                 if best_work_enabled:
                     from core.best_work import stream_best_work
                     yield from stream_best_work(self, prompt, history, cancel_event,

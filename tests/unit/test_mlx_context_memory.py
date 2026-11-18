@@ -1,0 +1,421 @@
+"""Exercise the production MLX transaction with tiny, deterministic CPU protocol fixtures."""
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+import sys
+import threading
+
+import numpy as np
+import pytest
+
+from core._mlx_engine_base import MLXReasoningBackend
+from core.learning_state import bind_learning_state
+from core.learning_data import training_coverage
+
+
+class Tokenizer:
+    def encode(self, s, **kwargs):
+        return [ord(c) % 5 for c in s]
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        return "".join(("u" if m["role"] == "user" else "a") + m["content"] for m in messages) + (
+            "a" if add_generation_prompt else "")
+
+
+class Module:
+    def named_modules(self):
+        yield "", self
+        for key, value in vars(self).items():
+            if isinstance(value, Module):
+                for path, module in value.named_modules():
+                    yield key + ("." + path if path else ""), module
+
+    def freeze(self):
+        for _, mod in self.named_modules():
+            mod._unfrozen = set()
+
+    def unfreeze(self, keys, recurse=False):
+        self._unfrozen = set(keys)
+
+    def trainable_parameters(self):
+        return {f"{p}.{k}": value for p, mod in self.named_modules()
+                for k, value in vars(mod).items() if isinstance(value, np.ndarray)
+                and (not hasattr(mod, "_unfrozen") or k in mod._unfrozen)}
+
+    def update(self, tree):
+        for key, value in tree.items():
+            parent, _, name = key.rpartition(".")
+            setattr(dict(self.named_modules())[parent], name, value)
+
+    def train(self, mode=True):
+        self.training = mode
+
+    def eval(self):
+        self.train(False)
+
+
+class PackedProjection(Module):
+    def __init__(self):
+        self.packed = np.array([0b01001000, 0b01100101], dtype=np.uint32)
+        self.calls = 0
+
+    def __call__(self, hidden):
+        self.calls += 1
+        shifts = 2 * np.arange(5, dtype="uint32")
+        trits = ((self.packed[:, None] >> shifts) & 3).astype("float32") - 1
+        return hidden @ trits
+
+
+class Model(Module):
+    def __init__(self):
+        self.config = {"text_config": {"hidden_size": 2, "vocab_size": 5}}
+        self.lm_head = PackedProjection()
+        self.embedding = np.array([[1, 0], [1, 1], [-1, 0], [0, -1], [-1, 1]], dtype="float32")
+        self.lengths = []
+        self.training = False
+
+    def __call__(self, ids):
+        self.lengths.append(ids.shape[1])
+        return SimpleNamespace(logits=self.lm_head(self.embedding[ids]))
+
+
+@pytest.fixture
+def cpu_protocol(monkeypatch):
+    """NumPy reference derivatives and an immutable optimizer exercise backend operations on Linux."""
+    mx = ModuleType("mlx.core")
+    mx.float32 = np.float32
+    for name in ("square", "all", "any", "stack", "isfinite", "zeros", "sum", "where", "array", "array_equal"):
+        setattr(mx, name, getattr(np, name))
+    mx.random = SimpleNamespace(uniform=lambda lo, hi, shape: np.random.default_rng(7).uniform(lo, hi, shape).astype("float32"))
+    mx.stop_gradient = lambda a: a
+    mx.eval = lambda *values: None
+    # This fixture deliberately uses npz; the conditional Apple test exercises
+    # the actual safetensors writer and native autodiff.
+    def save(path, weights, metadata=None):
+        with open(path, "wb") as handle:
+            np.savez(handle, **weights)
+    mx.save_safetensors = save
+    def load(path):
+        with np.load(path) as saved:
+            return dict(saved)
+    mx.load = load
+
+    nn = ModuleType("mlx.nn")
+    nn.Module = Module
+    def ce(z, y, reduction):
+        z = z - z.max(axis=-1, keepdims=True)
+        return np.log(np.exp(z).sum(axis=-1)) - np.take_along_axis(z, y[..., None], axis=-1)[..., 0]
+    nn.losses = SimpleNamespace(cross_entropy=ce)
+    def value_and_grad(model, loss_fn):
+        def calculate(model, *args):
+            loss = loss_fn(model, *args)
+            grads = {}
+            for key, value in model.trainable_parameters().items():
+                grad = np.zeros_like(value)
+                for index in np.ndindex(value.shape):
+                    plus, minus = value.copy(), value.copy()
+                    plus[index] += 1e-3
+                    minus[index] -= 1e-3
+                    model.update({key: plus})
+                    a = loss_fn(model, *args)
+                    model.update({key: minus})
+                    b = loss_fn(model, *args)
+                    grad[index] = (a - b) / 0.002
+                model.update({key: value})
+                grads[key] = grad
+            return loss, grads
+        return calculate
+    nn.value_and_grad = value_and_grad
+
+    class Optimizer:
+        def __init__(self, learning_rate, weight_decay):
+            self.learning_rate = learning_rate
+            self.state = {"step": np.array(0)}
+
+        def init(self, trainable):
+            pass
+
+        def update(self, model, grads):
+            self.state["step"] = self.state["step"] + 1
+            model.update({k: v - self.learning_rate * grads[k] for k, v in model.trainable_parameters().items()})
+
+    utils = ModuleType("mlx.utils")
+    utils.tree_flatten, utils.tree_unflatten = lambda t: list(t.items()), dict
+    for name, module in (("mlx", ModuleType("mlx")), ("mlx.core", mx), ("mlx.nn", nn),
+                         ("mlx.optimizers", SimpleNamespace(AdamW=Optimizer)), ("mlx.utils", utils)):
+        monkeypatch.setitem(sys.modules, name, module)
+    return mx
+
+
+@pytest.mark.parametrize("runtime", ["mlx_repo_vlm", "jang_vlm"])
+def test_packed_training_transaction_and_recovery(tmp_path, runtime, cpu_protocol, monkeypatch):
+    engine = MLXReasoningBackend("fixture/" + runtime)
+    engine.model, engine.tokenizer = Model(), Tokenizer()
+    engine.is_mlx_available = True
+    engine._vlm_runtime = runtime
+    original_head = engine.model.lm_head
+    packed = original_head.packed.copy()
+    assert engine.model.trainable_parameters()  # Real fresh MLX modules expose foundation trainables.
+    store = bind_learning_state(engine, model_info={"resolved_revision": "a" * 40}, state_root=tmp_path)
+    row = [{"prompt": "abcdefghi", "completion": "answer"}]
+    kwargs = dict(steps=1, max_window_tokens=5, learning_rate=0.05)
+    with pytest.raises(RuntimeError, match="rejected"):
+        engine.train_mini_batch({}, row, validation_callback=lambda candidate: False, **kwargs)
+    assert engine.model.lm_head is original_head and store.current_manifest() is None
+    weights, drift = engine.train_mini_batch({}, row, anchor_texts=["abc"], **kwargs)
+    assert drift > 0 and np.isfinite(drift)
+    assert set(weights) == {"lm_head.lora_a", "lm_head.lora_b"}
+    assert engine.model.lm_head.linear is original_head
+    np.testing.assert_array_equal(original_head.packed, packed)
+    assert max(engine.model.lengths) <= 4
+    assert engine.last_learning_metrics["supervised_tokens"] == training_coverage(
+        engine.tokenizer, row, max_tokens=5)["supervised_tokens"]
+    assert engine.last_learning_metrics["ewc_used"]
+    assert engine.last_learning_metrics["adapter_target"] == "language_output_head"
+    assert Path(store.current_checkpoint()).exists()
+    engine.train_mini_batch({}, row, validation_callback=lambda candidate: True, **kwargs)
+    assert engine.last_learning_metrics["optimizer_resumed"] is True
+    prior = store.current_manifest()
+    prior_weights = {k: v.copy() for k, v in engine.adapters.items()}
+    event = threading.Event()
+    def stop_after_training(candidate):
+        assert any(not np.array_equal(v, prior_weights[k]) for k, v in candidate.model.trainable_parameters().items())
+        event.set()
+        return True
+
+    for validator, error in ((lambda candidate: False, RuntimeError), (stop_after_training, InterruptedError)):
+        with pytest.raises(error):
+            engine.train_mini_batch({}, row, validation_callback=validator, cancel_event=event, **kwargs)
+        assert store.current_manifest() == prior
+        for key, value in engine.adapters.items():
+            np.testing.assert_array_equal(value, prior_weights[key])
+    event.clear()
+    monkeypatch.setattr(cpu_protocol, "save_safetensors", lambda *a, **kw: (_ for _ in ()).throw(OSError("full disk")))
+    with pytest.raises(OSError, match="full disk"):
+        engine.train_mini_batch({}, row, **kwargs)
+    assert store.current_manifest() == prior
+    for key, value in engine.adapters.items():
+        np.testing.assert_array_equal(value, prior_weights[key])
+    monkeypatch.setattr(original_head, "packed", np.array([1, 2], dtype="uint32"))
+    engine.model.embedding[0] = np.nan
+    with pytest.raises(FloatingPointError):
+        engine.train_mini_batch({}, row, **kwargs)
+    assert store.current_manifest() == prior
+
+
+@pytest.mark.parametrize("runtime", ["mlx_repo_vlm", "jang_vlm"])
+def test_native_mlx_packed_no_vjp_and_restart(tmp_path, runtime):
+    """Runs real MLX autodiff, AdamW and safetensors when MLX is installed."""
+    mx = pytest.importorskip("mlx.core")
+    import mlx.nn as nn
+    from core.mlx_adapter_persistence import install_mlx_adapter_persistence
+
+    @mx.custom_function
+    def project(hidden, packed):
+        shifts = 2 * mx.arange(5, dtype=mx.uint32)
+        weights = ((packed[:, None] >> shifts) & 3).astype(mx.float32) - 1
+        return hidden @ weights
+
+    @project.vjp
+    def no_backward(*args):
+        raise AssertionError("An inference-only packed kernel received a VJP")
+
+    class Head(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.packed = mx.array([0b01001000, 0b01100101], dtype=mx.uint32)
+
+        def __call__(self, hidden):
+            return project(hidden, self.packed)
+
+    class LanguageModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=2, vocab_size=5)
+            self.embedding = mx.array([[1, 0], [1, 1], [-1, 0], [0, -1], [-1, 1]], dtype=mx.float32)
+            self.lm_head = Head()
+
+        def __call__(self, ids):
+            return SimpleNamespace(logits=self.lm_head(self.embedding[ids]))
+
+    class Backend(MLXReasoningBackend):
+        def __init__(self):
+            super().__init__("fixture/" + runtime)
+            self.model_info = {"resolved_revision": "a" * 40}
+            self.learning_state_root = tmp_path
+            self._vlm_runtime = runtime
+
+        def load_model(self):
+            self.model, self.tokenizer = LanguageModel(), Tokenizer()
+            self.is_mlx_available = True
+            self.model.eval()
+            return True
+
+        def get_training_model(self):
+            return self.model
+
+    install_mlx_adapter_persistence(Backend)
+    mx.random.seed(7)
+    engine = Backend()
+    assert engine.load_model()
+    row = [{"prompt": "abcdefghi", "completion": "answer"}]
+    baseline = engine.model(mx.array([[0, 1, 2]])).logits
+    native = engine.model.lm_head
+    engine.inject_lora_adapters(r=2)
+    assert engine.model.lm_head.linear is native
+    assert bool(mx.array_equal(baseline, engine.model(mx.array([[0, 1, 2]])).logits).item())
+    learned, drift = engine.train_mini_batch({}, row, max_window_tokens=5, anchor_texts=["abc"], steps=1)
+    assert drift > 0
+    probe = engine.score_learning_probe("abc", "de")
+    restored = Backend()
+    assert restored.load_model()
+    assert all(mx.array_equal(v, restored.adapters[k]).item() for k, v in learned.items())
+    assert restored.score_learning_probe("abc", "de") == pytest.approx(probe)
+    restored.train_mini_batch({}, row, max_window_tokens=5, steps=1)
+    assert restored.last_learning_metrics["optimizer_resumed"]
+
+
+def test_legacy_projection_layout_reuses_and_restores_only_saved_targets(cpu_protocol, monkeypatch):
+    """Exercise legacy q/v/down with narrow layers and prove alien packed layers fail without replacement."""
+    from core.mlx_learning import ensure_adapters
+    import mlx.nn as nn
+
+    class Linear(Module):
+        def __init__(self):
+            self.weight = np.eye(2, dtype="float32")
+
+        def __call__(self, hidden):
+            return hidden @ self.weight
+
+    class LoRALinear(Module):
+        @classmethod
+        def from_base(cls, base, r, scale):
+            wrapped = cls()
+            wrapped.linear = base
+            wrapped.lora_a = np.ones((2, r), dtype="float32")
+            wrapped.lora_b = np.zeros((r, 2), dtype="float32")
+            wrapped.scale = scale
+            return wrapped
+
+    class Decoder(Module):
+        def __init__(self):
+            self.block = Module()
+            self.block.self_attn = Module()
+            self.block.self_attn.q_proj = Linear()
+            self.block.self_attn.v_proj = Linear()
+            self.block.mlp = Module()
+            self.block.mlp.down_proj = Linear()
+
+        @property
+        def layers(self):
+            return (self.block,)
+
+    monkeypatch.setattr(nn, "Linear", Linear, raising=False)
+    monkeypatch.setattr(nn, "QuantizedLinear", Linear, raising=False)
+    monkeypatch.setitem(sys.modules, "mlx_lm.tuner.lora", SimpleNamespace(LoRALinear=LoRALinear))
+    backend = SimpleNamespace(model=Decoder())
+    base = backend.model.block.self_attn.q_proj
+    trainables = ensure_adapters(backend, rank=3)
+    projections = {"block.self_attn.q_proj", "block.self_attn.v_proj", "block.mlp.down_proj"}
+    assert set(trainables) == {p + "." + name for p in projections for name in ("lora_a", "lora_b")}
+    head = backend.model.block.self_attn.q_proj
+    head.lora_b += 1
+    assert ensure_adapters(backend)["block.self_attn.q_proj.lora_b"] is head.lora_b
+    assert backend.model.block.self_attn.q_proj is head and head.linear is base
+    subset = SimpleNamespace(model=Decoder())
+    ensure_adapters(subset, rank=3, layout="legacy", target_paths={"block.self_attn.q_proj"})
+    assert set(subset.adapters) == {"block.self_attn.q_proj.lora_a", "block.self_attn.q_proj.lora_b"}
+    assert isinstance(subset.model.block.self_attn.v_proj, Linear)
+    incompatible = SimpleNamespace(model=Decoder(), _vlm_runtime="jang_vlm")
+    incompatible.model.block.self_attn.v_proj = PackedProjection()
+    prior_down = incompatible.model.block.mlp.down_proj
+    with pytest.raises(RuntimeError, match="Unsupported loaded projection"):
+        ensure_adapters(incompatible, layout="legacy", target_paths=projections)
+    assert incompatible.model.block.mlp.down_proj is prior_down
+
+
+def test_native_mlx_legacy_projection_update_and_restart(tmp_path):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm.tuner.lora")
+    import mlx.nn as nn
+    from core.mlx_adapter_persistence import install_mlx_adapter_persistence
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = nn.Module()
+            self.self_attn.q_proj = nn.Linear(4, 4, bias=False)
+            self.self_attn.v_proj = nn.Linear(4, 4, bias=False)
+            self.mlp = nn.Module()
+            self.mlp.down_proj = nn.Linear(4, 4, bias=False)
+
+        def __call__(self, x):
+            return self.mlp.down_proj(self.self_attn.q_proj(x) + self.self_attn.v_proj(x))
+
+    class LanguageModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embedding = nn.Embedding(5, 4)
+            self.layers = [Block()]
+            self.lm_head = nn.Linear(4, 5, bias=False)
+
+        def __call__(self, ids):
+            return self.lm_head(self.layers[0](self.embedding(ids)))
+
+    class Engine(MLXReasoningBackend):
+        def load_model(self):
+            mx.random.seed(11)
+            self.model, self.tokenizer = LanguageModel(), Tokenizer()
+            self.model.eval()
+            self.is_mlx_available = True
+            return True
+
+        def get_training_model(self):
+            return self.model
+
+    install_mlx_adapter_persistence(Engine)
+
+    def load():
+        engine = Engine("fixture/legacy")
+        engine.model_info = {"resolved_revision": "a" * 40}
+        engine.learning_state_root = tmp_path
+        assert engine.load_model()
+        return engine
+
+    engine = load()
+    row = [{"prompt": "abc", "completion": "answer"}]
+    base = engine.model.layers[0].self_attn.q_proj
+    before = base.weight
+    weights, delta = engine.train_mini_batch({}, row, steps=1)
+    assert delta > 0
+    assert len(weights) == 6 and set(weights) == set(engine.inject_lora_adapters())
+    assert engine.model.layers[0].self_attn.q_proj.linear is base
+    assert bool(mx.array_equal(base.weight, before).item())
+    reference = engine.score_learning_probe("abc", "answer")
+    restarted = load()
+    assert restarted.score_learning_probe("abc", "answer") == pytest.approx(reference)
+    assert restarted.last_restored_adapter_provenance == "model-bound"
+
+
+def test_interrupt_after_commit_keeps_live_weights_generation_and_ewc_metrics(tmp_path, cpu_protocol, monkeypatch):
+    from core.learning_state import LearningTransaction
+    engine = MLXReasoningBackend("fixture/published")
+    engine.model, engine.tokenizer = Model(), Tokenizer()
+    engine.is_mlx_available = True
+    engine._vlm_runtime = "mlx_repo_vlm"
+    store = bind_learning_state(engine, model_info={"resolved_revision": "a" * 40}, state_root=tmp_path)
+    commit = LearningTransaction.commit
+    def signal_after_publish(txn, *args, **kwargs):
+        commit(txn, *args, **kwargs)
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(LearningTransaction, "commit", signal_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        engine.train_mini_batch({}, [{"prompt": "abc", "completion": "answer"}], steps=1,
+                                anchor_texts=["abc"], max_window_tokens=5)
+    checkpoint = store.current_checkpoint()
+    manifest = store.current_manifest()
+    assert checkpoint == engine.adapter_path == engine._last_managed_checkpoint
+    assert engine._mlx_parent_generation == manifest["generation"]
+    assert manifest["metadata"]["metrics"] == engine.last_learning_metrics
+    assert engine.last_learning_metrics["ewc_used"] and engine.last_learning_metrics["fisher_tensors"] > 0
+    for key, value in cpu_protocol.load(checkpoint).items():
+        np.testing.assert_array_equal(value, engine.model.trainable_parameters()[key])

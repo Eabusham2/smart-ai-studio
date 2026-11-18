@@ -11,7 +11,7 @@
 [![Context Window: Auto-Scaled up to 256K](https://img.shields.io/badge/Context%20Window-Dynamic%20up%20to%20256K-cyan.svg)](#-hardware-adaptive-context-scaling)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-yellow.svg)](https://www.python.org/)
 
-**Smart AI Studio** is a high-performance, low-memory local AI reasoning and coding studio designed for Apple Silicon (native MLX) and multi-platform environments (CUDA / CPU). Featuring real-time token streaming, a ChatGPT-style side-by-side AI Canvas, conversation history sidebar, reinforcement learning with ground-truth verification (RLVR), interactive thinking dropdowns, and biological synaptic sleep consolidation.
+**Smart AI Studio** is a high-performance, low-memory local AI reasoning and coding studio designed for Apple Silicon (native MLX) and multi-platform environments (CUDA / CPU). Featuring real-time token streaming, a ChatGPT-style side-by-side AI Canvas, conversation history sidebar, reinforcement learning with ground-truth verification (RLVR), interactive thinking dropdowns, and checkpoint-backed learning from chat.
 
 ---
 
@@ -126,14 +126,16 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
   Collapsible reasoning pill cards (`[▶ 💭 Reasoning Process (153 tokens)]`) keeping chat clean while preserving complete chain-of-thought traces.
 * **🧪 RLVR & Sandbox Verification**:
   Supports deterministic AST validation, unit-test execution, and resource-limited sandbox checks before eligible results are used by learning and memory workflows.
-* **💤 Biological Synaptic Sleep Consolidation (EWC-LoRA)**:
-  Consolidates high-reward interaction traces during offline sleep cycles using Elastic Weight Consolidation (EWC) to prevent catastrophic forgetting.
 * **🛡️ System RAM & VRAM Memory Watchdog**:
   Continuous background telemetry monitoring host memory pressure and auto-unloading models when thresholds exceed 90% RAM to prevent system freezing.
 * **📈 Dynamic Metric Scaling**:
   Human-readable dynamic units for learned synapses ($100 \rightarrow \text{K} \rightarrow \text{M} \rightarrow \text{B}$) and model parameters ($\text{M} \rightarrow \text{B} \rightarrow \text{T}$).
 
 ---
+
+## Persistent chat memory
+
+At 80% of Context, eligible text backends start learning from old, complete exchanges. Sleep can also start an update on the loaded model. A validated checkpoint retires the learned turns from model input and keeps the full transcript visible. Memory Explorer shows the checkpoint and supports importing an older MLX adapter on its original base. [Backend support, storage and recall evaluation](docs/parametric-memory.md)
 
 ## 🤖 Model Matrix & Architectures
 

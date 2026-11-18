@@ -13,8 +13,10 @@ token remaining in Context until natural EOS.
 """
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Dict, List, Optional
 
+from core.context_memory import ChatArchive, oldest_completed_chunk, working_history
 from core.platform import get_auto_context_window_size
 from core.temperature_policy import CHAT_N1_TEMPERATURE
 
@@ -191,31 +193,8 @@ def _strata_generation_context(engine, backend) -> int:
 
 
 def _oldest_completed_chunk(history: List[Dict[str, str]], ratio: float) -> tuple[list, list]:
-    """Take an oldest prefix ending on assistant, while always retaining recent turns."""
-    if len(history) <= 2:
-        return [], history
-    target = max(2, int(len(history) * max(0.05, min(float(ratio), 0.80))))
-    target = min(target, len(history) - 1)
-
-    last_assistant = -1
-    saw_user = False
-    for idx, message in enumerate(history[:target]):
-        role = str(message.get("role", "")).strip().lower()
-        if role == "user":
-            saw_user = True
-        elif role == "assistant" and saw_user:
-            last_assistant = idx
-    if last_assistant < 0:
-        for idx, message in enumerate(history[target:-1], start=target):
-            role = str(message.get("role", "")).strip().lower()
-            if role == "user":
-                saw_user = True
-            elif role == "assistant" and saw_user:
-                last_assistant = idx
-                break
-    if last_assistant < 0:
-        return [], history
-    return history[: last_assistant + 1], history[last_assistant + 1 :]
+    """Return complete old exchanges, retaining system/tool turns and recent dialogue."""
+    return oldest_completed_chunk(working_history(history), ratio)
 
 
 def install_awake_auto_learning(cls) -> None:
@@ -225,7 +204,7 @@ def install_awake_auto_learning(cls) -> None:
     original_stream_solve = cls.stream_solve
     original_solve = cls.solve
 
-    def _apply_awake_learning(self, history, prompt: Optional[str] = None):
+    def _apply_awake_learning(self, history, prompt: Optional[str] = None, cancel_event=None):
         if not prompt:
             return history
 
@@ -238,7 +217,15 @@ def install_awake_auto_learning(cls) -> None:
             )
             return history
 
-        if getattr(backend, "runtime", None) == "prism_speculative":
+        native_trainable = False
+        is_native = getattr(backend, "runtime", None) == "prism_speculative"
+        if is_native:
+            capability = getattr(backend, "training_ready", None)
+            try:
+                native_trainable = callable(capability) and bool(capability())
+            except Exception:
+                native_trainable = False
+        if is_native and not native_trainable:
             context_budget = _selected_context_budget(self)
             self._last_context_consolidation_note = (
                 f"Native inference only · Context {context_budget:,} includes prompt/history + output. "
@@ -251,6 +238,20 @@ def install_awake_auto_learning(cls) -> None:
         tokenizer = getattr(backend, "tokenizer", None)
         if consolidator is None or backend is None or tokenizer is None:
             return history
+
+        # Resolve the authoritative checkpoint before measuring even a short request.
+        # The visible transcript can arrive as a fresh copy on each GUI/tool round.
+        original_history = history
+        active_history = getattr(consolidator, "active_history", None)
+        if callable(active_history):
+            if getattr(consolidator, "engine", backend) is not backend:
+                self._last_context_consolidation_note = "The active model changed; keeping the transcript."
+                return original_history
+            try:
+                history = active_history(history)
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+                self._last_context_consolidation_note = str(error)
+                return original_history
 
         # Gemini's rolling-memory design: start learning old turns before the hard
         # boundary, at 80% of total Context. After triggering, reduce the active
@@ -285,6 +286,9 @@ def install_awake_auto_learning(cls) -> None:
         except Exception:
             return history
 
+        if (isinstance(original_history, list) and not isinstance(original_history, ChatArchive)
+                and len(original_history) != len(history)):
+            original_history[:] = history
         if current_tokens < trigger_tokens:
             self._last_context_consolidation_note = (
                 f"Context {context_budget:,}: prompt/history {current_tokens:,}; "
@@ -310,7 +314,10 @@ def install_awake_auto_learning(cls) -> None:
             if not chunk:
                 break
             try:
-                learned = bool(consolidator.consolidate_chunk_sync(chunk))
+                if cancel_event is None:
+                    learned = bool(consolidator.consolidate_chunk_sync(chunk))
+                else:
+                    learned = bool(consolidator.consolidate_chunk_sync(chunk, cancel_event=cancel_event))
             except Exception:
                 learned = False
             if not learned:
@@ -323,8 +330,12 @@ def install_awake_auto_learning(cls) -> None:
             except Exception:
                 break
 
-        if consolidated_turns and isinstance(history, list):
-            history[:] = retained
+        if consolidated_turns:
+            # Direct chat() callers receive the reduced working list. GUI archives
+            # retain all messages for display and export, including after restart.
+            if isinstance(original_history, list) and not isinstance(original_history, ChatArchive):
+                original_history[:] = retained
+            history = retained
             self._last_context_consolidation_note = (
                 f"Context {context_budget:,}: consolidated {consolidated_turns} old dialogue turns into "
                 f"trainable weights ({original_tokens:,} → {current_tokens:,} active prompt tokens); "
@@ -332,9 +343,11 @@ def install_awake_auto_learning(cls) -> None:
             )
             return history
 
+        detail = getattr(consolidator, "last_error", "")
         self._last_context_consolidation_note = (
             f"Context {context_budget:,}: active prompt uses {original_tokens:,} tokens; no completed old dialogue "
             "pair could be safely consolidated, so the physical Context boundary remains authoritative."
+            + (f" {detail}" if detail else "")
         )
         return history
 
@@ -352,8 +365,10 @@ def install_awake_auto_learning(cls) -> None:
         if cancel_before_request(self, cancel_event):
             self._last_stream_pro_meta = None
             return
-        history = _apply_awake_learning(self, history, prompt)
+        history = _apply_awake_learning(self, history, prompt, cancel_event)
         self._last_stream_pro_meta = None
+        if cancel_event is not None and cancel_event.is_set():
+            return
 
         # Preserve the historical chat decision point: entropy chooses N=1/8/16.
         native = getattr(self, "gguf_backend", None)
@@ -451,10 +466,12 @@ def install_awake_auto_learning(cls) -> None:
         progress_callback=None,
     ):
         if not getattr(self, "_awake_stream_history_prepared", False):
-            history = _apply_awake_learning(self, history, prompt)
+            history = _apply_awake_learning(self, history, prompt, cancel_event)
         else:
             _selected_context_budget(self)
 
+        if cancel_event is not None and cancel_event.is_set():
+            return "", {"cancelled": True, "verified": False, "branch_count": 0, "raw_branches": []}
         formatted = self._format_prompt_with_history(prompt, history)
         remaining = _remaining_generation_tokens(self, formatted)
         previous_max = getattr(self.settings, "max_new_tokens", None)

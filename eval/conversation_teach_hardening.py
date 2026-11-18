@@ -202,7 +202,9 @@ def install(p4, cls) -> None:
             )
             consolidator._run_shadow_consolidation(_chat_history())
             delta = float(consolidator.total_param_shift or 0.0)
-            persisted = bool(os.path.exists(p4.RSI_ADAPTER_PATH))
+            store = getattr(backend, "learning_state", None)
+            actual_checkpoint = store.current_checkpoint() if store is not None else None
+            persisted = bool(actual_checkpoint and os.path.exists(actual_checkpoint))
             if consolidator.consolidation_count != 1:
                 raise RuntimeError("Phase 3B conversational teach produced no real parameter update")
 
@@ -222,7 +224,7 @@ def install(p4, cls) -> None:
                 "trained": True,
                 "facts": len(CONVERSATION_TEACH_EXAMPLES),
                 "param_delta_l2": delta,
-                "adapter_path": p4.RSI_ADAPTER_PATH,
+                "adapter_path": (actual_checkpoint if str(getattr(self.engine, "backend_key", "mlx") or "mlx").lower() != "mlx" else p4.RSI_ADAPTER_PATH),
                 "training_tokens": train_tokens,
                 "training_tps": teach_tps,
             }

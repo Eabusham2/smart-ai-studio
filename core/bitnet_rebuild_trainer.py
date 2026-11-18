@@ -1,26 +1,20 @@
-"""Persistent BitNet learning bridge.
+"""Train a cumulative PEFT adapter on the declared BitNet BF16 parent.
 
-bitnet.cpp is an inference runtime, not a trainer. For supported model families this
-module updates a real PEFT LoRA against the declared BF16 training sibling, merges
-that learned state into a temporary Hugging Face checkpoint, then uses Microsoft's
-official BitNet conversion pipeline to rebuild an I2_S deployment GGUF. The caller
-hot-reloads bitnet.cpp only after the converted learned model exists.
-
-Unsupported architectures fail closed; no synthetic drift or fake training state is
-ever reported.
+The conversion uses the selected deployment's verified ternary encoding. A
+staged rebuild must match the original tensor layout and tokenizer, load in
+bitnet.cpp and pass behavioral validation before it becomes current.
 """
 from __future__ import annotations
 
-import gc
-import math
+import ast
 import os
-import shutil
-import subprocess
+import re
 import sys
 import tempfile
 from pathlib import Path
 from core.training_memory import release_training_memory
-from typing import Any, Dict, List, Optional, Tuple
+from core.training_lineage import local_training_parent, run_conversion
+from typing import List, Optional
 
 
 class BitNetRebuildTrainer:
@@ -38,6 +32,9 @@ class BitNetRebuildTrainer:
             raise ValueError("BitNet training requires a BF16 training-base model id")
         self.runtime_root = Path(runtime_root)
         self.deploy_root = Path(deploy_root)
+        self.training_source = None
+        self.cancel_event = None
+        self.quantization = None
         self.peft_dir = self.deploy_root / "peft"
         self.learned_model_path = self.deploy_root / "learned-i2_s.gguf"
         self.rank = int(rank)
@@ -66,6 +63,30 @@ class BitNetRebuildTrainer:
             if candidate.is_file():
                 return candidate
         return None
+
+    def selected_quantization(self, observed_types):
+        """Resolve the exact type IDs from the installed converter's own enum."""
+        source = self._bitnet_source()
+        if source is None:
+            raise RuntimeError("Local BitNet converter is unavailable")
+        for root in (source / "3rdparty" / "llama.cpp", source):
+            constants = root / "gguf-py" / "gguf" / "constants.py"
+            if not constants.is_file():
+                continue
+            for node in ast.parse(constants.read_text(encoding="utf-8")).body:
+                if not isinstance(node, ast.ClassDef) or node.name != "GGMLQuantizationType":
+                    continue
+                matches = set()
+                for entry in node.body:
+                    if not isinstance(entry, ast.Assign) or not isinstance(entry.value, ast.Constant):
+                        continue
+                    for key in entry.targets:
+                        if (isinstance(key, ast.Name) and key.id in {"TL1", "TL2", "I2_S"}
+                                and entry.value.value in observed_types):
+                            matches.add(key.id.lower())
+                if len(matches) == 1:
+                    return matches.pop()
+        raise RuntimeError("The converter cannot prove the selected deployment's ternary encoding")
 
     @staticmethod
     def _training_runtime_available() -> bool:
@@ -102,37 +123,16 @@ class BitNetRebuildTrainer:
             return False
 
     def can_prepare(self) -> bool:
+        try:
+            local_training_parent(self.base_model_id)
+        except (ValueError, OSError, RuntimeError):
+            return False
         if not self.base_model_id or not self._training_runtime_available():
             return False
         source = self._bitnet_source()
         if source is None:
             return False
-        if self._quantizer(source) is None:
-            return False
         return True
-
-    @staticmethod
-    def _format_training_example(tokenizer, prompt: str, completion: str) -> Tuple[str, str]:
-        messages = [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": completion},
-        ]
-        prefix_messages = [{"role": "user", "content": prompt}]
-        try:
-            full_text = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            prefix = tokenizer.apply_chat_template(
-                prefix_messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            return str(prefix), str(full_text)
-        except Exception:
-            prefix = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-            return prefix, prefix + completion + "<|im_end|>"
 
     @staticmethod
     def _target_modules(model) -> List[str]:
@@ -166,12 +166,8 @@ class BitNetRebuildTrainer:
         if not self._training_runtime_available():
             raise RuntimeError("No supported runtime is available for real BitNet BF16 fine-tuning")
 
-        tokenizer = AutoTokenizer.from_pretrained(self.base_model_id, trust_remote_code=True)
-        if tokenizer.pad_token_id is None:
-            if tokenizer.eos_token is not None:
-                tokenizer.pad_token = tokenizer.eos_token
-            else:
-                tokenizer.add_special_tokens({"pad_token": "<|endoftext|>"})
+        source = self.training_source or local_training_parent(self.base_model_id)
+        tokenizer = AutoTokenizer.from_pretrained(source, local_files_only=True, trust_remote_code=True)
 
         device_map = "auto"
         dtype = torch.bfloat16
@@ -185,7 +181,7 @@ class BitNetRebuildTrainer:
             dtype = torch.float32
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.base_model_id,
+            source,
             torch_dtype=dtype,
             device_map=device_map,
             low_cpu_mem_usage=True,
@@ -220,31 +216,25 @@ class BitNetRebuildTrainer:
         model.train()
         return model, tokenizer
 
-    @staticmethod
-    def _snapshot_trainable(model) -> Dict[str, Any]:
-        return {
-            name: param.detach().float().cpu().clone()
-            for name, param in model.named_parameters()
-            if param.requires_grad
-        }
-
-    @staticmethod
-    def _drift_l2(before: Dict[str, Any], model) -> Tuple[float, int]:
-        total = 0.0
-        touched = 0
-        for name, param in model.named_parameters():
-            if not param.requires_grad or name not in before:
-                continue
-            delta = param.detach().float().cpu() - before[name]
-            total += float((delta * delta).sum().item())
-            touched += int(param.numel())
-        return math.sqrt(max(total, 0.0)), touched
-
     def _convert_merged_checkpoint(self, merged_dir: str, output_tmp: str) -> None:
         source = self._bitnet_source()
         if source is None:
             raise RuntimeError("Microsoft BitNet conversion source is unavailable")
 
+        converter = source / "utils" / "convert-hf-to-gguf-bitnet.py"
+        if self.quantization is None:
+            raise RuntimeError("Select and verify the source BitNet tensor encoding before conversion")
+        help_result = run_conversion([sys.executable, str(converter), "--help"], cwd=str(source),
+                                     cancel_event=self.cancel_event)
+        supported = re.search(r"--outtype\s+\{([^}]+)\}", help_result.stdout or "")
+        if supported and self.quantization in supported[1].split(","):
+            run = run_conversion([sys.executable, str(converter), merged_dir, "--outtype", self.quantization,
+                                  "--outfile", output_tmp], cwd=str(source), cancel_event=self.cancel_event)
+            if run.returncode or not Path(output_tmp).is_file():
+                raise RuntimeError("Native BitNet conversion failed: " + (run.stderr or run.stdout)[-2000:])
+            return
+        if self.quantization != "i2_s":
+            raise RuntimeError("The installed converter does not support rebuilding the selected " + self.quantization)
         quantizer = self._quantizer(source)
         if quantizer is None:
             raise RuntimeError("Official BitNet quantizer is unavailable")
@@ -266,16 +256,14 @@ class BitNetRebuildTrainer:
                     "Official Microsoft BitNet preprocess/converter inputs are unavailable"
                 )
 
-            proc = subprocess.run(
+            proc = run_conversion(
                 [
                     sys.executable,
                     str(preprocess),
                     "--input", str(model_file),
                     "--output", str(processed_file),
                 ],
-                cwd=str(source),
-                capture_output=True,
-                text=True,
+                cwd=str(source), cancel_event=self.cancel_event,
             )
             if proc.returncode != 0 or not processed_file.is_file():
                 raise RuntimeError(
@@ -286,7 +274,7 @@ class BitNetRebuildTrainer:
             os.replace(str(model_file), str(backup_file))
             os.replace(str(processed_file), str(model_file))
             try:
-                proc = subprocess.run(
+                proc = run_conversion(
                     [
                         sys.executable,
                         str(converter_ms),
@@ -296,9 +284,7 @@ class BitNetRebuildTrainer:
                         "--concurrency", "1",
                         "--outfile", str(f32),
                     ],
-                    cwd=str(source),
-                    capture_output=True,
-                    text=True,
+                    cwd=str(source), cancel_event=self.cancel_event,
                 )
                 if proc.returncode != 0 or not f32.is_file():
                     raise RuntimeError(
@@ -314,11 +300,9 @@ class BitNetRebuildTrainer:
                 except OSError:
                     pass
 
-            proc = subprocess.run(
+            proc = run_conversion(
                 [str(quantizer), str(f32), output_tmp, "I2_S", "1"],
-                cwd=str(source),
-                capture_output=True,
-                text=True,
+                cwd=str(source), cancel_event=self.cancel_event,
             )
             if proc.returncode != 0 or not os.path.isfile(output_tmp):
                 raise RuntimeError(
@@ -333,11 +317,9 @@ class BitNetRebuildTrainer:
         if not converter.is_file():
             raise RuntimeError("Official BitNet HF converter is unavailable")
 
-        proc = subprocess.run(
+        proc = run_conversion(
             [sys.executable, str(converter), merged_dir, "--outtype", "f32"],
-            cwd=str(source),
-            capture_output=True,
-            text=True,
+            cwd=str(source), cancel_event=self.cancel_event,
         )
         f32 = Path(merged_dir) / "ggml-model-f32.gguf"
         if proc.returncode != 0 or not f32.is_file():
@@ -346,11 +328,9 @@ class BitNetRebuildTrainer:
                 + (proc.stderr or proc.stdout or "f32 GGUF was not produced").strip()
             )
 
-        proc = subprocess.run(
+        proc = run_conversion(
             [str(quantizer), str(f32), output_tmp, "I2_S", "1"],
-            cwd=str(source),
-            capture_output=True,
-            text=True,
+            cwd=str(source), cancel_event=self.cancel_event,
         )
         if proc.returncode != 0 or not os.path.isfile(output_tmp):
             raise RuntimeError(
@@ -359,163 +339,44 @@ class BitNetRebuildTrainer:
             )
 
     def train(
-        self,
-        data: List[Dict[str, str]],
-        *,
-        learning_rate: float = 1e-4,
-        steps: int = 3,
-        max_length: int = 512,
-    ) -> Tuple[Dict[str, Any], float, int, str]:
-        import torch
+        self, data, *, output_directory, previous_peft=None, learning_rate=1e-4,
+        steps=3, max_length=256, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
+    ):
+        """Build the complete candidate inside the caller's unpublished generation."""
+        from core.torch_context_learning import check_cancelled, update_lora, verify_saved_lora
 
-        rows = [
-            item for item in (data or [])
-            if str(item.get("prompt") or "").strip()
-            and str(item.get("completion") or "").strip()
-        ]
-        if not rows:
-            raise RuntimeError("BitNet trainer received no prompt/completion pairs")
-
-        self.deploy_root.mkdir(parents=True, exist_ok=True)
+        output = Path(output_directory)
+        self.cancel_event = cancel_event
+        peft_path = output / "peft"
+        if previous_peft is not None and not (Path(previous_peft) / "adapter_config.json").is_file():
+            raise RuntimeError("The active deployment is missing its cumulative PEFT checkpoint")
+        self.peft_dir = Path(previous_peft or peft_path)
+        check_cancelled(cancel_event)
         model, tokenizer = self._load_trainable_model()
-        before = self._snapshot_trainable(model)
-        params = [p for p in model.parameters() if p.requires_grad]
-        if not params:
-            raise RuntimeError("BitNet PEFT model exposes no trainable parameters")
-        optimizer = torch.optim.AdamW(params, lr=float(learning_rate))
-
-        tmp_peft = tempfile.mkdtemp(prefix="bitnet-peft-next-", dir=str(self.deploy_root))
-        tmp_merged = tempfile.mkdtemp(prefix="bitnet-merged-", dir=str(self.deploy_root))
-        tmp_deploy = str(self.learned_model_path) + ".tmp"
-        peft_backup = str(self.peft_dir) + ".previous"
-
         try:
-            for _ in range(max(1, int(steps))):
-                for item in rows:
-                    prompt = str(item["prompt"]).strip()
-                    completion = str(item["completion"]).strip()
-                    prefix, full_text = self._format_training_example(tokenizer, prompt, completion)
-                    encoded = tokenizer(
-                        full_text,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=max(32, int(max_length)),
-                    )
-                    prefix_ids = tokenizer(
-                        prefix,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=max(32, int(max_length)),
-                    )["input_ids"]
-
-                    try:
-                        device = next(p.device for p in model.parameters() if p.requires_grad)
-                    except StopIteration as exc:
-                        raise RuntimeError("BitNet adapter exposes no trainable parameters") from exc
-
-                    encoded = {k: v.to(device) for k, v in encoded.items()}
-                    labels = encoded["input_ids"].clone()
-                    prompt_len = min(int(prefix_ids.shape[1]), int(labels.shape[1]))
-                    labels[:, :prompt_len] = -100
-
-                    optimizer.zero_grad(set_to_none=True)
-                    out = model(**encoded, labels=labels)
-                    loss = out.loss
-                    if loss is None or not torch.isfinite(loss):
-                        raise RuntimeError("BitNet adapter training produced a non-finite loss")
-                    loss.backward()
-                    optimizer.step()
-
-            drift, touched = self._drift_l2(before, model)
-            if drift <= 0.0 or touched <= 0:
-                raise RuntimeError("BitNet training completed but measured zero parameter change")
-
-            model.save_pretrained(tmp_peft, safe_serialization=True)
-            tokenizer.save_pretrained(tmp_peft)
-
-            # Merge the cumulative PEFT state into the BF16 master checkpoint, then
-            # convert that real updated model back into BitNet's deployment format.
-            if not hasattr(model, "merge_and_unload"):
-                raise RuntimeError("BitNet PEFT model cannot merge its learned adapter")
-            merged = model.merge_and_unload()
-            # Microsoft convert-helper-bitnet.py expects one model.safetensors.
-            merged.save_pretrained(
-                tmp_merged,
-                safe_serialization=True,
-                max_shard_size="100GB",
+            metrics, drift = update_lora(
+                model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
+                fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+                previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
             )
-            tokenizer.save_pretrained(tmp_merged)
-
-            # Microsoft's converter is file-based. Release both the PEFT graph and
-            # merged BF16 model before conversion so their memory cannot overlap.
-            try:
-                optimizer.zero_grad(set_to_none=True)
-            except Exception:
-                pass
-            before.clear()
-            params.clear()
-            encoded = None
-            prefix_ids = None
-            labels = None
-            out = None
-            loss = None
-            del optimizer
-            del merged
-            del model
-            model = None
-            tokenizer = None
-            release_training_memory()
-
-            self._convert_merged_checkpoint(tmp_merged, tmp_deploy)
-
-            if os.path.isdir(peft_backup):
-                shutil.rmtree(peft_backup, ignore_errors=True)
-            if self.peft_dir.is_dir():
-                os.replace(str(self.peft_dir), peft_backup)
-            os.replace(tmp_peft, str(self.peft_dir))
-            tmp_peft = ""
-
-            os.replace(tmp_deploy, str(self.learned_model_path))
-            if os.path.isdir(peft_backup):
-                shutil.rmtree(peft_backup, ignore_errors=True)
-
-            return {
-                "trainable_parameters_touched": int(touched),
-                "base_model_id": self.base_model_id,
-                "adapter_format": "peft-merged-bitnet-i2_s",
-            }, float(drift), int(touched), str(self.learned_model_path)
-        except BaseException:
-            if os.path.isdir(peft_backup) and not self.peft_dir.is_dir():
-                os.replace(peft_backup, str(self.peft_dir))
-            raise
+            check_cancelled(cancel_event)
+            model.save_pretrained(peft_path, safe_serialization=True, save_embedding_layers=False)
+            verify_saved_lora(model, peft_path)
+            tokenizer.save_pretrained(peft_path)
+            with tempfile.TemporaryDirectory(prefix="bitnet-merge-", dir=output) as merged_dir:
+                merged = model.merge_and_unload(safe_merge=True)
+                merged.save_pretrained(merged_dir, safe_serialization=True, max_shard_size="100GB")
+                tokenizer.save_pretrained(merged_dir)
+                del merged
+                model = tokenizer = None
+                release_training_memory()
+                check_cancelled(cancel_event)
+                deployment = output / f"learned-{self.quantization}.gguf"
+                self._convert_merged_checkpoint(merged_dir, str(deployment))
+            adapter_format = "peft-merged-bitnet-" + self.quantization
+            check_cancelled(cancel_event)
+            metrics.update({"base_model_id": self.base_model_id, "adapter_format": adapter_format})
+            return metrics, drift, metrics["trainable_parameters_touched"], str(deployment)
         finally:
-            if tmp_peft and os.path.isdir(tmp_peft):
-                shutil.rmtree(tmp_peft, ignore_errors=True)
-            shutil.rmtree(tmp_merged, ignore_errors=True)
-            try:
-                if os.path.isfile(tmp_deploy):
-                    os.remove(tmp_deploy)
-            except OSError:
-                pass
-            try:
-                optimizer.zero_grad(set_to_none=True)
-            except Exception:
-                pass
-            try:
-                before.clear()
-            except Exception:
-                pass
-            try:
-                del optimizer
-            except Exception:
-                pass
-            try:
-                del tokenizer
-            except Exception:
-                pass
-            try:
-                if model is not None:
-                    del model
-            except Exception:
-                pass
+            model = tokenizer = None
             release_training_memory()

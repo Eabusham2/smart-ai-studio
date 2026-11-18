@@ -276,18 +276,11 @@ Current runtime chain:
 
 If the packed prompt already exceeds Context, generation fails closed rather than dropping conversation history.
 
-### 10.4 Awake consolidation
+### 10.4 Persistent context learning
 
-At the 80% Context watermark:
+At 80% of Context, eligible text backends train on old, complete exchanges using bounded causal windows. The active backend measures source continuation and retention losses before and after training. A successful adapter checkpoint publishes the retirement receipt for those exact turns. Generation then uses the reduced active history and can continue consolidation toward 60% of Context. System instructions, tool exchanges and incomplete turns stay in text.
 
-`_apply_awake_learning`
-→ choose oldest complete user/assistant chunk
-→ `AwakeOnlineConsolidator.consolidate_chunk_sync`
-→ real active backend `train_mini_batch`
-→ nonzero measured parameter drift + persisted artifact
-→ only then remove that old dialogue chunk from active textual history.
-
-If training fails, the dialogue remains in history. Every backend uses transaction/rollback semantics and shared training-memory cleanup.
+The GUI archive retains the full visible transcript across restarts. Both ordinary and Best Work chat project that archive through the loaded checkpoint before packing the prompt. Sleep starts one batch on the active backend. A failed or cancelled candidate leaves its turns active and the preceding generation available. Strata retains its full text history. [Backend capabilities, memory limits, migration and evaluation](parametric-memory.md)
 
 ### 10.5 Explicit Learn → real update → RSI
 
@@ -713,7 +706,7 @@ Awake consolidation and explicit Learn select the active real trainable backend 
 - **MLX:** LoRA-only trainables, real gradients/AdamW, EWC/Fisher, nonzero drift, transactional adapter save/rollback.
 - **GGUF/Prism:** frozen quantized base + real PEFT/QLoRA sidecar on a declared compatible parent, nonzero drift, official LoRA→GGUF conversion, hot reload, rollback.
 - **BitNet:** official bitnet.cpp deployment runtime; when a verified BF16 training lineage exists, BF16 parent → PEFT update → merge → I2_S rebuild → hot reload, with rollback. If that lineage/toolchain cannot be proven, training fails closed rather than reporting fake learning.
-- **Transformers/controller:** language-projection LoRA, completion-only labels, real backward/AdamW, nonzero drift, transactional persistence.
+- **Transformers/controller:** language-projection LoRA, bounded causal-token windows covering the full dialogue, AdamW, finite candidate checks and model-bound PEFT persistence.
 
 RSI persistent self-memory remains question/reward/PASS-free: successful self-generated traces are stored separately and only hidden verification gates eligibility.
 

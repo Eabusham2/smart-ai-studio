@@ -92,6 +92,8 @@ def tokenize_training_row(tokenizer, item: Mapping, *, supervise_prompt: bool = 
     if labels:
         labels[0] = IGNORE_INDEX
     if not supervise_prompt:
+        if not full.startswith(prefix):
+            raise RuntimeError("The native chat template does not expose a verified assistant completion boundary")
         prefix_ids = encode_text(tokenizer, prefix)
         # BPE can merge at the assistant boundary. The longest common token
         # prefix masks only tokens that are demonstrably part of the prompt.
@@ -126,11 +128,18 @@ def windows_from_tokens(tokens: Sequence[int], labels: Sequence[int] | None = No
 def iter_training_windows(tokenizer, data: Iterable[Mapping], *, max_tokens: int = 256, supervise_prompt: bool = True) -> Iterator[TrainingWindow]:
     for index, item in enumerate(data):
         tokens, labels = tokenize_training_row(tokenizer, item, supervise_prompt=supervise_prompt)
+        if not any(value != IGNORE_INDEX for value in labels[1:]):
+            raise ValueError(f"Learning row {index} has no supervised next-token targets")
         yield from windows_from_tokens(tokens, labels, max_tokens=max_tokens, row_index=index)
 
 
 def iter_probe_windows(tokenizer, prompt: str, completion: str, *, max_tokens: int = 256) -> Iterator[TrainingWindow]:
-    """Teacher-force only an explicit answer, without an EOS or role-label target."""
+    """Score an answer with its complete source-free cue in every bounded window.
+
+Unlike raw corpus training, a recall probe cannot discard its question merely
+because its answer lands at a window boundary. Long answers retain the cue and
+one preceding answer token; a cue that cannot fit is rejected explicitly.
+"""
     _, prefix = format_training_row(tokenizer, {"prompt": prompt, "completion": completion})
     prefix_ids = encode_text(tokenizer, prefix)
     tokens = encode_text(tokenizer, prefix + str(completion))
@@ -141,8 +150,22 @@ def iter_probe_windows(tokenizer, prompt: str, completion: str, *, max_tokens: i
         boundary += 1
     if not boundary or boundary >= len(tokens):
         raise ValueError("Probe has no independently tokenized answer targets")
-    labels = [IGNORE_INDEX] * boundary + tokens[boundary:]
-    yield from windows_from_tokens(tokens, labels, max_tokens=max_tokens)
+    context = tokens[:boundary]
+    targets = tokens[boundary:]
+    size = int(max_tokens)
+    if size <= len(context):
+        raise ValueError("The full source-free probe cue does not fit the scoring window")
+    cursor = 0
+    while cursor < len(targets):
+        prefix_context = context + ([targets[cursor - 1]] if cursor else [])
+        room = size - len(prefix_context)
+        if room <= 0:
+            raise ValueError("The probe cue and answer predecessor leave no scoring room")
+        selected = targets[cursor:cursor + room]
+        ids = tuple(prefix_context + selected)
+        labels = tuple([IGNORE_INDEX] * len(prefix_context) + selected)
+        yield TrainingWindow(ids, labels, 0, cursor, cursor + len(selected))
+        cursor += len(selected)
 
 
 def training_coverage(tokenizer, data: Iterable[Mapping], *, max_tokens: int = 256, supervise_prompt: bool = True) -> dict:

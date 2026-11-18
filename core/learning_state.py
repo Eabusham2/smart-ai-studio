@@ -58,10 +58,16 @@ def identity_digest(identity: dict) -> str:
     return hashlib.sha256(_canonical(identity)).hexdigest()
 
 
-def file_sha256(path) -> str:
+def _check_cancelled(event) -> None:
+    if event is not None and (event() if callable(event) else event.is_set()):
+        raise InterruptedError("Learning cancelled before checkpoint publication")
+
+
+def file_sha256(path, *, cancel_event=None) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
+            _check_cancelled(cancel_event)
             digest.update(block)
     return digest.hexdigest()
 
@@ -94,7 +100,7 @@ def _state_root(state_root=None) -> Path:
     if state_root is not None:
         return Path(state_root).expanduser().resolve()
     from config.paths import get_portable_data_dir
-    return Path(get_portable_data_dir()) / "learned_memory"
+    return (Path(get_portable_data_dir()) / "learned_memory").resolve()
 
 
 def _local_model_fingerprint(source: Path, root: Path) -> dict:
@@ -117,8 +123,8 @@ def _local_model_fingerprint(source: Path, root: Path) -> dict:
     else:
         base = source
         paths = sorted(path for path in source.rglob("*") if path.is_file() and (
-            path.suffix.lower() in {".safetensors", ".gguf", ".npz", ".bin", ".model", ".tiktoken"}
-            or path.name in {"config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "generation_config.json", "chat_template.jinja"}
+            path.suffix.lower() in {".safetensors", ".gguf", ".npz", ".bin", ".model", ".tiktoken", ".json", ".jinja", ".jinja2", ".py", ".yaml", ".yml"}
+            or path.name in {"merges.txt", "vocab.txt", "tokenizer.tiktoken"}
         ) and not any(part in {".git", "learned_memory", "controller_lora", "adapters"} for part in path.relative_to(base).parts))
     fingerprints = {}
     cache = {}
@@ -137,14 +143,20 @@ def _local_model_fingerprint(source: Path, root: Path) -> dict:
     return fingerprints
 
 
-def _cached_source(source: str, info: dict) -> Path:
+def requested_revision(info: dict) -> str | None:
+    return next((str(info[key]) for key in ("resolved_revision", "repo_revision", "source_revision", "revision", "commit_sha") if info.get(key)), None)
+
+
+def cached_model_source(source: str, info: dict | None = None) -> Path:
+    """Resolve only the exact requested revision already in the local Hub cache."""
+    info = dict(info or {})
     local = Path(source).expanduser()
     if local.exists():
         return local
     if source.count("/") == 1 and not source.startswith((".", "/")):
         try:
             from huggingface_hub import snapshot_download
-            return Path(snapshot_download(source, revision=info.get("resolved_revision") or info.get("revision"), local_files_only=True))
+            return Path(snapshot_download(source, revision=requested_revision(info), local_files_only=True))
         except (ImportError, OSError, ValueError):
             pass
     return local
@@ -155,11 +167,11 @@ def model_identity(model_path, model_info=None, *, adapter_format: str = "mlx", 
     source = str(model_path or info.get("model_path") or info.get("repo_id") or "").strip()
     if not source:
         raise ValueError("Persistent learning requires a specific base model identity")
-    local = _cached_source(source, info)
-    files = _local_model_fingerprint(local.resolve(), _state_root(state_root)) if local.exists() else {}
+    local = cached_model_source(source, info)
+    files = _local_model_fingerprint(local.absolute(), _state_root(state_root)) if local.exists() else {}
     repo = str(info.get("repo_id") or info.get("hf_repo_id") or (source if not Path(source).expanduser().exists() else ""))
-    revision = str(info.get("resolved_revision") or info.get("revision") or info.get("commit_sha") or "")
-    if not revision and "snapshots" in local.parts:
+    revision = str(requested_revision(info) or "")
+    if "snapshots" in local.parts:
         position = local.parts.index("snapshots")
         if len(local.parts) > position + 1:
             revision = local.parts[position + 1]
@@ -194,6 +206,8 @@ class LearningStateStore:
         self.directory = _state_root(state_root) / self.identity_digest
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / "generations").mkdir(exist_ok=True)
+        _fsync_directory(self.directory)
+        _fsync_directory(self.directory.parent)
         with _LOCKS_LOCK:
             self.lock = _LOCKS.setdefault(str(self.directory), threading.RLock())
 
@@ -271,8 +285,9 @@ class LearningTransaction:
         self.directory.mkdir(parents=True, exist_ok=False)
         self.committed = False
 
-    def commit(self, checkpoint: str, metadata=None) -> dict:
+    def commit(self, checkpoint: str, metadata=None, *, cancel_event=None) -> dict:
         with self.store.lock, _process_commit_lock(self.store.directory):
+            _check_cancelled(cancel_event)
             pointer = self.store._read_pointer()
             if (pointer["generation"] if pointer else None) != self.parent:
                 raise RuntimeError("Learned memory changed during this update; retry against the current generation")
@@ -281,6 +296,7 @@ class LearningTransaction:
                 raise RuntimeError("Training did not produce its declared checkpoint")
             artifacts = {}
             for path in sorted(self.directory.rglob("*")):
+                _check_cancelled(cancel_event)
                 if path.is_symlink():
                     raise RuntimeError("Learning artifacts must be regular files, not symbolic links")
                 if path.is_file() and path.name != "manifest.json":
@@ -288,9 +304,17 @@ class LearningTransaction:
                         raise RuntimeError("Training produced an empty artifact")
                     with open(path, "rb") as stream:
                         os.fsync(stream.fileno())
-                    artifacts[path.relative_to(self.directory).as_posix()] = {"size": path.stat().st_size, "sha256": file_sha256(path)}
+                    artifacts[path.relative_to(self.directory).as_posix()] = {"size": path.stat().st_size, "sha256": file_sha256(path, cancel_event=cancel_event)}
             if not artifacts:
                 raise RuntimeError("Training produced no persisted parameters")
+            relative_target = target.relative_to(self.directory).as_posix()
+            if target.is_file():
+                authenticated = relative_target in artifacts
+            else:
+                prefix = "" if relative_target == "." else relative_target + "/"
+                authenticated = any(name.startswith(prefix) for name in artifacts)
+            if not authenticated:
+                raise RuntimeError("Declared checkpoint contains no authenticated artifact")
             manifest = {
                 "schema": SCHEMA_VERSION, "identity": self.store.identity,
                 "identity_digest": self.store.identity_digest,
@@ -300,22 +324,34 @@ class LearningTransaction:
                 "metadata": {**self.metadata, **dict(metadata or {})},
             }
             _atomic_json(self.directory / "manifest.json", manifest)
-            _fsync_directory(self.directory)
+            directories = {self.directory, self.directory.parent}
+            for relative in artifacts:
+                parent = (self.directory / relative).parent
+                while parent != self.directory:
+                    directories.add(parent)
+                    parent = parent.parent
+            for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
+                _fsync_directory(directory)
+            _check_cancelled(cancel_event)
             new_pointer = {
                 "generation": self.generation,
                 "manifest_sha256": file_sha256(self.directory / "manifest.json"),
             }
             try:
                 _atomic_json(self.store.directory / "current.json", new_pointer)
-            except OSError as exc:
-                # A directory-fsync error after atomic publication must not
-                # roll live weights back while leaving the new pointer active.
+                self.committed = True
+            except BaseException as exc:
+                # An fsync error or process interrupt after publication must
+                # never erase the selected generation or roll live weights
+                # back while leaving the new pointer active.
                 # On restart the atomic pointer selects an entire old or new
                 # generation, including its matching retirement metadata.
                 if self.store._read_pointer() != new_pointer:
                     raise
+                self.committed = True
+                if not isinstance(exc, OSError):
+                    raise
                 manifest["durability_warning"] = str(exc)
-            self.committed = True
             # Garbage collection is not part of commit correctness. Keep the old
             # committed generation for recovery; never erase a concurrent stage.
             try:
@@ -328,7 +364,12 @@ class LearningTransaction:
 
     def abort(self) -> None:
         if not self.committed:
-            shutil.rmtree(self.directory, ignore_errors=True)
+            with self.store.lock, _process_commit_lock(self.store.directory):
+                pointer = self.store._read_pointer()
+                if pointer and pointer["generation"] == self.generation:
+                    self.committed = True
+                    return
+                shutil.rmtree(self.directory, ignore_errors=True)
 
     def __enter__(self):
         return self
@@ -345,7 +386,8 @@ def bind_learning_state(backend, *, model_path=None, model_info=None, state_root
         adapter_format=adapter_format, state_root=state_root,
     )
     existing = getattr(backend, "learning_state", None)
-    if isinstance(existing, LearningStateStore) and existing.identity == identity:
+    intended_directory = _state_root(state_root) / identity_digest(identity)
+    if isinstance(existing, LearningStateStore) and existing.identity == identity and existing.directory.resolve() == intended_directory.resolve():
         return existing
     store = LearningStateStore(identity, state_root=state_root)
     backend.learning_state = store

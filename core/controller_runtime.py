@@ -351,7 +351,11 @@ class UniversalControllerBackend:
         from config.paths import get_portable_data_dir
         import hashlib
 
-        source = resolve_local_snapshot(self.model_path)
+        from core.learning_state import cached_model_source
+        source = str(cached_model_source(self.model_path, self.model_info))
+        revision = (self.model_info.get("resolved_revision") or self.model_info.get("repo_revision")
+                    or self.model_info.get("source_revision") or self.model_info.get("revision"))
+        source_options = {"revision": revision} if revision and not os.path.exists(source) else {}
         context_tokens = int(getattr(self, "context_tokens", 0) or self.model_info.get("default_context") or 32768)
         kv_bytes = estimate_transformers_kv_bytes(source, context_tokens)
         budgets = transformers_memory_limits(torch, getattr(self, "speed_memory_limit_gb", None), kv_bytes=kv_bytes)
@@ -361,11 +365,11 @@ class UniversalControllerBackend:
         self._offload_directory = tempfile.mkdtemp(prefix=f"{source_key}-", dir=offload_root)
         processor = None
         try:
-            processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True)
+            processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True, **source_options)
         except Exception:
             processor = None
         if processor is None:
-            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options)
 
         requested = str(self.model_info.get("transformers_auto_class") or "").strip()
         candidates = [requested] if requested else []
@@ -395,7 +399,7 @@ class UniversalControllerBackend:
                     offload_folder=self._offload_directory,
                     offload_state_dict=True,
                     low_cpu_mem_usage=True,
-                    trust_remote_code=True,
+                    trust_remote_code=True, **source_options,
                 )
                 break
             except Exception as exc:
@@ -413,13 +417,20 @@ class UniversalControllerBackend:
         # transactionally on every model load so learned chat state survives restarts.
         key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
         eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
-        self.adapter_path = (
-            os.path.join(os.path.abspath(eval_root), key)
-            if eval_root
-            else os.path.join(get_portable_data_dir(), "controller_lora", key)
-        )
-        adapter_cfg = os.path.join(self.adapter_path, "adapter_config.json")
-        if os.path.isfile(adapter_cfg):
+        from core.learning_state import bind_learning_state
+        legacy_root = os.path.abspath(eval_root) if eval_root else os.path.join(get_portable_data_dir(), "controller_lora")
+        legacy_path = os.path.join(legacy_root, key)
+        state_root = os.path.join(legacy_root, "learned_memory")
+        store = bind_learning_state(self, model_path=source, model_info=self.model_info,
+                                    state_root=state_root, adapter_format="peft")
+        self._loaded_learning_checkpoint = self.adapter_path = store.current_checkpoint()
+        if self.adapter_path is None and os.path.isfile(os.path.join(legacy_path, "adapter_config.json")):
+            selected = self.model_info.get("legacy_adapter_path")
+            if not selected or os.path.realpath(selected) != os.path.realpath(legacy_path):
+                raise RuntimeError("Existing controller LoRA has no base-model fingerprint; refusing to omit or apply it. "
+                                   "Explicitly select the legacy adapter for this base to migrate it: " + legacy_path)
+            self.adapter_path = legacy_path
+        if self.adapter_path:
             try:
                 from peft import PeftModel
                 model = PeftModel.from_pretrained(
@@ -450,10 +461,11 @@ class UniversalControllerBackend:
             return False
         if self.runtime not in ("transformers_auto", "transformers", "hf_transformers"):
             return bool(self.can_train)
+        if getattr(self.config, "is_encoder_decoder", False):
+            return False
         try:
-            import torch  # noqa: F401
-            import peft  # noqa: F401
-            return True
+            from peft import PeftModel
+            return isinstance(self.model, PeftModel) or bool(self._transformers_lora_targets(self.model))
         except Exception:
             return False
 
@@ -475,6 +487,7 @@ class UniversalControllerBackend:
     @staticmethod
     def _transformers_lora_targets(model) -> List[str]:
         import torch
+        from transformers.pytorch_utils import Conv1D
         suffixes = {
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -484,12 +497,12 @@ class UniversalControllerBackend:
         }
         blocked = (
             "vision", "visual", "image", "audio", "speech",
-            "projector", "mm_projector", "vision_tower",
+            "projector", "mm_projector", "vision_tower", "mtp",
         )
         targets: List[str] = []
         for name, module in model.named_modules():
             leaf = name.rsplit(".", 1)[-1]
-            if leaf not in suffixes or not isinstance(module, torch.nn.Linear):
+            if leaf not in suffixes or not isinstance(module, (torch.nn.Linear, Conv1D)):
                 continue
             low = name.lower()
             if any(marker in low for marker in blocked):
@@ -533,198 +546,65 @@ class UniversalControllerBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
-        **_kwargs,
+        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None, **_kwargs,
     ):
-        """Real transactional completion-only PEFT update for Transformers controllers."""
-        del adapters, fisher_matrix, lambda_ewc, save_path
-        import math
-        import shutil
+        """Validate the live PEFT candidate before publishing its checkpoint generation."""
         import torch
+        from core.torch_context_learning import check_cancelled, default_validation, lora_parameters, update_lora, validate_candidate, verify_saved_lora
 
-        model = self._ensure_transformers_lora()
-        tok = self.tokenizer
-        rows = [
-            item for item in (data or [])
-            if str(item.get("prompt") or "").strip()
-            and str(item.get("completion") or "").strip()
-        ]
-        if not rows:
-            raise RuntimeError("Controller trainer received no prompt/completion pairs")
-
-        before = {
-            name: param.detach().float().cpu().clone()
-            for name, param in model.named_parameters()
-            if param.requires_grad
-        }
-        params = [param for param in model.parameters() if param.requires_grad]
-        if not params:
-            raise RuntimeError("Controller LoRA exposes no trainable parameters")
-
-        optimizer = torch.optim.AdamW(params, lr=float(learning_rate))
-        model.train()
-        tmp = ""
-        backup = ""
-        success = False
-        had_adapter = bool(self.adapter_path and os.path.isdir(self.adapter_path))
-
+        store = self.learning_state
+        txn = store.begin(metadata=learning_metadata)
+        before = {}
+        model = None
+        original_path = self.adapter_path
         try:
-            trained_rows = 0
-            for _ in range(max(1, int(steps))):
-                for item in rows:
-                    prompt = str(item["prompt"]).strip()
-                    completion = str(item["completion"]).strip()
-                    messages = [{"role": "user", "content": prompt}]
-                    prefix = None
-                    apply_template = getattr(tok, "apply_chat_template", None)
-                    if callable(apply_template):
-                        try:
-                            prefix = apply_template(
-                                messages,
-                                tokenize=False,
-                                add_generation_prompt=True,
-                            )
-                        except Exception:
-                            prefix = None
-                    if not prefix:
-                        prefix = (
-                            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-                            f"<|im_start|>assistant\n"
-                        )
-                    full = prefix + completion
-                    if "<|im_start|>" in prefix:
-                        full += "<|im_end|>"
-
-                    encoded = tok(
-                        full,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=512,
-                    )
-                    prefix_ids = tok(
-                        prefix,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=512,
-                    )["input_ids"]
-                    try:
-                        device = next(param.device for param in params)
-                    except StopIteration:
-                        raise RuntimeError("Controller LoRA lost its trainable parameters")
-
-                    encoded = {key: value.to(device) for key, value in encoded.items()}
-                    labels = encoded["input_ids"].clone()
-                    prompt_len = min(int(prefix_ids.shape[1]), int(labels.shape[1]))
-                    labels[:, :prompt_len] = -100
-
-                    optimizer.zero_grad(set_to_none=True)
-                    output = model(**encoded, labels=labels)
-                    loss = getattr(output, "loss", None)
-                    if loss is None or not torch.isfinite(loss):
-                        raise RuntimeError("Controller LoRA training produced a non-finite loss")
-                    loss.backward()
-                    optimizer.step()
-                    trained_rows += 1
-
-            if trained_rows <= 0:
-                raise RuntimeError("Controller LoRA found no trainable prompt/completion rows")
-
-            total = 0.0
-            touched = 0
-            for name, param in model.named_parameters():
-                if not param.requires_grad or name not in before:
-                    continue
-                delta = param.detach().float().cpu() - before[name]
-                total += float((delta * delta).sum().item())
-                touched += int(param.numel())
-            drift = math.sqrt(max(total, 0.0))
-            if drift <= 0.0 or touched <= 0:
-                raise RuntimeError("Controller LoRA completed but measured zero parameter change")
-
-            if not self.adapter_path:
-                raise RuntimeError("Controller adapter persistence path is unavailable")
-            os.makedirs(os.path.dirname(self.adapter_path), exist_ok=True)
-            tmp = self.adapter_path + ".next"
-            backup = self.adapter_path + ".previous"
-            shutil.rmtree(tmp, ignore_errors=True)
-            shutil.rmtree(backup, ignore_errors=True)
-
-            model.save_pretrained(tmp, safe_serialization=True)
-            if had_adapter:
-                os.replace(self.adapter_path, backup)
-            os.replace(tmp, self.adapter_path)
-            tmp = ""
-
-            self.adapters = {
-                "trainable_parameters_touched": touched,
-                "adapter_format": "peft-lora",
-            }
-            result = (dict(self.adapters), float(drift))
-            success = True
-            return result
-
+            if store.current_checkpoint() != self._loaded_learning_checkpoint:
+                raise RuntimeError("Reload the latest committed controller checkpoint before learning")
+            check_cancelled(cancel_event)
+            if validation_callback is None:
+                validation_callback = default_validation(self, data)
+            model = self._ensure_transformers_lora()
+            named = lora_parameters(model)
+            before = {name: param.detach().cpu().clone() for name, param in named.items()}
+            metrics, drift = update_lora(
+                model, self.tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=256,
+                fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, before=before,
+                anchor_texts=anchor_texts, output_directory=txn.directory,
+                previous_directory=Path(self._loaded_learning_checkpoint).parent if self._loaded_learning_checkpoint else None,
+            )
+            evidence = validate_candidate(self, validation_callback, cancel_event)
+            tmp = txn.directory / "peft"
+            model.save_pretrained(tmp, safe_serialization=True, save_embedding_layers=False)
+            verify_saved_lora(model, tmp)
+            check_cancelled(cancel_event)
+            metrics["adapter_format"] = "peft-lora"
+            txn.commit("peft", metadata={"metrics": metrics, "validation": evidence, "drift_l2": drift}, cancel_event=cancel_event)
+            return dict(metrics), drift
         except BaseException:
-            success = False
-            # Restore live trainable tensors first, then restore the persisted
-            # adapter directory if the filesystem transaction had started.
-            try:
+            if before and not txn.committed:
                 with torch.no_grad():
-                    for name, param in model.named_parameters():
-                        snapshot = before.get(name)
-                        if snapshot is None or not param.requires_grad:
-                            continue
-                        param.copy_(
-                            snapshot.to(device=param.device, dtype=param.dtype)
-                        )
-            except Exception:
-                pass
-
-            if tmp and os.path.isdir(tmp):
-                shutil.rmtree(tmp, ignore_errors=True)
-
-            if backup and os.path.isdir(backup):
-                if os.path.isdir(self.adapter_path):
-                    shutil.rmtree(self.adapter_path, ignore_errors=True)
-                os.replace(backup, self.adapter_path)
-                backup = ""
-            elif not had_adapter and self.adapter_path and os.path.isdir(self.adapter_path):
-                # A brand-new failed transaction must not leave an unaccepted
-                # persisted adapter behind.
-                shutil.rmtree(self.adapter_path, ignore_errors=True)
+                    for name, param in named.items():
+                        param.copy_(before[name].to(device=param.device, dtype=param.dtype))
+                self.adapter_path = original_path
             raise
-
         finally:
-            if tmp and os.path.isdir(tmp):
-                shutil.rmtree(tmp, ignore_errors=True)
-            if success and backup and os.path.isdir(backup):
-                shutil.rmtree(backup, ignore_errors=True)
-                backup = ""
-            elif backup and os.path.isdir(backup):
-                # Failure/cancellation keeps the previous adapter authoritative.
-                if os.path.isdir(self.adapter_path):
-                    shutil.rmtree(self.adapter_path, ignore_errors=True)
-                try:
-                    os.replace(backup, self.adapter_path)
-                    backup = ""
-                except Exception:
-                    pass
-
-            try:
-                optimizer.zero_grad(set_to_none=True)
-            except Exception:
-                pass
+            if txn.committed:
+                # Publication is authoritative even if interrupted during
+                # post-commit cleanup. The live tensors are already validated.
+                self._loaded_learning_checkpoint = self.adapter_path = str(tmp)
+                self.adapters = metrics
+                self.last_learning_metrics = dict(metrics)
+            txn.abort()
             before.clear()
-            params.clear()
-            encoded = None
-            prefix_ids = None
-            labels = None
-            output = None
-            loss = None
-            try:
-                del optimizer
-            except Exception:
-                pass
-            model.eval()
+            if model is not None:
+                model.eval()
             release_training_memory(self)
+
+    def score_learning_probe(self, prompt, completion):
+        from core.native_speed import runtime_lock
+        from core.torch_context_learning import score_torch_probe
+        with runtime_lock(self):
+            return score_torch_probe(self.model, self.tokenizer, prompt, completion)
 
     @staticmethod
     def _text_from_generation(value: Any) -> str:
@@ -1102,3 +982,8 @@ class UniversalControllerBackend:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+# PEFT optimization, teacher-forced probes, serving and unload share one reentrant lock.
+from core.native_speed import install_native_runtime_lock
+install_native_runtime_lock(UniversalControllerBackend)

@@ -20,7 +20,7 @@ class MLXReasoningBackend:
         self.adapter_path = adapter_path
         self.model = None
         self.tokenizer = None
-        self.adapters = {"lora_layer_0": 0.0}
+        self.adapters = {}
         self.is_mlx_available = False
 
     def load_model(self) -> bool:
@@ -227,132 +227,33 @@ class MLXReasoningBackend:
             except Exception:
                 pass
 
-    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0) -> Dict[str, Any]:
-        """
-        Attaches trainable LoRA adapter tensors to base model linear projection layers
-        while freezing all foundation weights.
-        """
+    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0, layout=None, target_paths=None) -> Dict[str, Any]:
+        """Install or reuse LoRA on the loaded language model."""
         if not self.is_mlx_available or self.model is None:
             raise RuntimeError("Cannot inject LoRA adapters: MLX model is not loaded.")
+        from core.mlx_learning import ensure_adapters
+        return ensure_adapters(self, r, scale, layout, target_paths=target_paths)
 
-        import mlx.core as mx
-        import mlx.nn as nn
-        import mlx.utils
-        from mlx_lm.tuner.lora import LoRALinear
-
-        self.model.freeze()
-        lora_count = 0
-
-        target_layers = getattr(self.model, "layers", None)
-        if target_layers is None and hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
-            target_layers = self.model.model.layers
-
-        if target_layers:
-            for layer in target_layers:
-                # MLP down_proj
-                if hasattr(layer, "mlp") and hasattr(layer.mlp, "down_proj"):
-                    layer.mlp.down_proj = LoRALinear.from_base(layer.mlp.down_proj, r=r, scale=scale)
-                    layer.mlp.down_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
-                    lora_count += 1
-                # Attention projections
-                if hasattr(layer, "self_attn"):
-                    if hasattr(layer.self_attn, "q_proj"):
-                        layer.self_attn.q_proj = LoRALinear.from_base(layer.self_attn.q_proj, r=r, scale=scale)
-                        layer.self_attn.q_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
-                        lora_count += 1
-                    if hasattr(layer.self_attn, "v_proj"):
-                        layer.self_attn.v_proj = LoRALinear.from_base(layer.self_attn.v_proj, r=r, scale=scale)
-                        layer.self_attn.v_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
-                        lora_count += 1
-                elif hasattr(layer, "linear_attn") and hasattr(layer.linear_attn, "out_proj"):
-                    layer.linear_attn.out_proj = LoRALinear.from_base(layer.linear_attn.out_proj, r=r, scale=scale)
-                    layer.linear_attn.out_proj.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
-                    lora_count += 1
-
-        trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
-        self.adapters = trainable_params
-        return trainable_params
-
-    def compute_mlx_fisher(self, anchor_texts: List[str]) -> Dict[str, Any]:
-        """Compute diagonal Fisher while releasing each anchor's autograd state immediately."""
+    def compute_mlx_fisher(self, anchor_texts: List[str], *, max_window_tokens=128, cancel_event=None):
+        """Compute the window-weighted empirical diagonal on only the active adapters."""
         if not self.is_mlx_available or self.model is None or self.tokenizer is None:
             return {}
+        from core.mlx_learning import bounded_tokens, fisher_diagonal
+        return fisher_diagonal(self, anchor_texts, bounded_tokens(self, max_window_tokens), cancel_event)
 
-        import gc
-        import mlx.core as mx
-        import mlx.nn as nn
-        import mlx.utils
-
-        trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
-        if not trainable_params:
-            self.inject_lora_adapters(r=8)
-            trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
-        if not trainable_params:
-            return {}
-
-        fisher_matrix = {k: mx.zeros_like(v) for k, v in trainable_params.items()}
-        mx.eval(*fisher_matrix.values())
-
-        def loss_fn(model, inputs, targets):
-            logits = model(inputs)
-            logits = logits[:, :-1, :]
-            targets = targets[:, 1:]
-            return mx.mean(nn.losses.cross_entropy(logits, targets))
-
-        grad_fn = mx.grad(loss_fn)
-        valid_anchors = 0
+    def score_learning_probe(self, prompt, completion, *, max_window_tokens=128):
+        """Mean teacher-forced NLL on the supplied completion, using the current live weights."""
+        if not self.is_mlx_available or self.model is None or self.tokenizer is None:
+            raise RuntimeError("MLX learning probe requires the loaded language model and tokenizer")
+        from core.mlx_learning import bounded_tokens, score_rows
+        rows = [{"prompt": prompt, "completion": completion}]
         was_training = bool(getattr(self.model, "training", False))
-
         try:
-            self.model.train()
-            for text in anchor_texts:
-                tokens = self.tokenizer.encode(text)
-                if len(tokens) < 2:
-                    continue
-
-                inputs = mx.array([tokens])
-                grads = grad_fn(self.model, inputs, inputs)
-                flat_grads = dict(mlx.utils.tree_flatten(grads))
-                if flat_grads:
-                    mx.eval(*flat_grads.values())
-
-                for key, grad in flat_grads.items():
-                    if key not in fisher_matrix:
-                        continue
-                    grad = mx.stop_gradient(grad)
-                    value = fisher_matrix[key] + (grad * grad)
-                    mx.eval(value)
-                    fisher_matrix[key] = mx.stop_gradient(value)
-
-                valid_anchors += 1
-                grads = None
-                flat_grads = None
-                inputs = None
-                gc.collect(2)
-                try:
-                    mx.clear_cache()
-                except Exception:
-                    pass
-
-            if valid_anchors > 0:
-                inv = 1.0 / float(valid_anchors)
-                for key in list(fisher_matrix):
-                    value = fisher_matrix[key] * inv
-                    mx.eval(value)
-                    fisher_matrix[key] = mx.stop_gradient(value)
-            return fisher_matrix
+            self.model.eval()
+            return score_rows(self.model, self.tokenizer, rows, bounded_tokens(self, max_window_tokens))
         finally:
-            if not was_training:
-                try:
-                    self.model.eval()
-                except Exception:
-                    pass
-            gc.collect(2)
-            try:
-                mx.clear_cache()
-            except Exception:
-                pass
-
+            if was_training:
+                self.model.train()
 
     def count_tokens(self, messages: List[Dict[str, str]]) -> int:
         """Calculates total token length of conversation turns."""
@@ -381,178 +282,191 @@ class MLXReasoningBackend:
         lambda_ewc: float = 400.0,
         learning_rate: float = 1e-4,
         steps: int = 3,
-        save_path: Optional[str] = None
+        save_path: Optional[str] = None,
+        *,
+        max_window_tokens=128,
+        supervise_prompt=True,
+        anchor_texts=None,
+        retention_data=None,
+        retention_tolerance=0.1,
+        cancel_event=None,
+        validation_callback=None,
+        learning_metadata=None,
     ) -> Tuple[Dict[str, Any], float]:
-        """Run a real transactional MLX AdamW/EWC LoRA update."""
+        """Update only live adapters and publish one validated, recoverable generation."""
         del adapters
         if not self.is_mlx_available or self.model is None or self.tokenizer is None:
             raise RuntimeError("MLX training requires the currently loaded real model and tokenizer")
 
-        import gc
         import mlx.core as mx
         import mlx.nn as nn
         import mlx.optimizers as optim
-        import mlx.utils
-
-        trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
-        if not trainable_params:
-            self.inject_lora_adapters(r=8)
-            trainable_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
-        if not trainable_params:
-            raise RuntimeError("MLX training exposes no trainable adapter parameters")
-
-        def _clone(value):
-            try:
-                return mx.copy(value)
-            except Exception:
-                return value + mx.zeros_like(value)
-
-        rollback_params = {key: _clone(value) for key, value in trainable_params.items()}
-        mx.eval(*rollback_params.values())
-
-        w_initial_flat = mx.concat(
-            [mx.reshape(value, (-1,)) for value in rollback_params.values()]
+        from mlx.utils import tree_flatten, tree_unflatten
+        from core.learning_data import iter_training_windows
+        from core.mlx_adapter_persistence import persist_candidate, resume_optimizer
+        from core.mlx_learning import (
+            bounded_tokens, cancel_if_requested, check_finite, ensure_adapters,
+            flat_trainables, loss_for_tokens, score_rows, window_arrays,
         )
-        mx.eval(w_initial_flat)
 
-        if reference_weights is None:
-            reference_weights = dict(rollback_params)
-
-        optimizer = optim.AdamW(learning_rate=learning_rate)
-        tmp_save_path = None
-        backup_save_path = None
-        had_persisted_adapter = bool(save_path and os.path.isfile(save_path))
-        transaction_committed = False
-        was_training = bool(getattr(self.model, "training", False))
-
-        def ewc_loss_fn(model, inputs, targets):
-            logits = model(inputs)
-            logits = logits[:, :-1, :]
-            targets = targets[:, 1:]
-            ce_loss = mx.mean(nn.losses.cross_entropy(logits, targets))
-
-            if fisher_matrix and reference_weights and lambda_ewc > 0:
-                penalty = mx.array(0.0)
-                current_params = dict(mlx.utils.tree_flatten(model.trainable_parameters()))
-                for key, weight in current_params.items():
-                    if key in fisher_matrix and key in reference_weights:
-                        diff = weight - reference_weights[key]
-                        penalty = penalty + mx.sum(fisher_matrix[key] * (diff ** 2))
-                ce_loss = ce_loss + (lambda_ewc / 2.0) * penalty
-            return ce_loss
-
-        loss_and_grad_fn = nn.value_and_grad(self.model, ewc_loss_fn)
+        if (not math.isfinite(learning_rate) or learning_rate <= 0
+                or not math.isfinite(lambda_ewc) or lambda_ewc < 0 or int(steps) < 1):
+            raise ValueError("Invalid MLX learning rate, EWC coefficient or step count")
+        if not math.isfinite(retention_tolerance) or retention_tolerance < 0:
+            raise ValueError("Invalid retention loss tolerance")
+        max_tokens = bounded_tokens(self, max_window_tokens)
+        cancel_if_requested(cancel_event)
+        installed = []
+        old_adapters = self.adapters
+        rollback_params = {}
+        old_training = bool(getattr(self.model, "training", False))
+        old_metrics = getattr(self, "last_learning_metrics", None)
+        store = getattr(self, "learning_state", None)
+        metadata = dict(learning_metadata or {})
+        txn = None
 
         try:
-            self.model.train()
-            trained_rows = 0
-            for _step in range(max(1, int(steps))):
-                for item in data:
-                    prompt_text = item.get("prompt", "")
-                    completion_text = item.get("completion", "")
-                    full_text = (
-                        f"<|im_start|>user\n{prompt_text}<|im_end|>\n"
-                        f"<|im_start|>assistant\n{completion_text}<|im_end|>"
-                    )
-                    tokens = self.tokenizer.encode(full_text)
-                    if len(tokens) < 2:
+            if store is not None:
+                txn = store.begin(update_id=metadata.get("update_id"), metadata=metadata)
+                if txn.parent != getattr(self, "_mlx_parent_generation", None):
+                    raise RuntimeError("MLX live weights differ from the committed learning generation; reload the model")
+            params = ensure_adapters(self, installed=installed)
+            # Native MLX updates replace immutable leaves. Keep the evaluated
+            # references to roll back without copying any foundation tensors.
+            rollback_params = dict(params)
+            check_finite(params.values(), "starting adapter weights")
+            reference = reference_weights if reference_weights is not None else rollback_params
+            self.model.eval()
+            if anchor_texts and fisher_matrix is None and lambda_ewc:
+                fisher_matrix = self.compute_mlx_fisher(
+                    anchor_texts, max_window_tokens=max_tokens, cancel_event=cancel_event)
+                if not fisher_matrix:
+                    raise ValueError("No learnable causal targets in Fisher anchors")
+            fisher_tensors = 0
+            if fisher_matrix and lambda_ewc:
+                if fisher_matrix.keys() != params.keys() or reference.keys() != params.keys():
+                    raise ValueError("MLX EWC tensors do not match active adapter keys")
+                for key, value in params.items():
+                    if value.shape != reference[key].shape or value.shape != fisher_matrix[key].shape:
+                        raise ValueError(f"MLX EWC shape mismatch for {key}")
+                check_finite([*fisher_matrix.values(), *reference.values()], "EWC tensors")
+                if any(bool(mx.any(value < 0).item()) for value in fisher_matrix.values()):
+                    raise ValueError("MLX Fisher diagonal contains negative entries")
+                fisher_tensors = sum(bool(mx.any(value > 0).item()) for value in fisher_matrix.values())
+
+            def training_loss(model, tokens, targets, mask):
+                loss = loss_for_tokens(model, tokens, targets, mask)
+                if fisher_tensors:
+                    for key, weight in flat_trainables(model).items():
+                        diff = weight.astype(mx.float32) - reference[key].astype(mx.float32)
+                        loss = loss + (0.5 * lambda_ewc) * mx.sum(fisher_matrix[key] * mx.square(diff))
+                return loss
+
+            retention_before = None
+            if retention_data:
+                retention_before = score_rows(self.model, self.tokenizer, retention_data, max_tokens, cancel_event)
+            get_grad = nn.value_and_grad(self.model, training_loss)
+            # Weight decay alone must never satisfy the measured learning test.
+            optimizer = optim.AdamW(learning_rate=learning_rate, weight_decay=0.0)
+            resumed_optimizer = resume_optimizer(self, optimizer, txn, learning_rate)
+            window_count = 0
+            token_count = 0
+            observed_gradient = False
+            rows = tuple(data)
+            for _ in range(int(steps)):
+                visited = set()
+                for window in iter_training_windows(
+                    self.tokenizer, rows, max_tokens=max_tokens, supervise_prompt=supervise_prompt
+                ):
+                    cancel_if_requested(cancel_event)
+                    if not window.supervised_tokens:
                         continue
-
-                    inputs = mx.array([tokens])
-                    loss, grads = loss_and_grad_fn(self.model, inputs, inputs)
+                    loss, grads = get_grad(self.model, *window_arrays(window.input_ids, window.labels))
+                    flat_grads = dict(tree_flatten(grads))
+                    if flat_grads.keys() != params.keys():
+                        raise RuntimeError("MLX gradients do not match active adapter keys")
+                    check_finite([loss, *flat_grads.values()], "loss or gradient")
+                    if not observed_gradient:
+                        observed_gradient = bool(mx.any(mx.stack([
+                            mx.any(g != 0) for g in flat_grads.values()
+                        ])).item())
                     optimizer.update(self.model, grads)
-                    mx.eval(self.model.parameters(), optimizer.state)
-                    trained_rows += 1
+                    current = flat_trainables(self.model)
+                    state = dict(tree_flatten(optimizer.state))
+                    check_finite([*current.values(), *state.values()], "updated adapter or optimizer weights")
+                    visited.add(window.row_index)
+                    window_count += 1
+                    token_count += window.supervised_tokens
+                    del grads, flat_grads, loss, current, state
+                if len(visited) != len(rows):
+                    raise ValueError("An MLX learning row contains no supervised causal targets")
 
-                    loss = None
-                    grads = None
-                    inputs = None
-                    gc.collect(1)
-                    try:
-                        mx.clear_cache()
-                    except Exception:
-                        pass
-
-            if trained_rows <= 0:
-                raise RuntimeError("MLX training found no valid prompt/completion token rows")
-
-            updated_params = dict(mlx.utils.tree_flatten(self.model.trainable_parameters()))
-            w_final_flat = mx.concat(
-                [mx.reshape(value, (-1,)) for value in updated_params.values()]
-            )
-            mx.eval(w_final_flat)
-            param_drift = float(mx.linalg.norm(w_final_flat - w_initial_flat).item())
-            if param_drift <= 0.0:
-                raise RuntimeError("MLX training completed but measured zero parameter change")
-
-            if save_path:
-                import shutil
-
-                os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-                tmp_save_path = save_path + ".next.safetensors"
-                backup_save_path = save_path + ".previous"
-                try:
-                    if os.path.exists(tmp_save_path):
-                        os.remove(tmp_save_path)
-                    if os.path.exists(backup_save_path):
-                        os.remove(backup_save_path)
-                except OSError:
-                    pass
-
-                if had_persisted_adapter:
-                    shutil.copy2(save_path, backup_save_path)
-
-                mx.save_safetensors(tmp_save_path, updated_params)
-                os.replace(tmp_save_path, save_path)
-                tmp_save_path = None
-
-            self.adapters = updated_params
-            transaction_committed = True
-            return updated_params, param_drift
-
+            if window_count == 0:
+                raise RuntimeError("MLX training found no supervised causal targets")
+            if not observed_gradient:
+                raise RuntimeError("MLX candidate received no nonzero gradients from the learning rows")
+            candidate = flat_trainables(self.model)
+            squared = []
+            changed = []
+            for key, weight in candidate.items():
+                diff = weight.astype(mx.float32) - rollback_params[key].astype(mx.float32)
+                squared.append(mx.sum(mx.square(diff)))
+                changed.append(mx.sum(diff != 0))
+            drift = math.sqrt(float(mx.sum(mx.stack(squared)).item()))
+            touched = sum(int(value.item()) for value in changed)
+            if not math.isfinite(drift) or drift <= 0.0:
+                raise RuntimeError("MLX training completed but measured zero parameter change or non-finite drift")
+            head_only = set(candidate) == {"lm_head.lora_a", "lm_head.lora_b"}
+            metrics = {
+                "adapter_delta_l2": drift,
+                "trainable_parameters_touched": touched,
+                "trained_windows": window_count,
+                "supervised_tokens": token_count,
+                "ewc_used": fisher_tensors > 0,
+                "fisher_tensors": fisher_tensors,
+                "optimizer_resumed": resumed_optimizer,
+                "adapter_target": "language_output_head" if head_only else "language_projections",
+            }
+            if retention_data:
+                after = score_rows(self.model, self.tokenizer, retention_data, max_tokens, cancel_event)
+                metrics.update(retention_loss_before=retention_before, retention_loss_after=after)
+                if after > retention_before + retention_tolerance:
+                    raise RuntimeError("MLX candidate exceeded retention loss tolerance")
+            cancel_if_requested(cancel_event)
+            self.adapters = candidate
+            if validation_callback is not None:
+                verdict = validation_callback(self)
+                accepted = verdict.get("accepted") if isinstance(verdict, dict) else verdict
+                if accepted is not True:
+                    raise RuntimeError("MLX candidate rejected by learning validation")
+                if isinstance(verdict, dict):
+                    metrics["validation"] = verdict
+            cancel_if_requested(cancel_event)
+            if bool(getattr(self.model, "training", False)) != old_training:
+                self.model.train(old_training)
+            self.last_learning_metrics = metrics
+            persist_candidate(self, candidate, save_path, txn, metadata, metrics, cancel_event, optimizer)
+            return candidate, drift
         except BaseException:
-            # A failed update/persist must not remain live. Restore only the LoRA
-            # trainables captured before the transaction; foundation weights stay frozen.
+            if txn is not None and txn.committed:
+                # The pointer is authoritative even if an interrupt arrives
+                # after publication. Keep the validated live tensors and receipt.
+                self.adapter_path = str(txn.directory / "adapters.safetensors")
+                self._last_managed_checkpoint = self.adapter_path
+                self._mlx_parent_generation = txn.generation
+                raise
             try:
-                self.model.update(
-                    mlx.utils.tree_unflatten(list(rollback_params.items()))
-                )
-                mx.eval(self.model.parameters())
-                self.adapters = dict(
-                    mlx.utils.tree_flatten(self.model.trainable_parameters())
-                )
+                if rollback_params:
+                    self.model.update(tree_unflatten(list(rollback_params.items())))
+                    mx.eval(*rollback_params.values())
             finally:
-                if tmp_save_path:
-                    try:
-                        if os.path.exists(tmp_save_path):
-                            os.remove(tmp_save_path)
-                    except OSError:
-                        pass
-                if save_path:
-                    try:
-                        if backup_save_path and os.path.isfile(backup_save_path):
-                            os.replace(backup_save_path, save_path)
-                        elif not had_persisted_adapter and os.path.isfile(save_path):
-                            os.remove(save_path)
-                    except OSError:
-                        pass
+                for parent, name, original in reversed(installed):
+                    setattr(parent, name, original)
+                self.adapters = old_adapters if installed or not rollback_params else rollback_params
+            self.last_learning_metrics = old_metrics
             raise
         finally:
-            if transaction_committed and backup_save_path:
-                try:
-                    if os.path.isfile(backup_save_path):
-                        os.remove(backup_save_path)
-                except OSError:
-                    pass
-            if not was_training:
-                try:
-                    self.model.eval()
-                except Exception:
-                    pass
-            rollback_params.clear()
-            gc.collect(2)
-            try:
-                mx.clear_cache()
-            except Exception:
-                pass
-
+            if txn is not None:
+                txn.abort()  # Idempotent after publication.
+            if bool(getattr(self.model, "training", False)) != old_training:
+                self.model.train(old_training)

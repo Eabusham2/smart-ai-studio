@@ -53,8 +53,33 @@ def test_long_prompt_cannot_hide_the_training_answer():
 
 
 def test_recall_probe_supervises_only_answer_and_no_role_delimiter():
-    windows = list(data.iter_probe_windows(Tokenizer(), "question?", "answer", max_tokens=6))
-    assert bytes(value for window in windows for value in window.labels[1:] if value != -100) == b"answer"
+    windows = list(data.iter_probe_windows(Tokenizer(), "question?", "answer" * 30, max_tokens=48))
+    assert bytes(value for window in windows for value in window.labels[1:] if value != -100) == b"answer" * 30
+    assert all(b"question?" in bytes(window.input_ids) for window in windows)
+
+
+def test_probe_refuses_to_discard_a_question_that_cannot_fit():
+    with pytest.raises(ValueError, match="full source-free"):
+        list(data.iter_probe_windows(Tokenizer(), "q" * 14, "x", max_tokens=6))
+
+
+def test_completion_only_refuses_a_divergent_native_template():
+    class Divergent(Tokenizer):
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+            return "different prefix" if add_generation_prompt else "user text plus answer"
+    with pytest.raises(RuntimeError, match="completion boundary"):
+        list(data.iter_training_windows(Divergent(), [{"prompt": "q", "completion": "a"}], supervise_prompt=False))
+
+
+def test_each_row_must_supply_a_next_token_target():
+    class CollapsedRow(Tokenizer):
+        def encode(self, text, **kwargs):
+            return [1] if "unsupported" in text else super().encode(text, **kwargs)
+
+    rows = [{"prompt": "valid", "completion": "answer"},
+            {"prompt": "unsupported", "completion": "answer"}]
+    with pytest.raises(ValueError, match="row 1 has no supervised"):
+        list(data.iter_training_windows(CollapsedRow(), rows))
 
 
 def test_native_template_and_all_user_facts_enter_training():
@@ -83,6 +108,31 @@ def test_aborted_stage_keeps_old_parameters_and_retirement(tmp_path):
     assert not txn.directory.exists()
     assert store.current_manifest()["generation"] == first["generation"]
     assert store.current_manifest()["metadata"]["memory"]["retirement_head"] == "old"
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_interrupt_at_publication_preserves_matching_generation(tmp_path, monkeypatch, published):
+    store = state.LearningStateStore({"source": "model"}, state_root=tmp_path)
+    previous = commit(store, b"previous")
+    txn = store.begin(metadata={"memory": {"retirement_head": "new"}})
+    (txn.directory / "adapter.safetensors").write_bytes(b"candidate")
+    atomic = state._atomic_json
+
+    def interrupt(path, value):
+        if path.name == "current.json":
+            if published:
+                atomic(path, value)
+            raise KeyboardInterrupt("publication boundary")
+        atomic(path, value)
+
+    monkeypatch.setattr(state, "_atomic_json", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        txn.commit("adapter.safetensors")
+    txn.abort()
+    assert txn.committed is published
+    assert txn.directory.exists() is published
+    assert store.current_manifest()["generation"] == (txn.generation if published else previous["generation"])
+    assert Path(store.current_checkpoint()).read_bytes() == (b"candidate" if published else b"previous")
 
 
 def test_raw_training_inherits_retirement_metadata(tmp_path):
@@ -153,6 +203,43 @@ def test_directory_tokenizer_change_is_a_different_memory_bank(tmp_path):
     tokenizer.write_text('{"vocab":2}')
     new = state.model_identity(model, state_root=tmp_path / "state")
     assert old != new
+
+
+@pytest.mark.parametrize("asset", ["hadamard.json", "merges.txt", "runtime/vision_artifact.py"])
+def test_publisher_runtime_and_tokenizer_assets_are_identity_bound(tmp_path, asset):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "model.safetensors").write_bytes(b"base")
+    runtime = model / asset
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    runtime.write_text("original")
+    old = state.model_identity(model, state_root=tmp_path / "state")
+    runtime.write_text("changed")
+    new = state.model_identity(model, state_root=tmp_path / "state")
+    assert old != new
+
+
+def test_empty_checkpoint_directory_cannot_publish_unrelated_sibling(tmp_path):
+    store = state.LearningStateStore({"source": "model"}, state_root=tmp_path)
+    with store.begin() as txn:
+        (txn.directory / "empty").mkdir()
+        (txn.directory / "other.bin").write_bytes(b"not checkpoint")
+        with pytest.raises(RuntimeError, match="authenticated"):
+            txn.commit("empty")
+    assert store.current_manifest() is None
+
+
+def test_cancel_during_publication_keeps_prior_checkpoint(tmp_path):
+    import threading
+    store = state.LearningStateStore({"source": "model"}, state_root=tmp_path)
+    previous = commit(store)
+    cancel = threading.Event()
+    cancel.set()
+    with store.begin() as txn:
+        (txn.directory / "adapter.safetensors").write_bytes(b"rejected")
+        with pytest.raises(InterruptedError):
+            txn.commit("adapter.safetensors", cancel_event=cancel)
+    assert store.current_manifest()["generation"] == previous["generation"]
 
 
 def test_checkpoint_cannot_escape_generation(tmp_path):

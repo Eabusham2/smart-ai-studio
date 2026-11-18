@@ -26,7 +26,10 @@ def install(cls) -> None:
                 messages.append({"role": "user", "content": prompt})
             return controller.prepare_chat_prompt(messages)
 
-        tok = getattr(self.mlx_backend, "tokenizer", None) or getattr(self, "tokenizer", None)
+        owners = {"mlx": "mlx_backend", "controller": "controller_backend",
+                  "gguf": "gguf_backend", "bitnet": "bitnet_backend"}
+        selected = getattr(self, owners.get(getattr(self, "active_backend", None), "mlx_backend"), None)
+        tok = getattr(selected, "tokenizer", None) or getattr(self, "tokenizer", None)
         messages = []
         for turn in (history or []):
             role = str(turn.get("role", "user"))

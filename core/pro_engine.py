@@ -262,6 +262,14 @@ class ProReasoningEngine:
                 resolved_backend, resolved_device = resolve_optimal_backend(model_type)
                 target_backend = backend or (self.backend if self.backend != "auto" else resolved_backend)
 
+            # All Transformers execution uses the same persistent, capability-
+            # checked backend. The old direct CUDA branch had no trainer or
+            # checkpoint reload path and left CPU/MPS selections without one.
+            if target_backend in ("torch", "cuda", "cpu", "mps"):
+                target_backend = "controller"
+                controller_runtime = "transformers_auto"
+                info["controller_runtime"] = controller_runtime
+
             self.active_backend = target_backend
             self.active_model_path = target_path
 
@@ -335,7 +343,7 @@ class ProReasoningEngine:
                 if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
                     self.mlx_backend = MLXReasoningBackend(
                         model_path=target_path,
-                        adapter_path=self.lora_adapter_path,
+                        adapter_path=info.get("legacy_adapter_path") or self.lora_adapter_path,
                         model_info=info,
                     )
                     if self.mlx_backend.load_model():
@@ -350,6 +358,7 @@ class ProReasoningEngine:
                             "path": target_path,
                             "input_modalities": sorted(self.active_input_modalities),
                             "trainable": callable(getattr(self.mlx_backend, "train_mini_batch", None)),
+                            "learning_migration": getattr(self.mlx_backend, "learning_migration_status", None),
                         }
                     else:
                         return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
@@ -387,6 +396,7 @@ class ProReasoningEngine:
                         model_path=target_path,
                         mmproj_path=mmproj_path,
                         training_base_model_id=info.get("gguf_training_base_model_id"),
+                        legacy_adapter_path=info.get("legacy_adapter_path"),
                         n_ctx=int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
                         auto_memory_placement=bool(info.get("auto_memory_placement", True)),
                         memory_limit_gb=getattr(self, "speed_memory_limit_gb", None),
@@ -419,6 +429,7 @@ class ProReasoningEngine:
                         hf_repo_id=str(info.get("repo_id") or target_path),
                         n_ctx=int(info.get("max_context") or 32768),
                         training_base_model_id=info.get("bitnet_training_base_model_id"),
+                        legacy_adapter_path=info.get("legacy_adapter_path"),
                     )
                     if self.bitnet_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -437,21 +448,6 @@ class ProReasoningEngine:
                         "path": target_path,
                         "error": "Official bitnet.cpp runtime/model could not be prepared for this BitNet checkpoint.",
                     }
-
-                # 4. PyTorch CUDA / MPS / CPU
-                if target_backend in ("torch", "cuda") and self.device == "cuda":
-                    import torch
-                    if torch.cuda.is_available():
-                        from transformers import AutoModelForCausalLM, AutoTokenizer
-                        self.tokenizer = AutoTokenizer.from_pretrained(target_path, trust_remote_code=True)
-                        self.model = AutoModelForCausalLM.from_pretrained(
-                            target_path,
-                            torch_dtype=torch.bfloat16,
-                            device_map="auto",
-                            trust_remote_code=True
-                        )
-                        self.model.eval()
-                        return {"status": "loaded", "model": model_name, "backend": "cuda", "path": target_path}
 
                 return {"status": "not_downloaded", "model": model_name, "backend": target_backend, "path": target_path}
 

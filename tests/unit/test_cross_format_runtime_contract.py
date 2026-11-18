@@ -51,16 +51,18 @@ def test_gguf_always_on_consolidation_and_learning_are_real():
 
     assert "def _real_training_ready" in online
     assert "success = self.consolidate_chunk_sync(evicted_chunk)" in online
-    assert "(retained_history, True) if success else (conversation_history, False)" in online
+    assert "(retained_history, True) if success else (active, False)" in online
 
     assert "_require_live_trainable_backend" in learner
-    assert "backend.train_mini_batch(" in learner
-    assert "backend.train_mini_batch(" in learner
+    assert "service.train_pairs(" in learner
+    assert "backend.train_mini_batch(" in online
 
     assert "def train_mini_batch(" in gguf
     assert "GGUFLoRATrainer" in gguf
-    assert "lora_path=self.adapter_path if os.path.isfile(self.adapter_path) else None" in gguf
-    assert "peft_backup" in gguf
+    assert "lora_path=self.adapter_path or None" in gguf
+    assert "update_deployment(" in gguf
+    staged = _src("core/native_context_learning.py")
+    assert staged.index("validate_candidate(backend") < staged.index("txn.commit(")
 
 
 def test_bitnet_uses_real_official_runtime_and_verified_rebuild_learning():

@@ -161,13 +161,13 @@ def saved_adapter(source, state_root):
 @pytest.mark.parametrize("offloaded", [False, True])
 def test_saved_adapter_restore_failure_never_silently_omits_learning(monkeypatch, tmp_path, offloaded):
     source, calls = fake_transformers(monkeypatch, tmp_path)
-    saved_adapter(source, tmp_path / "state")
+    legacy = saved_adapter(source, tmp_path / "state")
     def restore(model, *args, **kwargs):
         raise RuntimeError("saved adapter is incompatible")
     monkeypatch.setitem(sys.modules, "peft", SimpleNamespace(PeftModel=SimpleNamespace(from_pretrained=restore)))
     if not offloaded:
         monkeypatch.setattr(placement, "describe_transformers_placement", lambda *args: {"inference_only": False})
-    backend = runtime.UniversalControllerBackend(str(source), {"controller_runtime": "transformers_auto"})
+    backend = runtime.UniversalControllerBackend(str(source), {"controller_runtime": "transformers_auto", "legacy_adapter_path": str(legacy)})
     with pytest.raises(RuntimeError, match="refusing to omit"):
         backend.load_model()
     assert backend.model is None and not backend.is_loaded
@@ -177,7 +177,7 @@ def test_saved_adapter_restore_failure_never_silently_omits_learning(monkeypatch
 
 def test_failed_adapter_drops_hook_cycles_before_deleting_offload_files(monkeypatch, tmp_path):
     source, calls = fake_transformers(monkeypatch, tmp_path)
-    saved_adapter(source, tmp_path / "state")
+    legacy = saved_adapter(source, tmp_path / "state")
     references = []
     class Model:
         hf_device_map = {"embed": "cpu", "layer": "disk"}
@@ -201,7 +201,7 @@ def test_failed_adapter_drops_hook_cycles_before_deleting_offload_files(monkeypa
         assert references and references[0]() is None, "offload deleted while model/hooks are still live"
         return real_delete(directory)
     monkeypatch.setattr(runtime.shutil, "rmtree", delete_after_release)
-    backend = runtime.UniversalControllerBackend(str(source), {"controller_runtime": "transformers_auto"})
+    backend = runtime.UniversalControllerBackend(str(source), {"controller_runtime": "transformers_auto", "legacy_adapter_path": str(legacy)})
     with pytest.raises(RuntimeError, match="refusing to omit"):
         backend.load_model()
     assert backend._offload_directory is None
@@ -209,14 +209,14 @@ def test_failed_adapter_drops_hook_cycles_before_deleting_offload_files(monkeypa
 
 def test_adapter_redispatch_keeps_budget_directory_and_reports_result(monkeypatch, tmp_path):
     source, calls = fake_transformers(monkeypatch, tmp_path)
-    saved_adapter(source, tmp_path / "state")
+    legacy = saved_adapter(source, tmp_path / "state")
     seen = []
     def restore(model, *args, **kwargs):
         seen.append(kwargs)
         model.hf_device_map = {"embed": "cpu", "layer": "disk", "adapter": "cpu"}
         return model
     monkeypatch.setitem(sys.modules, "peft", SimpleNamespace(PeftModel=SimpleNamespace(from_pretrained=restore)))
-    backend = runtime.UniversalControllerBackend(str(source), {"controller_runtime": "transformers_auto"})
+    backend = runtime.UniversalControllerBackend(str(source), {"controller_runtime": "transformers_auto", "legacy_adapter_path": str(legacy)})
     assert backend.load_model()
     try:
         assert seen[0]["max_memory"] == calls[0][1]["max_memory"]
@@ -274,7 +274,8 @@ def test_real_small_checkpoint_runs_with_cpu_and_disk_offload(monkeypatch, tmp_p
             learned = trained(input_ids=prompt).logits.detach().clone()
         assert not torch.allclose(expected, learned), "fixture must contain a meaningful saved adapter update"
         expected = learned
-        trained.save_pretrained(saved_adapter(checkpoint, tmp_path / "state"))
+        legacy = saved_adapter(checkpoint, tmp_path / "state")
+        trained.save_pretrained(legacy)
         del trained
     del original
     tokenizer = SimpleNamespace(encode=lambda text: [1, 2])
@@ -282,7 +283,8 @@ def test_real_small_checkpoint_runs_with_cpu_and_disk_offload(monkeypatch, tmp_p
     monkeypatch.setattr(transformers.AutoProcessor, "from_pretrained", lambda *args, **kwargs: tokenizer)
     monkeypatch.setattr("config.paths.get_portable_data_dir", lambda: str(tmp_path / "state"))
     monkeypatch.setattr(placement, "transformers_memory_limits", lambda *args, **kwargs: {"cpu": 80_000})
-    backend = runtime.UniversalControllerBackend(str(checkpoint), {"controller_runtime": "transformers_auto", "default_context": 64})
+    backend = runtime.UniversalControllerBackend(str(checkpoint), {"controller_runtime": "transformers_auto", "default_context": 64,
+                                                               "legacy_adapter_path": str(legacy) if with_saved_adapter else None})
     try:
         assert backend.load_model()
         assert backend.memory_placement["disk_offload"]
