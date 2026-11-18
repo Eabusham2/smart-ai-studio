@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from config.settings import Settings, get_settings, MODEL_PRESETS
+from core.adaptation_capabilities import adaptation_capabilities
 from core.downloader import ensure_model_available, is_model_available_locally
 from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
@@ -266,6 +267,7 @@ class ProReasoningEngine:
             # checked backend. The old direct CUDA branch had no trainer or
             # checkpoint reload path and left CPU/MPS selections without one.
             direct_torch = target_backend in ("torch", "cuda", "cpu", "mps")
+            direct_cuda = target_backend in ("torch", "cuda") and getattr(self, "device", None) == "cuda"
             if direct_torch:
                 target_backend = "controller"
                 controller_runtime = "transformers_auto"
@@ -301,6 +303,7 @@ class ProReasoningEngine:
                     )
                     if direct_torch:
                         self.controller_backend.direct_torch_generation = True
+                        self.controller_backend.direct_cuda = direct_cuda
                     self.controller_backend.learning_scope = getattr(self, "learning_scope", None)
                     self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
                     self.controller_backend.context_tokens = int(
@@ -363,7 +366,7 @@ class ProReasoningEngine:
                             "runtime": controller_runtime or "mlx_lm",
                             "path": target_path,
                             "input_modalities": sorted(self.active_input_modalities),
-                            "trainable": callable(getattr(self.mlx_backend, "train_mini_batch", None)),
+                            "trainable": adaptation_capabilities(self.mlx_backend)["causal_lm"],
                             "learning_migration": getattr(self.mlx_backend, "learning_migration_status", None),
                         }
                     else:

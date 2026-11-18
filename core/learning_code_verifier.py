@@ -5,6 +5,7 @@ import ast
 import json
 import keyword
 import math
+import os
 import sys
 
 from core.verifier import GroundTruthVerifier
@@ -91,10 +92,18 @@ class PythonTaskVerifier:
             raise ValueError("baseline_ms must be a positive measured training-task baseline")
         try:
             import resource
-            limit_kind = "RLIMIT_DATA" if sys.platform == "darwin" else "RLIMIT_AS"
-            getattr(resource, limit_kind)
+            if sys.platform == "darwin":
+                # Darwin can reject small DATA/AS limits even in a fresh Python
+                # interpreter. Enforce a resident budget using live RSS and the
+                # kernel's per-child peak, preserving all inherited rlimits.
+                getattr(os, "wait4")
+                getattr(resource, "RLIMIT_DATA")
+                limit_kind = "resident"
+            else:
+                limit_kind = "RLIMIT_AS"
+                getattr(resource, limit_kind)
         except (ImportError, AttributeError):
-            raise RuntimeError("Python test rewards require OS-enforced per-process memory limits") from None
+            raise RuntimeError("Python test rewards require per-process memory budget enforcement") from None
         self.verifier = GroundTruthVerifier(sandbox_timeout=timeout, max_memory_mb=memory,
                                             required_memory_resource=limit_kind)
         self.results = []

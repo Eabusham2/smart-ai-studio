@@ -6,9 +6,9 @@ This record covers the expanded online workflows, packed Bonsai adapters, scoped
 
 | Run | Result | Measured duration |
 | --- | --- | --- |
-| Expanded unit suite with bitsandbytes present, excluding the two GUI modules run separately | **1,425 passed, 2 skipped, 58 subtests passed** | 131.63 s |
-| Real Tk tests: existing Best Work rendering/steer handoff, paging/learning panel and unloaded-model Sleep dialog | **7 passed** | 1.81 s |
-| Final native-learning and release-gate follow-up, including real MLX CPU and Torch | **141 passed, 5 subtests passed** | 35.85 s |
+| Expanded unit suite with bitsandbytes present, excluding the two GUI modules run separately | **1,435 passed, 2 skipped, 58 subtests passed** | 145.36 s |
+| Real Tk tests: existing Best Work rendering/steer handoff, paging/learning panel and unloaded-model Sleep dialog | **7 passed** | 2.37 s |
+| Dedicated native-learning and release-gate follow-up, including real MLX CPU and Torch | **141 passed, 5 subtests passed** | 35.85 s |
 | Existing offline live integration suite | **18 passed, 1 skipped** | 503.68 s |
 | Final task/reference-policy follow-up | **80 passed** | 30.96 s |
 | Final query geometry and device follow-up | **36 passed** | 19.19 s |
@@ -16,8 +16,9 @@ This record covers the expanded online workflows, packed Bonsai adapters, scoped
 | Root routing/release/Windows-argument follow-up | **26 passed** | 4.16 s |
 | Optional bitsandbytes CPU precision and native-parent follow-up | **26 passed** | 19.06 s |
 | Cross-platform checkpoint/export flush and learning follow-up, with bitsandbytes present | **106 passed** | 30.11 s |
-| Isolated Python reward worker, inherited memory cap, allocation failure and timeout | **51 passed** | 15.13 s |
+| Isolated Python reward worker, inherited limits, transient/sustained resident-memory excess, timeout and child reaping | **52 passed** | 17.33 s |
 | Original direct Torch and Learn behavior preservation | **45 passed** | — |
+| Public direct CUDA precision policy and existing Transformers placement | **29 passed** | 19.35 s |
 | Compilation, CLI help and `git diff --check` | Passed | — |
 
 Focused development runs overlap the broad suites and are not added to these totals. Follow-up focused checks cover final sampling-configuration and split-query geometry corrections. The separate GitHub workflow runs the six existing platform/Python lanes and mandatory native MLX CPU and Metal lanes, retains native compiler/artifact gates, and prevents a feature-branch test dispatch from publishing a release.
@@ -28,11 +29,11 @@ The first expanded broad pass found an unloaded-model Sleep panel regression and
 
 ### Corrections found by platform CI and preservation review
 
-The initial hosted branch run found three production platform issues. CPU bitsandbytes could select an NF4 packing kernel that rejected a small GQA projection. The GGUF trainer now prefers resident CPU/MPS precision when it fits and verifies actual model projection geometry, quantization, prefill and input gradients before an optional NF4 route; supported CUDA QLoRA remains available. Windows rejected `fsync` on read-only artifact handles. Checkpoint and export staging now use writable non-truncating handles, with failures still preventing publication. The macOS Python reward process failed before reporting usable results. It now starts an isolated interpreter, installs the stricter of the requested and inherited memory caps before reading the candidate, and reports bounded worker diagnostics. The native CPU/Metal lanes also test denied allocations and timeout handling.
+Hosted branch CI found three production platform issues. CPU bitsandbytes could select an NF4 packing kernel that rejected a small GQA projection. The GGUF trainer now prefers resident CPU/MPS precision when it fits and verifies actual model projection geometry, quantization, prefill and input gradients before an optional NF4 route; supported CUDA QLoRA remains available. Windows rejected `fsync` on read-only artifact handles. Checkpoint and export staging now use writable non-truncating handles, with failures still preventing publication. macOS rejected small address-space/data limits before the Python reward task started. Its checked worker now has a separate supervisor that enforces a resident-memory budget through live RSS checks and mandatory per-worker kernel peak validation. Transient allocations can exceed a polling interval but cannot earn a reward when their recorded peak exceeds the budget. Linux retains its hard address-space cap, and inherited resource limits remain in force. The native CPU/Metal lanes also test excess allocations, timeout handling and child cleanup.
 
 The older Python 3.10 dependency stack also exposed test assumptions: an undersized recurrent head was invalid for the MLX-LM 0.31.3 Metal kernel, and an independent Torch reference scorer constructed CPU IDs for an MPS model. Packed fixtures now use a supported 64-wide recurrent head, and the independent scorer follows the actual embedding/output devices. Deterministic CPU retention tests explicitly select CPU throughout reload; other tests retain their normal device selection. The original gradient, fixed-weight, recall and persistence assertions remain in force.
 
-Review against the original default branch found that migrating direct Torch execution through the shared controller had lost real-logit entropy, caller/search `top_p`, and continuation-only branch decoding. These contracts are restored and tested through the public loader, including a cold project-scope switch and return. Learn again trains the entire verified synthesized note, with its matching source quotation kept separately for validation. Evidence from an earlier note cannot replace a later note. Attachment previews skip leading whitespace, retain file boundaries and preserve mixed-folder media reporting without eagerly loading the full source.
+Review against the original default branch found that migrating direct Torch execution through the shared controller had lost real-logit entropy, caller/search `top_p`, continuation-only branch decoding and the original direct CUDA BF16 policy. These contracts are restored and tested through the public loader, including a cold project-scope switch and return. The dtype tests simulate CUDA availability to verify the loader's policy; they do not run CUDA tensor operations. Imported Transformers models retain their checkpoint dtype. Prism GGUF token counts again use actual worker tokenizer IDs instead of falling back to a character estimate. The MLX load receipt uses the same capability check as the learning panel, including read-only document scopes. Learn again trains the entire verified synthesized note, with its matching source quotation kept separately for validation. Evidence from an earlier note cannot replace a later note. Attachment previews skip leading whitespace, retain file boundaries and preserve mixed-folder media reporting without eagerly loading the full source.
 
 ## Environment
 

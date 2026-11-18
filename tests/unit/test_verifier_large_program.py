@@ -35,28 +35,35 @@ def test_argument_limit_retries_unchanged_program_over_stdin(monkeypatch, window
 def test_checked_worker_preserves_lower_inherited_limit_and_bounds_candidate_input():
     resource = pytest.importorskip("resource")
     import sys
-    from core.verifier import _LIMITED_PYTHON
 
     name = "RLIMIT_DATA" if sys.platform == "darwin" else "RLIMIT_AS"
-    requested = 256 * 1048576
-    inherited = 128 * 1048576
-    # Use a separate interpreter to impose a tighter hard limit without changing
-    # pytest's process. Keep that interpreter and the actual worker in isolation.
-    outer = """import resource, subprocess, sys
+    # On Darwin even a clean Python interpreter can reserve much more virtual
+    # DATA than it has resident. Choose a valid inherited native limit there.
+    inherited = 1 << 47 if sys.platform == "darwin" else 128 * 1048576
+    requested = inherited * 2
+    outer = """import resource, runpy, subprocess, sys
 kind = getattr(resource, sys.argv[1])
 hard = resource.getrlimit(kind)[1]
 cap = int(sys.argv[2]) if hard == resource.RLIM_INFINITY else min(int(sys.argv[2]), hard)
 resource.setrlimit(kind, (cap, cap))
-child = subprocess.run([sys.executable, "-I", "-S", "-c", sys.argv[4], sys.argv[1], sys.argv[3]],
-                       input=f"import resource; print(resource.getrlimit(resource.{sys.argv[1]}))",
-                       capture_output=True, text=True)
-assert child.returncode == 0, child.stderr
-assert child.stdout.strip() == str((cap, cap)), (child.stdout, cap)
+applied = resource.getrlimit(kind)
+assert all(value != resource.RLIM_INFINITY and value <= cap for value in applied)
+program = f"import resource; print(resource.getrlimit(resource.{sys.argv[1]}))"
+if sys.platform == "darwin":
+    run = runpy.run_path(sys.argv[4])["run_resident_task"]
+    outcome = run(program, int(sys.argv[3]), 5)
+else:
+    worker = runpy.run_path(sys.argv[4])["_LIMITED_PYTHON"]
+    outcome = subprocess.run([sys.executable, "-I", "-S", "-c", worker, sys.argv[1], sys.argv[3]],
+                             input=program, capture_output=True, text=True)
+assert outcome.returncode == 0, outcome.stderr
+assert outcome.stdout.strip() == str(applied), (outcome.stdout, applied)
 """
-    import os
-    env = {**os.environ, "MallocNanoZone": "0"} if sys.platform == "darwin" else None
-    result = subprocess.run([sys.executable, "-I", "-S", "-c", outer, name, str(inherited),
-                             str(requested), _LIMITED_PYTHON], capture_output=True, text=True, env=env, timeout=10)
+    from pathlib import Path
+    module = "resident_verifier.py" if sys.platform == "darwin" else "verifier.py"
+    worker_file = Path(__file__).resolve().parents[2] / "core" / module
+    result = subprocess.run([sys.executable, "-c", outer, name, str(inherited), str(requested), str(worker_file)],
+                            capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
 
@@ -66,7 +73,35 @@ def test_checked_python_rejects_excess_memory_and_timeout():
     cases = [{"args": [1], "expected": 1}]
     memory = PythonTaskVerifier({"function": "f", "cases": cases, "memory_mb": 96})
     assert memory("def f(n):\n    return len('a' * (384 * 1024 * 1024)) // (384 * 1024 * 1024)") == 0, memory.results
-    assert "MemoryError" in memory.results[0]["reason"] or "exited with code -" in memory.results[0]["reason"]
+    assert any(reason in memory.results[0]["reason"] for reason in ("MemoryError", "resident memory", "exited with code -")), memory.results
     time_limited = PythonTaskVerifier({"function": "f", "cases": cases, "timeout_seconds": .25})
     assert time_limited("def f(n):\n    while n:\n        pass\n    return 1") == 0
     assert "timed out" in time_limited.results[0]["reason"]
+
+
+def test_resident_budget_checks_freed_peak_and_reaps_timed_out_worker(tmp_path):
+    pytest.importorskip("resource")
+    from core.resident_verifier import run_resident_task
+
+    # Complete and free the allocation between polls; wait4 must still catch it.
+    allocate = "a = bytearray(80 * 1048576); a[::4096] = b'x' * (len(a) // 4096)"
+    code = allocate + "; del a; print('correct')"
+    outcome = run_resident_task(code, 48 * 1048576, 6, poll_seconds=1)
+    assert outcome.returncode != 0 and "peak resident memory" in outcome.stderr, outcome
+    assert run_resident_task("print(1)", 48 * 1048576, 5).returncode == 0
+
+    # Keep an oversize allocation alive. The supervisor must kill it promptly,
+    # without waiting until the task finishes or the wall-time budget expires.
+    outcome = run_resident_task(allocate + "; import time; time.sleep(4)", 48 * 1048576, 2)
+    assert outcome.returncode != 0 and "resident memory" in outcome.stderr, outcome
+
+    pidfile = tmp_path / "worker.pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_resident_task(f"import os, time; open({str(pidfile)!r}, 'w').write(str(os.getpid())); time.sleep(10)",
+                          48 * 1048576, 1)
+    pid = int(pidfile.read_text())
+    import psutil
+    deadline = time.monotonic() + 2
+    while psutil.pid_exists(pid):
+        assert time.monotonic() < deadline, "timed-out checked worker survived"
+        time.sleep(.01)

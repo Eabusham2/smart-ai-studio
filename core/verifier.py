@@ -12,7 +12,6 @@ import collections
 import errno
 import logging
 import math
-import os
 import random
 import re
 import subprocess
@@ -171,12 +170,13 @@ class GroundTruthVerifier:
         """Executes test harness in local isolated subprocess with memory and time caps."""
         try:
             options = dict(capture_output=True, text=True, timeout=self.sandbox_timeout)
-            if self.required_memory_resource is not None:
+            if self.required_memory_resource == "resident":
+                from core.resident_verifier import run_resident_task
+                res = run_resident_task(test_harness, self.max_memory_mb * 1048576, self.sandbox_timeout)
+            elif self.required_memory_resource is not None:
                 # A process hosting Metal/other workers must not run Python hooks
                 # in its forked child. Start a minimal interpreter and install the
                 # mandatory limit there, before loading even the candidate source.
-                if sys.platform == "darwin":
-                    options["env"] = {**os.environ, "MallocNanoZone": "0"}
                 command = [sys.executable, "-I", "-S", "-c", _LIMITED_PYTHON,
                            self.required_memory_resource, str(self.max_memory_mb * 1048576)]
                 res = subprocess.run(command, input=test_harness, **options)

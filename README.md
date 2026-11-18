@@ -92,8 +92,9 @@ plus runtime/app data. Custom models have their own preparation requirements.
 on supported loaded MLX and llama.cpp models, accepting repeatable gains only
 with the same calibration tokens. Strata's **Check placement** reports its
 configuration; it does not run the upstream quick/thorough tuner or claim a
-measured gain. Strata and CPU/disk-dispatched Transformers are inference only;
-other training-capable backends retain their existing learning behavior.
+measured gain. Strata and unsupported offloaded Transformers placements remain
+inference only. Supported resident CPU, MPS and CUDA placements can use the
+validated online learning workflows.
 
 See **[Chosen-model placement, Strata, and native auto speed](docs/STRATA_AUTO_SPEED.md)**
 for import behavior, exact sources, quality defaults, storage, cancellation,
@@ -137,7 +138,7 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
 
 At 80% of Context, eligible text backends start learning from old, complete exchanges. Sleep can also start an update on the loaded model. Parameter validation and generated recall checks gate retirement from model input; the complete transcript stays in a paged archive. Memory Explorer shows checkpoints, scoped memory, and online learning controls. [Backend support, storage and recall evaluation](docs/parametric-memory.md)
 
-**Online learning** adds resumable document ingestion, evidence selection, few-shot practice, fixed-KV query adaptation on supported models, verifier/consensus reward updates, entropic discovery with PUCT candidate reuse, and a searchable bank of document adapters. Task adaptation defaults to a temporary request copy; model, session and project scopes support persistent memory. Hardware and runtime capabilities are checked before updates. [Workflows and CLI](docs/test-time-learning.md) · [Research coverage and exclusions](docs/ttt-research-coverage.md)
+**Online learning** adds resumable document ingestion, evidence selection, few-shot practice, fixed-KV query adaptation on supported models, verifier/consensus reward updates, entropic discovery with PUCT candidate reuse, and a searchable bank of document adapters. Learning persists in the selected model, session or project scope by default. Select **Temporary practice** to use a request copy and restore the prior learned state afterwards. Hardware and runtime capabilities are checked before updates. [Workflows and CLI](docs/test-time-learning.md) · [Research coverage and exclusions](docs/ttt-research-coverage.md)
 
 ## 🤖 Model Matrix & Architectures
 

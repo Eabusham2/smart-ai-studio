@@ -112,6 +112,37 @@ def test_existing_native_history_filters_are_unchanged(pro_module):
     assert "  old text" not in packed
 
 
+@pytest.mark.parametrize("has_head", [False, True])
+def test_packed_mlx_load_reports_decoder_capability_on_owner(pro_module, monkeypatch, tmp_path, has_head):
+    from concurrent.futures import ThreadPoolExecutor
+
+    engine = engine_for(pro_module)
+    engine.settings.auto_download = False
+    engine.lora_adapter_path = None
+    monkeypatch.setattr(pro_module, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
+    with ThreadPoolExecutor(max_workers=1) as owner:
+        owner_id = owner.submit(threading.get_ident).result()
+        decoder = SimpleNamespace(named_modules=lambda: [], lm_head=(lambda x: x) if has_head else None)
+
+        def inspect_decoder():
+            assert threading.get_ident() == owner_id
+            return decoder
+
+        backend = SimpleNamespace(
+            model=decoder, is_mlx_available=True, _vlm_runtime="mlx_repo_vlm",
+            _mlx_owner=owner, run_on_mlx_owner=lambda fn: owner.submit(fn).result(),
+            get_training_model=Mock(side_effect=inspect_decoder), load_model=lambda: True,
+            train_mini_batch=Mock(side_effect=AssertionError("Unexpected training during load")),
+        )
+        monkeypatch.setattr(pro_module, "MLXReasoningBackend", lambda **kwargs: backend)
+        receipt = engine.load_model("Packed fixture", model_path=str(tmp_path),
+                                    model_info={"controller_runtime": "mlx_repo_vlm"})
+        assert receipt["status"] == "loaded" and engine.mlx_engine is backend
+        assert receipt["trainable"] is has_head
+        backend.get_training_model.assert_called_once_with()
+        backend.train_mini_batch.assert_not_called()
+
+
 def test_strata_preset_uses_only_managed_backend_and_forwards_context_memory_progress(pro_module, monkeypatch):
     engine = engine_for(pro_module)
     created = []

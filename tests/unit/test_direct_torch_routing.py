@@ -60,3 +60,33 @@ def test_migrated_direct_solver_uses_logits_and_preserves_nucleus_sampling(tiny_
         assert kwargs["top_p"] == .61 and kwargs["temperature"] == .65 and prompt not in text
     finally:
         engine.unload_model()
+
+
+@pytest.mark.parametrize("backend,device,cuda_available,model_info,uses_bfloat16", [
+    ("cuda", "cuda", True, {}, True),
+    ("torch", "cuda", True, {}, True),
+    ("cuda", "cuda", False, {}, False),
+    ("torch", "cpu", True, {}, False),
+    ("cpu", "cuda", True, {}, False),
+    ("cuda", "cuda", True, {"controller_runtime": "transformers_auto"}, False),
+])
+def test_loader_preserves_only_the_original_cuda_precision(
+        tmp_path, monkeypatch, backend, device, cuda_available, model_info, uses_bfloat16):
+    import sys
+    from tests.unit.test_transformers_placement import fake_transformers
+
+    engine = ProReasoningEngine(device=device, settings=get_settings(use_mock=False, auto_download=False,
+                                database_path=str(tmp_path / "chat.db")))
+    source, calls = fake_transformers(monkeypatch, tmp_path)
+    torch_host = sys.modules["torch"]
+    torch_host.bfloat16 = object()
+    torch_host.cuda.is_available = lambda: cuda_available
+    torch_host.cuda.ipc_collect = lambda: None
+    try:
+        result = engine.load_model("Local precision test", model_path=str(source), backend=backend, model_info=model_info)
+        assert result["status"] == "loaded", result
+        _, options = calls[0]
+        assert options["torch_dtype"] == (torch_host.bfloat16 if uses_bfloat16 else "auto")
+        assert options["device_map"] == "auto"
+    finally:
+        engine.unload_model()

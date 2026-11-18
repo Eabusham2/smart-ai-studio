@@ -192,6 +192,7 @@ class UniversalControllerBackend:
     """Protocol adapter for specialized text/multimodal controller runtimes."""
 
     direct_torch_generation = False
+    direct_cuda = False
 
     def __init__(self, model_path: str, model_info: Dict[str, Any]):
         self.model_path = str(model_path)
@@ -373,6 +374,9 @@ class UniversalControllerBackend:
         if processor is None:
             processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options)
 
+        # The original direct CUDA loader selected BF16 even for checkpoints
+        # stored in FP32. Imported controllers use the checkpoint's native dtype.
+        dtype = torch.bfloat16 if self.direct_cuda and torch.cuda.is_available() else "auto"
         requested = str(self.model_info.get("transformers_auto_class") or "").strip()
         candidates = [requested] if requested else (["AutoModelForCausalLM"] if self.direct_torch_generation else [])
         candidates += [
@@ -395,7 +399,7 @@ class UniversalControllerBackend:
             try:
                 model = cls.from_pretrained(
                     source,
-                    torch_dtype="auto",
+                    torch_dtype=dtype,
                     device_map="auto",
                     max_memory=budgets,
                     offload_folder=self._offload_directory,

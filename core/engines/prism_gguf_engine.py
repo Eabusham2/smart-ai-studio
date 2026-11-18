@@ -442,7 +442,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
     def count_tokens(self, messages: List[Dict[str, str]]) -> int:
         text = "\n".join(str(m.get("content", "")) for m in messages or [])
         try:
-            result = self._call({"op": "tokenize", "text": text, "add_bos": add_bos, "special": special})
+            result = self._call({"op": "tokenize", "text": text})
             return len(result.get("tokens") or [])
         except Exception:
             return max(1, len(text) // 4)
