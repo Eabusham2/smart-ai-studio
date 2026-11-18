@@ -296,10 +296,10 @@ def _document_fragments(path):
             yield from handler.pieces
 
 
-def iter_file_positions(path, chunk_chars, *, first=0, seek=None):
+def iter_file_positions(path, chunk_chars, *, first=0, seek=None, errors="strict"):
     """Contiguous, complete Unicode chunks. Structured text retains its original syntax."""
     if path.suffix.lower() not in (".pdf", ".parquet", ".docx"):
-        with path.open("r", encoding="utf-8", errors="strict", newline="") as stream:
+        with path.open("r", encoding="utf-8", errors=errors, newline="") as stream:
             if seek is not None:
                 stream.seek(seek)
             while chunk := stream.read(chunk_chars):
@@ -325,3 +325,15 @@ def iter_file_positions(path, chunk_chars, *, first=0, seek=None):
 def iter_file_chunks(path, chunk_chars):
     for chunk, _ in iter_file_positions(path, chunk_chars):
         yield chunk
+
+
+def iter_attachment_positions(path, chunk_chars, extraction_errors, *, first=0, seek=None):
+    """Keep legacy Learn's readable files and report each failed extractor separately."""
+    try:
+        yield from iter_file_positions(path, chunk_chars, first=first, seek=seek, errors="replace")
+    except Exception as error:
+        # Iterator consumers perform training and cancellation outside this generator.
+        # Never turn a failed update into an extraction warning.
+        detail = f"{path.name}: {type(error).__name__}: {error}"
+        if detail not in extraction_errors:
+            extraction_errors.append(detail)

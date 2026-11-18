@@ -2,11 +2,69 @@
 from __future__ import annotations
 
 import math
+import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 from core.learning_state import bind_learning_state, model_identity
 from core.torch_context_learning import check_cancelled, default_validation, validate_candidate
+
+
+@contextmanager
+def native_training_output(trainer, output_directory, destination, previous_peft, cancel_event, data, objective):
+    """Give managed callers their stage and standalone callers the historical cumulative files."""
+    if output_directory is not None:
+        output = Path(output_directory)
+        yield output, previous_peft, output / destination.name, data
+        return
+
+    from core.learning_state import _process_commit_lock
+    from core.training_lineage import standalone_training_parent
+
+    if objective == "causal_lm":
+        data = [row for row in data or () if str(row.get("prompt") or "").strip() and str(row.get("completion") or "").strip()]
+        if not data:
+            raise RuntimeError("The standalone trainer received no prompt/completion pairs")
+    root = destination.parent
+    root.mkdir(parents=True, exist_ok=True)
+    peft = root / "peft"
+    previous_peft_dir = trainer.peft_dir
+    previous_source = trainer.training_source
+    with _process_commit_lock(root), tempfile.TemporaryDirectory(prefix="native-training-", dir=root) as temporary:
+        output = Path(temporary)
+        previous = previous_peft or (peft if (peft / "adapter_config.json").is_file() else None)
+        try:
+            check_cancelled(cancel_event)
+            trainer.training_source = previous_source or standalone_training_parent(trainer.base_model_id)
+            yield output, previous, destination, data
+            check_cancelled(cancel_event)
+            # Keep the cumulative PEFT factors, optimizer and converted deployment in sync.
+            # Backups are renames on the same volume, including for full BitNet weights.
+            files = [output / "peft", output / "optimizer.safetensors", output / destination.name]
+            if not all(item.exists() for item in files):
+                raise RuntimeError("The native trainer did not produce a complete standalone checkpoint")
+            backups = []
+            published = []
+            try:
+                for item in files:
+                    target = root / item.name
+                    backup = output / (item.name + ".previous")
+                    if target.exists():
+                        os.replace(target, backup)
+                        backups.append((target, backup))
+                    os.replace(item, target)
+                    published.append((target, item))
+            except BaseException:
+                for target, item in reversed(published):
+                    os.replace(target, item)
+                for target, backup in reversed(backups):
+                    os.replace(backup, target)
+                raise
+        finally:
+            trainer.peft_dir = previous_peft_dir
+            trainer.training_source = previous_source
 
 
 def select_deployment(backend, base_path, root, kind, legacy_path):

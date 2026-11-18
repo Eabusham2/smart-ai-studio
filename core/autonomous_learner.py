@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
-from core.learning_sources import iter_file_chunks, iter_learning_files, learning_media_kinds, source_snapshot
+from core.learning_sources import iter_attachment_positions, iter_learning_files, learning_media_kinds, source_snapshot
 from core.test_time_learning import OnlineLearning
 from core.online_consolidator import AwakeOnlineConsolidator
 from memory.db import EpisodicMemoryDB
@@ -141,12 +141,13 @@ class AutonomousLearner:
         """Continue the complete attachment stream before bounded Learn/RSI synthesis."""
         _, file_count = source_snapshot(source_path, cancel_event)
         preview = []
+        extraction_errors = []
         size = 0
         scanned = 0
         has_more = False
         for path in iter_learning_files(source_path):
             first_chunk = True
-            for chunk in iter_file_chunks(path, 2048):
+            for chunk, _ in iter_attachment_positions(path, 2048, extraction_errors):
                 if cancel_event is not None and cancel_event.is_set():
                     raise InterruptedError("Learning source reading cancelled")
                 scanned += len(chunk)
@@ -157,7 +158,7 @@ class AutonomousLearner:
                 if first_chunk and file_count > 1:
                     chunk = f"\n\n===== SOURCE FILE: {path.name} =====\n" + chunk
                 first_chunk = False
-                room = 4096 - size
+                room = 16000 - size
                 piece = chunk[:room]
                 preview.append(piece)
                 size += len(piece)
@@ -168,16 +169,17 @@ class AutonomousLearner:
                 break
         source_text = "".join(preview)
         if not source_text.strip():
-            raise RuntimeError("/learn attachment contained no usable text in its synthesis excerpt.")
+            detail = " " + "\n".join(extraction_errors) if extraction_errors else ""
+            raise RuntimeError("/learn attachment contained no usable text in its synthesis excerpt." + detail)
         result = {"topic": topic, "source_path": str(source_path), "source_text": source_text,
-                  "sources_found": file_count, "media_kinds": learning_media_kinds(source_path), "extraction_errors": []}
+                  "sources_found": file_count, "media_kinds": learning_media_kinds(source_path), "extraction_errors": extraction_errors}
         if has_more or scanned > 4096:
             def progress(update):
                 if progress_callback:
                     progress_callback("ingesting", f"Read {update['next']} source chunks and "
                                       f"trained {update['trained_chunks']}.", 0.0)
 
-            job = OnlineLearning(self._consolidation_service()).run_request(
+            job = OnlineLearning(self._consolidation_service(), attachment_errors=extraction_errors).run_request(
                 {"method": "ingest", "source": str(source_path), "strategy": "stream",
                  "learning_rate": self.settings.consolidation_lr},
                 cancel_event=cancel_event, progress=progress)
@@ -185,12 +187,14 @@ class AutonomousLearner:
             if progress_callback:
                 progress_callback("ingested", f"The adapter processed all {job['source_chars']} source characters. "
                                   f"Learn/RSI will synthesize from a {size}-character excerpt.", 0.0)
+        if extraction_errors and progress_callback:
+            progress_callback("source_warnings", "Source extraction warnings: " + "\n".join(extraction_errors), 0.0)
         self._last_research = result
         return result
 
     def _lesson_source(self, research, topic):
         source = self._source_blob(research)
-        if len(source) <= 4096:
+        if research.get("source_path") or len(source) <= 4096:
             return source
         # Retrieved web reports are already strings from the research tools.
         # Visit all bounded passages and keep a bounded sample of validated

@@ -147,6 +147,72 @@ def cpu_protocol(monkeypatch):
     return mx
 
 
+def test_mlx_partial_fisher_matches_zero_importance_on_remaining_parameters(cpu_protocol):
+    def fresh():
+        engine = MLXReasoningBackend("fixture/partial-fisher")
+        engine.model, engine.tokenizer = Model(), Tokenizer()
+        engine.is_mlx_available = True
+        engine._vlm_runtime = "mlx_repo_vlm"
+        engine.inject_lora_adapters()
+        return engine
+
+    partial, complete = fresh(), fresh()
+    key = "lm_head.lora_b"
+    weights = partial.adapters
+    one = np.ones_like(weights[key])
+    reference = {key: weights[key] + .1}
+    rows = [{"prompt": "abc", "completion": "answer"}]
+    options = dict(steps=2, max_window_tokens=6, learning_rate=.005, lambda_ewc=2.)
+    subset, _ = partial.train_mini_batch({}, rows, fisher_matrix={key: one}, reference_weights=reference, **options)
+    diagonal = {name: one if name == key else np.zeros_like(value) for name, value in weights.items()}
+    full, _ = complete.train_mini_batch({}, rows, fisher_matrix=diagonal, reference_weights={**weights, **reference}, **options)
+    assert partial.last_learning_metrics["ewc_used"] and partial.last_learning_metrics["fisher_tensors"] == 1
+    for name in weights:
+        np.testing.assert_allclose(subset[name], full[name])
+    for fisher, refs in (({"unknown": one}, {"unknown": one}), ({key: one}, weights),
+                         ({key: one[:-1]}, reference), ({key: -one}, reference),
+                         ({key: one * np.nan}, reference), ({key: one}, {key: one * np.inf})):
+        with pytest.raises((ValueError, FloatingPointError)):
+            partial.train_mini_batch({}, rows, fisher_matrix=fisher, reference_weights=refs, **options)
+    assert all(np.array_equal(subset[name], partial.adapters[name]) for name in subset)
+
+
+def test_explicit_mlx_export_writes_and_rolls_back_alongside_managed_generation(tmp_path, cpu_protocol, monkeypatch):
+    from core.learning_state import LearningTransaction, validate_checkpoint
+
+    engine = MLXReasoningBackend("fixture/export")
+    engine.model, engine.tokenizer = Model(), Tokenizer()
+    engine.is_mlx_available = True
+    engine._vlm_runtime = "mlx_repo_vlm"
+    store = bind_learning_state(engine, model_info={"resolved_revision": "a" * 40}, state_root=tmp_path / "state")
+    external = tmp_path / "public" / "my-adapter.safetensors"
+    rows = [{"prompt": "abc", "completion": "answer"}]
+    def train(path):
+        return engine.train_mini_batch({}, rows, save_path=str(path), steps=1, max_window_tokens=5)
+
+    train(external)
+    first = Path(store.current_checkpoint())
+    first_bytes = first.read_bytes()
+    assert external.read_bytes() == first_bytes and validate_checkpoint(engine, external)
+    # Existing evaluation callers pass the live path back to the trainer.
+    train(first)
+    second = Path(store.current_checkpoint())
+    assert second != first and first.read_bytes() == first_bytes
+    with pytest.raises(ValueError, match="overwrite managed"):
+        train(first)
+    assert store.current_checkpoint() == str(second) and first.read_bytes() == first_bytes
+    sidecar = Path(str(external) + ".memory.json")
+    previous_sidecar = sidecar.read_bytes()
+    def refuse(*args, **kwargs):
+        raise RuntimeError("another update won")
+    monkeypatch.setattr(LearningTransaction, "commit", refuse)
+    with pytest.raises(RuntimeError, match="another update won"):
+        train(external)
+    assert external.read_bytes() == first_bytes and sidecar.read_bytes() == previous_sidecar
+    assert store.current_checkpoint() == str(second)
+    assert not list(external.parent.glob("tmp*"))
+
+
 @pytest.mark.parametrize("runtime", ["mlx_repo_vlm", "jang_vlm"])
 def test_packed_training_transaction_and_recovery(tmp_path, runtime, cpu_protocol, monkeypatch):
     engine = MLXReasoningBackend("fixture/" + runtime)

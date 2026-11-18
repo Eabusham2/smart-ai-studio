@@ -6,8 +6,10 @@ This record covers the expanded online workflows, packed Bonsai adapters, scoped
 
 | Run | Result | Measured duration |
 | --- | --- | --- |
-| Expanded unit suite with bitsandbytes present, excluding the two GUI modules run separately | **1,435 passed, 2 skipped, 58 subtests passed** | 145.36 s |
-| Real Tk tests: existing Best Work rendering/steer handoff, paging/learning panel and unloaded-model Sleep dialog | **7 passed** | 2.37 s |
+| Final unit suite after sequential Best Work and compatibility repairs, with bitsandbytes present; two GUI modules run separately | **1,467 passed, 2 skipped, 58 subtests passed** | 179.58 s |
+| Final real Tk tests: sequential passes, controls, original handoffs, both Sleep sources, scope changes and archive paging | **11 passed** | 3.97 s |
+| Previous expanded unit suite with bitsandbytes present | **1,435 passed, 2 skipped, 58 subtests passed** | 145.36 s |
+| Previous real Tk tests: original handoff, paging/learning panel and unloaded-model Sleep dialog | **7 passed** | 2.37 s |
 | Dedicated native-learning and release-gate follow-up, including real MLX CPU and Torch | **141 passed, 5 subtests passed** | 35.85 s |
 | Existing offline live integration suite | **18 passed, 1 skipped** | 503.68 s |
 | Final task/reference-policy follow-up | **80 passed** | 30.96 s |
@@ -34,6 +36,18 @@ Hosted branch CI found three production platform issues. CPU bitsandbytes could 
 The older Python 3.10 dependency stack also exposed test assumptions: an undersized recurrent head was invalid for the MLX-LM 0.31.3 Metal kernel, and an independent Torch reference scorer constructed CPU IDs for an MPS model. Packed fixtures now use a supported 64-wide recurrent head, and the independent scorer follows the actual embedding/output devices. Deterministic CPU retention tests explicitly select CPU throughout reload; other tests retain their normal device selection. The original gradient, fixed-weight, recall and persistence assertions remain in force.
 
 Review against the original default branch found that migrating direct Torch execution through the shared controller had lost real-logit entropy, caller/search `top_p`, continuation-only branch decoding and the original direct CUDA BF16 policy. These contracts are restored and tested through the public loader, including a cold project-scope switch and return. The dtype tests simulate CUDA availability to verify the loader's policy; they do not run CUDA tensor operations. Imported Transformers models retain their checkpoint dtype. Prism GGUF token counts again use actual worker tokenizer IDs instead of falling back to a character estimate. The MLX load receipt uses the same capability check as the learning panel, including read-only document scopes. Learn again trains the entire verified synthesized note, with its matching source quotation kept separately for validation. Evidence from an earlier note cannot replace a later note. Attachment previews skip leading whitespace, retain file boundaries and preserve mixed-folder media reporting without eagerly loading the full source.
+
+### Sequential Best Work and additional compatibility repairs
+
+Best Work now defaults to two sequential passes around the existing router, temperature ladder and selector. Tests execute two real CPU Transformers decoder calls, compare the second call's exact token input with the first sampled draft, and confirm that only the final sample is displayed. An installed Pro/GGUF fixture routes nine candidates followed by one refinement and excludes losing drafts from the next prompt. Tool calls execute only after the final selected pass; a real tool result starts another stage. Tests also retain the one-pass mode, cancellation and cleanup, duplicate-action protection, structured attachments, complete-context errors and actual all-pass token accounting. The real Tk test drives this pipeline from the GUI worker and exercises the pass control alongside the original branch inspector.
+
+The additional preservation review restored the original verified-episode Sleep queue as a separate GUI choice from current-chat consolidation. Its production test performs a small real PEFT/Fisher update, checkpoints the selected scope, and acknowledges the SQLite rows after validation. Tests cover empty chat, concurrent consumers, uninterrupted chat writes, crash recovery after publication, source changes, validation failure and cancellation. Queue locking also covers the original standalone daemon. The older queue has no source-model identity; the panel explicitly names the selected target instead of assigning one retrospectively.
+
+Standalone GGUF/BitNet `train(data)` again publishes to its historical deployment path; tests repeat real tiny parent-model updates and inject publication failure to check deployment, PEFT-factor and optimizer rollback. Conversion itself is simulated in these fixtures. Non-MLX completion-only defaults, explicit full-sequence supervision, explicit MLX `save_path` exports, partial Fisher/reference subsets, and live public Torch model/tokenizer handles are covered. Explicit online standalone parent resolution is tested with simulated downloads; managed transactions retain local lineage checks. Learn preserves the earlier 16,000-character attachment evidence budget, replacement decoding for legacy text attachments, and continued processing of readable lessons after a malformed file. Direct ingestion remains strict.
+
+The comparison with `d3cead010685a04c95e97b2469c07fa3de627156` removes no tracked files. Four previous test names changed to reflect real factor-axis validation, explicit legacy imports and managed transactional state; their relevant behavior is tested under the current interfaces. Internals were refactored, so this is a behavioral compatibility claim supported by tests, not a claim that every older source line is unchanged.
+
+The preceding branch revision `b345eb860c3ce926dc662bb58efd12cfd3f098c4` passed [all required CI jobs](https://github.com/Eabusham2/smart-ai-studio/actions/runs/44235167538), including 133 tests on native MLX CPU and 133 on native MLX Metal and both native C++ jobs. The sequential-pass and additional compatibility changes require a fresh CI run on their own commit before promotion.
 
 ## Environment
 

@@ -80,7 +80,28 @@ def parse_reasoning_and_response(raw_text: str) -> Tuple[Optional[str], str]:
     return None, raw_text
 
 
+def _direct_torch_handle(name):
+    """Expose the serving model/tokenizer even after the controller wraps or reloads PEFT."""
+    def get(engine):
+        backend = getattr(engine, "controller_backend", None)
+        if getattr(backend, "direct_torch_generation", False) is True:
+            return getattr(backend, name, None)
+        return vars(engine).get(name)
+
+    def set_value(engine, value):
+        backend = getattr(engine, "controller_backend", None)
+        if getattr(backend, "direct_torch_generation", False) is True:
+            setattr(backend, name, value)
+        else:
+            vars(engine)[name] = value
+
+    return property(get, set_value, lambda engine: set_value(engine, None))
+
+
 class ProReasoningEngine:
+    model = _direct_torch_handle("model")
+    tokenizer = _direct_torch_handle("tokenizer")
+
     def __init__(
         self,
         base_model_path: Optional[str] = None,
@@ -267,6 +288,7 @@ class ProReasoningEngine:
             # checked backend. The old direct CUDA branch had no trainer or
             # checkpoint reload path and left CPU/MPS selections without one.
             direct_torch = target_backend in ("torch", "cuda", "cpu", "mps")
+            requested_backend = target_backend
             direct_cuda = target_backend in ("torch", "cuda") and getattr(self, "device", None) == "cuda"
             if direct_torch:
                 target_backend = "controller"
@@ -304,6 +326,7 @@ class ProReasoningEngine:
                     if direct_torch:
                         self.controller_backend.direct_torch_generation = True
                         self.controller_backend.direct_cuda = direct_cuda
+                        self.controller_backend.direct_backend_name = requested_backend
                     self.controller_backend.learning_scope = getattr(self, "learning_scope", None)
                     self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
                     self.controller_backend.context_tokens = int(
@@ -331,7 +354,8 @@ class ProReasoningEngine:
                         return {
                             "status": "loaded",
                             "model": model_name,
-                            "backend": controller_runtime,
+                            "backend": "cuda" if getattr(self.controller_backend, "direct_cuda_loaded", False) is True else controller_runtime,
+                            **({"runtime": controller_runtime, "requested_backend": requested_backend} if direct_torch else {}),
                             "path": target_path,
                             "input_modalities": sorted(self.active_input_modalities),
                             "trainable": bool(getattr(self.controller_backend, "can_train", False)),

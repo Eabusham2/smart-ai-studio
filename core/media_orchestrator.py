@@ -691,7 +691,8 @@ class MediaController:
         return {"name": name, "result": result}
 
     def stream_solve(self, prompt, history=None, cancel_event=None, progress_callback=None,
-                     best_work_enabled=False, status_callback=None, route_with_history=False):
+                     best_work_enabled=False, status_callback=None, route_with_history=False,
+                     best_work_passes=None):
         with self.lock:
             self._depth += 1
             self.busy = True
@@ -711,7 +712,8 @@ class MediaController:
                     from core.best_work import stream_best_work
                     yield from stream_best_work(self, prompt, history, cancel_event,
                                                 progress_callback, status_callback,
-                                                route_with_history=route_with_history)
+                                                route_with_history=route_with_history,
+                                                passes=best_work_passes)
                 else:
                     yield from self._stream_solve(prompt, history=history, cancel_event=cancel_event,
                                                   progress_callback=progress_callback)

@@ -22,6 +22,7 @@ def test_migrated_direct_solver_uses_logits_and_preserves_nucleus_sampling(tiny_
         result = engine.load_model("Local causal model", model_path=source, backend="torch")
         assert result["status"] == "loaded"
         backend = engine.controller_backend
+        assert engine.model is backend.model and engine.tokenizer is backend.tokenizer
         prompt = "What is the vault color?"
         tokens = backend.tokenizer(prompt, return_tensors="pt").to(backend.model.device)
         with torch.no_grad():
@@ -32,6 +33,7 @@ def test_migrated_direct_solver_uses_logits_and_preserves_nucleus_sampling(tiny_
 
         with engine.use_learning_scope(LearningScope("project", "torch-compat"), seed_from_current=False):
             assert engine.controller_backend.direct_torch_generation
+            assert engine.model is engine.controller_backend.model and engine.tokenizer is engine.controller_backend.tokenizer
             assert engine.calculate_token_entropy(prompt) == pytest.approx(expected)
         backend = engine.controller_backend
         assert backend.direct_torch_generation
@@ -58,8 +60,12 @@ def test_migrated_direct_solver_uses_logits_and_preserves_nucleus_sampling(tiny_
         text = "".join(backend.stream_generate_tokens(prompt, max_tokens=2, temperature=.65, top_p=.61))
         kwargs, _ = calls[0]
         assert kwargs["top_p"] == .61 and kwargs["temperature"] == .65 and prompt not in text
+        base = engine.model
+        backend.train_mini_batch({}, [{"prompt": prompt, "completion": "slate"}], steps=1, validation_callback=lambda _: True)
+        assert engine.model is backend.model and engine.model is not base and engine.model.get_base_model() is base
     finally:
         engine.unload_model()
+    assert engine.model is None and engine.tokenizer is None
 
 
 @pytest.mark.parametrize("backend,device,cuda_available,model_info,uses_bfloat16", [
@@ -73,6 +79,7 @@ def test_migrated_direct_solver_uses_logits_and_preserves_nucleus_sampling(tiny_
 def test_loader_preserves_only_the_original_cuda_precision(
         tmp_path, monkeypatch, backend, device, cuda_available, model_info, uses_bfloat16):
     import sys
+    from core.pro_runtime_hardening import _active_backend_name
     from tests.unit.test_transformers_placement import fake_transformers
 
     engine = ProReasoningEngine(device=device, settings=get_settings(use_mock=False, auto_download=False,
@@ -88,5 +95,10 @@ def test_loader_preserves_only_the_original_cuda_precision(
         _, options = calls[0]
         assert options["torch_dtype"] == (torch_host.bfloat16 if uses_bfloat16 else "auto")
         assert options["device_map"] == "auto"
+        if uses_bfloat16:
+            assert result["backend"] == "cuda" and result["runtime"] == "transformers_auto"
+            assert _active_backend_name(engine) == backend
+            assert engine.model is engine.controller_backend.model
+            assert engine.tokenizer.encode("test") == [1]
     finally:
         engine.unload_model()

@@ -189,8 +189,12 @@ def test_packed_hot_scope_matches_cold_restore_and_rolls_back_bad_candidate(tmp_
     tokens = mx.array([[1, 7, 9]])
     initial = resident(tokens).logits
     rows = [{"prompt": "1 7", "completion": "9"}]
-    engine.train_mini_batch({}, rows, steps=2, learning_rate=.001, validation_callback=lambda _: True)
+    exported = tmp_path / "exported.safetensors"
+    engine.train_mini_batch({}, rows, steps=2, learning_rate=.001, save_path=str(exported), validation_callback=lambda _: True)
     global_scope, checkpoint = engine.learning_scope, engine.adapter_path
+    raw, info = mx.load(str(exported), return_metadata=True)
+    assert info["smartai_identity"] == engine.learning_state.identity_digest
+    assert raw.keys() == engine.adapters.keys() and all(mx.array_equal(value, raw[key]).item() for key, value in engine.adapters.items())
     committed = resident(tokens).logits
     assert not mx.array_equal(initial, committed).item()
     empty = LearningScope("session", "other")

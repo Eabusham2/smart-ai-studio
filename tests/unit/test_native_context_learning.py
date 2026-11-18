@@ -67,7 +67,7 @@ def test_real_peft_full_coverage_rollback_and_reload(tiny_controller, monkeypatc
         return {"accepted": math.isfinite(observed[-1])}
 
     metadata, drift = backend.train_mini_batch({}, data, learning_rate=0.006, steps=1,
-                                              lambda_ewc=1.0, validation_callback=accept)
+                                              lambda_ewc=1.0, supervise_prompt=True, validation_callback=accept)
     assert metadata["training_windows"] == expected["windows"] > 32
     assert metadata["supervised_tokens"] == expected["supervised_tokens"] > 512
     assert metadata["ewc_lambda"] == 1.0 and drift > 0
@@ -106,6 +106,9 @@ def test_real_peft_full_coverage_rollback_and_reload(tiny_controller, monkeypatc
     from safetensors.torch import load_file
     previous = load_file(Path(backend.adapter_path).parent / "optimizer.safetensors")
     continued, _ = backend.train_mini_batch({}, data[-1:], steps=1, validation_callback=accept)
+    assert continued["supervise_prompt"] is False
+    assert continued["supervised_tokens"] == training_coverage(
+        backend.tokenizer, data[-1:], max_tokens=16, supervise_prompt=False)["supervised_tokens"]
     assert continued["optimizer_resumed"]
     assert not continued["ewc_used"] and continued["fisher_tensors"] == 0
     resumed = load_file(Path(backend.adapter_path).parent / "optimizer.safetensors")
@@ -242,6 +245,117 @@ def test_cpu_gguf_bridge_trains_real_parent_before_conversion(tiny_controller, t
         trainer.train([{"prompt": "vault color", "completion": "slate"}], output_directory=output, steps=1)
     assert trainer.training_mode == "resident"
     assert not (output / "adapter.gguf").exists()
+
+
+@pytest.mark.parametrize("tiny_controller", ["split_queries"], indirect=True)
+@pytest.mark.parametrize("kind", ["gguf", "bitnet"])
+def test_standalone_native_train_keeps_original_paths_and_resumes(tiny_controller, tmp_path, monkeypatch, kind):
+    import hashlib
+    from core.gguf_lora_trainer import GGUFLoRATrainer
+    from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
+
+    root = tmp_path / "standalone"
+    if kind == "gguf":
+        trainer = GGUFLoRATrainer(model_path="selected.gguf", base_model_id=tiny_controller.model_path,
+                                  adapter_root=str(root), rank=2, alpha=2)
+        artifact = root / "adapter.gguf"
+        convert = "_convert_to_gguf"
+        monkeypatch.setattr(trainer, "_training_placement", lambda source: ("cpu", "resident"))
+    else:
+        import torch
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        if getattr(torch.backends, "mps", None):
+            monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+        trainer = BitNetRebuildTrainer(base_model_id=tiny_controller.model_path, runtime_root=str(tmp_path),
+                                       deploy_root=str(root), rank=2, alpha=2)
+        artifact = root / "learned-i2_s.gguf"
+        convert = "_convert_merged_checkpoint"
+        monkeypatch.setattr(trainer, "_training_runtime_available", lambda: True)
+
+    def write_fixture_conversion(source, output):
+        weights = next(Path(source).glob("*.safetensors"))
+        Path(output).write_bytes(hashlib.sha256(weights.read_bytes()).digest())
+
+    monkeypatch.setattr(trainer, convert, write_fixture_conversion)
+    rows = [{"prompt": "What is the vault color?", "completion": "slate"}]
+    first, drift, count, path = trainer.train(rows, steps=1)
+    assert drift > 0 and count > 0 and path == str(artifact)
+    assert first["supervise_prompt"] is False and not first["optimizer_resumed"]
+    before = artifact.read_bytes()
+    second, _, _, path = trainer.train(rows, steps=1, supervise_prompt=True)
+    assert second["optimizer_resumed"] and second["supervised_tokens"] > first["supervised_tokens"]
+    assert (root / "peft" / "adapter_config.json").exists()
+    assert path == str(artifact) and artifact.read_bytes() != before
+    previous = {item: item.read_bytes() for item in (artifact, root / "peft" / "adapter_model.safetensors",
+                                                      root / "optimizer.safetensors")}
+    import os
+    replace = os.replace
+    def fail_final_publish(source, target):
+        if Path(target) == artifact and Path(source).name == artifact.name:
+            raise OSError("standalone deployment busy")
+        return replace(source, target)
+    monkeypatch.setattr(os, "replace", fail_final_publish)
+    with pytest.raises(OSError, match="standalone deployment busy"):
+        trainer.train(rows, steps=1)
+    assert all(item.read_bytes() == saved for item, saved in previous.items())
+
+
+@pytest.mark.parametrize("kind", ["gguf", "bitnet"])
+def test_remote_training_parent_download_only_on_explicit_standalone_train(tmp_path, monkeypatch, kind):
+    import huggingface_hub as hub
+    from core.gguf_lora_trainer import GGUFLoRATrainer
+    from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
+
+    root = tmp_path / "published"
+    selected = tmp_path / "selected.gguf"
+    selected.write_bytes(b"fixture")
+    identifier = "fixture-owner/parent"
+    if kind == "gguf":
+        trainer = GGUFLoRATrainer(model_path=str(selected), base_model_id=identifier, adapter_root=str(root))
+    else:
+        trainer = BitNetRebuildTrainer(runtime_root=str(root), base_model_id=identifier, deploy_root=str(root))
+        monkeypatch.setattr(trainer, "_training_runtime_available", lambda: True)
+    source = tmp_path / "snapshot"
+    source.mkdir()
+    (source / "config.json").write_text("{}")
+    (source / "model.safetensors").write_bytes(b"fixture")
+    downloads = []
+    def snapshot_download(repo_id, local_files_only=False, **options):
+        if local_files_only:
+            raise OSError("not cached")
+        downloads.append((repo_id, options))
+        return str(source)
+    api_calls = []
+    def info(repo_id):
+        api_calls.append(repo_id)
+        return SimpleNamespace(sha="a" * 40, siblings=[SimpleNamespace(rfilename=name) for name in
+                                                      ("model.safetensors", "pytorch_model.bin", "config.json")])
+    monkeypatch.setattr(hub, "snapshot_download", snapshot_download)
+    monkeypatch.setattr(hub, "HfApi", lambda: SimpleNamespace(model_info=info))
+    for flag in ("OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(flag, raising=False)
+    assert not trainer.can_prepare()
+    with pytest.raises(RuntimeError, match="no prompt/completion pairs"):
+        trainer.train([])
+    rows = [{"prompt": "hello", "completion": "world"}]
+    with pytest.raises(RuntimeError, match="Download the declared"):
+        trainer.train(rows, output_directory=tmp_path)
+    monkeypatch.setenv("OFFLINE", "1")
+    with pytest.raises(RuntimeError, match="Download the declared"):
+        trainer.train(rows)
+    assert not downloads and not api_calls
+    monkeypatch.delenv("OFFLINE")
+    def inspect_parent():
+        assert trainer.training_source == str(source)
+        raise RuntimeError("test reached selected local parent")
+    monkeypatch.setattr(trainer, "_load_trainable_model", inspect_parent)
+    with pytest.raises(RuntimeError, match="test reached selected local parent"):
+        trainer.train(rows)
+    assert trainer.training_source is None
+    assert api_calls == [identifier] and len(downloads) == 1
+    repo_id, options = downloads[0]
+    assert repo_id == identifier and options["revision"] == "a" * 40
+    assert "model.safetensors" in options["allow_patterns"] and "pytorch_model.bin" not in options["allow_patterns"]
 
 
 def test_ternary_rebuild_checks_tensor_layout_and_actual_token_vocabulary(tmp_path):

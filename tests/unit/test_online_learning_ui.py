@@ -25,10 +25,16 @@ def app(tmp_path, monkeypatch):
         yield app
     finally:
         app.cancel_event.set()
+        worker = getattr(app, "_generation_worker", None)
+        if worker is not None:
+            worker.join(timeout=2)
+            assert not worker.is_alive()
         if app.watchdog:
             app.watchdog.stop_monitoring()
         app.engine.unload_model()
         root.destroy()
+        import gc
+        gc.collect()
 
 
 def descendants(widget):
@@ -89,3 +95,61 @@ def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app, task, me
     assert not app.is_generating and not app._sleep_consolidating
     output = [widget.get("1.0", "end") for widget in descendants(modal) if isinstance(widget, tk.Text)]
     assert any('"trained_chunks": 1' in text and '"completed"' in text for text in output)
+
+
+def test_sleep_keeps_verified_episode_queue_and_chat_modes_separate(app, monkeypatch):
+    service = app.engine.awake_consolidator
+    observed = []
+    ui_thread = threading.get_ident()
+    monkeypatch.setattr(service, '_real_training_ready', lambda: True)
+    monkeypatch.setattr(service, 'pending_verified_episodes', lambda db: 1)
+    monkeypatch.setattr(service, 'pending_exchanges', lambda history: 2)
+
+    def verified(database, **kwargs):
+        observed.append(('verified', database, threading.get_ident()))
+        return {'status': 'success', 'memories_consolidated': 1, 'parameter_drift_l2': .01,
+                'execution_time_seconds': .1, 'adapter_saved_to': 'verified-checkpoint'}
+
+    def chat(history, **kwargs):
+        observed.append(('chat', history, threading.get_ident()))
+        return {'status': 'retained', 'adapter_saved_to': 'chat-checkpoint'}
+
+    monkeypatch.setattr(service, 'sleep_verified_episodes', verified)
+    monkeypatch.setattr(service, 'sleep', chat)
+    app.chat_history[app.active_tab_id].clear()
+    app._on_open_sleep_consolidation_panel()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    chooser = next(w for w in descendants(modal) if isinstance(w, ttk.Combobox))
+    trigger = next(w for w in descendants(modal) if isinstance(w, tk.Button)
+                   and 'Trigger Sleep' in w.cget('text'))
+    assert chooser.get() == 'Verified episodes (original Sleep/EWC)'
+
+    for mode in ('Verified episodes (original Sleep/EWC)', 'Current chat exchanges'):
+        chooser.set(mode)
+        chooser.event_generate('<<ComboboxSelected>>')
+        expected = len(observed) + 1
+        trigger.invoke()
+        def poll():
+            if len(observed) == expected and not app.is_generating:
+                app.root.quit()
+            else:
+                app.root.after(10, poll)
+        app.root.after(10, poll)
+        app.root.after(4000, app.root.quit)
+        app.root.mainloop()
+        assert len(observed) == expected and not app.is_generating
+        assert str(chooser.cget('state')) == 'readonly'
+
+    assert observed[0][0] == 'verified' and observed[0][1] is app.learner.db
+    assert observed[1][0] == 'chat' and observed[1][1] is app.chat_history[app.active_tab_id]
+    assert all(item[2] != ui_thread for item in observed)
+    text = ''.join(w.get('1.0', 'end') for w in descendants(modal) if isinstance(w, tk.Text))
+    assert 'verified-checkpoint' in text and 'chat-checkpoint' in text
+    assert 'shared queue' in text and 'remain in active context' in text
+
+    from core.memory_scopes import LearningScope
+    app.engine.learning_scope = LearningScope('project', 'different-project')
+    trigger.invoke()
+    assert len(observed) == 2
+    text = ''.join(w.get('1.0', 'end') for w in descendants(modal) if isinstance(w, tk.Text))
+    assert 'reopen this panel' in text

@@ -339,49 +339,54 @@ class BitNetRebuildTrainer:
             )
 
     def train(
-        self, data, *, output_directory, previous_peft=None, learning_rate=1e-4,
-        steps=3, max_length=256, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
+        self, data, *, output_directory=None, previous_peft=None, learning_rate=1e-4,
+        steps=3, max_length=512, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
         reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
-        objective='causal_lm', supervise_prompt=True, row_weights=None, context_text=None, max_context_tokens=None,
+        objective='causal_lm', supervise_prompt=False, row_weights=None, context_text=None, max_context_tokens=None,
     ):
-        """Build the complete candidate inside the caller's unpublished generation."""
+        """Build a staged deployment or publish the standalone cumulative checkpoint."""
         from core.torch_context_learning import check_cancelled, update_lora, verify_saved_lora
+        from core.native_context_learning import native_training_output
 
-        output = Path(output_directory)
-        self.cancel_event = cancel_event
-        peft_path = output / "peft"
-        if previous_peft is not None and not (Path(previous_peft) / "adapter_config.json").is_file():
-            raise RuntimeError("The active deployment is missing its cumulative PEFT checkpoint")
-        self.peft_dir = Path(previous_peft or peft_path)
-        check_cancelled(cancel_event)
-        model, tokenizer = self._load_trainable_model()
-        try:
-            metrics, drift = update_lora(
-                model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
-                fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
-                previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
-                reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
-                objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
-                context_text=context_text, max_context_tokens=max_context_tokens,
-            )
+        if output_directory is None and self.quantization is None:
+            self.quantization = "i2_s"  # Historical standalone rebuild format.
+        destination = self.deploy_root / f"learned-{self.quantization}.gguf"
+        with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data, objective) as stage:
+            output, previous_peft, published, data = stage
+            self.cancel_event = cancel_event
+            peft_path = output / "peft"
+            if previous_peft is not None and not (Path(previous_peft) / "adapter_config.json").is_file():
+                raise RuntimeError("The active deployment is missing its cumulative PEFT checkpoint")
+            self.peft_dir = Path(previous_peft or peft_path)
             check_cancelled(cancel_event)
-            model.save_pretrained(peft_path, safe_serialization=True, save_embedding_layers=False)
-            verify_saved_lora(model, peft_path)
-            tokenizer.save_pretrained(peft_path)
-            with tempfile.TemporaryDirectory(prefix="bitnet-merge-", dir=output) as merged_dir:
-                merged = model.merge_and_unload(safe_merge=True)
-                merged.save_pretrained(merged_dir, safe_serialization=True, max_shard_size="100GB")
-                tokenizer.save_pretrained(merged_dir)
-                del merged
+            model, tokenizer = self._load_trainable_model()
+            try:
+                metrics, drift = update_lora(
+                    model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
+                    fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+                    previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
+                    reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                    objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
+                    context_text=context_text, max_context_tokens=max_context_tokens,
+                )
+                check_cancelled(cancel_event)
+                model.save_pretrained(peft_path, safe_serialization=True, save_embedding_layers=False)
+                verify_saved_lora(model, peft_path)
+                tokenizer.save_pretrained(peft_path)
+                with tempfile.TemporaryDirectory(prefix="bitnet-merge-", dir=output) as merged_dir:
+                    merged = model.merge_and_unload(safe_merge=True)
+                    merged.save_pretrained(merged_dir, safe_serialization=True, max_shard_size="100GB")
+                    tokenizer.save_pretrained(merged_dir)
+                    del merged
+                    model = tokenizer = None
+                    release_training_memory()
+                    check_cancelled(cancel_event)
+                    deployment = output / f"learned-{self.quantization}.gguf"
+                    self._convert_merged_checkpoint(merged_dir, str(deployment))
+                adapter_format = "peft-merged-bitnet-" + self.quantization
+                check_cancelled(cancel_event)
+                metrics.update({"base_model_id": self.base_model_id, "adapter_format": adapter_format})
+                return metrics, drift, metrics["trainable_parameters_touched"], str(published)
+            finally:
                 model = tokenizer = None
                 release_training_memory()
-                check_cancelled(cancel_event)
-                deployment = output / f"learned-{self.quantization}.gguf"
-                self._convert_merged_checkpoint(merged_dir, str(deployment))
-            adapter_format = "peft-merged-bitnet-" + self.quantization
-            check_cancelled(cancel_event)
-            metrics.update({"base_model_id": self.base_model_id, "adapter_format": adapter_format})
-            return metrics, drift, metrics["trainable_parameters_touched"], str(deployment)
-        finally:
-            model = tokenizer = None
-            release_training_memory()

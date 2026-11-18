@@ -5086,7 +5086,8 @@ class SmartAIChatbotApp:
                 self._best_work_mode = pro_active
                 self._best_work_final_rate = None
                 pro_summary = None
-                best_work_ui = {"label": None, "panel": None, "done": 0, "total": 0}
+                best_work_ui = {"label": None, "panel": None, "done": 0, "total": 0,
+                                "pass_index": 1, "passes": 1}
                 self._live_generation_snapshot = None
                 self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
@@ -5153,11 +5154,26 @@ class SmartAIChatbotApp:
                         label.configure(text=value)
                     self._scroll_chat_to_bottom()
 
+                def _pass_label(value):
+                    if best_work_ui["passes"] > 1:
+                        return f"{value} · pass {best_work_ui['pass_index']}/{best_work_ui['passes']}"
+                    return value
+
                 def _decision(event):
                     nonlocal pro_active
                     kind = event.get("kind")
                     total = event.get("total", 0)
-                    if kind == "route":
+                    if kind == "pass":
+                        best_work_ui["pass_index"] = int(event["pass_index"])
+                        best_work_ui["passes"] = int(event["passes"])
+                        best_work_ui["done"] = best_work_ui["total"] = 0
+                        if best_work_ui["passes"] > 1:
+                            pro_active = True
+                            self._best_work_mode = True
+                            value = "🌿 Best Work · " + ("final response" if event.get("final") else "refining draft")
+                        else:
+                            value = None
+                    elif kind == "route":
                         if total > 1:
                             best_work_ui["done"] = 0
                             best_work_ui["total"] = total
@@ -5165,6 +5181,9 @@ class SmartAIChatbotApp:
                             self._best_work_mode = True
                             value = f"🌿 Best Work 0/{total} · generating candidates"
                         else:
+                            if best_work_ui["passes"] > 1:
+                                best_work_ui["done"] = 0
+                                best_work_ui["total"] = total
                             value = "🌿 Continuing in single stream" if pro_active else None
                     elif kind == "selected":
                         best_work_ui["done"] = total
@@ -5176,6 +5195,7 @@ class SmartAIChatbotApp:
                     else:
                         value = "🌿 Rechecking original Pro routing after tool result" if pro_active else None
                     if value is not None:
+                        value = _pass_label(value)
                         if kind == "executing":
                             painted = threading.Event()
                             def _paint_before_execution(text=value):
@@ -5198,7 +5218,7 @@ class SmartAIChatbotApp:
                     best_work_ui["total"] = int(total)
                     action = "comparing candidates" if finished and done == total else (
                         f"branch #{done} done" if finished else f"generating branch #{done+1}")
-                    self.root.after(0, lambda text=f"🌿 Best Work {done}/{total} · {action}":
+                    self.root.after(0, lambda text=_pass_label(f"🌿 Best Work {done}/{total} · {action}"):
                                     _paint_best_work(text))
 
                 def _observed(sample):
@@ -5228,7 +5248,8 @@ class SmartAIChatbotApp:
                 options = {}
                 if use_pro_branches:
                     options.update(best_work_enabled=True, progress_callback=_branch_progress,
-                                   status_callback=_decision, route_with_history=route_with_history)
+                                   status_callback=_decision, route_with_history=route_with_history,
+                                   best_work_passes=getattr(self.settings, "best_work_passes", 2))
                 iterator = self.multimodal.stream_solve(full_msg,
                     history=curr_history, cancel_event=self.cancel_event, **options
                 )
@@ -5262,8 +5283,9 @@ class SmartAIChatbotApp:
                     self._live_generation_snapshot = snapshot
                     self._best_work_final_rate = snapshot.get("wall_tps") if pro_active else None
                 if pro_active and not self.cancel_event.is_set():
-                    self.root.after(0, lambda: _paint_best_work(
-                        f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · complete"))
+                    complete_label = _pass_label(
+                        f"🌿 Best Work {best_work_ui['total']}/{best_work_ui['total']} · complete")
+                    self.root.after(0, lambda text=complete_label: _paint_best_work(text))
 
                 if ui_pending:
                     _schedule_stream_insert("".join(ui_pending))
@@ -5723,6 +5745,32 @@ assert glyph_res["invariants_passed"] == True
 
         tk.Label(hdr, text="🌿 Multi-Branch Search & RLVR Verification", font=_FONT_H2, bg=self.C["bg_hud"], fg=self.C["accent_green"]).pack(anchor="w")
 
+        pass_controls = tk.Frame(modal, bg=self.C["bg_hud"])
+        pass_controls.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Label(pass_controls, text="Best Work passes:", font=_FONT_SMALL,
+                 bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
+        pass_count = tk.StringVar(master=modal, value=str(getattr(self.settings, "best_work_passes", 2)))
+        pass_entry = ttk.Spinbox(pass_controls, from_=1, to=999, width=5, textvariable=pass_count)
+        pass_entry.pack(side="left", padx=8)
+        pass_status = tk.Label(pass_controls, text="1 keeps the original pass; 2+ refines the prior result.",
+                               font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_muted"])
+
+        def _apply_passes():
+            try:
+                value = int(pass_count.get())
+                if value < 1:
+                    raise ValueError
+            except (ValueError, tk.TclError):
+                pass_status.configure(text="Enter a positive whole number of passes.")
+                return
+            self.settings.best_work_passes = value
+            self.engine.settings.best_work_passes = value
+            pass_status.configure(text=f"Next Best Work request: {value} pass(es).")
+
+        ttk.Button(pass_controls, text="Apply passes", command=_apply_passes).pack(side="left", padx=(0, 8))
+        pass_status.pack(side="left")
+        pass_entry.bind("<Return>", lambda _event: _apply_passes())
+
         # Telemetry HUD Row
         hud_row = tk.Frame(modal, bg=self.C["bg_hud"])
         hud_row.pack(fill="x", padx=16, pady=(0, 10))
@@ -6018,7 +6066,7 @@ assert glyph_res["invariants_passed"] == True
             return
         modal = tk.Toplevel(self.root)
         modal.title("Sleep Consolidation Control Panel (EWC-LoRA)")
-        modal.geometry("720x520")
+        modal.geometry("780x580")
         modal.minsize(640, 440)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
@@ -6038,24 +6086,58 @@ assert glyph_res["invariants_passed"] == True
         tab_id = self.active_tab_id
         service = self.engine.awake_consolidator
         backend = service.engine
+        scope = getattr(self.engine, "learning_scope", None)
+        database = getattr(getattr(self, "learner", None), "db", None)
+        source_mode = tk.StringVar(master=modal, value="Verified episodes (original Sleep/EWC)"
+                                   if database is not None else "Current chat exchanges")
 
-        def pending_exchanges():
+        def pending_items():
+            if source_mode.get() == "Verified episodes (original Sleep/EWC)":
+                return service.pending_verified_episodes(database)
             return service.pending_exchanges(self.chat_history.get(tab_id, []))
 
         try:
-            pending = str(pending_exchanges())
+            pending = str(pending_items())
         except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
             pending = f"Unavailable ({error})"
-        lbl_uncons = self._make_badge(cards_row, f"Pending complete exchanges: {pending}")
+        source_label = "verified episodes" if database is not None else "complete exchanges"
+        lbl_uncons = self._make_badge(cards_row, f"Pending {source_label}: {pending}")
         self._make_badge(cards_row, f"Active backend: {backend_label(backend)}")
+
+        source_row = tk.Frame(body, bg=self.C["bg_hud"])
+        source_row.pack(fill="x", pady=(0, 6))
+        tk.Label(source_row, text="Learn from:", bg=self.C["bg_hud"], fg=self.C["text_main"],
+                 font=_FONT_SMALL).pack(side="left", padx=(0, 8))
+        choices = (("Verified episodes (original Sleep/EWC)", "Current chat exchanges")
+                   if database is not None else ("Current chat exchanges",))
+        source_choice = ttk.Combobox(source_row, textvariable=source_mode, width=36, state="readonly",
+                                    values=choices)
+        source_choice.pack(side="left")
+        target_name = self.models_config.get(tab_id, {}).get("short_name", tab_id)
+        scope_name = getattr(scope, "kind", "model")
+        if getattr(scope, "key", ""):
+            scope_name += ": " + scope.key
+        tk.Label(body, text=f"Target: {target_name} · {scope_name}", bg=self.C["bg_hud"],
+                 fg=self.C["text_muted"], font=_FONT_TINY, anchor="w", wraplength=700).pack(fill="x")
 
         # Progress / Output Log Area
         tk.Label(body, text="📈 Live Sleep Consolidation Progress & Parameter Shift:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w", pady=(8, 2))
         txt_cons_log = tk.Text(body, height=12, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=12, pady=10)
         txt_cons_log.pack(fill="both", expand=True, pady=(0, 10))
-        txt_cons_log.insert("1.0", "Each sleep cycle trains a batch of old, complete exchanges from this chat on its loaded backend. "
-                            "A validated checkpoint retires those exchanges from model input. "
-                            "The transcript stays available in the chat.\n")
+        txt_cons_log.insert("1.0", "Verified episodes replays the original shared queue of verified solutions into the selected model and memory scope. "
+                            "Legacy episodes do not identify their originating model; accepted updates acknowledge the trained rows. "
+                            "Current chat exchanges separately consolidates completed dialogue, retiring text only after recall validation. "
+                            "The transcript remains available in chat.\n")
+
+        def _refresh_pending(_event=None):
+            try:
+                pending = str(pending_items())
+            except (RuntimeError, ValueError, OSError, sqlite3.Error):
+                pending = "Unavailable"
+            label = "verified episodes" if source_mode.get().startswith("Verified") else "complete exchanges"
+            lbl_uncons.configure(text=f"Pending {label}: {pending}")
+
+        source_choice.bind("<<ComboboxSelected>>", _refresh_pending)
 
 
         btn_bar = tk.Frame(body, bg=self.C["bg_hud"])
@@ -6071,6 +6153,7 @@ assert glyph_res["invariants_passed"] == True
 
         def _run_sleep():
             if (self.active_tab_id != tab_id or service.engine is not backend
+                    or getattr(self.engine, "learning_scope", None) != scope
                     or not service._real_training_ready()):
                 txt_cons_log.insert("end", "\nSelect and load a trainable backend, then reopen this panel.\n")
                 return
@@ -6082,7 +6165,9 @@ assert glyph_res["invariants_passed"] == True
             self._sleep_consolidating = True
             self.cancel_event.clear()
             self._set_generating_state(True)
-            transcript = self.chat_history[tab_id]
+            verified_episodes = source_mode.get() == "Verified episodes (original Sleep/EWC)"
+            transcript = self.chat_history.get(tab_id, [])
+            source_choice.configure(state="disabled")
             btn_trigger.configure(state="disabled", text="Consolidating…")
 
             def _finish(message):
@@ -6092,25 +6177,30 @@ assert glyph_res["invariants_passed"] == True
                     txt_cons_log.insert("end", message + "\n")
                     txt_cons_log.see("end")
                     btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now")
-                    try:
-                        pending = str(pending_exchanges())
-                    except (RuntimeError, ValueError, OSError, sqlite3.Error):
-                        pending = "Unavailable"
-                    lbl_uncons.configure(text=f"Pending complete exchanges: {pending}")
+                    source_choice.configure(state="readonly")
+                    _refresh_pending()
                 self._update_telemetry()
                 self._check_and_run_next_queue()
 
             def _worker():
                 try:
-                    res = service.sleep(transcript, cancel_event=self.cancel_event)
+                    if verified_episodes:
+                        res = service.sleep_verified_episodes(database, settings=self.settings,
+                                                              cancel_event=self.cancel_event)
+                    else:
+                        res = service.sleep(transcript, cancel_event=self.cancel_event)
                     if res["status"] == "idle":
-                        message = "No pending complete exchanges."
+                        message = "No pending verified episodes." if verified_episodes else "No pending complete exchanges."
+                    elif res.get("recovered"):
+                        message = (f"Recovered the committed checkpoint and acknowledged {res['memories_consolidated']} episode(s); "
+                                   f"no additional training ran.\nCheckpoint: {res['adapter_saved_to']}")
                     elif res["status"] == "retained":
                         message = (f"Weights updated; the exchanges remain in active context. "
                                    f"{res.get('retirement_reason', 'Recall is not yet verified.')}\n"
                                    f"Checkpoint: {res['adapter_saved_to']}")
                     else:
-                        message = (f"Consolidated {res['memories_consolidated']} exchange(s) in "
+                        unit = "episode(s)" if verified_episodes else "exchange(s)"
+                        message = (f"Consolidated {res['memories_consolidated']} {unit} in "
                                    f"{res['execution_time_seconds']:.2f}s. Weight drift {res['parameter_drift_l2']:.6g}.\n"
                                    f"Checkpoint: {res['adapter_saved_to']}")
                 except Exception as error:

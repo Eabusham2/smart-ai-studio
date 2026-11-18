@@ -226,7 +226,7 @@ class GGUFReasoningBackend:
         save_path: Optional[str] = None,
         cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
         reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
-        objective='causal_lm', supervise_prompt=True, max_window_tokens=256, row_weights=None,
+        objective='causal_lm', supervise_prompt=False, max_window_tokens=512, row_weights=None,
         context_text=None, max_context_tokens=2048, **_kwargs,
     ):
         """Train a LoRA on the declared HF lineage and validate it on the selected GGUF."""

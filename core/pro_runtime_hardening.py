@@ -31,6 +31,9 @@ def _normalize_adapter_path(path) -> str:
 
 def _active_backend_name(engine) -> str:
     active = getattr(engine, "active_backend", None)
+    controller = getattr(engine, "controller_backend", None)
+    if active == "controller" and getattr(controller, "direct_cuda_loaded", False) is True:
+        return controller.direct_backend_name
     if active == "controller" and getattr(getattr(engine, "controller_backend", None), "runtime", None) == "strata":
         return "strata"
     if active == "gguf" and getattr(getattr(engine, "gguf_backend", None), "runtime", None) == "prism_speculative":

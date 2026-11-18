@@ -19,6 +19,34 @@ def local_training_parent(identifier):
     return str(source.absolute())
 
 
+def standalone_training_parent(identifier):
+    """An explicit standalone train call can acquire its configured Hugging Face parent."""
+    try:
+        return local_training_parent(identifier)
+    except RuntimeError:
+        path = Path(identifier).expanduser()
+        offline = any(os.getenv(name, "").upper() in {"1", "ON", "TRUE", "YES"}
+                      for name in ("OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"))
+        if offline or path.exists() or path.is_absolute() or str(identifier).startswith((".", "~")):
+            raise
+    from huggingface_hub import HfApi, snapshot_download
+
+    info = HfApi().model_info(identifier)
+    files = {entry.rfilename for entry in info.siblings}
+    # Match Transformers' preference for safetensors. Some repos also ship the
+    # same model as PyTorch bins and multiple quantized deployments.
+    if "model.safetensors" in files or "model.safetensors.index.json" in files:
+        weights = ["model.safetensors", "model-*.safetensors"]
+    elif "pytorch_model.bin" in files or "pytorch_model.bin.index.json" in files:
+        weights = ["pytorch_model.bin", "pytorch_model-*.bin"]
+    else:
+        raise RuntimeError("The selected Hugging Face parent has no Transformers model weights")
+    snapshot = snapshot_download(repo_id=identifier, revision=info.sha, allow_patterns=[
+        *weights, "*.json", "*.jsonl", "*.py", "*.model", "*.txt", "*.tiktoken", "*.jinja", "*.vocab", "*.bpe",
+    ])
+    return local_training_parent(snapshot)
+
+
 def verify_parent(backend, trainer, path, native_tokens, state_root):
     from transformers import AutoTokenizer
     from core.gguf_metadata import inspect_gguf

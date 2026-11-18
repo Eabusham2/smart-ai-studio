@@ -358,12 +358,14 @@ class MLXReasoningBackend:
                     raise ValueError("No learnable causal targets in Fisher anchors")
             fisher_tensors = 0
             if fisher_matrix and lambda_ewc:
-                if fisher_matrix.keys() != params.keys() or reference.keys() != params.keys():
+                if (not fisher_matrix.keys() <= params.keys()
+                        or reference_weights is not None and reference.keys() != fisher_matrix.keys()):
                     raise ValueError("MLX EWC tensors do not match active adapter keys")
-                for key, value in params.items():
+                for key in fisher_matrix:
+                    value = params[key]
                     if value.shape != reference[key].shape or value.shape != fisher_matrix[key].shape:
                         raise ValueError(f"MLX EWC shape mismatch for {key}")
-                check_finite([*fisher_matrix.values(), *reference.values()], "EWC tensors")
+                check_finite([*fisher_matrix.values(), *(reference[key] for key in fisher_matrix)], "EWC tensors")
                 if any(bool(mx.any(value < 0).item()) for value in fisher_matrix.values()):
                     raise ValueError("MLX Fisher diagonal contains negative entries")
                 fisher_tensors = sum(bool(mx.any(value > 0).item()) for value in fisher_matrix.values())
@@ -371,7 +373,9 @@ class MLXReasoningBackend:
             def penalty(model):
                 loss = 0.0
                 if fisher_tensors:
-                    for key, weight in flat_trainables(model).items():
+                    weights = flat_trainables(model)
+                    for key in fisher_matrix:
+                        weight = weights[key]
                         diff = weight.astype(mx.float32) - reference[key].astype(mx.float32)
                         loss = loss + (0.5 * lambda_ewc) * mx.sum(fisher_matrix[key] * mx.square(diff))
                 return loss

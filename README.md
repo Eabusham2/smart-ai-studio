@@ -136,7 +136,7 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
 
 ## Persistent chat memory
 
-At 80% of Context, eligible text backends start learning from old, complete exchanges. Sleep can also start an update on the loaded model. Parameter validation and generated recall checks gate retirement from model input; the complete transcript stays in a paged archive. Memory Explorer shows checkpoints, scoped memory, and online learning controls. [Backend support, storage and recall evaluation](docs/parametric-memory.md)
+At 80% of Context, eligible text backends start learning from old, complete exchanges. Sleep offers the original verified-episode/EWC queue and a separate current-chat update on the loaded model. Parameter validation and generated recall checks gate retirement from model input; the complete transcript stays in a paged archive. Memory Explorer shows checkpoints, scoped memory, and online learning controls. [Backend support, storage and recall evaluation](docs/parametric-memory.md)
 
 **Online learning** adds resumable document ingestion, evidence selection, few-shot practice, fixed-KV query adaptation on supported models, verifier/consensus reward updates, entropic discovery with PUCT candidate reuse, and a searchable bank of document adapters. Learning persists in the selected model, session or project scope by default. Select **Temporary practice** to use a request copy and restore the prior learned state afterwards. Hardware and runtime capabilities are checked before updates. [Workflows and CLI](docs/test-time-learning.md) · [Research coverage and exclusions](docs/ttt-research-coverage.md)
 
@@ -264,6 +264,8 @@ Test coverage and platform-specific verification may vary by branch and environm
 ---
 
 ## 📦 Multi-Platform Packaging
+
+**Best Work** runs two sequential inference passes by default, refining the selected draft through the existing router and verifier. Only the final pass displays an answer or executes its selected tool. Set **Best Work passes** in **Branches…** to change the count; **1** keeps the original single-pass behavior.
 
 Release packages and Best Work behavior are documented in
 [Best Work handoffs and packaging](docs/best-work-handoffs.md). Portable packages

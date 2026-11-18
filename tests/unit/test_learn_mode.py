@@ -143,7 +143,44 @@ class TestAutonomousLearnMode(unittest.TestCase):
         result = self.learner.research_from_source(folder, "records")
         assert result["sources_found"] == 2 and result["media_kinds"] == ["image"]
         assert SOURCE_SENTENCE in result["source_text"] and "second.txt" in result["source_text"]
-        assert len(result["source_text"]) <= 4096 and result["stream"]["status"] == "completed"
+        assert result["stream"]["status"] == "completed"
+
+    def test_learn_skips_invalid_documents_reports_errors_and_restores_attachment_context(self):
+        from core.test_time_learning import OnlineLearning
+        folder = Path(self.temp_dir.name) / "lessons"
+        folder.mkdir()
+        (folder / "broken.docx").write_bytes(b"bad archive")
+        valid = folder / "notes.txt"
+        valid.write_bytes(b"Topic " * 1200 + b"cafe\xff. " + SOURCE_SENTENCE.encode() + b" filler" * 2000)
+        messages = []
+        result = self.learner.research_from_source(folder, "raft", progress_callback=lambda *args: messages.append(args))
+        assert result["extraction_errors"] and "broken.docx" in result["extraction_errors"][0]
+        assert any(stage == "source_warnings" for stage, _, _ in messages)
+        assert len(result["source_text"]) == 16000
+        assert SOURCE_SENTENCE in self.learner._lesson_source(result, "raft")
+        assert "cafe\ufffd." in result["source_text"]
+        assert result["stream"]["source_chars"] == len(valid.read_bytes().decode("utf-8", "replace"))
+        with self.assertRaises(UnicodeDecodeError):
+            OnlineLearning(self.learner._consolidation_service()).run_request(
+                {"method": "ingest", "source": str(valid), "chunk_chars": 30000})
+
+    def test_legacy_learn_resumes_preexisting_strict_source_checkpoint(self):
+        from core.test_time_learning import OnlineLearning
+        source = Path(self.temp_dir.name) / "earlier.txt"
+        source.write_text("A readable source statement. " * 250)
+        service = self.learner._consolidation_service()
+        first = OnlineLearning(service).run_request(
+            {"method": "ingest", "source": str(source), "learning_rate": self.settings.consolidation_lr})
+        updates = service.engine.train_calls
+        result = self.learner.research_from_source(source, "earlier")
+        assert result["stream"]["source_chars"] == first["source_chars"]
+        assert result["stream"]["chunks_this_run"] == 0 and service.engine.train_calls == updates
+
+    def test_unreadable_attachment_exposes_the_extraction_reason(self):
+        path = Path(self.temp_dir.name) / "corrupt.docx"
+        path.write_bytes(b"bad archive")
+        with self.assertRaisesRegex(RuntimeError, "corrupt.docx: BadZipFile"):
+            self.learner.research_from_source(path, "attachments")
 
     def test_verified_note_is_supervised_and_its_source_witness_is_bound_to_that_note(self):
         from unittest.mock import patch

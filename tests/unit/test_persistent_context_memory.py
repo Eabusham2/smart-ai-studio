@@ -123,7 +123,7 @@ def test_gui_request_copies_keep_retirement_through_both_real_routes(tmp_path, b
         _gui_force_single_stream = True
 
         def __init__(self):
-            self.settings = SimpleNamespace(max_new_tokens=64)
+            self.settings = SimpleNamespace(max_new_tokens=64, best_work_passes=1)
             self.controller_backend = TransactionalBackend(tmp_path)
             self.awake_consolidator = AwakeOnlineConsolidator(self.controller_backend)
             self.router = SimpleNamespace(route=lambda *args, **kwargs: ("Instant", 1))
@@ -238,12 +238,21 @@ def test_sleep_panel_dispatches_to_selected_backend_and_reports_only_committed_r
             return True
 
         def __getattr__(self, name):
-            if name in {"title", "geometry", "minsize", "transient", "pack", "see"}:
+            if name in {"title", "geometry", "minsize", "transient", "pack", "see", "bind"}:
                 return lambda *args, **kwargs: None
             raise AttributeError(name)
 
     for name in ("Toplevel", "Label", "Frame", "Text", "Button"):
         monkeypatch.setattr(app_gui.tk, name, Widget)
+    class Variable:
+        def __init__(self, **kwargs):
+            self.value = kwargs.get("value", "")
+        def get(self):
+            return self.value
+        def set(self, value):
+            self.value = value
+    monkeypatch.setattr(app_gui.tk, "StringVar", Variable)
+    monkeypatch.setattr(app_gui.ttk, "Combobox", Widget)
     monkeypatch.setattr(app_gui.threading, "Thread",
                         lambda target, **kwargs: SimpleNamespace(start=target))
     backend = TransactionalBackend(tmp_path)

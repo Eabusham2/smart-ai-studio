@@ -5,6 +5,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import shutil
 import tempfile
 
 
@@ -138,6 +139,57 @@ def resume_optimizer(backend, optimizer, txn, learning_rate):
     return True
 
 
+def _commit_with_export(backend, txn, checkpoint, details, save_path, cancel_event):
+    """Keep the caller's standalone copy and verified managed generation consistent on failure."""
+    from core.learning_state import (
+        _fsync_directory, _fsync_staged_file, _process_commit_lock, write_checkpoint_manifest,
+    )
+    import hashlib
+
+    target = Path(save_path).expanduser().resolve() if save_path else None
+    if target is not None and target.is_relative_to(txn.store.root):
+        relative = target.relative_to(txn.store.root)
+        managed = relative.parts and (relative.parts[0] in {"scopes", "identity_cache", "export_locks"}
+                                      or len(relative.parts[0]) == 64 and all(c in "0123456789abcdef" for c in relative.parts[0]))
+        if managed:
+            # Earlier callers passed the live adapter_path back as save_path.
+            # That immutable generation remains a recoverable parent.
+            current = getattr(backend, "_last_managed_checkpoint", None)
+            if not current or Path(current).resolve() != target:
+                raise ValueError("An external MLX save path cannot overwrite managed learning state")
+            target = None
+    if target is None:
+        return txn.commit(checkpoint=checkpoint.name, metadata=details, cancel_event=cancel_event)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock = txn.store.root / "export_locks" / hashlib.sha256(os.fsencode(target)).hexdigest()
+    lock.mkdir(parents=True, exist_ok=True)
+    with _process_commit_lock(lock), tempfile.TemporaryDirectory(dir=target.parent) as temporary:
+        stage = Path(temporary) / "adapters.safetensors"
+        shutil.copyfile(checkpoint, stage)
+        _fsync_staged_file(stage)
+        write_checkpoint_manifest(backend, stage)
+        published = []
+        try:
+            for source, destination in ((stage, target), (Path(str(stage) + ".memory.json"), Path(str(target) + ".memory.json"))):
+                backup = source.with_suffix(".previous") if destination.exists() else None
+                if backup is not None:
+                    shutil.copy2(destination, backup)
+                os.replace(source, destination)
+                published.append((destination, backup))
+            _fsync_directory(target.parent)
+            return txn.commit(checkpoint=checkpoint.name, metadata=details, cancel_event=cancel_event)
+        except BaseException:
+            if not txn.committed:
+                for destination, backup in reversed(published):
+                    if backup is None:
+                        destination.unlink(missing_ok=True)
+                    else:
+                        os.replace(backup, destination)
+                _fsync_directory(target.parent)
+            raise
+
+
 def persist_candidate(backend, candidate, save_path, txn, metadata, metrics, cancel_event, optimizer):
     import mlx.core as mx
     from core.mlx_learning import cancel_if_requested
@@ -181,7 +233,7 @@ def persist_candidate(backend, candidate, save_path, txn, metadata, metrics, can
             if source is not None:
                 details["imported_adapter"] = source
             cancel_if_requested(cancel_event)
-            txn.commit(checkpoint=destination.name, metadata=details, cancel_event=cancel_event)
+            _commit_with_export(backend, txn, destination, details, save_path, cancel_event)
             backend._last_managed_checkpoint = str(destination)
             backend._mlx_parent_generation = txn.generation
         backend.adapter_path = str(destination)

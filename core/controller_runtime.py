@@ -366,17 +366,19 @@ class UniversalControllerBackend:
         offload_root.mkdir(parents=True, exist_ok=True)
         source_key = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:16]
         self._offload_directory = tempfile.mkdtemp(prefix=f"{source_key}-", dir=offload_root)
+        self.direct_cuda_loaded = self.direct_cuda and torch.cuda.is_available()
         processor = None
-        try:
-            processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True, **source_options)
-        except Exception:
-            processor = None
+        if not self.direct_cuda_loaded:
+            try:
+                processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True, **source_options)
+            except Exception:
+                processor = None
         if processor is None:
             processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options)
 
         # The original direct CUDA loader selected BF16 even for checkpoints
         # stored in FP32. Imported controllers use the checkpoint's native dtype.
-        dtype = torch.bfloat16 if self.direct_cuda and torch.cuda.is_available() else "auto"
+        dtype = torch.bfloat16 if self.direct_cuda_loaded else "auto"
         requested = str(self.model_info.get("transformers_auto_class") or "").strip()
         candidates = [requested] if requested else (["AutoModelForCausalLM"] if self.direct_torch_generation else [])
         candidates += [
@@ -555,7 +557,7 @@ class UniversalControllerBackend:
         save_path: Optional[str] = None,
         cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
         reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
-        objective='causal_lm', supervise_prompt=True, max_window_tokens=256, row_weights=None,
+        objective='causal_lm', supervise_prompt=False, max_window_tokens=512, row_weights=None,
         context_text=None, max_context_tokens=2048, **_kwargs,
     ):
         """Validate the live PEFT candidate before publishing its checkpoint generation."""

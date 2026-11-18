@@ -23,7 +23,7 @@ from core.discovery_search import DiscoveryArchive
 from core import arc_augmentation as arc
 from core.candidate_trajectories import candidate_trajectories, joint_rows
 from core.policy_reference import policy_reference
-from core.learning_sources import iter_file_positions, iter_learning_files, source_snapshot
+from core.learning_sources import iter_attachment_positions, iter_file_positions, iter_learning_files, source_snapshot
 from core.online_consolidator import LearningValidationError, source_probe
 from core.training_memory import process_rss_mb
 
@@ -101,10 +101,11 @@ def _rewarded(answers, mode, verifier, extract_answer):
 
 
 class OnlineLearning:
-    def __init__(self, service, generate=None):
+    def __init__(self, service, generate=None, *, attachment_errors=None):
         self.service = service
         self.backend = service.engine
         self.generate = generate
+        self.attachment_errors = attachment_errors
 
     def _answer(self, prompt, tokens, temperature, event):
         check_cancel(event)
@@ -252,21 +253,32 @@ class OnlineLearning:
             descriptor.append({"max_window_tokens": max_window_tokens})
         if overlap_chars != 64:
             descriptor.append({"overlap_chars": overlap_chars})
-        job = hashlib.sha256(json.dumps(descriptor).encode()).hexdigest()
+        strict_job = hashlib.sha256(json.dumps(descriptor).encode()).hexdigest()
+        job = strict_job
+        if self.attachment_errors is not None:
+            descriptor.append("legacy-attachment-reading-v1")
+            job = hashlib.sha256(json.dumps(descriptor).encode()).hexdigest()
         manifest = store.current_manifest(verify=False) or {}
         state = {"next": 0, "trained_chunks": 0, "selected_chars": 0, "source_chars": 0}
         memory = manifest.get("metadata", {}).get("memory", {})
         cursor_bank = StreamCursorBank(store.directory)
-        state.update(cursor_bank.lookup(memory.get("stream_head"), job) or memory.get("streams", {}).get(job, {}))
+        # A previously strict-read prefix is also valid for a tolerant Learn attachment.
+        # Strict ingestion must never inherit progress past a skipped or repaired document.
+        eligible_jobs = [strict_job, job] if job != strict_job else [job]
+        for prior_job in eligible_jobs:
+            prior = cursor_bank.lookup(memory.get("stream_head"), prior_job) or memory.get("streams", {}).get(prior_job, {})
+            if prior.get("next", -1) >= state["next"]:
+                state.update(prior)
         db_path = store.directory / "source-progress.sqlite3"
         with closing(sqlite3.connect(db_path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS progress (job TEXT, generation TEXT, state TEXT, PRIMARY KEY(job,generation))")
             generation = manifest.get("generation", "")
-            record = db.execute("SELECT state FROM progress WHERE job=? AND generation=?", (job, generation)).fetchone()
-            if record:
-                cached = json.loads(record[0])
-                if cached["next"] >= state["next"]:
-                    state = cached
+            for prior_job in eligible_jobs:
+                record = db.execute("SELECT state FROM progress WHERE job=? AND generation=?", (prior_job, generation)).fetchone()
+                if record:
+                    cached = json.loads(record[0])
+                    if cached["next"] >= state["next"]:
+                        state = cached
         start = state["next"]
 
         def save():
@@ -294,7 +306,10 @@ class OnlineLearning:
             seek = state.get("seek") if resume_file else None
             tail = state.get("tail", "") if resume_file else ""
             resume_file = None
-            for chunk, next_seek in iter_file_positions(path, chunk_chars, first=file_index, seek=seek):
+            chunks = (iter_file_positions(path, chunk_chars, first=file_index, seek=seek)
+                      if self.attachment_errors is None else iter_attachment_positions(
+                          path, chunk_chars, self.attachment_errors, first=file_index, seek=seek))
+            for chunk, next_seek in chunks:
                 check_cancel(cancel_event)
                 if max_chunks and state["next"] - start >= max_chunks:
                     return report("paused")

@@ -1,50 +1,74 @@
 # Best Work handoffs, output limits, and release packaging
 
-## Preserved behavior
+## Choosing the number of passes
 
-The existing `EntropyRouter`, verifier/consensus selection, convex temperature
-ladder, and fixed-temperature extra candidate remain authoritative. The desktop
-checkbox only enables or disables that existing Pro path. There is no new
-keyword-based complexity selector or GUI branch-count dropdown. Native servers
-without full-vocabulary entropy retain their existing runtime-specific budget;
-Studio does not invent a confidence value for them.
+With **Best Work** checked, Studio runs **two sequential inference passes per
+stage** by default. The first pass produces a draft. The second receives the
+request, its conversation history, and the first pass's selected draft. It
+reviews that draft and generates the complete response shown in chat. With three
+or more passes, each refinement receives the immediately preceding winner. The
+progress card shows the current pass and branch progress while the draft is being
+generated. Ordinary chat keeps its existing streaming path.
 
-## Candidate and execution lifecycle
+In the **Branches** dialog, set **Best Work passes** to a positive whole number
+and choose **Apply passes** for the next Best Work request. Set the value to
+**1** for the original single-pass behavior. To set the startup default, use the
+`BEST_WORK_PASSES` environment variable. Python callers can set
+`settings.best_work_passes` or override it for one request with
+`stream_best_work(controller, prompt, passes=1)`. The media controller exposes
+the same override as `stream_solve(..., best_work_enabled=True, best_work_passes=1)`.
+
+## Routing, selection, and tools
+
+Each pass uses the existing entropy router and verifier or consensus selector.
+A pass can use a single stream or search multiple branches with the calibrated
+convex temperature ladder and its fixed-temperature extra candidate. Native
+servers without full-vocabulary entropy use their configured runtime branch
+budget. A refinement reroutes using its updated context, so successive passes
+can have different branch counts.
 
 Each candidate ends at normal model completion or at its first complete,
-well-formed top-level tool invocation. It does not execute the tool or generate
-an imagined tool result. Fenced code, inline examples, and thinking text are not
-executable calls. Candidate generation closes its owned iterator at the boundary.
+well-formed top-level tool invocation. The decoder closes its iterator at that
+boundary. Fenced code, inline examples, and thinking text remain ordinary
+candidate content. Intermediate winners enter the next pass as quoted draft
+data. A proposed call in a draft has no tool result and grants no authorization.
 
-The existing selector chooses the winner. Its text and invocation are displayed
-before dispatch, and only its selected action executes. Actual tool output is
-then returned in the conversation. The original routing method reevaluates the
-new context and can choose either a normal stream or another Pro round. A full
-answer without a tool call finishes without an extra generation request.
-Cancellation is checked before dispatch. A steer waits for the prior owned worker
-to finish cleanup before starting the new context-aware routing pass; its pending
-callback cannot start a duplicate request. The handoff tracks attempted operations
-before execution so a repeated identical action cannot be automatically retried.
+Only the final pass streams the selected response to chat. If it requests a
+tool, Studio displays the selected text and invocation, checks cancellation and
+authorization against the original user request, and dispatches the permitted action.
+Studio adds the actual result to the conversation and starts a fresh stage
+with the configured number of passes. For example, with two passes, a response
+requiring one tool result normally takes four passes across two stages. A final
+answer ends the request.
 
-The chat has a Best Work progress card when Pro actually runs, including after a
-tool result. The selected response is rendered once, rather than retaining both
-raw stream text and the formatted copy. Multiple thinking sections remain in order
-around the invocation and actual result, with each section rendered as a thinking
-control rather than leaving later raw tags in the response.
+Studio records an attempted action before execution and blocks an identical
+repeat. Stop closes the active generation. A steer waits for its worker to
+finish cleanup before routing the new request. The chat renders the selected
+response once and preserves the order of thinking sections, invocations, and
+actual results.
 
-## Output and telemetry
+## Context and telemetry
 
-Chat and Pro use the entire remaining **Context** window. The legacy
-`max_new_tokens` setting is no longer a separate output ceiling; EOS, the real
-context boundary, a completed tool invocation, and the user's Stop control still
-end generation. Prompts are not silently truncated to make room.
+Chat and Pro use the remaining **Context** window for generation until EOS,
+a tool boundary, cancellation, or the model's context limit. A refinement must
+fit the complete request, its active history, and the quoted prior draft with
+room for generation. If the packed input exceeds that budget, Studio reports
+the context error. It preserves the request and draft in full during this check.
+Use one pass when the original request fits but there is too little room for a
+refinement.
 
-Telemetry observes sampled token IDs or runtime-reported counters. UI chunks,
-word counts, and replaying the selected branch are not counted as inference.
-All observed candidates contribute to aggregate work; decode timing excludes
-prefill/tool waits, while wall throughput is a separate measure. Missing runtime
-counters are reported unavailable, never fabricated. Strata's authenticated
-status endpoint supplies real generated-token counters when its stream does not.
+Usage includes actual decoder invocations across every pass, candidate, and tool
+stage. Token totals come from sampled IDs or runtime-reported counters. Missing
+counts appear as unavailable. Displaying a selected branch adds no tokens.
+Decode timing excludes prefill and tool waits. Wall throughput includes elapsed
+request time. Strata's authenticated status endpoint supplies generated-token
+counters when its stream omits them.
+
+`last_best_work_metadata` retains the detailed Pro branch audit. It records the
+per-stage pass target in `passes_requested`, progress for the current stage in
+`passes_completed`, and the request-wide total in `total_passes_completed`.
+`pass_summaries` reports individual passes and `pass_usage` aggregates observed
+invocations and token counts across the request.
 
 ## Release formats
 
@@ -66,7 +90,10 @@ moving the rolling release tag. Large archives have verified reassembly helpers.
 
 ## Validation scope
 
-Automated tests use synthetic token streams, local HTTP fixtures, and small random
-networks where applicable. Packaging initializes the GUI without loading a model.
-These checks do not measure pretrained-model parity or throughput and are not a
-claim that real model inference has been benchmarked.
+Automated tests exercise routing, winner selection, tool boundaries, cancellation,
+and context errors with controlled streams and local HTTP fixtures. A small local
+CPU Transformers model also generates two actual samples. The test checks the
+second decoder input against the selected first sample and checks the displayed
+answer against the second sample. Packaging smoke tests initialize the GUI
+without loading a model. Answer quality and throughput benchmarking require a
+separate pretrained-model evaluation.

@@ -31,6 +31,10 @@ def install_sleep_daemon_hardening(cls) -> None:
             raise RuntimeError(
                 "Live consolidation has no real trainable model; refusing mock-simulation success."
             )
+        queue_lock = getattr(getattr(self, "db", None), "sleep_queue_lock", None)
+        if callable(queue_lock):
+            with queue_lock():
+                return original_run(self, *args, **kwargs)
         return original_run(self, *args, **kwargs)
 
     cls.__init__ = hardened_init

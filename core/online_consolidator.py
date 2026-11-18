@@ -390,6 +390,61 @@ class AwakeOnlineConsolidator:
                                    f"Original transcript retained. {detail}")
             return active
 
+    @staticmethod
+    def pending_verified_episodes(db):
+        """The historical queue includes all verified rows, ordered by surprise."""
+        return db.get_stats()["unconsolidated_verified"]
+
+    def sleep_verified_episodes(self, db, *, settings, cancel_event=None, limit=50):
+        """Replay shared verified episodes into the explicitly selected durable model scope."""
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            raise ValueError("The verified episode batch size must be a positive integer")
+        with self._update_lock, db.sleep_queue_lock():
+            check_cancel(cancel_event)
+            if not self._real_training_ready():
+                raise RuntimeError(self.last_error or "Load a persistent trainable model before verified Sleep")
+            store = self.engine.learning_state
+            if store.scope.kind == "request":
+                raise ValueError("Verified Sleep requires a durable memory scope")
+            target = str(store.directory.resolve())
+            token, rows = db.prepare_verified_sleep(target, limit)
+            if not rows:
+                return {"status": "idle", "memories_consolidated": 0}
+            job = "verified-sleep/" + token
+            bank = StreamCursorBank(store.directory)
+
+            def committed_receipt():
+                memory = self._memory(store.current_manifest())
+                return bank.lookup(memory.get("stream_head"), job)
+
+            receipt = committed_receipt()
+            if receipt:
+                result = {"status": "success", "recovered": True, "memories_consolidated": len(rows),
+                          "adapter_saved_to": store.current_checkpoint(), "scope": store.scope.record,
+                          "identity_digest": store.identity_digest}
+            else:
+                try:
+                    strength = float(settings.ewc_lambda)
+                    ratio = float(settings.episodic_replay_ratio)
+                    if not 0 < ratio <= 1 or not math.isfinite(strength) or strength < 0:
+                        raise ValueError("Invalid Sleep replay ratio or EWC strength")
+                    # One independent foundation example is reserved for validation.
+                    receipt = {"next": 1, "episode_digest": db.episode_digest(rows),
+                               "anchors": len(get_anchor_dataset()) - 1, "ewc_lambda": strength}
+                    result = self.train_pairs(
+                        [{"prompt": r["prompt"], "completion": r["completion"]} for r in rows],
+                        mode="verified_sleep", steps=1, learning_rate=settings.consolidation_lr,
+                        training_options={"supervise_prompt": False, "episodic_ratio": ratio, "lambda_ewc": strength},
+                        stream_cursor=(job, receipt), cancel_event=cancel_event)
+                except BaseException:
+                    # A backend may have committed before an error was reported. Keep its
+                    # reservation for a later acknowledgement if the durable receipt exists.
+                    if not committed_receipt():
+                        db.release_verified_sleep(token)
+                    raise
+            db.finish_verified_sleep(token, result["adapter_saved_to"], receipt)
+            return result
+
     def sleep(self, transcript, cancel_event=None):
         if isinstance(transcript, ChatArchive):
             store = self.engine.learning_state
@@ -583,7 +638,20 @@ class AwakeOnlineConsolidator:
         # RSI trains the self-generated trace only. Retention scores are evaluated
         # independently after the trace is written and never fed into its generation.
         data = list(pairs)
-        if mode != "rsi" and objective == "causal_lm":
+        strength = self.lambda_ewc
+        fisher_anchors = get_anchor_texts()[:2]
+        if mode == "verified_sleep":
+            from consolidation.daemon import SleepConsolidationDaemon
+
+            # Preserve historical surprise ordering and anchor interleaving. Leave
+            # the common validation anchor out of both training and the Fisher fit.
+            training_anchors = anchors[:2] + anchors[3:]
+            texts = get_anchor_texts()
+            fisher_anchors = texts[:2] + texts[3:]
+            data = SleepConsolidationDaemon.interleave_replay_batches(
+                data, training_anchors, options.pop("episodic_ratio"))
+            strength = options.pop("lambda_ewc")
+        elif mode != "rsi" and objective == "causal_lm":
             data += [anchors[0], *rehearsal]
         start = time.monotonic()
         ram = process_rss_mb()
@@ -600,7 +668,7 @@ class AwakeOnlineConsolidator:
                     logger.info("Could not construct full exchange recall probes: %s", exc)
             updated, drift = backend.train_mini_batch(
                 adapters=getattr(backend, "adapters", {}) or {}, data=data,
-                lambda_ewc=self.lambda_ewc, anchor_texts=get_anchor_texts()[:2],
+                lambda_ewc=strength, anchor_texts=fisher_anchors,
                 learning_rate=learning_rate, steps=steps, cancel_event=cancel_event,
                 validation_callback=validate, learning_metadata=metadata, **options,
             )
