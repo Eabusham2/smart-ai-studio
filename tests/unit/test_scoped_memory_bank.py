@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -322,3 +324,46 @@ def test_real_peft_pinned_ancestor_seeds_request_with_optimizer_and_ewc(tiny_con
     assert main.current_manifest() is None
     assert doc.current_manifest()["generation"] == latest
     assert main.for_scope(frozen).current_manifest()["generation"] == data["generation"]
+
+
+def test_generation_and_export_flush_writable_files_before_publication(tmp_path, monkeypatch):
+    real_fsync = os.fsync
+    flushed = []
+
+    def windows_flush(fd):
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode):
+            # A zero-byte write checks write access without modifying contents.
+            # On Windows the real fsync also rejects a read-only regular file.
+            os.write(fd, b"")
+            flushed.append(info)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", windows_flush)
+    owner = LearningStateStore({"source": "model"}, state_root=tmp_path)
+    bank = AdapterMemoryBank(owner)
+    doc = owner.for_scope(bank.document_scope("case"))
+    commit(doc, b"unchanged bytes")
+    payload = Path(doc.current_checkpoint())
+    assert payload.read_bytes() == b"unchanged bytes"
+    assert any(os.path.samestat(info, payload.stat()) for info in flushed)
+    bank.register("case", doc, title="Case", source="test", content="evidence")
+    flushed.clear()
+    archive = bank.export("case", tmp_path / "case.zip")
+    assert any(os.path.samestat(info, archive.stat()) for info in flushed)
+    with zipfile.ZipFile(archive) as bundle:
+        assert bundle.read("artifacts/adapter.bin") == b"unchanged bytes"
+
+    def faulty_flush(fd):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("device flush failed")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", faulty_flush)
+    with pytest.raises(OSError, match="device flush failed"):
+        commit(doc, b"rejected")
+    assert Path(doc.current_checkpoint()) == payload
+    rejected = tmp_path / "rejected.zip"
+    with pytest.raises(OSError, match="device flush failed"):
+        bank.export("case", rejected)
+    assert not rejected.exists()

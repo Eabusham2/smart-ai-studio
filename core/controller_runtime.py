@@ -191,6 +191,8 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
 class UniversalControllerBackend:
     """Protocol adapter for specialized text/multimodal controller runtimes."""
 
+    direct_torch_generation = False
+
     def __init__(self, model_path: str, model_info: Dict[str, Any]):
         self.model_path = str(model_path)
         self.model_info = dict(model_info or {})
@@ -372,7 +374,7 @@ class UniversalControllerBackend:
             processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options)
 
         requested = str(self.model_info.get("transformers_auto_class") or "").strip()
-        candidates = [requested] if requested else []
+        candidates = [requested] if requested else (["AutoModelForCausalLM"] if self.direct_torch_generation else [])
         candidates += [
             "AutoModelForImageTextToText",
             "AutoModelForVision2Seq",
@@ -725,12 +727,25 @@ class UniversalControllerBackend:
             frames.append(out)
         return frames
 
+    def _torch_sampling(self, max_tokens, temperature, top_p):
+        sample = float(temperature) > 0
+        options = {"max_new_tokens": int(max_tokens), "do_sample": sample,
+                   "temperature": max(float(temperature), 1e-5) if sample else None}
+        if self.direct_torch_generation:
+            # The original direct CUDA solver explicitly controlled nucleus
+            # sampling and requested one completion for each ladder temperature.
+            options.update(num_return_sequences=1, pad_token_id=self.tokenizer.eos_token_id)
+            if sample:
+                options["top_p"] = float(top_p)
+        return options
+
     def _generate_transformers(
         self,
         prompt: str,
         max_tokens: int,
         temperature: float,
         media: Optional[Dict[str, Any]] = None,
+        *, top_p: float = 0.92,
     ) -> str:
         import torch
         kwargs: Dict[str, Any] = {"text": prompt, "return_tensors": "pt"}
@@ -765,15 +780,9 @@ class UniversalControllerBackend:
         device = transformers_input_device(self.model)
         if device is not None and hasattr(inputs, "to"):
             inputs = inputs.to(device)
-        do_sample = float(temperature) > 0.0
         started = time.perf_counter()
         with torch.no_grad():
-            ids = self.model.generate(
-                **inputs,
-                max_new_tokens=int(max_tokens),
-                do_sample=do_sample,
-                temperature=max(float(temperature), 1e-5) if do_sample else None,
-            )
+            ids = self.model.generate(**inputs, **self._torch_sampling(max_tokens, temperature, top_p))
         elapsed = max(1e-9, time.perf_counter() - started)
         self.last_generation_seconds = elapsed
         try:
@@ -785,6 +794,11 @@ class UniversalControllerBackend:
         except (AttributeError, TypeError, ValueError):
             self.last_generation_tokens = None
             self.last_tok_per_sec = None
+        if self.direct_torch_generation and not getattr(self.model.config, "is_encoder_decoder", False):
+            # Causal generate() includes its packed prompt in the returned IDs.
+            # Pro scores the generated branch and may dispatch its selected tool.
+            prefix = inputs["input_ids"].shape[-1]
+            return self.tokenizer.decode(ids[0, prefix:], skip_special_tokens=True)
         decoder = getattr(self.processor, "batch_decode", None) or getattr(self.tokenizer, "batch_decode", None)
         if callable(decoder):
             return str(decoder(ids, skip_special_tokens=True)[0]).strip()
@@ -839,11 +853,7 @@ class UniversalControllerBackend:
             device = transformers_input_device(self.model)
             if device is not None and hasattr(inputs, "to"):
                 inputs = inputs.to(device)
-            do_sample = float(temperature) > 0
-            options = {"max_new_tokens": int(max_tokens), "do_sample": do_sample,
-                       "temperature": max(float(temperature), 1e-5) if do_sample else None}
-            # Preserve this controller's original sampling policy: its prior
-            # generate() did not override top_p with the Pro value.
+            options = self._torch_sampling(max_tokens, temperature, top_p)
             yield from stream_transformers(self.model, self.tokenizer, inputs, options,
                                           owner=self, stop_at_tool_boundary=stop_at_tool_boundary,
                                           cancelled=cancelled)
@@ -862,7 +872,9 @@ class UniversalControllerBackend:
                 return out
             t = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
-            if stop_at_tool_boundary or cancelled is not None:
+            # The direct Torch path historically meters each actual generated
+            # token. The shared streamer carries that observer and omits prompt IDs.
+            if self.direct_torch_generation or stop_at_tool_boundary or cancelled is not None:
                 pieces = []
                 iterator = self.stream_generate_tokens(prompt, max_tokens, t, top_p,
                                                        stop_at_tool_boundary=stop_at_tool_boundary, cancelled=cancelled)
@@ -889,7 +901,19 @@ class UniversalControllerBackend:
         return out
 
     def calculate_token_entropy(self, prompt: str) -> float:
-        del prompt
+        if self.direct_torch_generation:
+            import torch
+            from core.entropy_router import EntropyRouter
+            from core.transformers_placement import transformers_input_device
+
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            device = transformers_input_device(self.model)
+            if device is not None and hasattr(inputs, "to"):
+                inputs = inputs.to(device)
+            with torch.no_grad():
+                logits = self.model(**inputs).logits[:, -1, :]
+                return EntropyRouter.compute_entropy_from_logits(logits)
+
         # Specialized runtimes often do not expose stable logits APIs.  Returning a
         # neutral normalized entropy keeps routing functional without a second forward.
         return 0.35

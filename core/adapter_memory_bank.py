@@ -15,7 +15,7 @@ import time
 from uuid import uuid4
 import zipfile
 
-from core.learning_state import _canonical, _check_cancelled, _contained, _fsync_directory
+from core.learning_state import _canonical, _check_cancelled, _contained, _fsync_directory, _fsync_staged_file
 from core.memory_scopes import LearningScope
 
 
@@ -248,8 +248,7 @@ class AdapterMemoryBank:
                     bundle.write(directory / "manifest.json", "manifest.json")
                     for relative in manifest["artifacts"]:
                         bundle.write(_contained(directory, relative), "artifacts/" + relative)
-                with temporary.open("rb") as stream:
-                    os.fsync(stream.fileno())
+                _fsync_staged_file(temporary)
                 os.link(temporary, destination)
                 _fsync_directory(destination.parent)
             finally:

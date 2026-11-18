@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
-from core.learning_sources import iter_file_chunks, iter_learning_files, source_snapshot
+from core.learning_sources import iter_file_chunks, iter_learning_files, learning_media_kinds, source_snapshot
 from core.test_time_learning import OnlineLearning
 from core.online_consolidator import AwakeOnlineConsolidator
 from memory.db import EpisodicMemoryDB
@@ -39,7 +39,7 @@ class AutonomousLearner:
         self.tools = tools or AgentToolRegistry(db_path=self.settings.database_path)
         self._last_research: Optional[Dict[str, Any]] = None
         self._last_synthesis: str = ""
-        self._last_evidence = ""
+        self._verified_lesson = None
 
     @staticmethod
     def _source_blob(research: Optional[Dict[str, Any]]) -> str:
@@ -142,20 +142,36 @@ class AutonomousLearner:
         _, file_count = source_snapshot(source_path, cancel_event)
         preview = []
         size = 0
+        scanned = 0
         has_more = False
         for path in iter_learning_files(source_path):
+            first_chunk = True
             for chunk in iter_file_chunks(path, 2048):
-                if size + len(chunk) > 4096:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise InterruptedError("Learning source reading cancelled")
+                scanned += len(chunk)
+                if not preview:
+                    chunk = chunk.lstrip()
+                    if not chunk:
+                        continue
+                if first_chunk and file_count > 1:
+                    chunk = f"\n\n===== SOURCE FILE: {path.name} =====\n" + chunk
+                first_chunk = False
+                room = 4096 - size
+                piece = chunk[:room]
+                preview.append(piece)
+                size += len(piece)
+                if len(chunk) > room:
                     has_more = True
                     break
-                preview.append(chunk)
-                size += len(chunk)
             if has_more:
                 break
         source_text = "".join(preview)
+        if not source_text.strip():
+            raise RuntimeError("/learn attachment contained no usable text in its synthesis excerpt.")
         result = {"topic": topic, "source_path": str(source_path), "source_text": source_text,
-                  "sources_found": file_count, "media_kinds": [], "extraction_errors": []}
-        if has_more:
+                  "sources_found": file_count, "media_kinds": learning_media_kinds(source_path), "extraction_errors": []}
+        if has_more or scanned > 4096:
             def progress(update):
                 if progress_callback:
                     progress_callback("ingesting", f"Read {update['next']} source chunks and "
@@ -169,8 +185,6 @@ class AutonomousLearner:
             if progress_callback:
                 progress_callback("ingested", f"The adapter processed all {job['source_chars']} source characters. "
                                   f"Learn/RSI will synthesize from a {size}-character excerpt.", 0.0)
-        if not source_text.strip():
-            raise RuntimeError("/learn attachment contained no usable text in its synthesis excerpt.")
         self._last_research = result
         return result
 
@@ -273,7 +287,7 @@ class AutonomousLearner:
     ) -> Tuple[bool, str, float]:
         """Verify a self-generated claim against a verbatim evidence span from the sources."""
         self._require_live_trainable_backend()
-        self._last_evidence = ""
+        self._verified_lesson = None
         research = research or self._last_research
         synthesis = synthesis or self._last_synthesis
         source = self._source_blob(research)
@@ -302,7 +316,7 @@ class AutonomousLearner:
         if not passed:
             return False, "✗ Source verification failed: evidence was not a verbatim source span.", 0.0
 
-        self._last_evidence = evidence
+        self._verified_lesson = (topic, synthesis, evidence)
         return (
             True,
             f"✓ Source-grounded verification passed ({len(evidence)} evidence characters matched verbatim).",
@@ -326,9 +340,12 @@ class AutonomousLearner:
                     "parameter_drift_l2": 0.0}
         prompt = f"What should be remembered about {topic}?"
         service = self._consolidation_service()
-        result = service.train_pairs([{"prompt": prompt, "completion": self._last_evidence or completion_text}],
-                                     evidence=[self._last_evidence or completion_text], mode="learn",
-                                     cancel_event=cancel_event, learning_rate=self.settings.consolidation_lr)
+        witness = self._verified_lesson
+        evidence = witness[2] if witness and witness[:2] == (topic, completion_text) else completion_text
+        result = service.train_pairs([{"prompt": prompt, "completion": completion_text}],
+                                     evidence=[evidence], mode="learn", cancel_event=cancel_event,
+                                     learning_rate=self.settings.consolidation_lr)
+        self._verified_lesson = None
         memory_id = self.db.log_interaction(
             prompt=f"Source-grounded autonomous learning task: {topic}",
             completion=completion_text, raw_branches=[completion_text],

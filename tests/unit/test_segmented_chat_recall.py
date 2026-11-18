@@ -250,10 +250,17 @@ def test_causal_window_consumes_a_bounded_token_iterator_and_detects_label_misma
 
 
 @pytest.mark.parametrize("tiny_controller", [96], indirect=True)
-def test_real_cpu_peft_answers_older_fact_after_multiwindow_update_and_reload(tiny_controller):
+def test_real_cpu_peft_answers_older_fact_after_multiwindow_update_and_reload(tiny_controller, monkeypatch):
     from core.learning_recall import EmptyGeneration, generate_answer
 
+    # Auto placement normally uses Metal on a Mac runner. This particular
+    # numerical retention test exercises CPU training and CPU adapter restore.
+    monkeypatch.setattr("core.transformers_placement.transformers_memory_limits",
+                        lambda *args, **kwargs: {"cpu": 256 * 1024**2})
     backend = tiny_controller
+    backend.unload_model()
+    assert backend.load_model()
+    assert {parameter.device.type for parameter in backend.model.parameters()} == {"cpu"}
     service = AwakeOnlineConsolidator(backend)
     fact = {"prompt": "What is the vault color?", "completion": "slate"}
 
@@ -276,7 +283,9 @@ def test_real_cpu_peft_answers_older_fact_after_multiwindow_update_and_reload(ti
     assert second["training_metrics"]["supervised_tokens"] > 2 * 96
     assert answer() == "slate"
     backend.unload_model()
-    assert backend.load_model() and answer() == "slate"
+    assert backend.load_model()
+    assert {parameter.device.type for parameter in backend.model.parameters()} == {"cpu"}
+    assert answer() == "slate"
 
 
 def test_small_explicit_document_with_protected_history_uses_verified_replacement(tmp_path):

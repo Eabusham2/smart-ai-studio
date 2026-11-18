@@ -75,6 +75,12 @@ def file_sha256(path, *, cancel_event=None) -> str:
     return digest.hexdigest()
 
 
+def _fsync_staged_file(path: Path) -> None:
+    """Flush a finished staging file without truncation. Windows requires write access."""
+    with path.open("r+b") as stream:
+        os.fsync(stream.fileno())
+
+
 def _fsync_directory(directory: Path) -> None:
     if os.name == "nt":
         return
@@ -465,8 +471,7 @@ class LearningTransaction:
                 if path.is_file() and path.name != "manifest.json":
                     if path.stat().st_size <= 0:
                         raise RuntimeError("Training produced an empty artifact")
-                    with open(path, "rb") as stream:
-                        os.fsync(stream.fileno())
+                    _fsync_staged_file(path)
                     artifacts[path.relative_to(self.directory).as_posix()] = {"size": path.stat().st_size, "sha256": file_sha256(path, cancel_event=cancel_event)}
             if not artifacts:
                 raise RuntimeError("Training produced no persisted parameters")

@@ -3,6 +3,7 @@
 import os
 import tempfile
 import threading
+from pathlib import Path
 import unittest
 
 from config.settings import get_settings
@@ -132,6 +133,36 @@ class TestAutonomousLearnMode(unittest.TestCase):
         stats = self.db.get_stats()
         self.assertGreaterEqual(stats["total_interactions"], 1)
         self.assertEqual(stats["unconsolidated_verified"], 0)
+
+    def test_attachment_preview_reaches_content_after_whitespace_and_reports_media_kinds(self):
+        folder = Path(self.temp_dir.name) / "mixed"
+        folder.mkdir()
+        (folder / "record.txt").write_text(" " * 6144 + SOURCE_SENTENCE)
+        (folder / "second.txt").write_text("Another documented fact.")
+        (folder / "example.png").touch()
+        result = self.learner.research_from_source(folder, "records")
+        assert result["sources_found"] == 2 and result["media_kinds"] == ["image"]
+        assert SOURCE_SENTENCE in result["source_text"] and "second.txt" in result["source_text"]
+        assert len(result["source_text"]) <= 4096 and result["stream"]["status"] == "completed"
+
+    def test_verified_note_is_supervised_and_its_source_witness_is_bound_to_that_note(self):
+        from unittest.mock import patch
+        topic = "distributed consensus raft"
+        research = self.learner.crawl_and_research(topic)
+        note = self.learner.synthesize_knowledge(topic, research)
+        assert self.learner.self_test_and_verify(topic, research, note)[0]
+        service = self.learner._consolidation_service()
+        with patch.object(service, "train_pairs", wraps=service.train_pairs) as train:
+            self.learner.consolidate_parameters(topic, note, reward=1.0)
+            rows, = train.call_args.args
+            assert rows[0]["completion"] == note != SOURCE_SENTENCE
+            assert train.call_args.kwargs["evidence"] == [SOURCE_SENTENCE]
+            # Even an unconsumed verifier witness must not cross lesson/topic boundaries.
+            assert self.learner.self_test_and_verify(topic, research, note)[0]
+            direct_note = "The new archive label is green."
+            self.learner.consolidate_parameters("archive labels", direct_note, reward=1.0)
+            assert train.call_args.args[0][0]["completion"] == direct_note
+            assert train.call_args.kwargs["evidence"] == [direct_note]
 
     def test_07_full_learning_session_reports_measured_parameter_change(self):
         stages = []

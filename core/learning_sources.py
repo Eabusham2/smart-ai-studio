@@ -52,6 +52,19 @@ def _iter_source_files(source: Path, *, exclude=()) -> Iterable[Path]:
                 yield path
 
 
+def learning_media_kinds(source):
+    """Report detected modalities in a mixed learning folder without retaining a path list."""
+    root = Path(source).expanduser().resolve(strict=True)
+    detected = set()
+    for file in _iter_source_files(root):
+        kind = media_kind(file)
+        if kind:
+            detected.add(kind)
+        if len(detected) == len(MEDIA_SUFFIXES):
+            break
+    return [kind for kind in MEDIA_SUFFIXES if kind in detected]
+
+
 def inspect_learning_source(source: str | os.PathLike[str]) -> Dict[str, Any]:
     path = Path(source).expanduser().resolve()
     if not path.exists():

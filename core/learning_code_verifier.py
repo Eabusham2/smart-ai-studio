@@ -95,12 +95,9 @@ class PythonTaskVerifier:
             getattr(resource, limit_kind)
         except (ImportError, AttributeError):
             raise RuntimeError("Python test rewards require OS-enforced per-process memory limits") from None
-        self.verifier = GroundTruthVerifier(sandbox_timeout=timeout, max_memory_mb=memory)
+        self.verifier = GroundTruthVerifier(sandbox_timeout=timeout, max_memory_mb=memory,
+                                            required_memory_resource=limit_kind)
         self.results = []
-        # Set/verify a hard limit inside the child even if the portable
-        # verifier's best-effort preexec limit was unavailable on this host.
-        self.setup = (f"import resource as _resource\n"
-                      f"_resource.setrlimit(_resource.{limit_kind}, ({memory * 1048576},) * 2)\n")
         passes = 3 if self.baseline is not None else 1
         self.harness = f"""import json as _json, time as _time
 _times = []
@@ -119,7 +116,7 @@ print(sorted(_times)[len(_times) // 2])
         if not pure_function(code, self.function, max_code_chars=self.max_code_chars, max_ast_nodes=self.max_ast_nodes):
             self.results.append({"passed": False, "reason": "unsupported function or syntax"})
             return 0.0
-        result = self.verifier.verify_in_sandbox(self.setup + code, self.harness)
+        result = self.verifier.verify_in_sandbox(code, self.harness)
         if not result.passed:
             self.results.append({"passed": False, "reason": result.details})
             return 0.0

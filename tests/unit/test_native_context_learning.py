@@ -422,3 +422,48 @@ def test_gguf_parent_query_updates_only_q_before_conversion(tiny_controller, tmp
         trainer.train([], objective="query_only", context_text="What is the vault color ? the vault color is slate",
                       max_context_tokens=32, max_length=4, steps=2, output_directory=output)
     assert not (output / "adapter.gguf").exists()
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_gguf_prefers_resident_host_parent_when_bnb_advertises_device(tmp_path, monkeypatch, device):
+    import sys
+    from core.gguf_lora_trainer import GGUFLoRATrainer
+    from core import gguf_lora_trainer, transformers_placement
+
+    pytest.importorskip("torch")
+    source = tmp_path / "parent"
+    source.mkdir()
+    (source / "model.safetensors").write_bytes(b"sized parent")
+    monkeypatch.setitem(sys.modules, "bitsandbytes", SimpleNamespace(supported_torch_devices={device}))
+    monkeypatch.setattr(transformers_placement, "transformers_memory_limits", lambda *a: {device: 1024**3})
+    monkeypatch.setattr(gguf_lora_trainer, "_check_parent_nf4",
+                        lambda *_: pytest.fail("resident training must not require optional NF4 kernels"))
+    trainer = GGUFLoRATrainer(model_path="selected.gguf", base_model_id=str(source), adapter_root=str(tmp_path))
+    assert trainer._training_placement(source) == (device, "resident")
+
+
+@pytest.mark.parametrize("tiny_controller", ["split_queries"], indirect=True)
+def test_gguf_nf4_validates_gqa_shapes_and_keeps_supported_cuda_qlora(tiny_controller, tmp_path, monkeypatch):
+    import sys
+    from core.gguf_lora_trainer import GGUFLoRATrainer
+    from core import gguf_lora_trainer, transformers_placement
+
+    source = Path(tiny_controller.model_path)
+    weights = sum(f.stat().st_size for f in source.glob("*.safetensors"))
+    budget = 512 * 1024**2 + weights
+    device = "cpu"
+    monkeypatch.setattr(transformers_placement, "transformers_memory_limits", lambda *a: {device: budget})
+    monkeypatch.setitem(sys.modules, "bitsandbytes", SimpleNamespace(supported_torch_devices={"cuda", "cpu"}))
+    checked = []
+    def check(device, inputs, outputs):
+        checked.append((device.type, inputs, outputs))
+        if device.type == "cpu" and outputs % 32:
+            raise AssertionError("N must be divisible by block_n")
+    monkeypatch.setattr(gguf_lora_trainer, "_check_nf4_kernel", check)
+    trainer = GGUFLoRATrainer(model_path="selected.gguf", base_model_id=str(source), adapter_root=str(tmp_path))
+    with pytest.raises(RuntimeError, match="N must be divisible"):
+        trainer._training_placement(source)
+    assert ("cpu", 24, 8) in checked  # Actual K/V head, not the full query width.
+    device = 0
+    assert trainer._training_placement(source) == (0, "nf4")
+    assert ("cuda", 24, 8) in checked

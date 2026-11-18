@@ -6,14 +6,18 @@ This record covers the expanded online workflows, packed Bonsai adapters, scoped
 
 | Run | Result | Measured duration |
 | --- | --- | --- |
-| Expanded unit suite, excluding the two GUI modules run separately | **1,409 passed, 2 skipped, 58 subtests passed** | 118.21 s |
-| Real Tk tests: existing Best Work rendering/steer handoff and new paging/learning-panel tests, including discovery | **6 passed** | 2.06 s |
-| Dedicated native-learning lane, including real MLX CPU and Torch | **120 passed, 5 subtests passed** | 28.31 s |
+| Expanded unit suite with bitsandbytes present, excluding the two GUI modules run separately | **1,425 passed, 2 skipped, 58 subtests passed** | 131.63 s |
+| Real Tk tests: existing Best Work rendering/steer handoff, paging/learning panel and unloaded-model Sleep dialog | **7 passed** | 1.81 s |
+| Final native-learning and release-gate follow-up, including real MLX CPU and Torch | **141 passed, 5 subtests passed** | 35.85 s |
 | Existing offline live integration suite | **18 passed, 1 skipped** | 503.68 s |
 | Final task/reference-policy follow-up | **80 passed** | 30.96 s |
 | Final query geometry and device follow-up | **36 passed** | 19.19 s |
 | Final MLX position-state isolation follow-up | **26 passed** | 4.36 s |
 | Root routing/release/Windows-argument follow-up | **26 passed** | 4.16 s |
+| Optional bitsandbytes CPU precision and native-parent follow-up | **26 passed** | 19.06 s |
+| Cross-platform checkpoint/export flush and learning follow-up, with bitsandbytes present | **106 passed** | 30.11 s |
+| Isolated Python reward worker, inherited memory cap, allocation failure and timeout | **51 passed** | 15.13 s |
+| Original direct Torch and Learn behavior preservation | **45 passed** | — |
 | Compilation, CLI help and `git diff --check` | Passed | — |
 
 Focused development runs overlap the broad suites and are not added to these totals. Follow-up focused checks cover final sampling-configuration and split-query geometry corrections. The separate GitHub workflow runs the six existing platform/Python lanes and mandatory native MLX CPU and Metal lanes, retains native compiler/artifact gates, and prevents a feature-branch test dispatch from publishing a release.
@@ -21,6 +25,14 @@ Focused development runs overlap the broad suites and are not added to these tot
 The full 27B Apple Silicon/Metal module is opt-in. CPU tests execute actual tensors, forward passes, gradients and checkpoint reloads on small locally constructed models; no model download or external search is required. The required CI MLX lanes assert the real device and reject skipped packed-model tests.
 
 The first expanded broad pass found an unloaded-model Sleep panel regression and an outdated release-dependency assertion. Both were fixed before the green rerun. Independent review additionally fixed eager archive formatting, bounded recall cache keys/values, compressed-document indexing, transient recall-failure caching, duplicate GUI user turns and exact parent-generation checks. Existing entropy/Pro routing, temperature policy, tool handoff, 80%→60% consolidation, explicit legacy adapters, lossless runtime changes and native artifact provenance remain covered.
+
+### Corrections found by platform CI and preservation review
+
+The initial hosted branch run found three production platform issues. CPU bitsandbytes could select an NF4 packing kernel that rejected a small GQA projection. The GGUF trainer now prefers resident CPU/MPS precision when it fits and verifies actual model projection geometry, quantization, prefill and input gradients before an optional NF4 route; supported CUDA QLoRA remains available. Windows rejected `fsync` on read-only artifact handles. Checkpoint and export staging now use writable non-truncating handles, with failures still preventing publication. The macOS Python reward process failed before reporting usable results. It now starts an isolated interpreter, installs the stricter of the requested and inherited memory caps before reading the candidate, and reports bounded worker diagnostics. The native CPU/Metal lanes also test denied allocations and timeout handling.
+
+The older Python 3.10 dependency stack also exposed test assumptions: an undersized recurrent head was invalid for the MLX-LM 0.31.3 Metal kernel, and an independent Torch reference scorer constructed CPU IDs for an MPS model. Packed fixtures now use a supported 64-wide recurrent head, and the independent scorer follows the actual embedding/output devices. Deterministic CPU retention tests explicitly select CPU throughout reload; other tests retain their normal device selection. The original gradient, fixed-weight, recall and persistence assertions remain in force.
+
+Review against the original default branch found that migrating direct Torch execution through the shared controller had lost real-logit entropy, caller/search `top_p`, and continuation-only branch decoding. These contracts are restored and tested through the public loader, including a cold project-scope switch and return. Learn again trains the entire verified synthesized note, with its matching source quotation kept separately for validation. Evidence from an earlier note cannot replace a later note. Attachment previews skip leading whitespace, retain file boundaries and preserve mixed-folder media reporting without eagerly loading the full source.
 
 ## Environment
 

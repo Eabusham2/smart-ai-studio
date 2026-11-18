@@ -62,7 +62,8 @@ def packed_decoder(runtime):
             self.args = qwen.TextModelArgs(hidden_size=128, intermediate_size=128, vocab_size=128,
                     num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2, head_dim=32,
                     full_attention_interval=2, linear_num_key_heads=2, linear_num_value_heads=2,
-                    linear_key_head_dim=16, linear_value_head_dim=16)
+                    # MLX-LM's Metal recurrent kernel assigns Dk / 32 entries per SIMD lane.
+                    linear_key_head_dim=64, linear_value_head_dim=64)
             self.model = nn.Module()
             self.model.layers = [Block(self.args, i) for i in range(2)]
             self.model.norm = nn.RMSNorm(128)

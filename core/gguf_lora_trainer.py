@@ -5,6 +5,7 @@ converted candidate over the original quantized base before publishing it.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 import shutil
 import sys
@@ -49,6 +50,67 @@ def _find_or_clone_llama_cpp(tool_root: str, cancel_event=None) -> Path:
     return target
 
 
+@lru_cache(maxsize=128)
+def _check_nf4_kernel(device, input_width, output_tile):
+    """Exercise eval prefill and the input gradient with the same NF4 settings as training."""
+    import bitsandbytes as bnb
+    import torch
+
+    # Meta construction avoids consuming the user's RNG. Preserve the real
+    # input width and output width modulo 32 for bnb's tiled CPU packing path.
+    layer = bnb.nn.Linear4bit(input_width, output_tile, bias=False, compute_dtype=torch.bfloat16,
+                              compress_statistics=True, quant_type="nf4", device="meta")
+    values = torch.arange(output_tile * input_width, dtype=torch.float32).remainder_(7).sub_(3)
+    layer.weight = bnb.nn.Params4bit(values.reshape(output_tile, input_width), requires_grad=False,
+                                     compress_statistics=True, quant_type="nf4")
+    layer = layer.to(device)
+    x = torch.ones((2, input_width), device=device, dtype=torch.bfloat16)
+    layer.eval()
+    with torch.no_grad():
+        output = layer(x)
+        if output.shape != (2, output_tile) or not torch.isfinite(output).all().item():
+            raise ValueError("NF4 prefill produced invalid output")
+    with torch.enable_grad():
+        x.requires_grad_()
+        gradient, = torch.autograd.grad(layer(x).float().sum(), x)
+        if gradient.shape != x.shape or not torch.isfinite(gradient).all().item():
+            raise ValueError("NF4 backward produced an invalid input gradient")
+
+
+def _check_parent_nf4(source, device):
+    import bitsandbytes as bnb
+    import torch
+    from accelerate import init_empty_weights
+    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers.pytorch_utils import Conv1D
+
+    target = torch.device("cuda", device) if type(device) is int else torch.device(device)
+    if target.type not in getattr(bnb, "supported_torch_devices", {"cuda"}):
+        raise ValueError(f"bitsandbytes does not support {target.type}")
+    config = AutoConfig.from_pretrained(source, local_files_only=True, trust_remote_code=True)
+    with init_empty_weights(include_buffers=True):
+        skeleton = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    head = skeleton.get_output_embeddings()
+    shapes = set()
+    for module in skeleton.modules():
+        if module is head:
+            continue
+        if type(module) is torch.nn.Linear:
+            inputs, outputs = module.in_features, module.out_features
+        elif isinstance(module, Conv1D):
+            inputs, outputs = module.weight.shape
+        else:
+            continue
+        # Exercise a representative pair of output tiles without allocating
+        # a dense copy of a 27B projection to decide whether it fits.
+        tile = min(outputs, 32 + (outputs - 1) % 32 + 1)
+        shapes.add((inputs, tile))
+    if not shapes:
+        raise ValueError("The training parent has no bitsandbytes linear projections")
+    for inputs, tile in sorted(shapes):
+        _check_nf4_kernel(target, inputs, tile)
+
+
 class GGUFLoRATrainer:
     def __init__(
         self,
@@ -81,23 +143,28 @@ class GGUFLoRATrainer:
         if not weight_bytes:
             raise RuntimeError("The selected training parent contains no weight data")
         budgets = transformers_memory_limits(torch, self.memory_limit_gb)
-        try:
-            import bitsandbytes
-            nf4_devices = getattr(bitsandbytes, "supported_torch_devices", {"cuda"})
-        except (ImportError, OSError, RuntimeError):
-            nf4_devices = set()
-        # Keep BF16/FP16 learning available when a resident HF parent fits but
-        # bitsandbytes has no kernels for this host. Neither choice touches the
-        # GGUF inference file. Reserve headroom beyond frozen weight storage.
-        devices = sorted(budgets, key=lambda d: d == "cpu")
-        for device in devices:
-            kind = "cuda" if type(device) is int else str(device)
+        # Prefer a resident CPU or Metal parent whenever it fits. A published
+        # device tag alone does not establish support for a GQA projection's
+        # width, double quantization, or the backward kernel on this machine.
+        rejected = []
+        for device in sorted(budgets, key=lambda d: d == "cpu"):
             available = budgets[device]
-            if kind in nf4_devices and available > weight_bytes * 0.6 + 512 * 1024**2:
-                return device, "nf4"
-            if available > weight_bytes * 2 + 512 * 1024**2:
+            resident = available > weight_bytes * 2 + 512 * 1024**2
+            if device in {"cpu", "mps"} and resident:
                 return device, "resident"
-        raise RuntimeError("The declared training parent does not fit available device memory")
+            if available > weight_bytes * 0.6 + 512 * 1024**2:
+                try:
+                    _check_parent_nf4(source, device)
+                except (AssertionError, AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
+                    rejected.append(f"{device}: {error}")
+                else:
+                    return device, "nf4"
+            if resident:
+                return device, "resident"
+        reason = "The declared training parent does not fit available device memory"
+        if rejected:
+            reason += ". NF4 unavailable (" + ", ".join(rejected) + ")"
+        raise RuntimeError(reason)
 
     def can_prepare(self) -> bool:
         if not os.path.isfile(self.model_path) or not self.base_model_id:

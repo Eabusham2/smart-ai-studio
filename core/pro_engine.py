@@ -265,7 +265,8 @@ class ProReasoningEngine:
             # All Transformers execution uses the same persistent, capability-
             # checked backend. The old direct CUDA branch had no trainer or
             # checkpoint reload path and left CPU/MPS selections without one.
-            if target_backend in ("torch", "cuda", "cpu", "mps"):
+            direct_torch = target_backend in ("torch", "cuda", "cpu", "mps")
+            if direct_torch:
                 target_backend = "controller"
                 controller_runtime = "transformers_auto"
                 info["controller_runtime"] = controller_runtime
@@ -298,6 +299,8 @@ class ProReasoningEngine:
                         model_path=target_path,
                         model_info=info,
                     )
+                    if direct_torch:
+                        self.controller_backend.direct_torch_generation = True
                     self.controller_backend.learning_scope = getattr(self, "learning_scope", None)
                     self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
                     self.controller_backend.context_tokens = int(

@@ -12,6 +12,7 @@ import collections
 import errno
 import logging
 import math
+import os
 import random
 import re
 import subprocess
@@ -64,18 +65,46 @@ def _limit_sandbox_resources(max_memory_mb: int = 512):
         preexec()
 
 
+# Only this trusted bootstrap executes before the kernel limit has been checked.
+# The candidate and its cases arrive on stdin after interpreter startup.
+_LIMITED_PYTHON = """import resource, sys
+kind = getattr(resource, sys.argv[1])
+budget = int(sys.argv[2])
+try:
+    inherited = resource.getrlimit(kind)
+    cap = min([budget] + [value for value in inherited if value != resource.RLIM_INFINITY])
+    if inherited != (cap, cap):
+        resource.setrlimit(kind, (cap, cap))
+    applied = resource.getrlimit(kind)
+    if any(value == resource.RLIM_INFINITY or value > cap for value in applied):
+        raise RuntimeError("kernel did not apply the memory cap")
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+except (OSError, ValueError, RuntimeError) as error:
+    print(f"Verifier memory setup failed ({sys.argv[1]}, requested {budget}, inherited {inherited}): {error}",
+          file=sys.stderr)
+    sys.exit(2)
+try:
+    exec(compile(sys.stdin.buffer.read(), "<checked task>", "exec"), {"__name__": "__main__"})
+except BaseException as error:
+    print(f"Verifier task failed: {type(error).__name__}", file=sys.stderr)
+    sys.exit(1)
+"""
+
+
 class GroundTruthVerifier:
     def __init__(
         self,
         sandbox_timeout: float = 4.0,
         max_memory_mb: int = 512,
         use_docker: bool = False,
-        docker_image: str = "python:3.10-slim"
+        docker_image: str = "python:3.10-slim",
+        *, required_memory_resource: Optional[str] = None
     ):
         self.sandbox_timeout = sandbox_timeout
         self.max_memory_mb = max_memory_mb
         self.use_docker = use_docker
         self.docker_image = docker_image
+        self.required_memory_resource = required_memory_resource
 
     @staticmethod
     def extract_code_block(text: str, language: Optional[str] = None) -> Optional[str]:
@@ -141,21 +170,34 @@ class GroundTruthVerifier:
     def _verify_in_subprocess(self, test_harness: str, start_time: float) -> VerificationResult:
         """Executes test harness in local isolated subprocess with memory and time caps."""
         try:
-            # Set memory limits on POSIX platforms where preexec_fn is supported
-            preexec = get_sandbox_preexec(self.max_memory_mb)
-
-            options = dict(capture_output=True, text=True, timeout=self.sandbox_timeout, preexec_fn=preexec)
-            try:
-                res = subprocess.run([sys.executable, "-c", test_harness], **options)
-            except OSError as error:
-                if error.errno != errno.E2BIG and getattr(error, "winerror", None) != 206:
-                    raise
-                # Large user-declared case sets can exceed the OS argument limit.
-                res = subprocess.run([sys.executable, "-"], input=test_harness, **options)
+            options = dict(capture_output=True, text=True, timeout=self.sandbox_timeout)
+            if self.required_memory_resource is not None:
+                # A process hosting Metal/other workers must not run Python hooks
+                # in its forked child. Start a minimal interpreter and install the
+                # mandatory limit there, before loading even the candidate source.
+                if sys.platform == "darwin":
+                    options["env"] = {**os.environ, "MallocNanoZone": "0"}
+                command = [sys.executable, "-I", "-S", "-c", _LIMITED_PYTHON,
+                           self.required_memory_resource, str(self.max_memory_mb * 1048576)]
+                res = subprocess.run(command, input=test_harness, **options)
+            else:
+                options["preexec_fn"] = get_sandbox_preexec(self.max_memory_mb)
+                try:
+                    res = subprocess.run([sys.executable, "-c", test_harness], **options)
+                except OSError as error:
+                    if error.errno != errno.E2BIG and getattr(error, "winerror", None) != 206:
+                        raise
+                    # Large user-declared case sets can exceed the OS argument limit.
+                    res = subprocess.run([sys.executable, "-"], input=test_harness, **options)
             exec_time = (time.perf_counter() - start_time) * 1000
             passed = (res.returncode == 0)
 
             details = "All assertions passed successfully." if passed else f"Process exited with code {res.returncode}"
+            if not passed and self.required_memory_resource is not None:
+                diagnostic = next((line for line in reversed(res.stderr.splitlines())
+                                   if line.startswith(("Verifier memory setup failed", "Verifier task failed"))), "")
+                if diagnostic:
+                    details += " — " + diagnostic[:512]
             return VerificationResult(
                 passed=passed,
                 verifier_type="subprocess_sandbox",

@@ -132,12 +132,16 @@ def test_torch_reference_tracks_first_policy_exact_tokens_and_restores(tiny_cont
                 continue
         else:
             pytest.fail("No usable sampled actions")
-    ids = torch.tensor([sample["rollout_prompt_ids"] + sample["rollout_completion_ids"]])
+    sampled_ids = sample["rollout_prompt_ids"] + sample["rollout_completion_ids"]
     prefix = len(sample["rollout_prompt_ids"])
+
     def logp(model):
         with torch.no_grad():
-            logits = model(ids).logits[:, prefix-1:-1].log_softmax(-1)
-            return logits.gather(-1, ids[:, prefix:, None]).sum().item()
+            ids = torch.tensor([sampled_ids], device=model.get_input_embeddings().weight.device)
+            logits = model(ids).logits[:, prefix - 1:-1].float().log_softmax(-1)
+            targets = ids[:, prefix:, None].to(logits.device)
+            return logits.gather(-1, targets).sum().item()
+
     assert sample["reference_logprob"] == pytest.approx(logp(original), abs=1e-5)
     assert abs(logp(backend.model) - sample["reference_logprob"]) > 1e-4
     assert all(torch.equal(value, before[name]) for name, value in lora_parameters(backend.model).items())
@@ -230,7 +234,7 @@ def test_large_python_rewards_respect_declared_budgets():
     source = {"function": "identity", "cases": [{"args": ["ab" * 1000], "expected": "ab" * 1000}] * 50,
               "baseline_ms": 100000, "timeout_seconds": 6, "memory_mb": 256}
     verify = PythonTaskVerifier(source)
-    assert verify("def identity(value):\n    return value") > 0
+    assert verify("def identity(value):\n    return value") > 0, verify.results
     with pytest.raises(ValueError, match="max_case_chars"):
         PythonTaskVerifier(dict(source, max_case_chars=100))
     assert PythonTaskVerifier(dict(source, max_ast_nodes=3))("def identity(value):\n    return value") == 0
