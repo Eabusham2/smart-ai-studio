@@ -54,7 +54,8 @@ def test_visible_chat_is_paged_without_deleting_archived_turns(app):
     assert app._transcript_page_end == 141
 
 
-def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app):
+@pytest.mark.parametrize("task,method", [("Read a document", "ingest"), ("Discover a better solution", "discover")])
+def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app, task, method):
     main_thread = threading.get_ident()
     observed = []
 
@@ -66,6 +67,10 @@ def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app):
     app.engine.run_online_learning = run
     show_online_learning(app)
     modal = next(child for child in app.root.winfo_children() if isinstance(child, tk.Toplevel))
+    chooser = next(widget for widget in descendants(modal)
+                   if isinstance(widget, ttk.Combobox) and task in widget.cget("values"))
+    chooser.set(task)
+    chooser.event_generate("<<ComboboxSelected>>")
     run_button = next(widget for widget in descendants(modal)
                       if isinstance(widget, ttk.Button) and widget.cget("text") == "Run learning task")
     run_button.invoke()
@@ -80,7 +85,7 @@ def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app):
     app.root.after(3000, app.root.quit)
     app.root.mainloop()
     assert observed and observed[0][0] != main_thread
-    assert observed[0][1]["method"] == "ingest"
+    assert observed[0][1]["method"] == method
     assert not app.is_generating and not app._sleep_consolidating
     output = [widget.get("1.0", "end") for widget in descendants(modal) if isinstance(widget, tk.Text)]
     assert any('"trained_chunks": 1' in text and '"completed"' in text for text in output)

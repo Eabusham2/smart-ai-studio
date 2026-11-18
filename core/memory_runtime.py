@@ -305,7 +305,7 @@ def install_memory_runtime(cls):
                         result = {**result, "memory_entry": {k: v for k, v in entry.items() if k != "pin"}}
             else:
                 temporary = requested_scope is None and method in {
-                    "few_shot", "reinforce", "query_adapt", "consolidate_candidates"}
+                    "few_shot", "reinforce", "query_adapt", "consolidate_candidates", "discover"}
                 selected = LearningScope.request() if temporary else (
                     as_scope(requested_scope) if requested_scope is not None else self.learning_scope)
                 if selected == self.learning_scope:

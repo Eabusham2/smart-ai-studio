@@ -413,6 +413,7 @@ class BitNetCppReasoningBackend:
         steps: int = 3,
         save_path: Optional[str] = None,
         cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
+        reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
         objective='causal_lm', supervise_prompt=True, max_window_tokens=256, row_weights=None,
         context_text=None, max_context_tokens=2048, **_kwargs,
     ):
@@ -427,6 +428,7 @@ class BitNetCppReasoningBackend:
             self, trainer, data, learning_rate=learning_rate, steps=steps,
             fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event,
             validation_callback=validation_callback, learning_metadata=learning_metadata, anchor_texts=anchor_texts,
+            reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
             objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_window_tokens=max_window_tokens,
         )
 

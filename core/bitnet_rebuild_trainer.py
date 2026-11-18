@@ -341,6 +341,7 @@ class BitNetRebuildTrainer:
     def train(
         self, data, *, output_directory, previous_peft=None, learning_rate=1e-4,
         steps=3, max_length=256, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
+        reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
         objective='causal_lm', supervise_prompt=True, row_weights=None,
     ):
         """Build the complete candidate inside the caller's unpublished generation."""
@@ -359,6 +360,7 @@ class BitNetRebuildTrainer:
                 model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
                 fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
                 previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
+                reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
                 objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
             )
             check_cancelled(cancel_event)

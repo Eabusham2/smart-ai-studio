@@ -461,3 +461,25 @@ def test_packed_reward_updates_real_head_and_rejects_query(runtime, cpu_protocol
     assert store.current_manifest() == receipt
     for key, value in weights.items():
         np.testing.assert_array_equal(engine.adapters[key], value)
+
+
+@pytest.mark.parametrize("runtime", ["mlx_repo_vlm", "jang_vlm"])
+def test_packed_entropic_policy_with_supplied_reference(tmp_path, runtime, cpu_protocol):
+    engine = MLXReasoningBackend("fixture/" + runtime)
+    engine.model, engine.tokenizer = Model(), Tokenizer()
+    engine.is_mlx_available = True
+    engine._vlm_runtime = runtime
+    store = bind_learning_state(engine, model_info={"resolved_revision": "e" * 40}, state_root=tmp_path)
+    logits = engine.model(np.array([[1, 1]])).logits[0, -1]
+    initial = logits - np.log(np.exp(logits).sum())
+    rows = [{"prompt": "x", "completion": str(i), "rollout_prompt_ids": [1, 1],
+             "rollout_completion_ids": [i], "reference_logprob": float(initial[i]), "reward": reward}
+            for i, reward in ((2, .99), (4, .25), (3, 0.))]
+    _, delta = engine.train_mini_batch({}, rows, objective="reward_policy", reward_weighting="entropic",
+            reference_kl_coef=.1, entropic_kl_target=.2, steps=1, max_window_tokens=8, learning_rate=.03,
+            validation_callback=lambda _: True)
+    metrics = store.current_manifest()["metadata"]["metrics"]
+    assert delta > 0 and metrics["entropic_kl_achieved"] == pytest.approx(.2)
+    assert metrics["sampled_initial_log_ratios"] == pytest.approx([0., 0., 0.], abs=2e-6)
+    changed = engine.model(np.array([[1, 1]])).logits[0, -1]
+    assert changed[2] - changed[3] > logits[2] - logits[3]

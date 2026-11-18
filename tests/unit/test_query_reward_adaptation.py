@@ -131,3 +131,104 @@ def test_native_mlx_fixed_kv_updates_only_query():
     assert drift > 0 and backend.last_learning_metrics["kv_prefills"] == 1
     changed = [k for k, v in tree_flatten(backend.model.parameters()) if not mx.array_equal(v, before[k]).item()]
     assert changed and all("q_proj.lora_" in k for k in changed)
+
+
+def test_entropic_calibration_and_leave_one_out_are_scale_invariant():
+    from math import exp, log
+    from core.reward_adaptation import reward_advantages
+    rewards = (.05, .4, .55, .99)
+    original = {}
+    _, advantages = reward_advantages([{"reward": r} for r in rewards], reward_weighting="entropic",
+                                       diagnostics=original)
+    beta = original["entropic_beta"]
+    masses = [exp(beta * (r - max(rewards))) for r in rewards]
+    prob = [w / sum(masses) for w in masses]
+    assert sum(p * log(4 * p) for p in prob) == pytest.approx(log(2), abs=1e-10)
+    eps = original["entropic_loo_epsilon"]
+    for i, a in enumerate(advantages):
+        peers = sum(w for j, w in enumerate(masses) if j != i) / 3
+        assert a == pytest.approx(masses[i] / (eps + peers) - 1)
+    for scale, offset in ((.3, .44), (1e-10, 0.), (1e-200, 0.)):
+        metrics = {}
+        _, transformed = reward_advantages([{"reward": scale * r + offset} for r in rewards],
+                                            reward_weighting="entropic", diagnostics=metrics)
+        assert transformed == pytest.approx(advantages, rel=1e-12)
+        assert metrics["entropic_beta"] * scale == pytest.approx(beta)
+    assert not original["entropic_kl_saturated"]
+
+
+def test_entropic_ties_and_unreachable_budget_remain_finite():
+    from math import isfinite, log
+    from core.reward_adaptation import reward_advantages
+    report = {}
+    _, a = reward_advantages([{"reward": r} for r in (0, 1, 1)], reward_weighting="entropic",
+                             entropic_kl_target=2.0, diagnostics=report)
+    assert report["entropic_kl_saturated"] and report["entropic_kl_achieved"] == pytest.approx(log(1.5))
+    assert all(isfinite(x) for x in a) and a[0] < 0 < a[1] == a[2]
+    tiny = {}
+    _, b = reward_advantages([{"reward": r} for r in (0., 5e-324)], reward_weighting="entropic", diagnostics=tiny)
+    assert tiny["entropic_beta_clamped"] and all(isfinite(x) for x in b)
+    for gamma in (float("nan"), float("inf"), 0, -1):
+        with pytest.raises(ValueError, match="KL target"):
+            reward_advantages(sampled_group(), reward_weighting="entropic", entropic_kl_target=gamma)
+    with pytest.raises(ValueError, match="Unknown reward weighting"):
+        reward_advantages(sampled_group(), reward_weighting="fake")
+
+
+def test_entropic_step_uses_measured_trajectory_logprobs_and_restores_on_failure(llama):
+    import torch
+    from core.torch_context_learning import update_lora
+    rows = sampled_group()
+    # Use two-token completions to distinguish trajectory sums from token means.
+    for row in rows:
+        row["rollout_completion_ids"] *= 2
+    def scores():
+        with torch.no_grad():
+            vals = []
+            for row in rows:
+                prefix, actions = row["rollout_prompt_ids"], row["rollout_completion_ids"]
+                logits = llama(input_ids=torch.tensor([prefix + actions])).logits[0].log_softmax(-1)
+                vals.append(sum(logits[len(prefix) - 1 + i, token].item() for i, token in enumerate(actions)))
+            return vals
+
+    # Actual initial policy scores for these exact sampled actions.
+    initial = scores()
+    options = dict(learning_rate=.003, steps=1, max_tokens=16, objective="reward_policy",
+                   reward_weighting="entropic", entropic_kl_target=.15)
+    plain, _ = update_lora(llama, Tokens(), rows, **options)
+    assert plain["reward_weighting"] == "entropic" and plain["reference_logprob_source"] == "disabled"
+    current = scores()
+    assert current[0] - current[1] > initial[0] - initial[1]
+    snapshot = {k: p.detach().clone() for k, p in llama.named_parameters()}
+    for invalid_rows, coef, reason in ((rows, .1, "reference_logprob"),
+             ([dict(r, reward=0.) for r in rows], 0., "Uniform"), (rows, float("nan"), "coefficient")):
+        with pytest.raises(ValueError, match=reason):
+            update_lora(llama, Tokens(), invalid_rows, reference_kl_coef=coef, **options)
+        assert all(torch.equal(p, snapshot[k]) for k, p in llama.named_parameters())
+    for row, score in zip(rows, initial):
+        row["reference_logprob"] = score
+    receipt, drift = update_lora(llama, Tokens(), rows, reference_kl_coef=.5, **options)
+    ratios = [a - b for a, b in zip(current, initial)]
+    assert receipt["sampled_initial_log_ratios"] == pytest.approx(ratios, abs=2e-6)
+    assert receipt["shaped_advantages"] == pytest.approx([a - .5 * r for a, r in zip(plain["advantages"], ratios)], abs=2e-6)
+    assert drift > 0 and receipt["reference_logprob_source"] == "supplied_initial_trajectory_logprobs"
+
+
+def test_entropic_validation_requires_a_relative_improvement():
+    from core.torch_context_learning import default_validation
+
+    class Probe:
+        def __init__(self, scores):
+            self.scores = scores
+
+        def score_learning_probe(self, prompt, answer):
+            return self.scores.get(answer, 1.)
+
+    rows = sampled_group()
+    check = default_validation(Probe({"7": 2., "8": 4.}), rows, objective="reward_policy", reward_weighting="entropic")
+    assert not check(Probe({"7": 1.5, "8": 3.5}))["accepted"]
+    assert not check(Probe({"7": 1.5, "8": 3.}))["accepted"]
+    assert check(Probe({"7": 1., "8": 3.5}))["accepted"]
+    decimal = default_validation(Probe({"7": 1.2, "8": 1.}), rows,
+                                 objective="reward_policy", reward_weighting="entropic")
+    assert not decimal(Probe({"7": 1.1, "8": .9}))["accepted"]

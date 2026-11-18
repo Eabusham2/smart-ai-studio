@@ -231,13 +231,14 @@ def fisher_diagonal(backend, texts, max_tokens, cancel_event=None):
 
 
 def optimize_windows(backend, rows, *, objective, row_weights, supervise_prompt, optimizer,
-                     penalty, steps, max_tokens, context_text, max_context_tokens, cancel_event):
+                     penalty, steps, max_tokens, context_text, max_context_tokens, cancel_event,
+                     reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0):
     import mlx.core as mx
     import mlx.nn as nn
     from mlx.utils import tree_flatten, tree_unflatten
     from core.learning_data import iter_training_windows
     from core.query_adaptation import is_query_adapter, mlx_query_loss
-    from core.reward_adaptation import causal_row_weights, reward_group
+    from core.reward_adaptation import causal_row_weights, policy_advantages, reward_group
 
     model = backend.model
     inactive = []
@@ -296,10 +297,12 @@ def optimize_windows(backend, rows, *, objective, row_weights, supervise_prompt,
                 module.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
         details.update(kv_prefills=1, cached_context_tokens=length, updated_projection="q_proj", query_spans=[list(span) for span in spans])
     elif objective == "reward_policy":
-        group = reward_group(backend.tokenizer, rows, max_tokens)
+        group = reward_group(backend.tokenizer, rows, max_tokens, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
         arrays = [window_arrays(w.input_ids, w.labels) for w in group.windows]
         references = [float(loss_for_tokens(model, *inputs).item()) * w.supervised_tokens
                       for inputs, w in zip(arrays, group.windows)]
+        advantages, diagnostics = policy_advantages(group, rows, references, reference_kl_coef)
+        details.update(diagnostics)
 
         def policy_loss(model, inputs, count, advantage, previous):
             nll = loss_for_tokens(model, *inputs) * count
@@ -310,7 +313,7 @@ def optimize_windows(backend, rows, *, objective, row_weights, supervise_prompt,
         grad = nn.value_and_grad(model, policy_loss)
         for _ in range(steps):
             summed = {}
-            for inputs, w, advantage, previous in zip(arrays, group.windows, group.advantages, references):
+            for inputs, w, advantage, previous in zip(arrays, group.windows, advantages, references):
                 cancel_if_requested(cancel_event)
                 loss, grads = grad(model, inputs, w.supervised_tokens, advantage, previous)
                 check_finite([loss], "policy loss")

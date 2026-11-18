@@ -23,6 +23,10 @@ RETENTION_TOLERANCE = 0.10
 REPLAY_LIMIT = 8
 
 
+class LearningValidationError(RuntimeError):
+    """The candidate was measured, rejected and rolled back by the trainer."""
+
+
 def source_probe(text):
     """A bounded verbatim continuation; the expected span is absent from the cue."""
     words = re.findall(r'\S+', text.strip())
@@ -258,7 +262,7 @@ class AwakeOnlineConsolidator:
 
     def train_pairs(self, pairs, *, turns=(), evidence=(), mode="learn", cancel_event=None,
                     learning_rate=1e-4, steps=3, training_options=None, stream_cursor=None,
-                    validation_rows=None):
+                    validation_rows=None, policy_parent=...):
         """Serialize real updates. A committed manifest carries the exact retirement receipt."""
         with self._update_lock:
             with self.lock:
@@ -269,7 +273,7 @@ class AwakeOnlineConsolidator:
                 if not self._real_training_ready():
                     raise RuntimeError(self.last_error or "The active backend lacks a verified persistent trainer or probe scorer")
                 result = self._train(backend, pairs, turns, evidence, mode, cancel_event, learning_rate,
-                                     steps, dict(training_options or {}), stream_cursor, validation_rows)
+                                     steps, dict(training_options or {}), stream_cursor, validation_rows, policy_parent)
                 self.consolidation_count += 1
                 self.total_param_shift += result["parameter_drift_l2"]
                 self.last_result = result
@@ -291,7 +295,7 @@ class AwakeOnlineConsolidator:
                         self.is_consolidating = False
 
     def _train(self, backend, pairs, turns, evidence, mode, cancel_event, learning_rate,
-               steps, options, stream_cursor, validation_rows):
+               steps, options, stream_cursor, validation_rows, policy_parent):
         def check_cancel():
             if cancel_event is not None and cancel_event.is_set():
                 raise InterruptedError("Learning cancelled before checkpoint commit")
@@ -301,6 +305,8 @@ class AwakeOnlineConsolidator:
             raise ValueError("No complete dialogue or learning pairs")
         store = backend.learning_state
         manifest = store.current_manifest(verify=False)
+        if policy_parent is not ... and (manifest or {}).get("generation") != policy_parent:
+            raise RuntimeError("The active policy changed while sampling the rollout group")
         memory = self._memory(manifest)
         parent_head = memory.get("retirement_head") if memory.get("recall_version") == 1 else None
         old_replay = memory.get("replay", [])
@@ -321,8 +327,12 @@ class AwakeOnlineConsolidator:
             # Only a *relative* gain on the rewarded actions is evidence of
             # learning this objective. Lower NLL on every rollout is insufficient.
             probes = [{"prompt": row["prompt"], "completion": row["completion"]} for row in pairs]
-            mean = sum(row["reward"] for row in pairs) / len(pairs)
-            advantages = [row["reward"] - mean for row in pairs]
+            from core.reward_adaptation import reward_advantages, validation_contrast_weights, validation_gain_tolerance
+            weighting = {}
+            _, advantages = reward_advantages(
+                pairs, reward_weighting=options.get("reward_weighting", "group_relative"),
+                entropic_kl_target=options.get("entropic_kl_target", math.log(2)), diagnostics=weighting)
+            contrast_weights = validation_contrast_weights(advantages)
         else:
             probes = list(validation_rows) if validation_rows is not None else _probes(pairs, evidence)
         if not probes:
@@ -369,16 +379,25 @@ class AwakeOnlineConsolidator:
             metrics.update(probe_nll_before=baseline, probe_nll_after=after,
                            retention_nll_before=baseline_guard, retention_nll_after=after_guard)
             if objective == "reward_policy":
-                gain = sum(a * (before - now) for a, before, now in zip(advantages, baseline, after))
-                metrics["reward_logprob_contrast_gain"] = gain / len(probes)
-                if gain <= 0:
-                    raise RuntimeError("The candidate failed to improve relative likelihood of rewarded actions")
+                deltas = [before - now for before, now in zip(baseline, after)]
+                mean_delta = math.fsum(deltas) / len(deltas)
+                # The leave-one-out entropic advantages need not sum to zero.
+                # A shared improvement on every action cannot prove a shift
+                # toward the verifier's preferred actions.
+                gain = math.fsum(a * (d - mean_delta) for a, d in zip(contrast_weights, deltas)) / len(deltas)
+                metrics["reward_logprob_contrast_gain"] = gain
+                metrics["reward_logprob_weighted_gain"] = math.fsum(a * d for a, d in zip(advantages, deltas)) / len(deltas)
+                metrics["reward_validation_measure"] = "centered change in mean serving log probability per token"
+                metrics.update(weighting)
+                metrics["reward_validation_tolerance"] = validation_gain_tolerance(baseline, after)
+                if gain <= metrics["reward_validation_tolerance"]:
+                    raise LearningValidationError("The candidate failed to improve relative likelihood of rewarded actions")
             elif sum(after) >= sum(baseline):
-                raise RuntimeError("The candidate failed to improve the measured source continuations")
+                raise LearningValidationError("The candidate failed to improve the measured source continuations")
             if objective != "reward_policy" and any(now > old + RETENTION_TOLERANCE for now, old in zip(after, baseline)):
-                raise RuntimeError("The candidate regressed on a source continuation")
+                raise LearningValidationError("The candidate regressed on a source continuation")
             if any(now > old + RETENTION_TOLERANCE for now, old in zip(after_guard, baseline_guard)):
-                raise RuntimeError("The candidate regressed on a retention probe")
+                raise LearningValidationError("The candidate regressed on a retention probe")
             if stream_cursor:
                 head = stream_head
                 for legacy_key, legacy_cursor in new_memory.pop("streams", {}).items():
@@ -388,7 +407,7 @@ class AwakeOnlineConsolidator:
                 replay_bank.stage(update_id, replay_head, _sample(probes, 4))
                 new_memory["replay_head"] = update_id
             if old_checks and not passes_recall(candidate, old_checks, cancel_event):
-                raise RuntimeError("The candidate regressed on previously retired source-free recall")
+                raise LearningValidationError("The candidate regressed on previously retired source-free recall")
             metrics.update(retention_recall_checks=len(old_checks), retirement_checks=len(new_checks),
                            turns_retired=0, retirement_reason="")
             if turns:

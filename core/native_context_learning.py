@@ -39,7 +39,8 @@ def select_deployment(backend, base_path, root, kind, legacy_path):
 
 def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_matrix,
                       lambda_ewc, cancel_event, validation_callback, learning_metadata, anchor_texts=None,
-                      objective='causal_lm', supervise_prompt=True, row_weights=None, max_window_tokens=256):
+                      objective='causal_lm', supervise_prompt=True, row_weights=None, max_window_tokens=256,
+                      reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0):
     """Validate a candidate using the *serving* backend before switching current.json."""
     if objective not in {"causal_lm", "reward_policy"}:
         raise ValueError("Native conversion bridges do not expose frozen serving KV for query adaptation")
@@ -47,7 +48,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         raise RuntimeError("Load the selected model before learning")
     if objective == "reward_policy":
         from core.reward_adaptation import reward_advantages
-        reward_advantages(data)
+        reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
     store = backend.learning_state
     txn = store.begin(metadata=learning_metadata)
     original_metadata = backend.adapters
@@ -60,7 +61,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         # Merging and quantization can erase a BF16 update. Standalone
         # callers also validate behavior on the actual served deployment.
         if validation_callback is None:
-            validation_callback = default_validation(backend, data, objective=objective)
+            validation_callback = default_validation(backend, data, objective=objective, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
         lineage = backend._verify_training_parent(trainer)
         check_cancelled(cancel_event)
         unloaded = True
@@ -70,6 +71,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
             previous_peft=(Path(previous).parent / "peft") if previous else None,
             learning_rate=learning_rate, steps=steps, fisher_matrix=fisher_matrix,
             lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+            reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
             objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_length=max_window_tokens,
         )
         metrics["training_parent_sha256"] = lineage

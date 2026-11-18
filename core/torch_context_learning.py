@@ -26,15 +26,16 @@ def validate_candidate(backend, callback, cancel_event):
     return evidence
 
 
-def default_validation(backend, data, *, objective='causal_lm'):
+def default_validation(backend, data, *, objective='causal_lm', reward_weighting="group_relative", entropic_kl_target=None):
     """Acceptance for standalone backend callers without a consolidator."""
     from memory.anchor_dataset import get_anchor_dataset
     from core.online_consolidator import RETENTION_TOLERANCE
     if not data:
         raise ValueError("No training examples were supplied")
     if objective == "reward_policy":
-        from core.reward_adaptation import reward_advantages
-        _, weights = reward_advantages(data)
+        from core.reward_adaptation import reward_advantages, validation_contrast_weights, validation_gain_tolerance
+        _, weights = reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
+        weights = validation_contrast_weights(weights)
         probes = [(str(row["prompt"]), str(row["completion"])) for row in data]
     else:
         first = data[0]
@@ -43,20 +44,34 @@ def default_validation(backend, data, *, objective='causal_lm'):
     heldout = get_anchor_dataset()[2]
     guard = (heldout["prompt"], heldout["completion"])
 
-    def score(candidate):
-        losses = [candidate.score_learning_probe(*pair) for pair in probes]
-        return math.fsum(w * loss for w, loss in zip(weights, losses)) / len(losses)
+    def losses(candidate):
+        return [candidate.score_learning_probe(*pair) for pair in probes]
 
-    baseline, retained = score(backend), backend.score_learning_probe(*guard)
-    if not all(math.isfinite(value) for value in (baseline, retained)):
+    def score(values):
+        return math.fsum(w * loss for w, loss in zip(weights, values)) / len(values)
+
+    before = losses(backend)
+    baseline, retained = score(before), backend.score_learning_probe(*guard)
+    if not all(math.isfinite(value) for value in (*before, baseline, retained)):
         raise RuntimeError("Parameter-learning baseline is non-finite")
 
     def validate(candidate):
-        after, guard_after = score(candidate), candidate.score_learning_probe(*guard)
-        accepted = (math.isfinite(after) and math.isfinite(guard_after)
-                    and after < baseline and guard_after <= retained + RETENTION_TOLERANCE)
-        return {"accepted": accepted, "probe_nll_before": baseline, "probe_nll_after": after,
-                "score_kind": "reward_weighted_nll" if objective == "reward_policy" else "completion_nll",
+        after = losses(candidate)
+        guard_after = candidate.score_learning_probe(*guard)
+        gains = [previous - candidate_loss for previous, candidate_loss in zip(before, after)]
+        # Subtract the common shift first to avoid roundoff crediting an equal
+        # gain on every sampled completion as a relative policy improvement.
+        min_gain = 0.0
+        if objective == "reward_policy":
+            min_gain = validation_gain_tolerance(before, after)
+            shift = math.fsum(gains) / len(gains)
+            gains = [gain - shift for gain in gains]
+        gain = score(gains)
+        accepted = (all(math.isfinite(value) for value in (*after, guard_after))
+                    and gain > min_gain and guard_after <= retained + RETENTION_TOLERANCE)
+        return {"accepted": accepted, "probe_nll_before": baseline, "probe_nll_after": score(after),
+                "score_kind": (reward_weighting + "_advantage_mean_nll_contrast"
+                               if objective == "reward_policy" else "completion_nll"),
                 "retention_nll_before": retained, "retention_nll_after": guard_after}
     return validate
 
@@ -210,7 +225,8 @@ def save_adamw(optimizer, named, directory):
 def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
                 fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, before=None, anchor_texts=None,
                 previous_directory=None, output_directory=None, objective='causal_lm',
-                supervise_prompt=True, row_weights=None, context_text=None, max_context_tokens=2048):
+                supervise_prompt=True, row_weights=None, context_text=None, max_context_tokens=2048,
+                reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0):
     """Optimize each source window, measure actual drift, leave the base frozen.
 
     Caller owns the live-tensor rollback snapshot for an in-process model. The
@@ -223,7 +239,7 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
     if not math.isfinite(rate) or rate <= 0 or not math.isfinite(strength) or strength < 0 or int(steps) < 1:
         raise ValueError("Invalid learning rate, step count or EWC strength")
     from core.query_adaptation import is_query_adapter, torch_query_loss
-    from core.reward_adaptation import causal_row_weights, reward_group
+    from core.reward_adaptation import causal_row_weights, policy_advantages, reward_group
 
     rows = tuple(data)
     if objective not in {"causal_lm", "reward_policy", "query_only"}:
@@ -238,7 +254,7 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
         raise ValueError("The selected model has no trainable query projection adapters")
     limit = window_limit(model, max_tokens)
     weights = causal_row_weights(rows, row_weights) if objective == "causal_lm" else None
-    group = reward_group(tokenizer, rows, limit) if objective == "reward_policy" else None
+    group = reward_group(tokenizer, rows, limit, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target) if objective == "reward_policy" else None
     if before is None:
         before = {k: v.detach().cpu().clone() for k, v in named.items()}
     check_cancelled(cancel_event)
@@ -308,8 +324,10 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
             # gradient is REINFORCE. Repeated passes clip the trajectory ratio.
             with torch.no_grad():
                 reference = [window_loss(model, w).item() * w.supervised_tokens for w in group.windows]
+            advantages, diagnostics = policy_advantages(group, rows, reference, reference_kl_coef)
+            method_metrics.update(diagnostics)
             for epoch in range(int(steps)):
-                for w, advantage, old_nll in zip(group.windows, group.advantages, reference):
+                for w, advantage, old_nll in zip(group.windows, advantages, reference):
                     check_cancelled(cancel_event)
                     nll = window_loss(model, w) * w.supervised_tokens
                     ratio = (old_nll - nll).clamp(-20., 20.).exp()

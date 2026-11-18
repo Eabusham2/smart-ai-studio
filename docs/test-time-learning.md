@@ -14,6 +14,7 @@ This implementation adds mechanisms from several research directions. It is not 
 | Few-shot adaptation | Form leave-one-out training tasks from 2–12 independent demonstrations, vary their ordering, adapt, and vote among bounded answer generations. |
 | Query-only adaptation | Prefill a fixed context once, keep each layer's K/V immutable during adaptation, and update only query-side adapters on short causal spans. |
 | Learn from rewards | Sample candidate answers, assign verifier or strict-majority rewards, and optimize a signed group-relative objective with a clipped importance ratio. |
+| Discover a better solution | Select reusable candidate states with PUCT, sample improvements, and train with adaptive entropic advantages that emphasize the best verified outcomes. |
 | Consolidate candidate solutions | Select verified or majority-supported sampled traces and train on those traces, then retain the resulting scoped adapter. This is supervised trace consolidation, separate from the reward objective. |
 | Retrieve a parameter memory | Train independent document adapters, index bounded descriptive metadata, pin a validated generation, select a matching entry, and answer with that adapter loaded. The source document is not inserted into the answer prompt. |
 
@@ -29,7 +30,7 @@ Online updates use the existing model's native chat formatting, finite-drift che
 | `request` | A temporary copy of the currently loaded, verified checkpoint. It includes optimizer and retention state. Restore the previous model and delete only this request's state when the operation ends. |
 | `document` | An independent document's learned state. A catalog selection activates an immutable, read-only generation. |
 
-Few-shot, query adaptation, reward learning, and candidate consolidation default to a temporary request. Document ingestion defaults to the currently selected persistent scope. API callers can explicitly choose a persistent scope for task adaptation. Temporary scopes cannot nest. A failed restoration is reported, and the surviving request checkpoint is retained for recovery.
+Few-shot, query adaptation, reward learning, discovery, and candidate consolidation default to a temporary request. Document ingestion defaults to the currently selected persistent scope. API callers can explicitly choose a persistent scope for task adaptation. Temporary scopes cannot nest. A failed restoration is reported, and the surviving request checkpoint is retained for recovery.
 
 Changing scope reloads the same selected model through its ordinary loader. This preserves runtime metadata and validates model/tokenizer identity. Inference and scope transitions share a lifecycle lock, including the complete lifetime of streaming generators. Explicit legacy adapters remain confined to the model-wide migration path; they must first become a validated checkpoint before being copied into a request.
 
@@ -129,6 +130,35 @@ Verifier targets/cases evaluate sampled answers; they are not inserted into the 
 For consensus learning, set `mode` to `consensus` and omit the verifier. A strict majority is required. Ties, all-wrong/all-right reward groups, and empty usable rollouts produce no policy update. A consensus label is agreement, not proof of correctness. Limits are 2–12 rollouts per round, up to 8 rounds and 8 update steps, with bounded generated lengths.
 
 The reward objective can improve the relative likelihood of rewarded actions while reducing that of rejected actions. Candidate acceptance measures that contrast separately from ordinary source NLL. Native GGUF/BitNet routes optimize the verified parent and check the converted serving model; they do not backpropagate through native serving kernels. Text-based rollout routes reconstruct and validate their training prefix; exact sampling-time token/logprob export is not available on every native server.
+
+### Discovery with entropic rewards and candidate reuse
+
+```json
+{
+  "method": "discover",
+  "prompt": "Write a Python function sum_squares(values) that returns the sum of squares.",
+  "verifier": {
+    "kind": "python_tests",
+    "function": "sum_squares",
+    "cases": [
+      {"args": [[1, 2, 3]], "expected": 14},
+      {"args": [[]], "expected": 0}
+    ]
+  },
+  "rounds": 3,
+  "rollouts": 4,
+  "max_tokens": 128,
+  "archive_size": 16
+}
+```
+
+`discover` uses a separate adaptive entropic weighting rule. It adjusts the reward tilt by bisection under a KL concentration budget, then forms leave-one-out advantages. The default concentration target is `ln(2)`. Uniform rewards produce no gradient update; unreachable concentration targets, ties and finite bounds are handled explicitly. Each informative newly sampled group receives one update rather than repeated off-policy training on archived completions.
+
+The search archive stores candidate solutions, rewards and lineage. Its PUCT score combines the best observed direct-child reward with a rank-based exploration prior. Expanding a candidate increments visitation counts along its ancestry. The archive adds the best two children of each expansion and stays within the selected capacity while preserving initial seeds. Optional `seed` accepts an initial candidate or a small list. The output records parent selections, update metrics, the best result and the archive.
+
+For Python discovery, an omitted `baseline_ms` uses **1 ms as a reward normalization unit**, not as a claim about an existing implementation's speed. Correct candidates receive `1 / (1 + median_cases_ms)`; invalid candidates receive zero. This supplies a continuous reward without asking the user to benchmark a seed first.
+
+The local workflow reports an initial-reference KL coefficient of zero. Its KL concentration budget controls entropic reward weights; it is distinct from a KL penalty against the initial model. Low-level trainers can require explicitly supplied reference log probabilities when that separate penalty is requested. This is a bounded local variant of TTT-Discover, without its large distributed rollout infrastructure or published benchmark configuration. [Method and equations](https://arxiv.org/html/2601.16175v1)
 
 ## Save and retrieve document parameters
 

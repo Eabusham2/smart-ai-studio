@@ -287,6 +287,7 @@ class MLXReasoningBackend:
         max_window_tokens=128,
         supervise_prompt=True,
         objective="causal_lm",
+        reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
         row_weights=None,
         context_text=None,
         max_context_tokens=2048,
@@ -324,11 +325,11 @@ class MLXReasoningBackend:
             raise ValueError("Policy and query objectives use their own weights and at most eight steps")
         if objective == "reward_policy":
             from core.reward_adaptation import reward_advantages
-            reward_advantages(data)
+            reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
         rows = tuple(data)
         if objective != "causal_lm" and validation_callback is None:
             from core.torch_context_learning import default_validation
-            validation_callback = default_validation(self, rows, objective=objective)
+            validation_callback = default_validation(self, rows, objective=objective, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
         installed = []
         old_adapters = self.adapters
         rollback_params = {}
@@ -382,6 +383,7 @@ class MLXReasoningBackend:
             resumed_optimizer = resume_optimizer(self, optimizer, txn, learning_rate)
             details, window_count, token_count = optimize_windows(
                 self, rows, objective=objective, row_weights=row_weights, supervise_prompt=supervise_prompt,
+                reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
                 optimizer=optimizer, penalty=penalty, steps=int(steps), max_tokens=max_tokens,
                 context_text=context_text, max_context_tokens=min(max_context_tokens,
                     int(getattr(self, "context_budget_tokens", 0) or max_context_tokens)), cancel_event=cancel_event)

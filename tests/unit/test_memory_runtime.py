@@ -158,7 +158,8 @@ def test_other_thread_cannot_observe_temporary_request_weights(engine):
     assert finished.is_set() and observations == ["persistent"]
 
 
-def test_workflow_default_request_isolated_but_ingest_persists(engine, monkeypatch):
+@pytest.mark.parametrize("method", ["few_shot", "discover"])
+def test_workflow_default_request_isolated_but_ingest_persists(engine, monkeypatch, method):
     import core.test_time_learning as workflows
 
     class Work:
@@ -170,7 +171,7 @@ def test_workflow_default_request_isolated_but_ingest_persists(engine, monkeypat
             return {"status": "completed", "method": request["method"]}
 
     monkeypatch.setattr(workflows, "OnlineLearning", Work)
-    result = engine.run_online_learning({"method": "few_shot"})
+    result = engine.run_online_learning({"method": method})
     assert result["state_persisted"] is False and result["scope"]["kind"] == "request"
     assert result["total_wall_time_seconds"] >= 0
     assert Path(engine.store.current_checkpoint()).read_bytes() == b"persistent"

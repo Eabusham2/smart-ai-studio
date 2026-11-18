@@ -1,18 +1,17 @@
 # Online learning validation record
 
-This record covers the online-method, scoped-memory, document-bank and bounded-transcript additions on `feature/persistent-context-learning`, following commit `8ec3dc8c786dc4bc8d9f55308225768c38940b73`.
+This record covers the online-method, scoped-memory, document-bank and bounded-transcript additions on `feature/persistent-context-learning`, following commit `8ec3dc8c786dc4bc8d9f55308225768c38940b73`. The final unit and GUI runs include the adaptive entropic discovery follow-up to `4652c661b1c852ef80f2d58e35cbc14039b71ec5`.
 
 ## Completed runs
 
 | Run | Result | Measured duration |
 | --- | --- | --- |
-| Unit suite, excluding the two GUI modules run separately | **1,327 passed, 6 skipped, 58 subtests passed** | 100.65 s |
-| Real Tk tests: existing Best Work rendering/steer handoff and new paging/learning-panel tests | **5 passed** | 1.55 s |
-| Final lifecycle, CLI/paging, Pro routing and media follow-up after the changed-source restoration guard | **20 passed** | 2.44 s |
+| Final unit suite, excluding the two GUI modules run separately | **1,345 passed, 6 skipped, 58 subtests passed** | 98.93 s |
+| Real Tk tests: existing Best Work rendering/steer handoff and new paging/learning-panel tests, including discovery | **6 passed** | 2.28 s |
 | Existing offline `tests/live` suite | **18 passed, 1 skipped** | 499.57 s |
 | Compilation, CLI help and `git diff --check` | Passed | — |
 
-The follow-up run overlaps the broad unit suite. Its additional test confirms that changing the model identity during a reload cannot be reported as a successful restoration of the previous learned model.
+The live suite completed on the main integration before the isolated discovery follow-up. It was not repeated for that opt-in workflow; the final unit and GUI runs cover the complete follow-up, shared trainer changes, and existing routing regressions. Focused development runs overlap the final unit suite and are not added to these totals.
 
 The live-suite skip is the opt-in 27B Apple Silicon/Metal module. Native MLX tests also skip when MLX is unavailable. The CPU tests execute actual tensors, forward passes, gradients and checkpoint reloads on small locally constructed models; no model download or external search is required for these test runs.
 
@@ -33,6 +32,8 @@ The suite reports existing Pydantic/pytest configuration deprecations and Transf
 **Query adaptation.** Real CPU Llama, Mistral, Qwen2 and Qwen3 models produce matching fixed-cache span losses and full causal-forward losses. A hook verifies one context prefill and short adaptation spans. Non-query parameters remain byte-identical. Managed tests verify selective query optimizer-state resume, rejected/cancelled candidate rollback, checkpoint receipts and cold-reload scoring parity.
 
 **Policy updates.** Small real Torch models raise rewarded output probability and lower rejected output probability. Uniform reward groups leave parameters unchanged. A workflow test samples real CPU model outputs, evaluates them, performs a PEFT policy update, measures positive rewarded-versus-rejected likelihood contrast and reloads the committed checkpoint. Native bridges pass the objective to their verified parent trainers and exercise deployment/rollback contracts.
+
+**Discovery.** Tests check adaptive entropic concentration against its requested KL budget, ties and unreachable targets, reward-scale invariance, subnormal reward ranges, and finite mixed-precision loss scaling. A real CPU workflow samples fresh rollouts, updates a PEFT adapter with entropic advantages, measures positive relative-likelihood gain and reloads the checkpoint. An independent two-token test checks the optional explicitly supplied initial-reference penalty; the high-level discovery workflow reports that penalty as disabled. PUCT tests exercise rank priors, direct-child quality, ancestor visits, seed retention and bounded candidate text. Equal improvements on every action, worse relative preferences, and float32-scale noise cannot certify an update. Python verifier tests execute correct and incorrect functions and check the measured continuous runtime reward.
 
 **Bonsai/CRACK contracts.** CPU protocol fixtures exercise both publisher MLX and JANG packed-head layouts. The adapted head changes while the packed base stays unchanged. Unsupported query-only updates fail explicitly. Separate conditional tests exercise native MLX differentiation when that runtime is installed.
 

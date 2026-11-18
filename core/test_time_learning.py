@@ -19,8 +19,9 @@ from pathlib import Path
 
 from core.learning_recall import (EmptyGeneration, PromptTooLong, StreamCursorBank, check_cancel, generate_answer,
                                   generation_prefix, grounded_question, object_response)
+from core.discovery_search import DiscoveryArchive
 from core.learning_sources import iter_file_positions, iter_learning_files, source_snapshot
-from core.online_consolidator import source_probe
+from core.online_consolidator import LearningValidationError, source_probe
 from core.training_memory import process_rss_mb
 
 
@@ -109,13 +110,13 @@ class OnlineLearning:
         if not isinstance(request, dict):
             raise ValueError("An online learning request must be a JSON object")
         handlers = {"ingest": self.ingest, "few_shot": self.few_shot,
-                    "query_adapt": self.query_adapt, "reinforce": self.reinforce,
+                    "query_adapt": self.query_adapt, "reinforce": self.reinforce, "discover": self.discover,
                     "consolidate_candidates": self.consolidate_candidates}
         options = dict(request)
         method = options.pop("method", "")
         if method not in handlers:
             raise ValueError("Unknown online learning method: " + str(method))
-        if progress is not None and method == "ingest":
+        if progress is not None and method in {"ingest", "discover"}:
             options["progress"] = progress
         with self.service._update_lock:
             check_cancel(cancel_event)
@@ -330,8 +331,30 @@ class OnlineLearning:
         return {**result, "answer": self._answer(question, max_tokens, 0, cancel_event),
                 "generation_includes_context": True}
 
+    def _sample_group(self, prompt, rollouts, max_tokens, cancel_event):
+        answers = []
+        for _attempt in range(rollouts * 2):
+            try:
+                answers.append(self._answer(prompt, max_tokens, 0.8, cancel_event))
+            except EmptyGeneration:
+                continue
+            if len(answers) == rollouts:
+                break
+        return answers
+
+    def _update_policy(self, prompt, answers, rewards, *, mode, steps, learning_rate,
+                       reward_weighting, entropic_kl_target, cancel_event, policy_parent=...):
+        prefix = generation_prefix(self.backend, prompt)
+        rows = [{"prompt": prompt, "completion": answer, "rollout_prefix": prefix, "reward": reward}
+                for answer, reward in zip(answers, rewards)]
+        return self.service.train_pairs(rows, mode=mode, training_options={
+            "objective": "reward_policy", "max_window_tokens": 512, "reward_weighting": reward_weighting,
+            "entropic_kl_target": entropic_kl_target}, steps=steps, learning_rate=learning_rate,
+            cancel_event=cancel_event, policy_parent=policy_parent)
+
     def _rollout_update(self, prompt, *, policy, mode, verifier, rollouts, rounds, max_tokens, steps,
-                        learning_rate, extract_answer, cancel_event):
+                        learning_rate, extract_answer, cancel_event, reward_weighting="group_relative",
+                        entropic_kl_target=math.log(2)):
         _text(prompt, "rollout prompt", 2048)
         _integer(rollouts, 2, 12, "rollouts")
         _integer(rounds, 1, 8, "rounds")
@@ -344,14 +367,8 @@ class OnlineLearning:
         history = []
         best_sample, best_reward = None, None
         for _ in range(rounds):
-            answers = []
-            for _attempt in range(rollouts * 2):
-                try:
-                    answers.append(self._answer(prompt, max_tokens, 0.8, cancel_event))
-                except EmptyGeneration:
-                    continue
-                if len(answers) == rollouts:
-                    break
+            policy_parent = (self.backend.learning_state.current_manifest(verify=False) or {}).get("generation") if policy else None
+            answers = self._sample_group(prompt, rollouts, max_tokens, cancel_event)
             if len(answers) != rollouts:
                 history.append({"updated": False, "reason": "too few nonempty rollouts",
                                 "usable_rollouts": len(answers)})
@@ -365,18 +382,18 @@ class OnlineLearning:
                                 "rewards": rewards})
                 break
             if policy:
-                prefix = generation_prefix(self.backend, prompt)
-                rows = [{"prompt": prompt, "completion": a, "rollout_prefix": prefix, "reward": r}
-                        for a, r in zip(answers, rewards)]
-                options = {"objective": "reward_policy", "max_window_tokens": 512}
+                update = self._update_policy(prompt, answers, rewards, mode="rollout_" + mode, steps=steps,
+                                             learning_rate=learning_rate, reward_weighting=reward_weighting,
+                                             entropic_kl_target=entropic_kl_target, cancel_event=cancel_event,
+                                             policy_parent=policy_parent)
             else:
                 # Distillation takes a verified/consensus-selected trajectory.
                 # Only the sampled text is a supervised target.
                 selected = dict.fromkeys(a for a, r in zip(answers, rewards) if r == max(rewards))
                 rows = [{"prompt": prompt, "completion": answer} for answer in selected]
-                options = {"supervise_prompt": False}
-            update = self.service.train_pairs(rows, mode="rollout_" + mode, training_options=options,
-                                              steps=steps, learning_rate=learning_rate, cancel_event=cancel_event)
+                update = self.service.train_pairs(rows, mode="rollout_" + mode,
+                                                  training_options={"supervise_prompt": False},
+                                                  steps=steps, learning_rate=learning_rate, cancel_event=cancel_event)
             history.append({"updated": True, "rewards": rewards, "update": update})
         measurements = getattr(verifier, "results", None) if mode == "verifier" else None
         return {"status": "completed" if any(h["updated"] for h in history) else "skipped",
@@ -386,13 +403,102 @@ class OnlineLearning:
                 "best_sample": best_sample, "best_reward": best_reward}
 
     def reinforce(self, prompt, *, mode="consensus", verifier=None, rollouts=4, rounds=1,
-                  max_tokens=64, steps=1, learning_rate=1e-4, extract_answer=None, cancel_event=None):
+                  max_tokens=64, steps=1, learning_rate=1e-4, extract_answer=None, cancel_event=None,
+                  reward_weighting="group_relative", entropic_kl_target=math.log(2)):
         return self._rollout_update(prompt, policy=True, mode=mode, verifier=verifier, rollouts=rollouts,
                                     rounds=rounds, max_tokens=max_tokens, steps=steps, learning_rate=learning_rate,
-                                    extract_answer=extract_answer, cancel_event=cancel_event)
+                                    extract_answer=extract_answer, cancel_event=cancel_event,
+                                    reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
 
     def consolidate_candidates(self, prompt, *, mode="consensus", verifier=None, rollouts=4, rounds=1,
                                max_tokens=64, steps=1, learning_rate=1e-4, extract_answer=None, cancel_event=None):
         return self._rollout_update(prompt, policy=False, mode=mode, verifier=verifier, rollouts=rollouts,
                                     rounds=rounds, max_tokens=max_tokens, steps=steps, learning_rate=learning_rate,
                                     extract_answer=extract_answer, cancel_event=cancel_event)
+
+    def discover(self, prompt, *, verifier, seed=None, rounds=3, rollouts=4, max_tokens=96, archive_size=16,
+                 exploration=1.0, entropic_kl_target=math.log(2), learning_rate=1e-4,
+                 cancel_event=None, progress=None):
+        """Expand one PUCT-selected parent per fresh entropic policy update."""
+        _text(prompt, "discovery task", 2048)
+        _integer(rounds, 1, 8, "rounds")
+        _integer(rollouts, 2, 12, "rollouts")
+        _integer(max_tokens, 1, 192, "max_tokens")
+        _integer(archive_size, 2, 64, "archive_size")
+        if type(exploration) not in (int, float) or not 0 < exploration <= 20:
+            raise ValueError("exploration must be positive and at most 20")
+        if type(entropic_kl_target) not in (int, float) or not 0 < entropic_kl_target <= math.log(16):
+            raise ValueError("entropic_kl_target must be positive and at most log(16)")
+        if type(learning_rate) not in (int, float) or not math.isfinite(learning_rate) or learning_rate <= 0:
+            raise ValueError("learning_rate must be positive and finite")
+        seeds = [] if seed is None else ([seed] if isinstance(seed, str) else seed)
+        if not isinstance(seeds, list) or len(seeds) > 4:
+            raise ValueError("seed must be one solution or up to four distinct solutions")
+        for item in seeds:
+            _text(item, "seed solution", 2048)
+        if len(set(seeds)) != len(seeds) or len(seeds) >= archive_size:
+            raise ValueError("Use distinct seeds and reserve at least one archive slot for a child")
+        reference_ms = None
+        if isinstance(verifier, dict) and verifier.get("kind") == "python_tests":
+            reference_ms = verifier.get("baseline_ms", 1.0)
+            if reference_ms is None:
+                raise ValueError("Discovery requires a positive runtime reference for Python tests")
+            verifier = {**verifier, "baseline_ms": reference_ms}
+        elif not callable(verifier):
+            raise ValueError("Discovery requires a continuous task verifier or Python function tests")
+        verify = _verifier(verifier)
+        self._require("reward_policy")
+
+        def score(answer):
+            check_cancel(cancel_event)
+            value = float(verify(answer))
+            check_cancel(cancel_event)
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError("Discovery verifier rewards must be finite and in [0, 1]")
+            return value
+
+        with self.service._update_lock:
+            initial = [(text, score(text)) for text in seeds] or [(None, 0.0)]
+            archive = DiscoveryArchive(initial, archive_size, exploration)
+            history = []
+            store = self.backend.learning_state
+            for _ in range(rounds):
+                check_cancel(cancel_event)
+                parent, selection = archive.select()
+                conditioning = prompt if parent.text is None else (
+                    f"{prompt}\n\nPrevious candidate:\n{parent.text}\n\nReturn a complete improved solution.")
+                before = (store.current_manifest(verify=False) or {}).get("generation")
+                answers = self._sample_group(conditioning, rollouts, max_tokens, cancel_event)
+                rewards = [score(answer) for answer in answers]
+                record = {"parent": parent.id, "selection": selection, "rewards": rewards, "updated": False}
+                if answers:
+                    record["inserted"] = archive.expand(parent.id, list(zip(answers, rewards)))
+                if len(answers) < rollouts:
+                    record["reason"] = "too few nonempty rollouts"
+                elif max(rewards) == min(rewards):
+                    record["reason"] = "uniform rollout rewards"
+                else:
+                    try:
+                        result = self._update_policy(conditioning, answers, rewards, mode="discover",
+                            steps=1, learning_rate=learning_rate, reward_weighting="entropic",
+                            entropic_kl_target=entropic_kl_target, cancel_event=cancel_event, policy_parent=before)
+                        record.update(updated=True, update=result)
+                    except LearningValidationError as exc:
+                        record["reason"] = str(exc)
+                history.append(record)
+                if progress:
+                    progress({"phase": "discover", "round": len(history), "parent": parent.id,
+                              "updated": record["updated"], "archive_size": len(archive.active)})
+            ranked = archive.ranked()
+            best = next((archive.states[i] for i in ranked if archive.states[i].text is not None), None)
+            updates = sum(r["updated"] for r in history)
+            return {"status": "completed" if best is not None and (best.reward > 0 or updates) else "skipped",
+                    "updates": updates, "rounds": history, "expansions": archive.expansions,
+                    "archive": [{**archive.states[i].report(), "text": archive.states[i].text} for i in ranked],
+                    "lineage": [state.report() for state in archive.states.values()],
+                    "best_state_id": best.id if best else None, "best_sample": best.text if best else None,
+                    "best_reward": best.reward if best else None, "reward_source": "task_verifier",
+                    "reward_weighting": "entropic", "entropic_kl_target": entropic_kl_target,
+                    "reference_kl_coefficient": 0.0, "exploration": exploration, "archive_capacity": archive_size,
+                    **({"runtime_reference_ms": reference_ms, "verifier_measurements": verify.results}
+                       if reference_ms is not None else {})}
