@@ -3,25 +3,28 @@
 A checkpoint and its retirement/rehearsal metadata become visible through one
 atomic pointer replacement. Readers verify identity and hashes before restoration.
 No framework or model is imported here. Stored replay is bounded by the caller;
-only the current and previous committed parameter generations are retained.
+current, previous and explicitly pinned generations are retained.
 """
 from __future__ import annotations
 
 import hashlib
-from contextlib import contextmanager
+from contextlib import ExitStack, closing, contextmanager
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import uuid
-from typing import Any
+from weakref import WeakValueDictionary
+
+from core.memory_scopes import as_scope
 
 
 SCHEMA_VERSION = 1
-_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS = WeakValueDictionary()
 _LOCKS_LOCK = threading.Lock()
 
 
@@ -200,31 +203,154 @@ def model_identity(model_path, model_info=None, *, adapter_format: str = "mlx", 
 
 
 class LearningStateStore:
-    def __init__(self, identity: dict, *, state_root=None):
+    def __init__(self, identity: dict, *, state_root=None, scope=None, require_new=False):
         self.identity = json.loads(_canonical(identity))
         self.identity_digest = identity_digest(self.identity)
-        self.directory = _state_root(state_root) / self.identity_digest
-        self.directory.mkdir(parents=True, exist_ok=True)
-        (self.directory / "generations").mkdir(exist_ok=True)
-        _fsync_directory(self.directory)
-        _fsync_directory(self.directory.parent)
+        self.root = _state_root(state_root)
+        self.scope = as_scope(scope)
+        if require_new and self.scope.kind != "request":
+            raise ValueError("Only transient requests use exclusive scope creation")
+        self.directory = self.root / self.identity_digest
+        self.bank_path = self.directory / "adapter_bank.sqlite3"
+        if self.scope.kind != "model":
+            self.directory = self.root / "scopes" / self.identity_digest / self.scope.kind / self.scope.scope_id
+        self.directory.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_directory = self.directory.parent if self.scope.kind == "request" else self.directory
         with _LOCKS_LOCK:
-            self.lock = _LOCKS.setdefault(str(self.directory), threading.RLock())
+            self.lock = _LOCKS.setdefault(str(self._lock_directory), threading.RLock())
+        with self.lock:
+            self._lock_directory.mkdir(parents=True, exist_ok=True)
+            with _process_commit_lock(self._lock_directory):
+                self.directory.mkdir(parents=True, exist_ok=not require_new)
+                (self.directory / "generations").mkdir(exist_ok=True)
+                if self.scope.kind == "request":
+                    marker = self.directory / "request.json"
+                    if not marker.exists():
+                        _atomic_json(marker, uuid.uuid4().hex)
+                    self._request_id = json.loads(marker.read_text(encoding="utf-8"))
+                _fsync_directory(self.directory)
+                _fsync_directory(self.directory.parent)
+
+    def for_scope(self, scope, *, require_new=False):
+        """Atomically reserve a fresh transient namespace when require_new is set."""
+        return type(self)(self.identity, state_root=self.root, scope=scope, require_new=require_new)
+
+    def _check_request(self):
+        if self.scope.kind == "request":
+            marker = self.directory / "request.json"
+            if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8")) != self._request_id:
+                raise RuntimeError("This request has ended")
+
+    def discard_request(self):
+        """After unloading, remove exactly this request, fencing stale transactions."""
+        if self.scope.kind != "request":
+            raise ValueError("Only request scope supports transient cleanup")
+        with self.lock, _process_commit_lock(self._lock_directory):
+            if not self.directory.exists():
+                return
+            self._check_request()
+            shutil.rmtree(self.directory)
+            _fsync_directory(self.directory.parent)
+
+    def seed_from(self, parent_store, *, cancel_event=None, expected_generation=...):
+        """Fork verified serving parameters into an empty transient request before loading it."""
+        if (self.scope.kind != "request" or parent_store.scope.kind == "request"
+                or self.identity != parent_store.identity or self.root != parent_store.root):
+            raise ValueError("A request may only inherit its own durable model/tokenizer identity")
+        with parent_store.locked_generation(cancel_event=cancel_event) as (source, pointer):
+            _check_cancelled(cancel_event)
+            source_generation = source["generation"] if source else None
+            if expected_generation is not ... and source_generation != expected_generation:
+                raise RuntimeError("The source generation changed before the request could inherit it")
+            if self.current_manifest() is not None:
+                raise RuntimeError("Request memory already has parameters")
+            if source is None:
+                return None
+            metadata = dict(source.get("metadata") or {})
+            metadata.pop("update_id", None)
+            metadata["expected_parent"] = None
+            metadata["request_seed"] = {"scope": parent_store.scope.record,
+                                        "generation": source["generation"],
+                                        "manifest_sha256": pointer["manifest_sha256"]}
+            base = parent_store.directory / "generations" / source["generation"]
+            with self.begin(metadata=metadata) as txn:
+                for relative, expected in source["artifacts"].items():
+                    original = _contained(base, relative)
+                    destination = _contained(txn.directory, relative)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    digest = hashlib.sha256()
+                    with original.open("rb") as reader, destination.open("xb") as writer:
+                        for block in iter(lambda: reader.read(1024 * 1024), b""):
+                            _check_cancelled(cancel_event)
+                            digest.update(block)
+                            writer.write(block)
+                    if digest.hexdigest() != expected["sha256"]:
+                        raise RuntimeError("Source checkpoint changed while seeding request memory")
+                memory = metadata.get("memory", {})
+                if memory.get("retirement_head"):
+                    self._inherit_receipts(parent_store, memory["retirement_head"], cancel_event)
+                if memory.get("replay_head"):
+                    from core.learning_recall import ReplayBank
+                    ReplayBank(self.directory).inherit(parent_store.directory, memory["replay_head"], cancel_event)
+                if memory.get("stream_head"):
+                    from core.learning_recall import StreamCursorBank
+                    StreamCursorBank(self.directory).inherit(parent_store.directory, memory["stream_head"], cancel_event)
+                return txn.commit(source["checkpoint"], cancel_event=cancel_event)
+
+    def _inherit_receipts(self, parent_store, head, cancel_event):
+        from core.context_memory import RetirementLedger
+        origin = parent_store.directory / "retirement.sqlite3"
+        if not origin.is_file():
+            raise RuntimeError("The source checkpoint has no retirement ledger")
+        ledger = RetirementLedger(self.directory)
+        with closing(sqlite3.connect(ledger.path)) as db, db:
+            db.execute("ATTACH DATABASE ? AS origin", (str(origin),))
+            db.execute("BEGIN IMMEDIATE")
+            _check_cancelled(cancel_event)
+            db.execute("""WITH RECURSIVE lineage(head,parent,turns) AS (
+                SELECT head,parent,turns FROM origin.receipts WHERE head=?
+                UNION ALL SELECT r.head,r.parent,r.turns FROM origin.receipts AS r
+                JOIN lineage AS l ON l.parent=r.head
+            ) INSERT OR IGNORE INTO main.receipts SELECT * FROM lineage""", (head,))
+            ledger._index(db, head)
+            _check_cancelled(cancel_event)
+        recall = parent_store.directory / "recall.sqlite3"
+        if recall.is_file():
+            from core.learning_recall import RecallBank
+            target = RecallBank(self.directory)
+            with closing(sqlite3.connect(target.path)) as db, db:
+                db.execute("ATTACH DATABASE ? AS origin", (str(recall),))
+                db.execute("""WITH RECURSIVE sets(head,parent,depth,checks) AS (
+                    SELECT head,parent,depth,checks FROM origin.probe_sets WHERE head=?
+                    UNION ALL SELECT r.head,r.parent,r.depth,r.checks FROM origin.probe_sets AS r
+                    JOIN sets AS s ON s.parent=r.head
+                ) INSERT OR IGNORE INTO main.probe_sets SELECT * FROM sets""", (head,))
+                _check_cancelled(cancel_event)
 
     def _read_pointer(self) -> dict | None:
+        self._check_request()
+        if self.scope.pin:
+            if self.bank_path.is_file():
+                with closing(sqlite3.connect(self.bank_path)) as db:
+                    row = db.execute("""SELECT manifest_sha256 FROM entries
+                                        WHERE pin=? AND document_scope=? AND generation=?""",
+                                     (self.scope.pin, self.scope.scope_id, self.scope.generation)).fetchone()
+                    if row:
+                        return {"generation": self.scope.generation, "manifest_sha256": row[0]}
+            raise RuntimeError("The selected document generation is no longer pinned")
         path = self.directory / "current.json"
         if not path.exists():
             return None
         try:
             pointer = json.loads(path.read_text(encoding="utf-8"))
             generation = pointer["generation"]
-            if not isinstance(generation, str) or not generation or Path(generation).name != generation:
+            if not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{32}", generation):
                 raise ValueError("Invalid learning generation")
             return pointer
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError("Learned-memory pointer is invalid; refusing to discard saved memory") from exc
 
-    def current_manifest(self, *, verify: bool = True) -> dict | None:
+    def current_manifest(self, *, verify: bool = True, cancel_event=None) -> dict | None:
         with self.lock:
             pointer = self._read_pointer()
             if pointer is None:
@@ -236,12 +362,37 @@ class LearningStateStore:
             manifest = json.loads(path.read_text(encoding="utf-8"))
             if manifest.get("identity_digest") != self.identity_digest or manifest.get("identity") != self.identity:
                 raise RuntimeError("Learned checkpoint belongs to a different model/tokenizer")
+            if manifest.get("generation") != pointer["generation"]:
+                raise RuntimeError("Learned checkpoint generation does not match its pointer")
+            self.verify_scope(manifest)
             if verify:
                 for relative, expected in manifest.get("artifacts", {}).items():
                     artifact = _contained(directory, relative)
-                    if not artifact.is_file() or artifact.stat().st_size != expected["size"] or file_sha256(artifact) != expected["sha256"]:
+                    if not artifact.is_file() or artifact.stat().st_size != expected["size"] or file_sha256(artifact, cancel_event=cancel_event) != expected["sha256"]:
                         raise RuntimeError("Learned checkpoint failed integrity verification: " + relative)
             return manifest
+
+    def verify_scope(self, manifest):
+        if manifest.get("scope") != self.scope.record:
+            if self.scope.kind != "model" or "scope" in manifest:
+                raise RuntimeError("Selected learned checkpoint belongs to a different memory scope")
+
+    @contextmanager
+    def locked_generation(self, *, cancel_event=None):
+        """Hold the commit/GC lock while verifying and registering a durable pin."""
+        with self.lock, _process_commit_lock(self._lock_directory):
+            yield self.current_manifest(cancel_event=cancel_event), self._read_pointer()
+
+    def _collect_generations(self, current, parent):
+        with ExitStack() as stack:
+            db = stack.enter_context(closing(sqlite3.connect(self.bank_path))) if self.bank_path.is_file() else None
+            for old in (self.directory / "generations").iterdir():
+                if old.name in {current, parent} or not (old / "manifest.json").is_file():
+                    continue
+                if db and db.execute("""SELECT 1 FROM entries WHERE document_scope=?
+                                         AND generation=? LIMIT 1""", (self.scope.scope_id, old.name)).fetchone():
+                    continue
+                shutil.rmtree(old)
 
     def current_checkpoint(self) -> str | None:
         manifest = self.current_manifest()
@@ -266,12 +417,14 @@ def _contained(directory: Path, relative) -> Path:
 class LearningTransaction:
     def __init__(self, store: LearningStateStore, *, update_id=None, metadata=None):
         self.store = store
+        if store.scope.pin:
+            raise RuntimeError("A selected document generation is read-only")
         if store.identity.get("source_verified") is False:
             raise RuntimeError("Learning requires locally verified model weights or a pinned source revision; reload the selected model before training")
         self.generation = uuid.uuid4().hex
         self.update_id = str(update_id or (metadata or {}).get("update_id") or uuid.uuid4().hex)
         self.directory = store.directory / "generations" / self.generation
-        with store.lock:
+        with store.lock, _process_commit_lock(store._lock_directory):
             pointer = store._read_pointer()
             self.parent = pointer["generation"] if pointer else None
             supplied = dict(metadata or {})
@@ -282,11 +435,11 @@ class LearningTransaction:
             inherited.pop("expected_parent", None)
             inherited.pop("update_id", None)
             self.metadata = {**inherited, **supplied}
-        self.directory.mkdir(parents=True, exist_ok=False)
+            self.directory.mkdir(parents=True, exist_ok=False)
         self.committed = False
 
     def commit(self, checkpoint: str, metadata=None, *, cancel_event=None) -> dict:
-        with self.store.lock, _process_commit_lock(self.store.directory):
+        with self.store.lock, _process_commit_lock(self.store._lock_directory):
             _check_cancelled(cancel_event)
             pointer = self.store._read_pointer()
             if (pointer["generation"] if pointer else None) != self.parent:
@@ -323,6 +476,8 @@ class LearningTransaction:
                 "checkpoint": Path(checkpoint).as_posix(), "artifacts": artifacts,
                 "metadata": {**self.metadata, **dict(metadata or {})},
             }
+            if self.store.scope.kind != "model":
+                manifest["scope"] = self.store.scope.record
             _atomic_json(self.directory / "manifest.json", manifest)
             directories = {self.directory, self.directory.parent}
             for relative in artifacts:
@@ -355,16 +510,16 @@ class LearningTransaction:
             # Garbage collection is not part of commit correctness. Keep the old
             # committed generation for recovery; never erase a concurrent stage.
             try:
-                for old in (self.store.directory / "generations").iterdir():
-                    if old.name not in {self.generation, self.parent} and (old / "manifest.json").is_file():
-                        shutil.rmtree(old)
-            except OSError:
+                self.store._collect_generations(self.generation, self.parent)
+            except (OSError, sqlite3.Error):
                 pass
             return manifest
 
     def abort(self) -> None:
         if not self.committed:
-            with self.store.lock, _process_commit_lock(self.store.directory):
+            with self.store.lock, _process_commit_lock(self.store._lock_directory):
+                if not self.directory.exists():
+                    return
                 pointer = self.store._read_pointer()
                 if pointer and pointer["generation"] == self.generation:
                     self.committed = True
@@ -379,17 +534,20 @@ class LearningTransaction:
             self.abort()
 
 
-def bind_learning_state(backend, *, model_path=None, model_info=None, state_root=None, adapter_format="mlx") -> LearningStateStore:
+def bind_learning_state(backend, *, model_path=None, model_info=None, state_root=None, adapter_format="mlx", scope=None) -> LearningStateStore:
     identity = model_identity(
         model_path or getattr(backend, "model_path", None) or getattr(backend, "hf_repo_id", None),
         model_info if model_info is not None else getattr(backend, "model_info", None),
         adapter_format=adapter_format, state_root=state_root,
     )
     existing = getattr(backend, "learning_state", None)
-    intended_directory = _state_root(state_root) / identity_digest(identity)
-    if isinstance(existing, LearningStateStore) and existing.identity == identity and existing.directory.resolve() == intended_directory.resolve():
+    scope = as_scope(scope if scope is not None else getattr(backend, "learning_scope", None))
+    if (isinstance(existing, LearningStateStore) and existing.identity == identity
+            and existing.scope == scope and existing.root == _state_root(state_root)):
+        existing._check_request()
         return existing
-    store = LearningStateStore(identity, state_root=state_root)
+    store = LearningStateStore(identity, state_root=state_root, scope=scope)
+    backend.learning_scope = scope
     backend.learning_state = store
     backend.learning_identity = store.identity
     return store
@@ -409,6 +567,7 @@ def validate_checkpoint(backend, path, *, allow_legacy=False) -> dict | None:
             manifest = json.loads(adjacent.read_text(encoding="utf-8"))
             if manifest.get("identity_digest") != store.identity_digest or manifest.get("identity") != store.identity:
                 raise RuntimeError("Selected managed checkpoint belongs to a different model or tokenizer")
+            store.verify_scope(manifest)
             raise RuntimeError("Selected managed checkpoint is not the current generation; use an explicit memory rollback before loading it")
     sidecar = Path(str(selected) + ".memory.json")
     if not sidecar.is_file():
@@ -418,6 +577,7 @@ def validate_checkpoint(backend, path, *, allow_legacy=False) -> dict | None:
     manifest = json.loads(sidecar.read_text(encoding="utf-8"))
     if manifest.get("identity_digest") != store.identity_digest or manifest.get("identity") != store.identity:
         raise RuntimeError("Selected adapter belongs to a different model or tokenizer")
+    store.verify_scope(manifest)
     if selected.is_file() and manifest.get("sha256") != file_sha256(selected):
         raise RuntimeError("Selected adapter failed integrity verification")
     return manifest
@@ -432,5 +592,7 @@ def write_checkpoint_manifest(backend, path, *, metadata=None) -> dict:
         raise ValueError("Standalone checkpoint export requires a regular file")
     manifest = {"schema": SCHEMA_VERSION, "identity": store.identity, "identity_digest": store.identity_digest,
                 "sha256": file_sha256(selected), "metadata": dict(metadata or {})}
+    if store.scope.kind != "model":
+        manifest["scope"] = store.scope.record
     _atomic_json(Path(str(selected) + ".memory.json"), manifest)
     return manifest

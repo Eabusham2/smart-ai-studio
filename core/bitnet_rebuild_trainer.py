@@ -341,6 +341,7 @@ class BitNetRebuildTrainer:
     def train(
         self, data, *, output_directory, previous_peft=None, learning_rate=1e-4,
         steps=3, max_length=256, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
+        objective='causal_lm', supervise_prompt=True, row_weights=None,
     ):
         """Build the complete candidate inside the caller's unpublished generation."""
         from core.torch_context_learning import check_cancelled, update_lora, verify_saved_lora
@@ -358,6 +359,7 @@ class BitNetRebuildTrainer:
                 model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
                 fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
                 previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
+                objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
             )
             check_cancelled(cancel_event)
             model.save_pretrained(peft_path, safe_serialization=True, save_embedding_layers=False)

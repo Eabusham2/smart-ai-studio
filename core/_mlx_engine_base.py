@@ -286,6 +286,10 @@ class MLXReasoningBackend:
         *,
         max_window_tokens=128,
         supervise_prompt=True,
+        objective="causal_lm",
+        row_weights=None,
+        context_text=None,
+        max_context_tokens=2048,
         anchor_texts=None,
         retention_data=None,
         retention_tolerance=0.1,
@@ -299,14 +303,12 @@ class MLXReasoningBackend:
             raise RuntimeError("MLX training requires the currently loaded real model and tokenizer")
 
         import mlx.core as mx
-        import mlx.nn as nn
         import mlx.optimizers as optim
-        from mlx.utils import tree_flatten, tree_unflatten
-        from core.learning_data import iter_training_windows
+        from mlx.utils import tree_unflatten
         from core.mlx_adapter_persistence import persist_candidate, resume_optimizer
         from core.mlx_learning import (
             bounded_tokens, cancel_if_requested, check_finite, ensure_adapters,
-            flat_trainables, loss_for_tokens, score_rows, window_arrays,
+            flat_trainables, optimize_windows, score_rows,
         )
 
         if (not math.isfinite(learning_rate) or learning_rate <= 0
@@ -316,6 +318,17 @@ class MLXReasoningBackend:
             raise ValueError("Invalid retention loss tolerance")
         max_tokens = bounded_tokens(self, max_window_tokens)
         cancel_if_requested(cancel_event)
+        if objective not in {"causal_lm", "reward_policy", "query_only"}:
+            raise ValueError("Unknown test-time training objective")
+        if objective != "causal_lm" and (int(steps) > 8 or row_weights is not None):
+            raise ValueError("Policy and query objectives use their own weights and at most eight steps")
+        if objective == "reward_policy":
+            from core.reward_adaptation import reward_advantages
+            reward_advantages(data)
+        rows = tuple(data)
+        if objective != "causal_lm" and validation_callback is None:
+            from core.torch_context_learning import default_validation
+            validation_callback = default_validation(self, rows, objective=objective)
         installed = []
         old_adapters = self.adapters
         rollback_params = {}
@@ -354,8 +367,8 @@ class MLXReasoningBackend:
                     raise ValueError("MLX Fisher diagonal contains negative entries")
                 fisher_tensors = sum(bool(mx.any(value > 0).item()) for value in fisher_matrix.values())
 
-            def training_loss(model, tokens, targets, mask):
-                loss = loss_for_tokens(model, tokens, targets, mask)
+            def penalty(model):
+                loss = 0.0
                 if fisher_tensors:
                     for key, weight in flat_trainables(model).items():
                         diff = weight.astype(mx.float32) - reference[key].astype(mx.float32)
@@ -365,46 +378,13 @@ class MLXReasoningBackend:
             retention_before = None
             if retention_data:
                 retention_before = score_rows(self.model, self.tokenizer, retention_data, max_tokens, cancel_event)
-            get_grad = nn.value_and_grad(self.model, training_loss)
-            # Weight decay alone must never satisfy the measured learning test.
             optimizer = optim.AdamW(learning_rate=learning_rate, weight_decay=0.0)
             resumed_optimizer = resume_optimizer(self, optimizer, txn, learning_rate)
-            window_count = 0
-            token_count = 0
-            observed_gradient = False
-            rows = tuple(data)
-            for _ in range(int(steps)):
-                visited = set()
-                for window in iter_training_windows(
-                    self.tokenizer, rows, max_tokens=max_tokens, supervise_prompt=supervise_prompt
-                ):
-                    cancel_if_requested(cancel_event)
-                    if not window.supervised_tokens:
-                        continue
-                    loss, grads = get_grad(self.model, *window_arrays(window.input_ids, window.labels))
-                    flat_grads = dict(tree_flatten(grads))
-                    if flat_grads.keys() != params.keys():
-                        raise RuntimeError("MLX gradients do not match active adapter keys")
-                    check_finite([loss, *flat_grads.values()], "loss or gradient")
-                    if not observed_gradient:
-                        observed_gradient = bool(mx.any(mx.stack([
-                            mx.any(g != 0) for g in flat_grads.values()
-                        ])).item())
-                    optimizer.update(self.model, grads)
-                    current = flat_trainables(self.model)
-                    state = dict(tree_flatten(optimizer.state))
-                    check_finite([*current.values(), *state.values()], "updated adapter or optimizer weights")
-                    visited.add(window.row_index)
-                    window_count += 1
-                    token_count += window.supervised_tokens
-                    del grads, flat_grads, loss, current, state
-                if len(visited) != len(rows):
-                    raise ValueError("An MLX learning row contains no supervised causal targets")
-
-            if window_count == 0:
-                raise RuntimeError("MLX training found no supervised causal targets")
-            if not observed_gradient:
-                raise RuntimeError("MLX candidate received no nonzero gradients from the learning rows")
+            details, window_count, token_count = optimize_windows(
+                self, rows, objective=objective, row_weights=row_weights, supervise_prompt=supervise_prompt,
+                optimizer=optimizer, penalty=penalty, steps=int(steps), max_tokens=max_tokens,
+                context_text=context_text, max_context_tokens=min(max_context_tokens,
+                    int(getattr(self, "context_budget_tokens", 0) or max_context_tokens)), cancel_event=cancel_event)
             candidate = flat_trainables(self.model)
             squared = []
             changed = []
@@ -418,6 +398,7 @@ class MLXReasoningBackend:
                 raise RuntimeError("MLX training completed but measured zero parameter change or non-finite drift")
             head_only = set(candidate) == {"lm_head.lora_a", "lm_head.lora_b"}
             metrics = {
+                **details,
                 "adapter_delta_l2": drift,
                 "trainable_parameters_touched": touched,
                 "trained_windows": window_count,

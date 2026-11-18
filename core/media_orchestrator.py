@@ -253,6 +253,8 @@ class MediaController:
         checkpoint = None
         restore_error = None
         original_adapter = getattr(engine, "lora_adapter_path", None)
+        from copy import deepcopy
+        original_load_spec = deepcopy(getattr(engine, "_memory_load_spec", None))
         original_input_modalities = set(
             getattr(engine, "active_input_modalities", {"text"}) or {"text"}
         )
@@ -260,6 +262,7 @@ class MediaController:
         model_name = getattr(engine, "active_model_name", None)
         model_path = None
         backend_name = getattr(engine, "active_backend", None)
+        scoped_checkpoint = None
         if not self._room(needed_gb) and was_loaded:
             backend = getattr(engine, "mlx_backend", None) if backend_name == "mlx" else getattr(engine, "gguf_backend", None)
             if backend_name not in ("mlx", "gguf") or backend is None:
@@ -270,6 +273,8 @@ class MediaController:
             consolidator = getattr(engine, "awake_consolidator", None)
             if getattr(consolidator, "is_consolidating", False):
                 raise RuntimeError("Text consolidation is active; finish that update before media generation")
+            state = getattr(backend, "learning_state", None)
+            scoped_checkpoint = state.current_manifest() if state is not None else None
         with self._pause_guard(engine, backend):
             try:
                 if backend is not None:
@@ -293,7 +298,7 @@ class MediaController:
                         # Even a read/compare can evaluate a lazy tensor. Keep
                         # all GPU work on the model's original owner thread.
                         checkpoint = backend.run_on_mlx_owner(snapshot_mlx_adapters)
-                        if checkpoint is not None:
+                        if checkpoint is not None and scoped_checkpoint is None:
                             engine.lora_adapter_path = str(checkpoint)
                     self._notify("Temporarily pausing text to make RAM available for media; conversation history is retained.")
                     watchdog = getattr(self.app, "watchdog", None)
@@ -317,7 +322,8 @@ class MediaController:
                         except Exception:
                             pass
                     try:
-                        result = engine.load_model(model_name, model_path=model_path, backend=backend_name)
+                        result = (engine.load_model(**original_load_spec) if original_load_spec else
+                                  engine.load_model(model_name, model_path=model_path, backend=backend_name))
                         if result.get("status") != "loaded":
                             raise RuntimeError(str(result.get("error") or result))
                         self.app.is_model_loaded = True
@@ -335,7 +341,8 @@ class MediaController:
                                            for n, w in expected.items()):
                                     raise RuntimeError("Restored learned text tensors do not match the saved snapshot")
                             resumed.run_on_mlx_owner(verify_restored_adapters)
-                            resumed.adapter_path = original_adapter
+                            if scoped_checkpoint is None:
+                                resumed.adapter_path = original_adapter
                         self._notify("Text model restored; continuing with the same conversation.")
                     except Exception as exc:
                         try:

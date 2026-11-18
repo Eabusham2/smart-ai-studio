@@ -144,3 +144,19 @@ def test_native_source_uses_requested_revision_for_first_fetch(tmp_path, monkeyp
     assert engine.MLXReasoningBackend._resolve_mlx_source(backend) == str(exact)
     assert downloads == [{"repo_id": "fixture/model", "revision": "3" * 40,
                           "allow_patterns": ["config.json", "w.safetensors"]}]
+
+
+@pytest.mark.parametrize("package", [False, True])
+def test_scoped_mlx_load_rejects_external_adapter_before_loading_base(restore_fixture, package):
+    from pathlib import Path
+    from core.memory_scopes import LearningScope
+
+    engine, _, _ = restore_fixture
+    if package:
+        path = Path(engine.adapter_path).with_suffix("")
+        path.mkdir()
+        engine.adapter_path = str(path)
+    engine.learning_scope = LearningScope("session", "one")
+    with pytest.raises(RuntimeError, match="own committed adapter"):
+        engine.load_model()
+    assert not hasattr(engine, "original_saw_adapter_path")

@@ -228,3 +228,117 @@ def fisher_diagonal(backend, texts, max_tokens, cancel_event=None):
     fisher = {k: mx.stop_gradient(v / total) for k, v in fisher.items()}
     check_finite(fisher.values(), "Fisher diagonal")
     return fisher
+
+
+def optimize_windows(backend, rows, *, objective, row_weights, supervise_prompt, optimizer,
+                     penalty, steps, max_tokens, context_text, max_context_tokens, cancel_event):
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx.utils import tree_flatten, tree_unflatten
+    from core.learning_data import iter_training_windows
+    from core.query_adaptation import is_query_adapter, mlx_query_loss
+    from core.reward_adaptation import causal_row_weights, reward_group
+
+    model = backend.model
+    inactive = []
+    observed_gradient = False
+    windows = tokens = updates = 0
+    details = {"objective": objective}
+    # Initialize the full moment tree before restricting trainable parameters.
+    # Existing non-query factors and their moments survive a query-only update.
+    optimizer.init(model.trainable_parameters())
+
+    def apply(grads):
+        nonlocal observed_gradient, updates
+        gradients = dict(tree_flatten(grads))
+        if gradients.keys() != flat_trainables(model).keys():
+            raise RuntimeError("MLX gradients do not match the selected adapter factors")
+        check_finite(gradients.values(), "gradients")
+        norm = mx.sqrt(sum(mx.sum(mx.square(g.astype(mx.float32))) for g in gradients.values()))
+        check_finite([norm], "gradient norm")
+        nonzero = bool(norm.item())
+        observed_gradient |= nonzero
+        if objective != "causal_lm" and not nonzero:
+            if objective == "reward_policy" and updates:
+                return False
+            raise RuntimeError("Test-time objective supplied no gradient to the selected adapter")
+        if objective != "causal_lm":
+            factor = 1.0 / mx.maximum(norm, 1.0)
+            grads = tree_unflatten([(k, (g * factor).astype(g.dtype)) for k, g in gradients.items()])
+        optimizer.update(model, grads)
+        check_finite([*flat_trainables(model).values(), *(v for _, v in tree_flatten(optimizer.state))],
+                     "updated adapter or optimizer weights")
+        updates += 1
+        return True
+
+    if objective == "query_only":
+        if not any(is_query_adapter(k) for k in flat_trainables(model)):
+            raise ValueError("The loaded MLX adapter exposes no trainable query projection")
+        if getattr(backend, "_vlm_runtime", None) in {"mlx_repo_vlm", "jang_vlm"}:
+            raise ValueError("The packed MLX output-head bridge exposes no query gradients")
+        span_loss, spans, length = mlx_query_loss(model, backend.tokenizer, context_text,
+                                                 max_context_tokens, max_tokens, steps)
+        try:
+            for path, module in model.named_modules():
+                if hasattr(module, "lora_a") and hasattr(module, "lora_b") and not is_query_adapter(path):
+                    module.freeze(keys=["lora_a", "lora_b"], recurse=False)
+                    inactive.append(module)
+            grad = nn.value_and_grad(model, lambda m, start, stop: span_loss(m, start, stop) + penalty(m))
+            for start, stop in spans:
+                cancel_if_requested(cancel_event)
+                loss, grads = grad(model, start, stop)
+                check_finite([loss], "frozen-cache query loss")
+                apply(grads)
+                windows += 1
+                tokens += stop - start
+        finally:
+            for module in inactive:
+                module.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
+        details.update(kv_prefills=1, cached_context_tokens=length, updated_projection="q_proj", query_spans=[list(span) for span in spans])
+    elif objective == "reward_policy":
+        group = reward_group(backend.tokenizer, rows, max_tokens)
+        arrays = [window_arrays(w.input_ids, w.labels) for w in group.windows]
+        references = [float(loss_for_tokens(model, *inputs).item()) * w.supervised_tokens
+                      for inputs, w in zip(arrays, group.windows)]
+
+        def policy_loss(model, inputs, count, advantage, previous):
+            nll = loss_for_tokens(model, *inputs) * count
+            ratio = mx.exp(mx.clip(previous - nll, -20., 20.))
+            surrogate = mx.minimum(ratio * advantage, mx.clip(ratio, 0.8, 1.2) * advantage)
+            return -surrogate / group.target_count + penalty(model) / len(rows)
+
+        grad = nn.value_and_grad(model, policy_loss)
+        for _ in range(steps):
+            summed = {}
+            for inputs, w, advantage, previous in zip(arrays, group.windows, group.advantages, references):
+                cancel_if_requested(cancel_event)
+                loss, grads = grad(model, inputs, w.supervised_tokens, advantage, previous)
+                check_finite([loss], "policy loss")
+                for key, value in tree_flatten(grads):
+                    summed[key] = value if key not in summed else summed[key] + value
+                mx.eval(*summed.values())
+            if not apply(tree_unflatten(list(summed.items()))):
+                break
+        windows = len(rows) * updates
+        tokens = group.target_count * updates
+        details.update(reward_min=min(group.rewards), reward_max=max(group.rewards),
+                       group_size=len(rows), supervise_prompt=False,
+                       sampled_token_ids=all("rollout_completion_ids" in row for row in rows))
+    else:
+        weights = causal_row_weights(rows, row_weights)
+        grad = nn.value_and_grad(model, lambda m, inputs, weight: weight * loss_for_tokens(m, *inputs) + penalty(m))
+        for _ in range(steps):
+            for w in iter_training_windows(backend.tokenizer, rows, max_tokens=max_tokens, supervise_prompt=supervise_prompt):
+                cancel_if_requested(cancel_event)
+                weight = weights[w.row_index]
+                if weight:
+                    loss, grads = grad(model, window_arrays(w.input_ids, w.labels), weight)
+                    check_finite([loss], "causal loss")
+                    apply(grads)
+                    windows += 1
+                    tokens += w.supervised_tokens
+        details["supervise_prompt"] = bool(supervise_prompt)
+    if not observed_gradient:
+        raise RuntimeError("MLX candidate received no nonzero gradients from the learning rows")
+    details["optimizer_steps"] = updates
+    return details, windows, tokens

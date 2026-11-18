@@ -135,7 +135,9 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
 
 ## Persistent chat memory
 
-At 80% of Context, eligible text backends start learning from old, complete exchanges. Sleep can also start an update on the loaded model. A validated checkpoint retires the learned turns from model input and keeps the full transcript visible. Memory Explorer shows the checkpoint and supports importing an older MLX adapter on its original base. [Backend support, storage and recall evaluation](docs/parametric-memory.md)
+At 80% of Context, eligible text backends start learning from old, complete exchanges. Sleep can also start an update on the loaded model. Parameter validation and generated recall checks gate retirement from model input; the complete transcript stays in a paged archive. Memory Explorer shows checkpoints, scoped memory, and online learning controls. [Backend support, storage and recall evaluation](docs/parametric-memory.md)
+
+**Online learning** adds resumable document ingestion, evidence selection, few-shot practice, fixed-KV query adaptation on supported models, verifier/consensus reward updates, and a searchable bank of document adapters. Task adaptation defaults to a temporary request copy; model, session and project scopes support persistent memory. Hardware and runtime capabilities are checked before updates. [Workflows and CLI](docs/test-time-learning.md) · [Research coverage and exclusions](docs/ttt-research-coverage.md)
 
 ## 🤖 Model Matrix & Architectures
 

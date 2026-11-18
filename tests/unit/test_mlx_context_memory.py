@@ -83,7 +83,8 @@ def cpu_protocol(monkeypatch):
     """NumPy reference derivatives and an immutable optimizer exercise backend operations on Linux."""
     mx = ModuleType("mlx.core")
     mx.float32 = np.float32
-    for name in ("square", "all", "any", "stack", "isfinite", "zeros", "sum", "where", "array", "array_equal"):
+    for name in ("square", "all", "any", "stack", "isfinite", "zeros", "sum", "where", "array", "array_equal",
+                 "sqrt", "exp", "clip", "minimum", "maximum"):
         setattr(mx, name, getattr(np, name))
     mx.random = SimpleNamespace(uniform=lambda lo, hi, shape: np.random.default_rng(7).uniform(lo, hi, shape).astype("float32"))
     mx.stop_gradient = lambda a: a
@@ -272,6 +273,18 @@ def test_native_mlx_packed_no_vjp_and_restart(tmp_path, runtime):
     assert restored.score_learning_probe("abc", "de") == pytest.approx(probe)
     restored.train_mini_batch({}, row, max_window_tokens=5, steps=1)
     assert restored.last_learning_metrics["optimizer_resumed"]
+    rollouts = [{"prompt": "ab", "completion": text, "rollout_prompt_ids": [1, 1],
+                 "rollout_completion_ids": [idx], "reward": reward}
+                for text, idx, reward in (("a", 2, 1.), ("b", 3, 0.))]
+    before = restored.model.lm_head.linear.packed
+    _, policy_drift = restored.train_mini_batch({}, rollouts, max_window_tokens=5, steps=1,
+                                                objective="reward_policy", validation_callback=lambda _: True)
+    assert policy_drift > 0 and restored.last_learning_metrics["objective"] == "reward_policy"
+    assert bool(mx.array_equal(before, restored.model.lm_head.linear.packed).item())
+    with pytest.raises(ValueError, match="query projection|output-head"):
+        restored.train_mini_batch({}, row, objective="query_only", context_text="abc",
+                                  max_window_tokens=5, steps=1, validation_callback=lambda _: True)
+
 
 
 def test_legacy_projection_layout_reuses_and_restores_only_saved_targets(cpu_protocol, monkeypatch):
@@ -419,3 +432,32 @@ def test_interrupt_after_commit_keeps_live_weights_generation_and_ewc_metrics(tm
     assert engine.last_learning_metrics["ewc_used"] and engine.last_learning_metrics["fisher_tensors"] > 0
     for key, value in cpu_protocol.load(checkpoint).items():
         np.testing.assert_array_equal(value, engine.model.trainable_parameters()[key])
+
+
+@pytest.mark.parametrize("runtime", ["mlx_repo_vlm", "jang_vlm"])
+def test_packed_reward_updates_real_head_and_rejects_query(runtime, cpu_protocol, tmp_path):
+    engine = MLXReasoningBackend("fixture/" + runtime)
+    engine.model, engine.tokenizer = Model(), Tokenizer()
+    engine.is_mlx_available = True
+    engine._vlm_runtime = runtime
+    store = bind_learning_state(engine, model_info={"resolved_revision": "c" * 40}, state_root=tmp_path)
+    rows = [{"prompt": "c", "completion": answer, "rollout_prompt_ids": [1, 1], "rollout_completion_ids": [idx],
+             "reward": reward} for idx, answer, reward in [(2, "a", 1.0), (3, "b", 0.0)]]
+    packed = engine.model.lm_head.packed.copy()
+    before = engine.model(np.array([[1, 1]])).logits[0, -1]
+    weights, delta = engine.train_mini_batch({}, rows, objective="reward_policy", steps=1, learning_rate=.05,
+                                              max_window_tokens=8, validation_callback=lambda _: True)
+    after = engine.model(np.array([[1, 1]])).logits[0, -1]
+    assert delta > 0 and after[2] > before[2] and after[3] < before[3]
+    np.testing.assert_array_equal(packed, engine.model.lm_head.linear.packed)
+    receipt = store.current_manifest()
+    assert receipt["metadata"]["metrics"]["objective"] == "reward_policy"
+    with pytest.raises(ValueError, match="query projection|output-head"):
+        engine.train_mini_batch({}, rows, steps=1, objective="query_only", context_text="abcde",
+                                validation_callback=lambda _: True)
+    with pytest.raises(ValueError, match="Uniform"):
+        engine.train_mini_batch({}, [dict(row, reward=0.) for row in rows], objective="reward_policy",
+                                steps=1, validation_callback=lambda _: True)
+    assert store.current_manifest() == receipt
+    for key, value in weights.items():
+        np.testing.assert_array_equal(engine.adapters[key], value)

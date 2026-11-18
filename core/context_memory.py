@@ -10,8 +10,10 @@ import hashlib
 import json
 import sqlite3
 import threading
-from contextlib import closing
-from itertools import chain, islice
+from collections.abc import Sequence
+from contextlib import closing, contextmanager
+from itertools import chain, islice, zip_longest
+from operator import index as integer_index
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,8 +29,8 @@ class TranscriptTurn(dict):
         return type(self)(self, self.turn_id)
 
 
-class ChatArchive(list):
-    """Append-only visible transcript for a GUI model tab, resumable on restart."""
+class ChatArchive(Sequence):
+    """SQLite-backed visible transcript; only the active model projection is cached."""
 
     def __init__(self, db_path, tab):
         self.path = db_path
@@ -40,40 +42,134 @@ class ChatArchive(list):
                 seq INTEGER PRIMARY KEY, tab TEXT NOT NULL, turn_id TEXT UNIQUE NOT NULL,
                 message TEXT NOT NULL)""")
             db.execute("CREATE INDEX IF NOT EXISTS chat_archive_tab ON chat_archive(tab, seq)")
-            rows = db.execute("SELECT turn_id, message FROM chat_archive WHERE tab=? ORDER BY seq", (tab,))
-            super().__init__(TranscriptTurn(json.loads(message), key) for key, message in rows)
+            db.execute("""CREATE TABLE IF NOT EXISTS chat_epochs (
+                tab TEXT PRIMARY KEY, epoch INTEGER NOT NULL)""")
+            db.execute("INSERT OR IGNORE INTO chat_epochs VALUES (?,0)", (tab,))
+
+    @staticmethod
+    def _decode(row):
+        return TranscriptTurn(json.loads(row[1]), row[0])
+
+    def __len__(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            return db.execute("SELECT count(*) FROM chat_archive WHERE tab=?", (self.tab,)).fetchone()[0]
+
+    def __bool__(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            return db.execute("SELECT 1 FROM chat_archive WHERE tab=? LIMIT 1", (self.tab,)).fetchone() is not None
+
+    def iter_pages(self, page_size=128):
+        """Stream one consistent SQLite read snapshot in transcript order."""
+        if not 1 <= integer_index(page_size) <= 1024:
+            raise ValueError("page_size must be between 1 and 1024")
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute("SELECT turn_id,message FROM chat_archive WHERE tab=? ORDER BY seq", (self.tab,))
+            while page := rows.fetchmany(page_size):
+                yield [self._decode(row) for row in page]
+
+    def __iter__(self):
+        return chain.from_iterable(self.iter_pages())
+
+    def __getitem__(self, key):
+        with closing(sqlite3.connect(self.path)) as db:
+            if not isinstance(key, slice):
+                index = integer_index(key)
+                order, offset = ("ASC", index) if index >= 0 else ("DESC", -index - 1)
+                if offset < 2**63:
+                    row = db.execute(f"""SELECT turn_id,message FROM chat_archive WHERE tab=?
+                                         ORDER BY seq {order} LIMIT 1 OFFSET ?""", (self.tab, offset)).fetchone()
+                    if row is not None:
+                        return self._decode(row)
+                raise IndexError("Transcript index out of range")
+            db.execute("BEGIN")
+            count = db.execute("SELECT count(*) FROM chat_archive WHERE tab=?", (self.tab,)).fetchone()[0]
+            start, stop, step = key.indices(count)
+            size = len(range(start, stop, step))
+            if not size:
+                return []
+            last = start + (size - 1) * step
+            low, high = min(start, last), max(start, last)
+            # Start at whichever end of the indexed tab is closer to this page.
+            backwards = count - 1 - high < low
+            order, offset = ("DESC", count - 1 - high) if backwards else ("ASC", low)
+            rows = db.execute(f"""SELECT turn_id,message FROM chat_archive WHERE tab=?
+                                  ORDER BY seq {order} LIMIT ? OFFSET ?""", (self.tab, high - low + 1, offset))
+            page = [self._decode(row) for i, row in enumerate(rows) if i % abs(step) == 0]
+            if backwards != (step < 0):
+                page.reverse()
+            return page
+
+    def __eq__(self, other):
+        if self is other:
+            return True
+        if not isinstance(other, (ChatArchive, list)):
+            return NotImplemented
+        return all(a == b for a, b in zip_longest(self, other, fillvalue=object()))
 
     def append(self, turn):
-        with self._lock:
-            turn_id = uuid4().hex
-            with closing(sqlite3.connect(self.path)) as db, db:
-                db.execute("INSERT INTO chat_archive(tab,turn_id,message) VALUES (?,?,?)",
-                           (self.tab, turn_id, json.dumps(turn, ensure_ascii=False)))
-            super().append(TranscriptTurn(turn, turn_id))
+        with self._lock, closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("INSERT INTO chat_archive(tab,turn_id,message) VALUES (?,?,?)",
+                       (self.tab, uuid4().hex, json.dumps(turn, ensure_ascii=False)))
 
     def clear(self):
-        with self._lock:
-            with closing(sqlite3.connect(self.path)) as db, db:
-                db.execute("DELETE FROM chat_archive WHERE tab=?", (self.tab,))
-            super().clear()
+        with self._lock, closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DELETE FROM chat_archive WHERE tab=?", (self.tab,))
+            db.execute("UPDATE chat_epochs SET epoch=epoch+1 WHERE tab=?", (self.tab,))
             self._projection = None
 
     def active_view(self, ledger, head):
-        """Revisit only active and newly appended turns while the model lineage advances."""
+        """Decode unretired rows only, even on restart or checkpoint rollback."""
         with self._lock:
             cached = self._projection
-            source = iter(self)
             if cached and cached[0] == ledger.path:
-                _, old_head, length, active = cached
-                if old_head == head:
-                    result = active + self[length:]
-                    self._projection = (ledger.path, head, len(self), result)
-                    return list(result)
-                if ledger.descends_from(head, old_head):
-                    source = chain(active, self[length:])
-            result = ledger.active_turns(source, head)
-            self._projection = (ledger.path, head, len(self), result)
-            return list(result)
+                _, old_head, old_epoch, last_seq, active = cached
+                with closing(sqlite3.connect(self.path)) as db:
+                    db.execute("BEGIN")
+                    epoch, newest = self._watermark(db)
+                    if old_epoch == epoch and (old_head == head or ledger.descends_from(head, old_head)):
+                        rows = db.execute("""SELECT turn_id,message FROM chat_archive
+                                             WHERE tab=? AND seq>? ORDER BY seq""", (self.tab, last_seq))
+                        appended = map(self._decode, rows)
+                        if old_head == head:
+                            result = active + list(appended)
+                        else:
+                            result = ledger.active_turns(chain(active, appended), head)
+                        self._projection = (ledger.path, head, epoch, newest, result)
+                        return [turn.copy() for turn in result]
+
+            with self._active_rows(ledger, head) as (db, rows):
+                epoch, newest = self._watermark(db, schema="transcript.")
+                result = [self._decode(row) for row in rows]
+            self._projection = (ledger.path, head, epoch, newest, result)
+            return [turn.copy() for turn in result]
+
+    @contextmanager
+    def _active_rows(self, ledger, head):
+        with closing(sqlite3.connect(ledger.path)) as db, db:
+            db.execute("ATTACH DATABASE ? AS transcript", (str(self.path),))
+            db.execute("BEGIN IMMEDIATE")
+            ledger._index(db, head)
+            rows = db.execute("""SELECT a.turn_id,a.message FROM transcript.chat_archive AS a
+                                 WHERE a.tab=? AND NOT EXISTS
+                                 (SELECT 1 FROM retired_turns AS r WHERE r.turn_id=a.turn_id)
+                                 ORDER BY a.seq""", (self.tab,))
+            yield db, rows
+
+    def iter_active_pages(self, ledger, head, page_size=128):
+        """Stream unretired rows without allocating a complete active projection."""
+        if not head:
+            yield from self.iter_pages(page_size)
+            return
+        if not 1 <= integer_index(page_size) <= 1024:
+            raise ValueError("page_size must be between 1 and 1024")
+        with self._active_rows(ledger, head) as (_, rows):
+            while page := rows.fetchmany(page_size):
+                yield [self._decode(row) for row in page]
+
+    def _watermark(self, db, schema=""):
+        return db.execute(f"""SELECT epoch,(SELECT coalesce(max(seq),0) FROM {schema}chat_archive
+                              WHERE tab=?) FROM {schema}chat_epochs WHERE tab=?""",
+                          (self.tab, self.tab)).fetchone()
 
 
 def working_history(history, session_id=""):

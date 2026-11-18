@@ -26,25 +26,37 @@ def validate_candidate(backend, callback, cancel_event):
     return evidence
 
 
-def default_validation(backend, data):
+def default_validation(backend, data, *, objective='causal_lm'):
     """Acceptance for standalone backend callers without a consolidator."""
     from memory.anchor_dataset import get_anchor_dataset
     from core.online_consolidator import RETENTION_TOLERANCE
     if not data:
         raise ValueError("No training examples were supplied")
-    first = data[0]
-    witness = (str(first["prompt"])[-180:], str(first["completion"])[:48])
+    if objective == "reward_policy":
+        from core.reward_adaptation import reward_advantages
+        _, weights = reward_advantages(data)
+        probes = [(str(row["prompt"]), str(row["completion"])) for row in data]
+    else:
+        first = data[0]
+        weights = (1.0,)
+        probes = [(str(first["prompt"])[-180:], str(first["completion"])[:48])]
     heldout = get_anchor_dataset()[2]
     guard = (heldout["prompt"], heldout["completion"])
-    baseline, retained = (backend.score_learning_probe(*pair) for pair in (witness, guard))
-    if not all(math.isfinite(score) for score in (baseline, retained)):
+
+    def score(candidate):
+        losses = [candidate.score_learning_probe(*pair) for pair in probes]
+        return math.fsum(w * loss for w, loss in zip(weights, losses)) / len(losses)
+
+    baseline, retained = score(backend), backend.score_learning_probe(*guard)
+    if not all(math.isfinite(value) for value in (baseline, retained)):
         raise RuntimeError("Parameter-learning baseline is non-finite")
 
     def validate(candidate):
-        after, guard_after = (candidate.score_learning_probe(*pair) for pair in (witness, guard))
+        after, guard_after = score(candidate), candidate.score_learning_probe(*guard)
         accepted = (math.isfinite(after) and math.isfinite(guard_after)
                     and after < baseline and guard_after <= retained + RETENTION_TOLERANCE)
         return {"accepted": accepted, "probe_nll_before": baseline, "probe_nll_after": after,
+                "score_kind": "reward_weighted_nll" if objective == "reward_policy" else "completion_nll",
                 "retention_nll_before": retained, "retention_nll_after": guard_after}
     return validate
 
@@ -184,17 +196,21 @@ def restore_adamw(optimizer, named, directory):
 
 
 def save_adamw(optimizer, named, directory):
+    import torch
     from safetensors.torch import save_file
     tensors = {name + "/" + key: tensor.detach().cpu().contiguous()
                for name, p in named.items() for key, tensor in optimizer.state.get(p, {}).items()}
     if not tensors:
         raise RuntimeError("Optimizer contains no learned moments")
+    if any(not torch.isfinite(value).all().item() for value in tensors.values()):
+        raise RuntimeError("Optimizer contains non-finite moments")
     save_file(tensors, Path(directory) / _OPTIMIZER_FILE, metadata={"schema": _OPTIMIZER_SCHEMA})
 
 
 def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
                 fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, before=None, anchor_texts=None,
-                previous_directory=None, output_directory=None):
+                previous_directory=None, output_directory=None, objective='causal_lm',
+                supervise_prompt=True, row_weights=None, context_text=None, max_context_tokens=2048):
     """Optimize each source window, measure actual drift, leave the base frozen.
 
     Caller owns the live-tensor rollback snapshot for an in-process model. The
@@ -206,14 +222,31 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
     rate, strength = float(learning_rate), float(lambda_ewc)
     if not math.isfinite(rate) or rate <= 0 or not math.isfinite(strength) or strength < 0 or int(steps) < 1:
         raise ValueError("Invalid learning rate, step count or EWC strength")
-    named = lora_parameters(model)
+    from core.query_adaptation import is_query_adapter, torch_query_loss
+    from core.reward_adaptation import causal_row_weights, reward_group
+
+    rows = tuple(data)
+    if objective not in {"causal_lm", "reward_policy", "query_only"}:
+        raise ValueError("Unknown test-time training objective")
+    if not 2 <= int(max_tokens) <= 512:
+        raise ValueError("Training window must be 2–512 tokens")
+    if objective != "causal_lm" and (int(steps) > 8 or row_weights is not None):
+        raise ValueError("Policy and query objectives use their own weights and at most eight steps")
+    all_named = lora_parameters(model)
+    named = {k: v for k, v in all_named.items() if objective != "query_only" or is_query_adapter(k)}
+    if not named:
+        raise ValueError("The selected model has no trainable query projection adapters")
     limit = window_limit(model, max_tokens)
+    weights = causal_row_weights(rows, row_weights) if objective == "causal_lm" else None
+    group = reward_group(tokenizer, rows, limit) if objective == "reward_policy" else None
     if before is None:
         before = {k: v.detach().cpu().clone() for k, v in named.items()}
     check_cancelled(cancel_event)
     fisher = {}
     if strength:
         diagonal = fisher_matrix or _fisher(model, tokenizer, named, limit, cancel_event, anchor_texts)
+        if objective == 'query_only' and set(diagonal) == set(all_named):
+            diagonal = {key: diagonal[key] for key in named}
         if set(diagonal) != set(named):
             raise ValueError("Fisher information must match the loaded LoRA parameters")
         for name, value in diagonal.items():
@@ -225,29 +258,83 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
         if not fisher:
             raise ValueError("Requested EWC has no positive diagonal Fisher importance")
 
-    optimizer = torch.optim.AdamW(named.values(), lr=rate, weight_decay=0.0)
-    resumed = restore_adamw(optimizer, named, previous_directory)
-    windows = tokens = 0
-    model.train()
+    optimizer = torch.optim.AdamW(all_named.values(), lr=rate, weight_decay=0.0)
+    resumed = restore_adamw(optimizer, all_named, previous_directory)
+    windows = tokens = updates = 0
+    method_metrics = {}
+    inactive = [p for name, p in all_named.items() if name not in named]
+
+    def penalize():
+        for name, diagonal_tensor in fisher.items():
+            p = named[name]
+            delta = p.float() - before[name].to(device=p.device, dtype=torch.float32)
+            importance = diagonal_tensor.to(device=p.device, dtype=torch.float32)
+            ((strength / 2) * (importance * delta.square()).sum()).backward()
+
+    def step():
+        nonlocal updates
+        penalize()
+        norm = torch.nn.utils.clip_grad_norm_(named.values(), max_norm=1.0, error_if_nonfinite=True)
+        if objective != "causal_lm" and norm.item() == 0:
+            if objective == "reward_policy" and updates:
+                return False  # The clipped surrogate can be flat after a successful first pass.
+            raise RuntimeError("Test-time objective supplied no gradient to the selected parameters")
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        updates += 1
+        return True
+
     try:
-        for epoch in range(int(steps)):
-            for window in iter_training_windows(tokenizer, data, max_tokens=limit):
+        optimizer.zero_grad(set_to_none=True)
+        for p in inactive:
+            p.requires_grad_(False)
+        model.train(objective == "causal_lm")
+        if objective == "query_only":
+            span_loss, spans, context_length = torch_query_loss(
+                model, tokenizer, context_text, window_limit(model, max_context_tokens), limit, int(steps))
+            for start, stop in spans:
                 check_cancelled(cancel_event)
-                optimizer.zero_grad(set_to_none=True)
-                loss = window_loss(model, window)
-                for name, diagonal_tensor in fisher.items():
-                    p = named[name]
-                    delta = p.float() - before[name].to(device=p.device, dtype=torch.float32)
-                    importance = diagonal_tensor.to(device=p.device, dtype=torch.float32)
-                    loss = loss + (strength / 2) * (importance * delta.square()).sum().to(loss.device)
+                loss = span_loss(start, stop)
                 if not torch.isfinite(loss).item():
-                    raise RuntimeError("EWC loss is non-finite")
+                    raise RuntimeError("Non-finite cached query loss")
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(named.values(), max_norm=1.0, error_if_nonfinite=True)
-                optimizer.step()
-                if epoch == 0:
-                    windows += 1
-                    tokens += window.supervised_tokens
+                step()
+                windows += 1
+                tokens += stop - start
+            method_metrics.update(kv_prefills=1, cached_context_tokens=context_length,
+                                  updated_projection="q_proj", query_spans=[list(span) for span in spans])
+        elif group is not None:
+            # A shared reference policy for all sampled actions. The first
+            # gradient is REINFORCE. Repeated passes clip the trajectory ratio.
+            with torch.no_grad():
+                reference = [window_loss(model, w).item() * w.supervised_tokens for w in group.windows]
+            for epoch in range(int(steps)):
+                for w, advantage, old_nll in zip(group.windows, group.advantages, reference):
+                    check_cancelled(cancel_event)
+                    nll = window_loss(model, w) * w.supervised_tokens
+                    ratio = (old_nll - nll).clamp(-20., 20.).exp()
+                    surrogate = torch.minimum(ratio * advantage, ratio.clamp(0.8, 1.2) * advantage)
+                    (-surrogate / group.target_count).backward()
+                if not step():
+                    break
+            tokens = group.target_count
+            windows = len(group.windows)
+            method_metrics.update(reward_min=min(group.rewards), reward_max=max(group.rewards),
+                                  group_size=windows, supervise_prompt=False,
+                                  sampled_token_ids=all("rollout_completion_ids" in row for row in rows))
+        else:
+            for epoch in range(int(steps)):
+                for window in iter_training_windows(tokenizer, rows, max_tokens=limit, supervise_prompt=supervise_prompt):
+                    check_cancelled(cancel_event)
+                    weight = weights[window.row_index]
+                    if not weight:
+                        continue
+                    (weight * window_loss(model, window)).backward()
+                    step()
+                    if epoch == 0:
+                        windows += 1
+                        tokens += window.supervised_tokens
+            method_metrics["supervise_prompt"] = bool(supervise_prompt)
         check_cancelled(cancel_event)
         drift_sq = 0.0
         touched = 0
@@ -258,11 +345,13 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
         if not math.isfinite(drift_sq) or drift_sq <= 0 or not tokens or not touched:
             raise RuntimeError("PEFT update produced non-finite or zero parameter change")
         if output_directory is not None:
-            save_adamw(optimizer, named, output_directory)
-        return {"trainable_parameters_touched": touched, "training_windows": windows,
-                "optimizer": _OPTIMIZER_SCHEMA, "optimizer_resumed": resumed,
+            save_adamw(optimizer, all_named, output_directory)
+        return {**method_metrics, "objective": objective, "trainable_parameters_touched": touched, "training_windows": windows,
+                "optimizer": _OPTIMIZER_SCHEMA, "optimizer_resumed": resumed, "optimizer_steps": updates,
                 "supervised_tokens": tokens, "ewc_lambda": strength,
                 "ewc_used": bool(fisher), "fisher_tensors": len(fisher)}, math.sqrt(drift_sq)
     finally:
         optimizer.zero_grad(set_to_none=True)
+        for p in inactive:
+            p.requires_grad_(True)
         model.eval()

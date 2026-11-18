@@ -224,7 +224,9 @@ class GGUFReasoningBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
-        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None, **_kwargs,
+        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
+        objective='causal_lm', supervise_prompt=True, max_window_tokens=256, row_weights=None,
+        context_text=None, max_context_tokens=2048, **_kwargs,
     ):
         """Train a LoRA on the declared HF lineage and validate it on the selected GGUF."""
         from core.gguf_lora_trainer import GGUFLoRATrainer
@@ -238,6 +240,7 @@ class GGUFReasoningBackend:
             self, trainer, data, learning_rate=learning_rate, steps=steps,
             fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event,
             validation_callback=validation_callback, learning_metadata=learning_metadata, anchor_texts=anchor_texts,
+            objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_window_tokens=max_window_tokens,
         )
 
     def _verify_training_parent(self, trainer):

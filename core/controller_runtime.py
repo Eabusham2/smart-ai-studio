@@ -424,7 +424,8 @@ class UniversalControllerBackend:
         store = bind_learning_state(self, model_path=source, model_info=self.model_info,
                                     state_root=state_root, adapter_format="peft")
         self._loaded_learning_checkpoint = self.adapter_path = store.current_checkpoint()
-        if self.adapter_path is None and os.path.isfile(os.path.join(legacy_path, "adapter_config.json")):
+        model_scope = getattr(getattr(store, "scope", None), "kind", "model") == "model"
+        if model_scope and self.adapter_path is None and os.path.isfile(os.path.join(legacy_path, "adapter_config.json")):
             selected = self.model_info.get("legacy_adapter_path")
             if not selected or os.path.realpath(selected) != os.path.realpath(legacy_path):
                 raise RuntimeError("Existing controller LoRA has no base-model fingerprint; refusing to omit or apply it. "
@@ -546,15 +547,22 @@ class UniversalControllerBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
-        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None, **_kwargs,
+        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
+        objective='causal_lm', supervise_prompt=True, max_window_tokens=256, row_weights=None,
+        context_text=None, max_context_tokens=2048, **_kwargs,
     ):
         """Validate the live PEFT candidate before publishing its checkpoint generation."""
         import torch
         from core.torch_context_learning import check_cancelled, default_validation, lora_parameters, update_lora, validate_candidate, verify_saved_lora
 
+        if objective == "reward_policy":
+            from core.reward_adaptation import reward_advantages
+            reward_advantages(data)
         store = self.learning_state
         txn = store.begin(metadata=learning_metadata)
         before = {}
+        base_trainability = []
+        original_model = self.model
         model = None
         original_path = self.adapter_path
         try:
@@ -562,12 +570,16 @@ class UniversalControllerBackend:
                 raise RuntimeError("Reload the latest committed controller checkpoint before learning")
             check_cancelled(cancel_event)
             if validation_callback is None:
-                validation_callback = default_validation(self, data)
+                validation_callback = default_validation(self, data, objective=objective)
+            if not getattr(original_model, "peft_config", None):
+                base_trainability = [(p, p.requires_grad) for p in original_model.parameters()]
             model = self._ensure_transformers_lora()
             named = lora_parameters(model)
             before = {name: param.detach().cpu().clone() for name, param in named.items()}
             metrics, drift = update_lora(
-                model, self.tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=256,
+                model, self.tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_window_tokens,
+                objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
+                context_text=context_text, max_context_tokens=max_context_tokens,
                 fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, before=before,
                 anchor_texts=anchor_texts, output_directory=txn.directory,
                 previous_directory=Path(self._loaded_learning_checkpoint).parent if self._loaded_learning_checkpoint else None,
@@ -586,6 +598,12 @@ class UniversalControllerBackend:
                     for name, param in named.items():
                         param.copy_(before[name].to(device=param.device, dtype=param.dtype))
                 self.adapter_path = original_path
+            if not txn.committed and model is not None and model is not original_model:
+                # PEFT injects layers into the original module in-place. Undo
+                # that first injection as well as its factors on a rejected trial.
+                self.model = model.unload()
+                for p, was_trainable in base_trainability:
+                    p.requires_grad_(was_trainable)
             raise
         finally:
             if txn.committed:

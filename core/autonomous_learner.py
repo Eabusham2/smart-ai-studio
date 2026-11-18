@@ -19,7 +19,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
-from core.learning_sources import extract_learning_text
+from core.learning_sources import iter_file_chunks, iter_learning_files, source_snapshot
+from core.test_time_learning import OnlineLearning
 from core.online_consolidator import AwakeOnlineConsolidator
 from memory.db import EpisodicMemoryDB
 
@@ -44,6 +45,8 @@ class AutonomousLearner:
     def _source_blob(research: Optional[Dict[str, Any]]) -> str:
         if not research:
             return ""
+        if research.get("selected_source_text"):
+            return str(research["selected_source_text"])
         parts = []
         for key in ("source_text", "crawl_report", "search_report"):
             value = research.get(key)
@@ -134,25 +137,68 @@ class AutonomousLearner:
                 pass
         return None
 
-    def research_from_source(self, source_path: str, topic: str) -> Dict[str, Any]:
-        """Extract deterministic text from an attached file/folder for the existing Learn pipeline."""
-        extracted = extract_learning_text(source_path)
-        source_text = str(extracted.get("text") or "").strip()
-        if not source_text:
-            raise RuntimeError(
-                "/learn attachment contained no extractable text. "
-                "Media files can still be routed to a media generator Learn target."
-            )
-        result = {
-            "topic": str(topic or "").strip(),
-            "source_path": str(extracted.get("path") or source_path),
-            "source_text": source_text,
-            "sources_found": len(extracted.get("text_files") or []),
-            "media_kinds": list(extracted.get("media_kinds") or []),
-            "extraction_errors": list(extracted.get("extraction_errors") or []),
-        }
+    def research_from_source(self, source_path, topic, *, cancel_event=None, progress_callback=None):
+        """Continue the complete attachment stream before bounded Learn/RSI synthesis."""
+        _, file_count = source_snapshot(source_path, cancel_event)
+        preview = []
+        size = 0
+        has_more = False
+        for path in iter_learning_files(source_path):
+            for chunk in iter_file_chunks(path, 2048):
+                if size + len(chunk) > 4096:
+                    has_more = True
+                    break
+                preview.append(chunk)
+                size += len(chunk)
+            if has_more:
+                break
+        source_text = "".join(preview)
+        result = {"topic": topic, "source_path": str(source_path), "source_text": source_text,
+                  "sources_found": file_count, "media_kinds": [], "extraction_errors": []}
+        if has_more:
+            def progress(update):
+                if progress_callback:
+                    progress_callback("ingesting", f"Read {update['next']} source chunks and "
+                                      f"trained {update['trained_chunks']}.", 0.0)
+
+            job = OnlineLearning(self._consolidation_service()).run_request(
+                {"method": "ingest", "source": str(source_path), "strategy": "stream",
+                 "learning_rate": self.settings.consolidation_lr},
+                cancel_event=cancel_event, progress=progress)
+            result["stream"] = job
+            if progress_callback:
+                progress_callback("ingested", f"The adapter processed all {job['source_chars']} source characters. "
+                                  f"Learn/RSI will synthesize from a {size}-character excerpt.", 0.0)
+        if not source_text.strip():
+            raise RuntimeError("/learn attachment contained no usable text in its synthesis excerpt.")
         self._last_research = result
         return result
+
+    def _lesson_source(self, research, topic):
+        source = self._source_blob(research)
+        if len(source) <= 4096:
+            return source
+        # Retrieved web reports are already strings from the research tools.
+        # Visit all bounded passages and keep a bounded sample of validated
+        # relevant quotes from across the report, including its suffix.
+        import hashlib
+        selected = []
+        for index in range(0, len(source), 2048):
+            passage = source[index:index + 2048]
+            request = ("Return ONLY one JSON object with an evidence string. Copy the most relevant "
+                       f"short verbatim quote about {topic} from this passage, or an empty string.\n{passage}")
+            output, _ = self.engine.solve(request, force_branch_count=1, temperature=0.20)
+            quote = (self._extract_json_object(str(output)) or {}).get("evidence")
+            if (isinstance(quote, str) and 12 <= len(quote) <= 512 and quote in passage
+                    and not any(text == quote for _, text in selected)):
+                selected.append((hashlib.sha256(quote.encode()).digest(), quote))
+                selected.sort()
+                del selected[8:]
+        if not selected:
+            raise RuntimeError("The model selected no valid verbatim evidence across the retrieved report")
+        research["selected_source_text"] = "\n".join(quote for _, quote in selected)
+        research["source_selection"] = {"scanned_characters": len(source), "quotes": len(selected)}
+        return research["selected_source_text"]
 
     def crawl_and_research(self, topic: str) -> Dict[str, Any]:
         """Gather only actually retrieved source material through the existing tools."""
@@ -199,7 +245,7 @@ class AutonomousLearner:
         if not source:
             raise RuntimeError("/learn research returned no usable source material; refusing to fabricate a lesson.")
 
-        source = source[:16000]
+        source = self._lesson_source(research, topic)
         prompt = (
             f"Study the following source material about {topic}. Produce a concise technical learning note "
             "containing only claims supported by the supplied source. Do not invent facts, citations, or code. "
@@ -234,7 +280,7 @@ class AutonomousLearner:
         if not source or not synthesis:
             return False, "✗ Source-grounded verification unavailable.", 0.0
 
-        source = source[:16000]
+        source = self._lesson_source(research, topic)
         verify_prompt = (
             f"You are verifying what you just learned about {topic}. From the SOURCE below, return ONLY one JSON object "
             "with keys `claim` and `evidence`. `claim` must be a concise factual statement from the learned note. "
@@ -252,7 +298,7 @@ class AutonomousLearner:
 
         claim = str(obj.get("claim", "")).strip()
         evidence = str(obj.get("evidence", "")).strip()
-        passed = bool(claim and len(evidence) >= 12 and evidence.casefold() in source.casefold())
+        passed = bool(claim and len(evidence) >= 12 and evidence in source)
         if not passed:
             return False, "✗ Source verification failed: evidence was not a verbatim source span.", 0.0
 
@@ -280,7 +326,7 @@ class AutonomousLearner:
                     "parameter_drift_l2": 0.0}
         prompt = f"What should be remembered about {topic}?"
         service = self._consolidation_service()
-        result = service.train_pairs([{"prompt": prompt, "completion": completion_text}],
+        result = service.train_pairs([{"prompt": prompt, "completion": self._last_evidence or completion_text}],
                                      evidence=[self._last_evidence or completion_text], mode="learn",
                                      cancel_event=cancel_event, learning_rate=self.settings.consolidation_lr)
         memory_id = self.db.log_interaction(
@@ -300,7 +346,7 @@ class AutonomousLearner:
     ) -> str:
         """Generate one answer-blind RSI revision using the already-updated active model."""
         self._require_live_trainable_backend()
-        source = self._source_blob(research)
+        source = self._lesson_source(research, topic)
         if not source or not str(learned_note or "").strip():
             raise RuntimeError("RSI requires the completed Learn note and its source material.")
 
@@ -311,7 +357,7 @@ class AutonomousLearner:
             "Return only the improved technical note. Do not include a score, pass/fail verdict, "
             "verification result, or commentary about this instruction.\n\n"
             f"PREVIOUS NOTE:\n{str(learned_note)[:8000]}\n\n"
-            f"SOURCE MATERIAL:\n{source[:16000]}"
+            f"SOURCE MATERIAL:\n{source}"
         )
         improved, _meta = self.engine.solve(prompt)
         improved = str(improved or "").strip()
@@ -369,7 +415,7 @@ class AutonomousLearner:
                     0.0,
                 )
             research = (
-                self.research_from_source(source_path, clean_topic)
+                self.research_from_source(source_path, clean_topic, cancel_event=cancel_event, progress_callback=progress_callback)
                 if source_path
                 else self.crawl_and_research(clean_topic)
             )

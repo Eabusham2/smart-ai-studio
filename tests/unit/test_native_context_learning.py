@@ -25,8 +25,13 @@ def tiny_controller(tmp_path, monkeypatch, request):
     torch.set_num_threads(1)
     torch.manual_seed(29)
     base = tmp_path / "small-causal"
-    model = tf.GPT2LMHeadModel(tf.GPT2Config(vocab_size=16, n_positions=getattr(request, "param", 16), n_embd=24,
-                                               n_layer=1, n_head=2, bos_token_id=1, eos_token_id=2))
+    if getattr(request, "param", None) == "split_queries":
+        model = tf.LlamaForCausalLM(tf.LlamaConfig(vocab_size=16, max_position_embeddings=96, hidden_size=24,
+                                  intermediate_size=48, num_hidden_layers=2, num_attention_heads=3,
+                                  num_key_value_heads=1, bos_token_id=1, eos_token_id=2))
+    else:
+        model = tf.GPT2LMHeadModel(tf.GPT2Config(vocab_size=16, n_positions=getattr(request, "param", 16), n_embd=24,
+                                                 n_layer=1, n_head=2, bos_token_id=1, eos_token_id=2))
     model.save_pretrained(base)
     vocabulary = {"[UNK]": 0, "[BOS]": 1, "[EOS]": 2, "color": 3, "slate": 4,
                   "vault": 5, "What": 6, "is": 7, "the": 8, "?": 9, "red": 10}
@@ -314,3 +319,83 @@ def test_converter_cancellation_reaps_the_owned_process(tmp_path):
         worker.join(timeout=5)
     assert not worker.is_alive() and errors and "cancelled" in str(errors[0])
     assert not psutil.pid_exists(int(pid_file.read_text()))
+
+
+def test_reward_rejection_restores_fresh_controller_and_commit_reloads(tiny_controller):
+    import torch
+    backend = tiny_controller
+    initial = backend.model
+    saved = {name: (p.detach().clone(), p.requires_grad) for name, p in initial.named_parameters()}
+    prompt_ids = backend.tokenizer.encode("vault color", add_special_tokens=False)
+    rows = [{"prompt": "vault color", "completion": word, "rollout_prompt_ids": prompt_ids,
+             "rollout_completion_ids": backend.tokenizer.encode(word, add_special_tokens=False), "reward": reward}
+            for word, reward in (("slate", 1.), ("red", 0.))]
+    options = dict(objective="reward_policy", steps=1, learning_rate=.001, max_window_tokens=16)
+    with pytest.raises(RuntimeError, match="validation"):
+        backend.train_mini_batch({}, rows, validation_callback=lambda candidate: False, **options)
+    assert backend.model is initial and backend.learning_state.current_manifest() is None
+    assert all(name in saved and torch.equal(saved[name][0], p) and saved[name][1] == p.requires_grad
+               for name, p in backend.model.named_parameters())
+    metrics, drift = backend.train_mini_batch({}, rows, validation_callback=lambda candidate: True, **options)
+    assert metrics["objective"] == "reward_policy" and drift > 0
+    score = backend.score_learning_probe("vault color", "slate")
+    backend.unload_model()
+    assert backend.load_model() and backend.score_learning_probe("vault color", "slate") == pytest.approx(score)
+
+
+def test_named_scope_does_not_restore_global_native_legacy(tmp_path, monkeypatch):
+    from core.adaptation_capabilities import adaptation_capabilities
+    from core.memory_scopes import LearningScope
+    from core.native_context_learning import select_deployment
+    legacy = tmp_path / "legacy.gguf"
+    legacy.write_bytes(b"global")
+    store = SimpleNamespace(scope=LearningScope("request", "this-request"), current_checkpoint=lambda: None)
+    backend = SimpleNamespace(model=object(), training_base_model_id="base", legacy_adapter_path=str(legacy))
+    monkeypatch.setattr("core.native_context_learning.bind_learning_state", lambda *a, **kw: store)
+    assert select_deployment(backend, tmp_path, tmp_path, "gguf", legacy) is None
+    assert backend._loaded_legacy_deployment is None
+    store.scope = LearningScope("document", "sample", generation="1" * 32, pin="2" * 32)
+    backend.learning_state = store
+    result = adaptation_capabilities(backend)
+    for key in ("causal_lm", "reward_policy", "query_only"):
+        assert not result[key] and "read-only" in result["reasons"][key]
+
+@pytest.mark.parametrize("tiny_controller", ["split_queries"], indirect=True)
+def test_query_checkpoint_resumes_only_query_moments_and_rejects_cancel(tiny_controller):
+    from safetensors.torch import load_file
+    from core.adaptation_capabilities import adaptation_capabilities
+    import torch
+
+    backend = tiny_controller
+    assert adaptation_capabilities(backend)["query_only"]
+    rows = [{"prompt": "What is the vault color?", "completion": "slate"}]
+    backend.train_mini_batch({}, rows, steps=1, validation_callback=lambda _: True)
+    moments = load_file(Path(backend.adapter_path).parent / "optimizer.safetensors")
+    weights = {k: v.detach().clone() for k, v in backend.model.named_parameters()}
+    options = dict(objective="query_only", context_text="What is the vault color ? the vault color is slate",
+                   max_context_tokens=32, max_window_tokens=4, steps=2, learning_rate=.002)
+    metrics, _ = backend.train_mini_batch({}, rows, validation_callback=lambda _: True, **options)
+    assert metrics == backend.learning_state.current_manifest()["metadata"]["metrics"]
+    assert metrics["kv_prefills"] == 1 and metrics["optimizer_resumed"]
+    for name, p in backend.model.named_parameters():
+        if ".q_proj.lora_" not in name:
+            assert torch.equal(p, weights[name])
+    after = load_file(Path(backend.adapter_path).parent / "optimizer.safetensors")
+    assert after.keys() == moments.keys()
+    for key in after:
+        if ".q_proj.lora_" not in key:
+            assert torch.equal(after[key], moments[key])
+        elif key.endswith("/step"):
+            assert after[key].item() == moments[key].item() + 2
+    expected = backend.score_learning_probe("vault color", "slate")
+    checkpoint = backend.adapter_path
+    event = threading.Event()
+    def stop(_):
+        event.set()
+        return True
+    with pytest.raises(RuntimeError, match="cancelled"):
+        backend.train_mini_batch({}, rows, cancel_event=event, validation_callback=stop, **options)
+    assert backend.score_learning_probe("vault color", "slate") == pytest.approx(expected)
+    backend.unload_model()
+    assert backend.load_model() and backend.adapter_path == checkpoint
+    assert backend.score_learning_probe("vault color", "slate") == pytest.approx(expected)

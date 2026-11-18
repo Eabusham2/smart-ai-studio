@@ -204,3 +204,121 @@ def extract_learning_text(
         "text_chars": total,
         "extraction_errors": errors,
     }
+
+
+def iter_learning_files(source, *, exclude=()):
+    """Walk a stable ordered directory one level at a time. Skip dependency and VCS trees."""
+    root = Path(source).expanduser().resolve(strict=True)
+    if root.is_file():
+        if root.suffix.lower() not in SUPPORTED_TEXT_SUFFIXES:
+            raise ValueError("Unsupported text-learning file: " + root.name)
+        yield root
+        return
+    excluded = {Path(path).resolve() for path in exclude}
+    skip = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+    for directory, folders, files in os.walk(root, followlinks=False):
+        folders[:] = sorted(name for name in folders if name not in skip and Path(directory) / name not in excluded
+                            and not (Path(directory) / name).is_symlink())
+        for name in sorted(files):
+            path = Path(directory) / name
+            if path.suffix.lower() in SUPPORTED_TEXT_SUFFIXES and not path.is_symlink() and path.is_file():
+                yield path
+
+
+def source_snapshot(source, cancel_event=None, *, exclude=()):
+    """Identify the precise file set, order and versions without reading payloads into RAM."""
+    import hashlib
+    from core.learning_recall import check_cancel
+
+    signature = hashlib.sha256()
+    count = 0
+    for path in iter_learning_files(source, exclude=exclude):
+        check_cancel(cancel_event)
+        st = path.stat()
+        signature.update(json.dumps([str(path), st.st_dev, st.st_ino, st.st_size,
+                                    st.st_mtime_ns, st.st_ctime_ns]).encode())
+        count += 1
+    if not count:
+        raise ValueError("Source contains no supported text documents")
+    return signature.hexdigest(), count
+
+
+def _document_fragments(path):
+    if path.suffix.lower() == ".pdf":
+        from pypdf import PdfReader
+        with path.open("rb") as handle:
+            for page in PdfReader(handle).pages:
+                yield page.extract_text() or ""
+                yield "\n"
+    elif path.suffix.lower() == ".parquet":
+        import pyarrow.parquet as pq
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=1):
+            yield json.dumps(batch.to_pylist()[0], ensure_ascii=False, default=str) + "\n"
+    else:
+        import xml.sax
+        import zipfile
+        from collections import deque
+
+        class DocumentText(xml.sax.handler.ContentHandler):
+            def __init__(self):
+                super().__init__()
+                self.in_text = False
+                self.pieces = deque()
+
+            def startElement(self, name, attrs):
+                if name == "w:t":
+                    self.in_text = True
+                elif name in ("w:tab", "w:br"):
+                    self.pieces.append("\t" if name == "w:tab" else "\n")
+
+            def characters(self, value):
+                if self.in_text:
+                    self.pieces.append(value)
+
+            def endElement(self, name):
+                if name == "w:t":
+                    self.in_text = False
+                elif name == "w:p":
+                    self.pieces.append("\n")
+
+        parser = xml.sax.make_parser()
+        handler = DocumentText()
+        parser.setContentHandler(handler)
+        with zipfile.ZipFile(path) as archive, archive.open("word/document.xml") as stream:
+            while block := stream.read(8192):
+                parser.feed(block)
+                while handler.pieces:
+                    yield handler.pieces.popleft()
+            parser.close()
+            yield from handler.pieces
+
+
+def iter_file_positions(path, chunk_chars, *, first=0, seek=None):
+    """Contiguous, complete Unicode chunks. Structured text retains its original syntax."""
+    if path.suffix.lower() not in (".pdf", ".parquet", ".docx"):
+        with path.open("r", encoding="utf-8", errors="strict", newline="") as stream:
+            if seek is not None:
+                stream.seek(seek)
+            while chunk := stream.read(chunk_chars):
+                yield chunk, stream.tell()
+        return
+    pending = ""
+    index = 0
+    for text in _document_fragments(path):
+        cursor = 0
+        while cursor < len(text):
+            take = min(len(text) - cursor, chunk_chars - len(pending))
+            pending += text[cursor:cursor + take]
+            cursor += take
+            if len(pending) == chunk_chars:
+                if index >= first:
+                    yield pending, None
+                index += 1
+                pending = ""
+    if pending and index >= first:
+        yield pending, None
+
+
+def iter_file_chunks(path, chunk_chars):
+    for chunk, _ in iter_file_positions(path, chunk_chars):
+        yield chunk

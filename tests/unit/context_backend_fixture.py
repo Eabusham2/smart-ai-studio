@@ -1,6 +1,7 @@
 """Transactional scalar backend for testing orchestration and crash ordering only."""
 import json
 import math
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,24 @@ class TransactionalBackend:
     def score_learning_probe(self, prompt, completion):
         weight = -self.weight if self.regress and "quadratic formula" in prompt else self.weight
         return math.log1p(math.exp(-weight))
+
+    def stream_generate_tokens(self, prompt, **kwargs):
+        """Scripted exact recall for the synthetic cedar-label orchestration cases."""
+        match = re.search(r"sample (\d+)", prompt)
+        if not match:
+            yield "unknown"
+            return
+        idx = match[1]
+        answer = f"cedar{idx}"
+        question = f"Which archive label belongs to sample {idx}?"
+        if "Form one short recall question" in prompt:
+            yield json.dumps({"question": question, "answer": answer, "evidence": answer})
+        elif "Quote the entire original user" in prompt:
+            yield f"The archive label for sample {idx} is cedar{idx}."
+        elif "Quote the entire original assistant" in prompt:
+            yield f"I recorded sample {idx} as cedar{idx}."
+        else:
+            yield answer
 
     def count_tokens(self, messages):
         return sum(len(self.tokenizer.encode(m["content"])) for m in messages)

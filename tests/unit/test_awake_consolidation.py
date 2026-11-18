@@ -62,11 +62,9 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
             evict_ratio=0.40,
         )
         long_history = []
-        for i in range(10):
-            role = "user" if i % 2 == 0 else "assistant"
-            long_history.append(
-                {"role": role, "content": f"This is turn number {i} containing enough detailed context words." * 4}
-            )
+        for i in range(8):
+            long_history.append({"role": "user", "content": f"The archive label for sample {i} is cedar{i}."})
+            long_history.append({"role": "assistant", "content": f"I recorded sample {i} as cedar{i}."})
 
         retained, triggered = consolidator.check_and_prune(long_history)
         self.assertTrue(triggered)

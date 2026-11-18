@@ -586,6 +586,13 @@ class SmartAIChatbotApp:
         self.db = EpisodicMemoryDB(db_path=self.settings.database_path)
         self.tools = AgentToolRegistry(db_path=self.settings.database_path)
         self.engine = ProReasoningEngine(settings=self.settings)
+        from core.memory_preferences import load_memory_preference
+        # No model is resident yet. The ordinary loader will bind this saved
+        # namespace before looking up any learned generation.
+        try:
+            self.engine.learning_scope = load_memory_preference(self.settings.database_path)
+        except (ValueError, OSError, sqlite3.Error) as error:
+            print(f"Saved memory selection could not be read: {error}")
         self.audio_engine = AudioGenerationEngine()
         self.media_engine = MediaGenerationEngine()
         self.multimodal = MediaController(self)
@@ -2244,6 +2251,21 @@ class SmartAIChatbotApp:
         cf = tk.Frame(self.chat_container_frame, bg=self.C["bg_chat"])
         cf.pack(fill="both", expand=True)
 
+        self.history_pager = tk.Frame(cf, bg=self.C["bg_chat"])
+        self.history_pager.pack(fill="x")
+        self.history_page_label = tk.Label(self.history_pager, text="", bg=self.C["bg_chat"],
+                                          fg=self.C["text_muted"], font=_FONT_TINY)
+        self.history_page_label.pack(side="left", padx=12)
+        self.history_older_button = tk.Button(self.history_pager, text="Earlier", relief="flat",
+            command=lambda: self._show_transcript_page(getattr(self, "_transcript_page_start", 0)))
+        self.history_older_button.pack(side="right", padx=3)
+        self.history_latest_button = tk.Button(self.history_pager, text="Latest", relief="flat",
+                                              command=self._show_transcript_page)
+        self.history_latest_button.pack(side="right", padx=3)
+        self.history_newer_button = tk.Button(self.history_pager, text="Later", relief="flat",
+            command=lambda: self._show_transcript_page(start=getattr(self, "_transcript_page_end", 0)))
+        self.history_newer_button.pack(side="right", padx=3)
+
         scroll = tk.Scrollbar(
             cf, orient="vertical", bg=self.C["bg_card"],
             troughcolor=self.C["bg_chat"], bd=0, highlightthickness=0
@@ -3800,16 +3822,55 @@ class SmartAIChatbotApp:
 
     def _open_tab_history(self, tab):
         if self.models_config[tab].get("model_type", "text") == "text":
-            return ChatArchive(self.settings.database_path, tab)
+            scope = getattr(self.engine, "learning_scope", None)
+            key = tab if scope is None or scope.kind == "model" else f"{tab}:scope:{scope.scope_id}"
+            return ChatArchive(self.settings.database_path, key)
         return []
 
-    def _render_tab_transcript(self):
+    def _show_transcript_page(self, end=None, *, start=None):
+        if getattr(self, "is_generating", False):
+            return
+        self.chat_stream.configure(state="normal")
+        self.chat_stream.delete("1.0", "end")
+        for name in ("thinking_cache", "thinking_expanded", "thinking_meta", "code_snippets"):
+            getattr(self, name, {}).clear()
+        for tag in self.chat_stream.tag_names():
+            if tag.startswith(("tag_btn_", "tag_cp_", "tag_cv_", "think_body_")):
+                self.chat_stream.tag_delete(tag)
+        self._render_tab_transcript(end=end, start=start)
+
+    def _limit_rendered_transcript(self):
+        if getattr(self, "is_generating", False) or not hasattr(self, "chat_history"):
+            return
+        history = self.chat_history.get(self.active_tab_id, [])
+        if getattr(self, "_transcript_browsing", False):
+            return
+        visible = len(history) - getattr(self, "_transcript_page_start", 0)
+        count = self.chat_stream.count("1.0", "end", "chars")
+        if visible > 100 or (count and count[0] > 240_000):
+            self._show_transcript_page()
+        elif hasattr(self, "history_page_label"):
+            self._transcript_page_end = len(history)
+            self.history_page_label.configure(text=(f"Messages {getattr(self, '_transcript_page_start', 0) + 1}–{len(history)} of {len(history)}"
+                                                   if history else ""))
+            self.history_newer_button.configure(state="disabled")
+
+    def _render_tab_transcript(self, end=None, *, start=None):
+        from core.chat_paging import transcript_page
         history = self.chat_history[self.active_tab_id]
+        page = transcript_page(history, end=end, start=start)
+        self._transcript_page_start, self._transcript_page_end = page.start, page.end
+        self._transcript_browsing = page.end < page.total
+        if hasattr(self, "history_page_label"):
+            self.history_page_label.configure(text=(f"Messages {page.start + 1}–{page.end} of {page.total}"
+                + (" · Long messages previewed" if page.previewed else "")) if page.total else "")
+            self.history_older_button.configure(state="normal" if page.start else "disabled")
+            self.history_newer_button.configure(state="normal" if page.end < page.total else "disabled")
         if not history:
             self._send_welcome_messages()
         else:
             self.chat_stream.configure(state="normal")
-            for item in history:
+            for item in page.turns:
                 role = item.get("role")
                 content = item.get("content", "")
                 if role == "user":
@@ -3952,12 +4013,15 @@ class SmartAIChatbotApp:
             self._on_clear_chat()
 
     def _on_export_chat_button(self):
-        ok, res = self.tools.execute_tool("export_chat_history", {"filename": "chat_history_export.md"})
-        if ok:
-            self._append_ai_message(f"💾 **Chat History Exported**: Saved to `{os.path.abspath('chat_history_export.md')}`.")
-            messagebox.showinfo("Chat Exported", f"Chat history saved to:\n{os.path.abspath('chat_history_export.md')}")
-        else:
-            self._append_ai_message("⚠️ Could not export chat history.")
+        from core.chat_paging import export_transcript
+        path = filedialog.asksaveasfilename(title="Export complete conversation", defaultextension=".md",
+                                           initialfile="chat_history_export.md", filetypes=[("Markdown", "*.md")])
+        if path:
+            try:
+                export_transcript(self.chat_history.get(self.active_tab_id, []), path)
+                messagebox.showinfo("Chat Exported", f"Complete conversation saved to:\n{path}")
+            except OSError as error:
+                messagebox.showerror("Chat Export", str(error))
 
     def _on_memory_pressure_emergency(self, status: Dict[str, Any]):
         if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
@@ -4153,6 +4217,8 @@ class SmartAIChatbotApp:
         self._scroll_chat_to_bottom()
 
     def _append_user_message(self, text: str):
+        if getattr(self, "_transcript_browsing", False):
+            self._show_transcript_page()
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
             self.chat_history[self.active_tab_id].append({"role": "user", "content": text})
         self.chat_stream.configure(state="normal")
@@ -4163,6 +4229,8 @@ class SmartAIChatbotApp:
         self.chat_stream.insert("end", "\n\n")
         self.chat_stream.configure(state="disabled")
         self._scroll_chat_to_bottom()
+
+        self._limit_rendered_transcript()
 
     def _append_steer_directive(self, steer_text: str):
         self.chat_stream.configure(state="normal")
@@ -5391,6 +5459,7 @@ class SmartAIChatbotApp:
                 text="  ▶ Send  ", bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"],
                 activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"]
             )
+            self._limit_rendered_transcript()
         self._update_queue_ui()
 
     def _check_and_run_next_queue(self):
@@ -5567,7 +5636,9 @@ class SmartAIChatbotApp:
             service = getattr(self.engine, "awake_consolidator", None)
             result = getattr(service, "last_result", {}) or {}
             state = getattr(getattr(service, "engine", None), "learning_state", None)
-            if result and state is not None and result.get("identity_digest") == state.identity_digest:
+            scope_matches = (state is not None and result.get("scope", {"kind": "model"})
+                             == (state.scope.record if hasattr(state, "scope") else {"kind": "model"}))
+            if result and state is not None and result.get("identity_digest") == state.identity_digest and scope_matches:
                 label = f"Last adapter update: weight drift {result['parameter_drift_l2']:.4g}"
             elif inference_only:
                 label = "Weight training: unavailable for this inference model"
@@ -5763,6 +5834,13 @@ assert glyph_res["invariants_passed"] == True
 
         btn_refresh = tk.Button(hdr, text="🔄 Refresh", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, pady=3, cursor="hand2", highlightthickness=0)
         btn_refresh.pack(side="right", padx=3)
+
+        def open_learning():
+            from core.learning_ui import show_online_learning
+            modal.destroy()
+            show_online_learning(self)
+        tk.Button(hdr, text="Learning & saved memory…", command=open_learning,
+                  bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat", padx=8, pady=3).pack(side="right", padx=3)
 
         btn_export = tk.Button(hdr, text="📥 Export Markdown", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, pady=3, cursor="hand2", highlightthickness=0, command=lambda: self.tools.execute_tool("export_chat_history", {}))
         btn_export.pack(side="right", padx=3)
@@ -6005,7 +6083,7 @@ assert glyph_res["invariants_passed"] == True
             self._sleep_consolidating = True
             self.cancel_event.clear()
             self._set_generating_state(True)
-            transcript = list(self.chat_history[tab_id])
+            transcript = self.chat_history[tab_id]
             btn_trigger.configure(state="disabled", text="Consolidating…")
 
             def _finish(message):
@@ -6028,6 +6106,10 @@ assert glyph_res["invariants_passed"] == True
                     res = service.sleep(transcript, cancel_event=self.cancel_event)
                     if res["status"] == "idle":
                         message = "No pending complete exchanges."
+                    elif res["status"] == "retained":
+                        message = (f"Weights updated; the exchanges remain in active context. "
+                                   f"{res.get('retirement_reason', 'Recall is not yet verified.')}\n"
+                                   f"Checkpoint: {res['adapter_saved_to']}")
                     else:
                         message = (f"Consolidated {res['memories_consolidated']} exchange(s) in "
                                    f"{res['execution_time_seconds']:.2f}s. Weight drift {res['parameter_drift_l2']:.6g}.\n"

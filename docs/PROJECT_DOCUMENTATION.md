@@ -278,9 +278,11 @@ If the packed prompt already exceeds Context, generation fails closed rather tha
 
 ### 10.4 Persistent context learning
 
-At 80% of Context, eligible text backends train on old, complete exchanges using bounded causal windows. The active backend measures source continuation and retention losses before and after training. A successful adapter checkpoint publishes the retirement receipt for those exact turns. Generation then uses the reduced active history and can continue consolidation toward 60% of Context. System instructions, tool exchanges and incomplete turns stay in text.
+At 80% of Context, eligible text backends train on old, complete exchanges using bounded causal windows. The active backend measures source continuation and retention losses before and after training. Retirement also requires generated, source-free reconstruction and grounded question checks for the selected exchanges. A valid parameter update can persist with its source turns still active when recall is unproven. A checkpoint publishing a verified retirement receipt permits reduced active history and continued consolidation toward 60% of Context. System instructions, tool exchanges and incomplete turns stay in text.
 
-The GUI archive retains the full visible transcript across restarts. Both ordinary and Best Work chat project that archive through the loaded checkpoint before packing the prompt. Sleep starts one batch on the active backend. A failed or cancelled candidate leaves its turns active and the preceding generation available. Strata retains its full text history. [Backend capabilities, memory limits, migration and evaluation](parametric-memory.md)
+The SQLite archive retains the full transcript across restarts, and the GUI displays bounded pages. Both ordinary and Best Work chat project that archive through the loaded checkpoint before packing the prompt. Sleep starts one batch on the active backend. A failed or cancelled candidate leaves its turns active and the preceding generation available. Strata retains its full text history. [Backend capabilities, memory limits, migration and evaluation](parametric-memory.md)
+
+Explicit online workflows add resumable ingestion, grounded evidence/elicitation, few-shot adaptation, fixed-KV query-only updates on supported projections, signed verifier/consensus policy learning, and candidate-trace consolidation. Model/session/project scopes persist independently. Temporary requests fork verified state and restore their parent; indexed document memories activate pinned read-only generations. The GUI and CLI share the production lifecycle. [Workflows and requests](test-time-learning.md) · [Per-paper coverage](ttt-research-coverage.md)
 
 ### 10.5 Explicit Learn → real update → RSI
 

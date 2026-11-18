@@ -158,6 +158,8 @@ def install_mlx_adapter_persistence(cls):
         current = store.current_checkpoint()
         source = None
         if explicit and configured != current:
+            if store.scope.kind != "model":
+                raise RuntimeError("A scoped model must restore its own committed adapter generation")
             source = _import_identity(configured)
             prior = store.current_manifest(verify=False)
             if prior and prior["metadata"].get("imported_adapter") == source:
@@ -183,7 +185,7 @@ def install_mlx_adapter_persistence(cls):
                 if explicit and getattr(self, "_vlm_runtime", None):
                     raise RuntimeError("The selected MLX-VLM loader cannot attach an external adapter package; select its raw language LoRA checkpoint")
                 self.learning_migration_status = None
-                if not explicit and current is None:
+                if not explicit and current is None and store.scope.kind == "model":
                     legacy = Path(DEFAULT_MLX_ADAPTER_PATH)
                     if legacy.is_file():
                         self.learning_migration_status = {

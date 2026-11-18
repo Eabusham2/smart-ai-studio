@@ -23,7 +23,8 @@ def select_deployment(backend, base_path, root, kind, legacy_path):
     store = bind_learning_state(backend, model_path=base_path, model_info=info, **options)
     current = store.current_checkpoint()
     backend._loaded_legacy_deployment = None
-    if current is None and Path(legacy_path).is_file():
+    model_scope = getattr(getattr(store, "scope", None), "kind", "model") == "model"
+    if model_scope and current is None and Path(legacy_path).is_file():
         selected = getattr(backend, "legacy_adapter_path", None)
         if selected and Path(selected).resolve() == Path(legacy_path).resolve():
             checker = getattr(backend, "_check_deployment_format", None)
@@ -37,10 +38,16 @@ def select_deployment(backend, base_path, root, kind, legacy_path):
 
 
 def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_matrix,
-                      lambda_ewc, cancel_event, validation_callback, learning_metadata, anchor_texts=None):
+                      lambda_ewc, cancel_event, validation_callback, learning_metadata, anchor_texts=None,
+                      objective='causal_lm', supervise_prompt=True, row_weights=None, max_window_tokens=256):
     """Validate a candidate using the *serving* backend before switching current.json."""
+    if objective not in {"causal_lm", "reward_policy"}:
+        raise ValueError("Native conversion bridges do not expose frozen serving KV for query adaptation")
     if backend.model is None:
         raise RuntimeError("Load the selected model before learning")
+    if objective == "reward_policy":
+        from core.reward_adaptation import reward_advantages
+        reward_advantages(data)
     store = backend.learning_state
     txn = store.begin(metadata=learning_metadata)
     original_metadata = backend.adapters
@@ -53,7 +60,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         # Merging and quantization can erase a BF16 update. Standalone
         # callers also validate behavior on the actual served deployment.
         if validation_callback is None:
-            validation_callback = default_validation(backend, data)
+            validation_callback = default_validation(backend, data, objective=objective)
         lineage = backend._verify_training_parent(trainer)
         check_cancelled(cancel_event)
         unloaded = True
@@ -63,6 +70,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
             previous_peft=(Path(previous).parent / "peft") if previous else None,
             learning_rate=learning_rate, steps=steps, fisher_matrix=fisher_matrix,
             lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+            objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_length=max_window_tokens,
         )
         metrics["training_parent_sha256"] = lineage
         if not math.isfinite(drift) or drift <= 0 or touched <= 0:

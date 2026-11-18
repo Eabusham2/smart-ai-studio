@@ -298,6 +298,7 @@ class ProReasoningEngine:
                         model_path=target_path,
                         model_info=info,
                     )
+                    self.controller_backend.learning_scope = getattr(self, "learning_scope", None)
                     self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
                     self.controller_backend.context_tokens = int(
                         getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768
@@ -343,9 +344,11 @@ class ProReasoningEngine:
                 if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
                     self.mlx_backend = MLXReasoningBackend(
                         model_path=target_path,
-                        adapter_path=info.get("legacy_adapter_path") or self.lora_adapter_path,
+                        adapter_path=(info.get("legacy_adapter_path") or self.lora_adapter_path)
+                        if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                         model_info=info,
                     )
+                    self.mlx_backend.learning_scope = getattr(self, "learning_scope", None)
                     if self.mlx_backend.load_model():
                         self.mlx_engine = self.mlx_backend
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -396,12 +399,14 @@ class ProReasoningEngine:
                         model_path=target_path,
                         mmproj_path=mmproj_path,
                         training_base_model_id=info.get("gguf_training_base_model_id"),
-                        legacy_adapter_path=info.get("legacy_adapter_path"),
+                        legacy_adapter_path=info.get("legacy_adapter_path")
+                        if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                         n_ctx=int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
                         auto_memory_placement=bool(info.get("auto_memory_placement", True)),
                         memory_limit_gb=getattr(self, "speed_memory_limit_gb", None),
                         **native_options,
                     )
+                    self.gguf_backend.learning_scope = getattr(self, "learning_scope", None)
                     load_options = {"cancelled": load_cancelled} if server_path else {}
                     if self.gguf_backend.load_model(**load_options):
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -429,8 +434,10 @@ class ProReasoningEngine:
                         hf_repo_id=str(info.get("repo_id") or target_path),
                         n_ctx=int(info.get("max_context") or 32768),
                         training_base_model_id=info.get("bitnet_training_base_model_id"),
-                        legacy_adapter_path=info.get("legacy_adapter_path"),
+                        legacy_adapter_path=info.get("legacy_adapter_path")
+                        if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                     )
+                    self.bitnet_backend.learning_scope = getattr(self, "learning_scope", None)
                     if self.bitnet_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
                             self.awake_consolidator.engine = self.bitnet_backend
