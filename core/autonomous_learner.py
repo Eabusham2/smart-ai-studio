@@ -13,19 +13,28 @@ or second model load is accepted as learning evidence.
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
+from copy import copy
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
-from core.learning_sources import iter_attachment_positions, iter_learning_files, learning_media_kinds, source_snapshot
+from core.learning_sources import extract_learning_text, iter_attachment_positions, iter_learning_files, learning_media_kinds, source_snapshot
 from core.test_time_learning import OnlineLearning
-from core.online_consolidator import AwakeOnlineConsolidator
+from core.online_consolidator import ManagedAwakeOnlineConsolidator
+from core.learning_implementation import get_learning_implementation, learning_mode_kwargs
+from core.training_memory import backend_label, process_rss_mb
+from core.training_memory import release_training_memory_on_owner as release_training_memory
+from memory.anchor_dataset import get_anchor_texts
 from memory.db import EpisodicMemoryDB
 
 
-class AutonomousLearner:
+class ManagedAutonomousLearner:
+    learning_implementation = "managed"
+
     def __init__(
         self,
         engine: Optional[ProReasoningEngine] = None,
@@ -33,7 +42,12 @@ class AutonomousLearner:
         db: Optional[EpisodicMemoryDB] = None,
         settings: Optional[Settings] = None,
     ):
-        self.settings = settings or get_settings()
+        self.settings = settings or getattr(engine, "settings", None) or get_settings()
+        if engine is None and getattr(self.settings, "learning_implementation", "legacy") != self.learning_implementation:
+            # A standalone explicit constructor owns its engine; keep its service
+            # and checkpoint store on the same algorithm without changing global settings.
+            self.settings = copy(self.settings)
+            self.settings.learning_implementation = self.learning_implementation
         self.engine = engine or ProReasoningEngine(settings=self.settings)
         self.db = db or EpisodicMemoryDB(db_path=self.settings.database_path)
         self.tools = tools or AgentToolRegistry(db_path=self.settings.database_path)
@@ -41,11 +55,11 @@ class AutonomousLearner:
         self._last_synthesis: str = ""
         self._verified_lesson = None
 
-    @staticmethod
-    def _source_blob(research: Optional[Dict[str, Any]]) -> str:
+    @classmethod
+    def _source_blob(cls, research: Optional[Dict[str, Any]]) -> str:
         if not research:
             return ""
-        if research.get("selected_source_text"):
+        if cls.learning_implementation == "managed" and research.get("selected_source_text"):
             return str(research["selected_source_text"])
         parts = []
         for key in ("source_text", "crawl_report", "search_report"):
@@ -290,7 +304,7 @@ class AutonomousLearner:
         synthesis: Optional[str] = None,
     ) -> Tuple[bool, str, float]:
         """Verify a self-generated claim against a verbatim evidence span from the sources."""
-        self._require_live_trainable_backend()
+        self._require_live_mlx()
         self._verified_lesson = None
         research = research or self._last_research
         synthesis = synthesis or self._last_synthesis
@@ -316,7 +330,7 @@ class AutonomousLearner:
 
         claim = str(obj.get("claim", "")).strip()
         evidence = str(obj.get("evidence", "")).strip()
-        passed = bool(claim and len(evidence) >= 12 and evidence in source)
+        passed = bool(claim and len(evidence) >= 12 and self._evidence_matches(evidence, source))
         if not passed:
             return False, "✗ Source verification failed: evidence was not a verbatim source span.", 0.0
 
@@ -327,12 +341,18 @@ class AutonomousLearner:
             1.0,
         )
 
+    @staticmethod
+    def _evidence_matches(evidence, source):
+        return evidence in source
+
     def _consolidation_service(self):
         backend = self._require_live_trainable_backend()
         service = getattr(self.engine, "awake_consolidator", None)
         if service is None:
-            service = AwakeOnlineConsolidator(backend, lambda_ewc=float(self.settings.ewc_lambda))
+            service = ManagedAwakeOnlineConsolidator(backend, lambda_ewc=float(self.settings.ewc_lambda))
             self.engine.awake_consolidator = service
+        if getattr(service, "learning_implementation", None) == "legacy":
+            raise RuntimeError("Load the managed learning implementation before starting a managed lesson")
         if service.engine is not backend:
             raise RuntimeError("The loaded model changed before learning could begin")
         return service
@@ -543,3 +563,131 @@ class AutonomousLearner:
             "synapses_learned_m": total_params_m,
             "parameter_drift_l2": total_drift,
         }
+
+
+class LegacyAutonomousLearner(ManagedAutonomousLearner):
+    """Source-grounded Learn and RSI with the original direct Fisher/LoRA updates."""
+
+    learning_implementation = "legacy"
+
+    def research_from_source(self, source_path: str, topic: str, *, cancel_event=None, progress_callback=None) -> Dict[str, Any]:
+        """Extract deterministic text from an attached file/folder for the existing Learn pipeline."""
+        extracted = extract_learning_text(source_path)
+        source_text = str(extracted.get("text") or "").strip()
+        if not source_text:
+            raise RuntimeError(
+                "/learn attachment contained no extractable text. "
+                "Media files can still be routed to a media generator Learn target."
+            )
+        result = {
+            "topic": str(topic or "").strip(),
+            "source_path": str(extracted.get("path") or source_path),
+            "source_text": source_text,
+            "sources_found": len(extracted.get("text_files") or []),
+            "media_kinds": list(extracted.get("media_kinds") or []),
+            "extraction_errors": list(extracted.get("extraction_errors") or []),
+        }
+        self._last_research = result
+        return result
+
+    def _lesson_source(self, research, topic):
+        return self._source_blob(research)[:16000]
+
+    @staticmethod
+    def _evidence_matches(evidence, source):
+        return evidence.casefold() in source.casefold()
+
+    def _direct_backend(self):
+        backend = self._require_live_mlx()
+        scope = getattr(getattr(backend, "learning_state", None), "scope", None)
+        if getattr(scope, "pin", None):
+            raise RuntimeError("The current document checkpoint is pinned for read-only inference")
+        return backend
+
+    def _direct_update(self, backend, prompt, completion, cancel_event):
+        adapter_path = getattr(backend, "adapter_path", None) or getattr(self.engine, "lora_adapter_path", None)
+        if not adapter_path and getattr(backend, "is_mlx_available", False) and getattr(backend, "learning_state", None) is None:
+            adapter_path = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
+            backend.adapter_path = adapter_path
+            self.engine.lora_adapter_path = adapter_path
+
+        ram_before = process_rss_mb()
+        fisher = None
+        try:
+            fisher_fn = getattr(backend, "compute_mlx_fisher", None)
+            if callable(fisher_fn):
+                try:
+                    fisher = fisher_fn(get_anchor_texts()[:4], **learning_mode_kwargs(fisher_fn, "legacy"))
+                except Exception:
+                    pass
+            ewc_active = bool(fisher)
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Learning cancelled before the adapter update")
+            updated, drift = backend.train_mini_batch(
+                adapters=getattr(backend, "adapters", {}) or {},
+                data=[{"prompt": prompt, "completion": completion}],
+                fisher_matrix=fisher,
+                lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if ewc_active else 0.0,
+                learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
+                steps=3, save_path=adapter_path,
+                **learning_mode_kwargs(backend.train_mini_batch, "legacy"),
+            )
+        finally:
+            fisher = None
+            cleanup = release_training_memory(backend)
+
+        drift = float(drift)
+        if not math.isfinite(drift) or drift <= 0.0:
+            raise RuntimeError("Learning completed a training call but measured no finite parameter change.")
+        touched = 0
+        if isinstance(updated, dict):
+            try:
+                touched = int(updated.get("trainable_parameters_touched", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+            if touched <= 0:
+                for value in updated.values():
+                    try:
+                        touched += int(value.size)
+                    except (AttributeError, TypeError, ValueError):
+                        pass
+        return {
+            "status": "success", "parameter_drift_l2": drift, "trainable_parameters_touched": touched,
+            "trainable_parameters_m": touched / 1_000_000.0, "ewc_active": ewc_active,
+            "adapter_saved_to": getattr(backend, "adapter_path", None) or adapter_path,
+            "backend": backend_label(backend), "ram_before_mb": round(float(ram_before), 1),
+            "ram_after_cleanup_mb": round(float(cleanup["after_mb"]), 1),
+            "ram_released_mb": round(float(cleanup["released_mb"]), 1),
+        }
+
+    def consolidate_parameters(self, topic, completion_text, reward=1.0, *, cancel_event=None):
+        if reward < 1.0:
+            return {"status": "skipped", "reason": "Learning trace was not source-verified.", "parameter_drift_l2": 0.0}
+        backend = self._direct_backend()
+        memory_id = self.db.log_interaction(
+            prompt=f"Source-grounded autonomous learning task: {topic}",
+            completion=completion_text, raw_branches=[completion_text],
+            verified_reward=1.0, surprise_score=0.35, mode="Autonomous Learn: Source-Grounded",
+            entropy=0.0, winning_branch=0, test_cases="verbatim source evidence required",
+        )
+        result = self._direct_update(backend, f"What should be remembered about {topic}?", completion_text, cancel_event)
+        self.db.mark_consolidated([memory_id])
+        return {**result, "memories_consolidated": 1}
+
+    def consolidate_rsi_parameters(self, trace, *, cancel_event=None):
+        return self._direct_update(
+            self._direct_backend(),
+            "Internalize this self-generated reasoning pattern and improve future problem solving.",
+            str(trace).strip(), cancel_event,
+        )
+
+
+AutonomousLearner = LegacyAutonomousLearner
+
+
+def make_autonomous_learner(engine=None, tools=None, db=None, settings=None, *, implementation=None):
+    settings = settings or getattr(engine, "settings", None) or get_settings()
+    selected = get_learning_implementation(implementation if implementation is not None
+                                           else getattr(settings, "learning_implementation", None))
+    cls = ManagedAutonomousLearner if selected == "managed" else LegacyAutonomousLearner
+    return cls(engine=engine, tools=tools, db=db, settings=settings)

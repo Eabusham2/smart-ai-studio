@@ -123,6 +123,8 @@ class PrismSpeculativeReasoningBackend:
     Existing Python/MLX backends are never silently switched to this runtime.
     """
 
+    supports_learning_modes = True
+
     runtime = "prism_speculative"
     supports_entropy = False
 

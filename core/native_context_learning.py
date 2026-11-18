@@ -17,7 +17,11 @@ def native_training_output(trainer, output_directory, destination, previous_peft
     """Give managed callers their stage and standalone callers the historical cumulative files."""
     if output_directory is not None:
         output = Path(output_directory)
-        yield output, previous_peft, output / destination.name, data
+        previous_dir, previous_cancel, previous_mode = trainer.peft_dir, trainer.cancel_event, trainer._legacy_training
+        try:
+            yield output, previous_peft, output / destination.name, data
+        finally:
+            trainer.peft_dir, trainer.cancel_event, trainer._legacy_training = previous_dir, previous_cancel, previous_mode
         return
 
     from core.learning_state import _process_commit_lock
@@ -30,9 +34,9 @@ def native_training_output(trainer, output_directory, destination, previous_peft
     root = destination.parent
     root.mkdir(parents=True, exist_ok=True)
     peft = root / "peft"
-    previous_peft_dir = trainer.peft_dir
-    previous_source = trainer.training_source
     with _process_commit_lock(root), tempfile.TemporaryDirectory(prefix="native-training-", dir=root) as temporary:
+        previous_peft_dir, previous_source = trainer.peft_dir, trainer.training_source
+        previous_cancel, previous_mode = trainer.cancel_event, trainer._legacy_training
         output = Path(temporary)
         previous = previous_peft or (peft if (peft / "adapter_config.json").is_file() else None)
         try:
@@ -65,6 +69,7 @@ def native_training_output(trainer, output_directory, destination, previous_peft
         finally:
             trainer.peft_dir = previous_peft_dir
             trainer.training_source = previous_source
+            trainer.cancel_event, trainer._legacy_training = previous_cancel, previous_mode
 
 
 def select_deployment(backend, base_path, root, kind, legacy_path):
@@ -94,7 +99,7 @@ def select_deployment(backend, base_path, root, kind, legacy_path):
 
 def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_matrix,
                       lambda_ewc, cancel_event, validation_callback, learning_metadata, anchor_texts=None,
-                      objective='causal_lm', supervise_prompt=True, row_weights=None, max_window_tokens=256,
+                      learning_mode="managed", objective='causal_lm', supervise_prompt=True, row_weights=None, max_window_tokens=256,
                       context_text=None, max_context_tokens=None,
                       reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0):
     """Validate a candidate using the *serving* backend before switching current.json."""
@@ -106,7 +111,7 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         from core.reward_adaptation import reward_advantages
         reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
     store = backend.learning_state
-    txn = store.begin(metadata=learning_metadata)
+    txn = store.begin(metadata=learning_metadata, inherit_metadata=learning_mode == "managed")
     original_metadata = backend.adapters
     unloaded = False
     try:
@@ -116,21 +121,29 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         check_cancelled(cancel_event)
         # Merging and quantization can erase a BF16 update. Standalone
         # callers also validate behavior on the actual served deployment.
-        if validation_callback is None:
+        if learning_mode == "managed" and validation_callback is None:
             validation_callback = default_validation(backend, data, objective=objective, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
+        trainer.allow_parent_download = learning_mode == "legacy"
         lineage = backend._verify_training_parent(trainer)
         check_cancelled(cancel_event)
         unloaded = True
         backend.unload_model()
-        metrics, drift, touched, deployment = trainer.train(
-            data, output_directory=txn.directory,
-            previous_peft=(Path(previous).parent / "peft") if previous else None,
-            learning_rate=learning_rate, steps=steps, fisher_matrix=fisher_matrix,
-            lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
-            reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
-            objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_length=max_window_tokens,
-            **({"context_text": context_text, "max_context_tokens": max_context_tokens} if objective == "query_only" else {}),
-        )
+        if learning_mode == "legacy":
+            metrics, drift, touched, deployment = trainer.train(
+                data, learning_mode="legacy", output_directory=txn.directory,
+                previous_peft=(Path(previous).parent / "peft") if previous else None,
+                learning_rate=learning_rate, steps=steps, max_length=max_window_tokens, cancel_event=cancel_event,
+            )
+        else:
+            metrics, drift, touched, deployment = trainer.train(
+                data, learning_mode="managed", output_directory=txn.directory,
+                previous_peft=(Path(previous).parent / "peft") if previous else None,
+                learning_rate=learning_rate, steps=steps, fisher_matrix=fisher_matrix,
+                lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+                reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_length=max_window_tokens,
+                **({"context_text": context_text, "max_context_tokens": max_context_tokens} if objective == "query_only" else {}),
+            )
         metrics["training_parent_sha256"] = lineage
         if objective == "query_only":
             metrics["kv_cache_runtime"] = "verified_transformers_parent"
@@ -143,7 +156,8 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
         backend._candidate_deployment = deployment
         if not backend.load_model():
             raise RuntimeError("Candidate deployment could not be loaded: " + str(getattr(backend, "last_error", "")))
-        evidence = validate_candidate(backend, validation_callback, cancel_event)
+        evidence = (validate_candidate(backend, validation_callback, cancel_event) if learning_mode == "managed"
+                    else {"method": "deployment_reload"})
         check_cancelled(cancel_event)
         txn.commit(Path(deployment).name, metadata={"metrics": metrics, "validation": evidence, "drift_l2": drift},
                    cancel_event=cancel_event)

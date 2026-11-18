@@ -70,7 +70,8 @@ def test_eval_state_is_isolated_but_native_runtime_cache_remains_shared():
 
 
 @pytest.mark.parametrize("resume", [False, True])
-def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, request, resume):
+@pytest.mark.parametrize("implementation", [None, "legacy", "managed"])
+def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, request, resume, implementation):
     from config.settings import Settings
     from core import pro_engine
     from core.learning_state import LearningStateStore, model_identity
@@ -99,12 +100,18 @@ def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, r
     info["legacy_adapter_path"] = desktop.current_checkpoint()
     run = tmp_path / "eval"
     export = run / "backend_state" / "mlx" / "adapters.safetensors"
-    run_store = LearningStateStore(identity, state_root=export.parent / "learned_memory")
+    state_root = export.parent / "learned_memory"
+    if implementation == "legacy":
+        state_root /= "legacy-implementation"
+    run_store = LearningStateStore(identity, state_root=state_root)
     if resume:
         commit(run_store, b"eval-resume-weights")
     run_manifest = run_store.current_manifest()
     config_path = tmp_path / "run.json"
-    config_path.write_text(json.dumps({"model_info": info, "run_dir": str(run)}))
+    config = {"model_info": info, "run_dir": str(run)}
+    if implementation is not None:
+        config["learning_implementation"] = implementation
+    config_path.write_text(json.dumps(config))
     monkeypatch.setenv(bridge.APP_EVAL_CONFIG_ENV, str(config_path))
 
     # Use the production Pro loader, MLX restore wrapper and eval export routine.

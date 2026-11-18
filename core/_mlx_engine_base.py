@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class MLXReasoningBackend:
+    supports_learning_modes = True
+
     def __init__(
         self,
         model_path: str = "orcarouter/Qwen3.8-27B-Uncensored-MLX",
@@ -227,19 +229,35 @@ class MLXReasoningBackend:
             except Exception:
                 pass
 
-    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0, layout=None, target_paths=None) -> Dict[str, Any]:
-        """Install or reuse LoRA on the loaded language model."""
+    def _uses_legacy_learning(self, mode):
+        # Packed VLMs require the native LoRA wrappers and objectives introduced in PR17.
+        return mode == "legacy" and getattr(self, "_vlm_runtime", None) not in {"mlx_repo_vlm", "jang_vlm"}
+
+    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0, layout=None, target_paths=None,
+                             *, learning_mode=None) -> Dict[str, Any]:
+        """Install projections for the selected learner or reconstruct an exact checkpoint layout."""
         if not self.is_mlx_available or self.model is None:
             raise RuntimeError("Cannot inject LoRA adapters: MLX model is not loaded.")
+        from core.learning_implementation import resolve_learning_mode
+        mode = resolve_learning_mode(self, learning_mode, {})
+        if self._uses_legacy_learning(mode) and layout is None and target_paths is None:
+            from core.mlx_legacy_learning import inject_adapters
+            return inject_adapters(self, r, scale)
         from core.mlx_learning import ensure_adapters
         return ensure_adapters(self, r, scale, layout, target_paths=target_paths)
 
-    def compute_mlx_fisher(self, anchor_texts: List[str], *, max_window_tokens=128, cancel_event=None):
-        """Compute the window-weighted empirical diagonal on only the active adapters."""
+    def compute_mlx_fisher(self, anchor_texts: List[str], *, learning_mode=None, **options):
+        """Compute the original whole-anchor or managed window-weighted Fisher diagonal."""
         if not self.is_mlx_available or self.model is None or self.tokenizer is None:
             return {}
+        from core.learning_implementation import resolve_learning_mode
+        mode = resolve_learning_mode(self, learning_mode, options)
+        if self._uses_legacy_learning(mode):
+            from core.mlx_legacy_learning import fisher_diagonal
+            return fisher_diagonal(self, anchor_texts, **options)
         from core.mlx_learning import bounded_tokens, fisher_diagonal
-        return fisher_diagonal(self, anchor_texts, bounded_tokens(self, max_window_tokens), cancel_event)
+        max_tokens = bounded_tokens(self, options.pop("max_window_tokens", 128))
+        return fisher_diagonal(self, anchor_texts, max_tokens, **options)
 
     def score_learning_probe(self, prompt, completion, *, max_window_tokens=128):
         """Mean teacher-forced NLL on the supplied completion, using the current live weights."""
@@ -284,6 +302,18 @@ class MLXReasoningBackend:
         steps: int = 3,
         save_path: Optional[str] = None,
         *,
+        learning_mode=None,
+        **options,
+    ) -> Tuple[Dict[str, Any], float]:
+        """Select full-row legacy training or the managed windowed objectives."""
+        from core.learning_implementation import resolve_learning_mode
+        mode = resolve_learning_mode(self, learning_mode, options)
+        return self._update_adapters(adapters, data, fisher_matrix, reference_weights, lambda_ewc,
+                                     learning_rate, steps, save_path, mode=mode, **options)
+
+    def _update_adapters(
+        self, adapters, data, fisher_matrix, reference_weights, lambda_ewc, learning_rate, steps, save_path,
+        *, mode,
         max_window_tokens=128,
         supervise_prompt=True,
         objective="causal_lm",
@@ -305,6 +335,7 @@ class MLXReasoningBackend:
 
         import mlx.core as mx
         import mlx.optimizers as optim
+        from core import mlx_legacy_learning
         from mlx.utils import tree_unflatten
         from core.mlx_adapter_persistence import persist_candidate, resume_optimizer
         from core.mlx_learning import (
@@ -312,12 +343,13 @@ class MLXReasoningBackend:
             flat_trainables, optimize_windows, score_rows,
         )
 
+        legacy = self._uses_legacy_learning(mode)
         if (not math.isfinite(learning_rate) or learning_rate <= 0
-                or not math.isfinite(lambda_ewc) or lambda_ewc < 0 or int(steps) < 1):
+                or not math.isfinite(lambda_ewc) or (not legacy and (lambda_ewc < 0 or int(steps) < 1))):
             raise ValueError("Invalid MLX learning rate, EWC coefficient or step count")
         if not math.isfinite(retention_tolerance) or retention_tolerance < 0:
             raise ValueError("Invalid retention loss tolerance")
-        max_tokens = bounded_tokens(self, max_window_tokens)
+        max_tokens = None if legacy else bounded_tokens(self, max_window_tokens)
         cancel_if_requested(cancel_event)
         if objective not in {"causal_lm", "reward_policy", "query_only"}:
             raise ValueError("Unknown test-time training objective")
@@ -341,23 +373,32 @@ class MLXReasoningBackend:
 
         try:
             if store is not None:
-                txn = store.begin(update_id=metadata.get("update_id"), metadata=metadata)
+                txn = store.begin(update_id=metadata.get("update_id"), metadata=metadata, inherit_metadata=mode != "legacy")
                 if txn.parent != getattr(self, "_mlx_parent_generation", None):
                     raise RuntimeError("MLX live weights differ from the committed learning generation; reload the model")
-            params = ensure_adapters(self, installed=installed)
+            if legacy:
+                params = mlx_legacy_learning.inject_adapters(self, installed=installed)
+                if not params:
+                    raise RuntimeError("MLX training exposes no trainable adapter parameters")
+            else:
+                params = ensure_adapters(self, installed=installed)
             # Native MLX updates replace immutable leaves. Keep the evaluated
             # references to roll back without copying any foundation tensors.
             rollback_params = dict(params)
             check_finite(params.values(), "starting adapter weights")
             reference = reference_weights if reference_weights is not None else rollback_params
             self.model.eval()
-            if anchor_texts and fisher_matrix is None and lambda_ewc:
+            if anchor_texts and fisher_matrix is None and lambda_ewc > 0:
                 fisher_matrix = self.compute_mlx_fisher(
-                    anchor_texts, max_window_tokens=max_tokens, cancel_event=cancel_event)
+                    anchor_texts, learning_mode="managed", max_window_tokens=max_tokens, cancel_event=cancel_event)
                 if not fisher_matrix:
                     raise ValueError("No learnable causal targets in Fisher anchors")
             fisher_tensors = 0
-            if fisher_matrix and lambda_ewc:
+            if legacy and fisher_matrix:
+                # The original EWC loop applies only the intersection of supplied keys.
+                fisher_matrix = {key: value for key, value in fisher_matrix.items() if key in params and key in reference}
+                reference = {key: reference[key] for key in fisher_matrix}
+            if fisher_matrix and lambda_ewc > 0:
                 if (not fisher_matrix.keys() <= params.keys()
                         or reference_weights is not None and reference.keys() != fisher_matrix.keys()):
                     raise ValueError("MLX EWC tensors do not match active adapter keys")
@@ -371,25 +412,36 @@ class MLXReasoningBackend:
                 fisher_tensors = sum(bool(mx.any(value > 0).item()) for value in fisher_matrix.values())
 
             def penalty(model):
+                if not fisher_tensors:
+                    return 0.0
+                weights = flat_trainables(model)
+                if legacy:
+                    total = mx.array(0.0)
+                    for key, fisher in fisher_matrix.items():
+                        total = total + mx.sum(fisher * (weights[key] - reference[key]) ** 2)
+                    return (lambda_ewc / 2.0) * total
                 loss = 0.0
-                if fisher_tensors:
-                    weights = flat_trainables(model)
-                    for key in fisher_matrix:
-                        weight = weights[key]
-                        diff = weight.astype(mx.float32) - reference[key].astype(mx.float32)
-                        loss = loss + (0.5 * lambda_ewc) * mx.sum(fisher_matrix[key] * mx.square(diff))
+                for key, fisher in fisher_matrix.items():
+                    diff = weights[key].astype(mx.float32) - reference[key].astype(mx.float32)
+                    loss = loss + (0.5 * lambda_ewc) * mx.sum(fisher * mx.square(diff))
                 return loss
 
             retention_before = None
             if retention_data:
                 retention_before = score_rows(self.model, self.tokenizer, retention_data, max_tokens, cancel_event)
-            optimizer = optim.AdamW(learning_rate=learning_rate, weight_decay=0.0)
-            resumed_optimizer = resume_optimizer(self, optimizer, txn, learning_rate)
-            details, window_count, token_count = optimize_windows(
-                self, rows, objective=objective, row_weights=row_weights, supervise_prompt=supervise_prompt,
-                reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
-                optimizer=optimizer, penalty=penalty, steps=int(steps), max_tokens=max_tokens,
-                context_text=context_text, max_context_tokens=bounded_tokens(self, max_context_tokens), cancel_event=cancel_event)
+            if legacy:
+                optimizer = optim.AdamW(learning_rate=learning_rate)
+                resumed_optimizer = False
+                details, window_count, token_count = mlx_legacy_learning.optimize_rows(
+                    self, rows, optimizer, penalty, steps)
+            else:
+                optimizer = optim.AdamW(learning_rate=learning_rate, weight_decay=0.0)
+                resumed_optimizer = resume_optimizer(self, optimizer, txn, learning_rate)
+                details, window_count, token_count = optimize_windows(
+                    self, rows, objective=objective, row_weights=row_weights, supervise_prompt=supervise_prompt,
+                    reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                    optimizer=optimizer, penalty=penalty, steps=int(steps), max_tokens=max_tokens,
+                    context_text=context_text, max_context_tokens=bounded_tokens(self, max_context_tokens), cancel_event=cancel_event)
             candidate = flat_trainables(self.model)
             squared = []
             changed = []
@@ -404,6 +456,7 @@ class MLXReasoningBackend:
             head_only = set(candidate) == {"lm_head.lora_a", "lm_head.lora_b"}
             metrics = {
                 **details,
+                "learning_mode": "legacy" if legacy else "managed",
                 "adapter_delta_l2": drift,
                 "trainable_parameters_touched": touched,
                 "trained_windows": window_count,

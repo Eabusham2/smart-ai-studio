@@ -1,5 +1,7 @@
 # Using persistent learning in Studio
 
+> **Current selection:** The steps below describe **managed** persistent learning. First open **Memory DB → Learning & saved memory…**, select **managed** under **Learning implementation**, and click **Apply implementation**. The application now defaults to the original **legacy** algorithms and **one** Best Work pass; choose two or more passes explicitly. Both implementations remain available. [Restoration and compatibility guide](original-and-managed-learning.md)
+
 Studio can carry information from an earlier conversation into a later one by saving changes to a model's adapter, a small set of trainable parameters. The chat archive keeps the original wording for reading and export. The model still has a finite **Context** window for the current instructions, active conversation and answer.
 
 ## Start a project memory

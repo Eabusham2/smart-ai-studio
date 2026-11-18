@@ -84,7 +84,7 @@ def main(argv=None):
         if not isinstance(supplied, dict):
             raise ValueError("Model metadata must be an object")
         info.update(supplied)
-    settings_options = dict(backend=args.backend, use_mock=False, live_mode=True,
+    settings_options = dict(backend=args.backend, learning_implementation="managed", use_mock=False, live_mode=True,
                             auto_download=False, lora_adapter_path=None)
     if args.state_dir:
         settings_options["database_path"] = str(Path(os.environ["SMARTAI_DATA_DIR"]) / "learning.sqlite3")

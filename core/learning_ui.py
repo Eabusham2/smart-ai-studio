@@ -43,6 +43,16 @@ def show_online_learning(app):
                           "A paused document job resumes when you run the same request. Agreement is not a correctness check."),
               wraplength=810, justify="left").pack(anchor="w", pady=(6, 12))
 
+    implementation_bar = ttk.Frame(frame)
+    implementation_bar.pack(fill="x", pady=(0, 8))
+    implementation_var = tk.StringVar(value=getattr(app.settings, "learning_implementation", "legacy"))
+    ttk.Label(implementation_bar, text="Learning implementation:").pack(side="left")
+    ttk.Combobox(implementation_bar, textvariable=implementation_var, values=("legacy", "managed"),
+                 width=12, state="readonly").pack(side="left", padx=5)
+    ttk.Label(frame, text="legacy: original Awake/Learn/RSI and Sleep daemon. managed: persistent context learning.\n"
+              "Changing implementation reloads a resident model. Each implementation keeps its own saved weights and chat.",
+              wraplength=810, justify="left").pack(anchor="w", pady=(0, 8))
+
     scope_bar = ttk.Frame(frame)
     scope_bar.pack(fill="x")
     current = app.engine.learning_scope
@@ -105,7 +115,7 @@ def show_online_learning(app):
         output.see("end")
         output.configure(state="disabled")
 
-    def start(operation, *, changed_scope=False):
+    def start(operation, *, changed_scope=False, changed_implementation=False):
         nonlocal running
         if (running or app.is_generating or getattr(app, "_model_load_in_progress", False)
                 or getattr(app, "_speed_ui_running", False) or getattr(app.engine, "speed_tuning_active", False)
@@ -119,13 +129,14 @@ def show_online_learning(app):
         app._set_generating_state(True)
         run_button.configure(state="disabled")
         scope_button.configure(state="disabled")
+        implementation_button.configure(state="disabled")
 
         def work():
             try:
                 result = operation()
-                events.put(("done", (result, changed_scope)))
+                events.put(("done", (result, changed_scope, changed_implementation)))
             except Exception as error:
-                events.put(("done", ({"status": "error", "error": str(error)}, False)))
+                events.put(("done", ({"status": "error", "error": str(error)}, False, False)))
 
         def drain():
             nonlocal running
@@ -137,14 +148,22 @@ def show_online_learning(app):
                 if kind == "progress":
                     log(str(payload))
                 else:
-                    result, scope_changed = payload
+                    result, scope_changed, implementation_changed = payload
                     running = False
                     app._sleep_consolidating = False
                     app._set_generating_state(False)
                     run_button.configure(state="normal")
                     scope_button.configure(state="normal")
+                    implementation_button.configure(state="normal")
                     log(json.dumps(result, ensure_ascii=False, indent=2, default=str))
                     app.is_model_loaded = bool(app.engine.is_model_loaded)
+                    if implementation_changed and result.get("status") not in {"error", "unchanged"}:
+                        from core.memory_preferences import save_learning_implementation
+                        try:
+                            save_learning_implementation(app.settings.database_path, result["learning_implementation"])
+                        except (ValueError, OSError, sqlite3.Error) as error:
+                            log(f"Implementation changed, but its startup selection could not be saved: {error}")
+                        app._learning_implementation_changed(result["previous_implementation"])
                     if scope_changed and result.get("status") != "error":
                         from core.memory_preferences import save_memory_preference
                         try:
@@ -190,6 +209,13 @@ def show_online_learning(app):
     scope_button.pack(side="right")
     run_button = ttk.Button(controls, text="Run learning task", command=run)
     run_button.pack(side="left")
+    def apply_implementation():
+        selected = implementation_var.get()
+        start(lambda: app.engine.set_learning_implementation(selected, cancel_event=app.cancel_event),
+              changed_implementation=True)
+
+    implementation_button = ttk.Button(implementation_bar, text="Apply implementation", command=apply_implementation)
+    implementation_button.pack(side="right")
     ttk.Button(controls, text="Cancel", command=app.cancel_event.set).pack(side="left", padx=8)
     ttk.Button(controls, text="Close", command=lambda: None if running else modal.destroy()).pack(side="right")
     modal.protocol("WM_DELETE_WINDOW", lambda: None if running else modal.destroy())

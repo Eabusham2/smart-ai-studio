@@ -651,10 +651,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         finally:
             self.model = wrapper
 
-    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0, layout=None, target_paths=None):
+    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0, layout=None, target_paths=None, *, learning_mode=None):
         from core.native_speed import runtime_lock
         with runtime_lock(self):
-            return self._run_training_method("inject_lora_adapters", r=r, scale=scale, layout=layout, target_paths=target_paths)
+            return self._run_training_method("inject_lora_adapters", r=r, scale=scale, layout=layout, target_paths=target_paths, learning_mode=learning_mode)
 
     def compute_mlx_fisher(self, anchor_texts, **kwargs):
         return self._run_training_method("compute_mlx_fisher", anchor_texts, **kwargs)

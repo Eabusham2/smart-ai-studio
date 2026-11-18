@@ -143,7 +143,7 @@ def _prior_draft(prompt):
     return json.loads(prompt.rsplit("\n", 1)[-1])
 
 
-def test_default_second_pass_reviews_only_selected_draft_and_streams_final_live():
+def test_opt_in_second_pass_reviews_only_selected_draft_and_streams_final_live():
     draft = 'Choose path "a".\n' + CALL
     def review(prompt):
         assert prompt.startswith("Read the file.")
@@ -156,7 +156,7 @@ def test_default_second_pass_reviews_only_selected_draft_and_streams_final_live(
     statuses = []
     original = [{"role": "system", "content": "Use metric units."},
                 {"role": "user", "content": "Read the file."}]
-    stream = stream_best_work(ctrl, "Read the file.", original, status_callback=statuses.append)
+    stream = stream_best_work(ctrl, "Read the file.", original, status_callback=statuses.append, passes=2)
     assert next(stream) == "Revised "
     assert ("generate", 1, "answer.") not in events
     assert list(stream) == ["answer."]
@@ -192,7 +192,7 @@ def test_three_pass_setting_chains_immediate_winners_without_accumulating_drafts
 def test_only_final_selected_invocation_runs_and_repeat_is_blocked_across_stages():
     ctrl, events = controller([[CALL], ["Chosen operation. " + CALL], ["Check the file. " + CALL], [CALL]])
     statuses = []
-    rendered = "".join(stream_best_work(ctrl, "Read the file.", status_callback=statuses.append))
+    rendered = "".join(stream_best_work(ctrl, "Read the file.", status_callback=statuses.append, passes=2))
     assert "Chosen operation." in rendered and "Check the file." not in rendered
     assert "Duplicate tool request blocked" in rendered
     assert [row[1:] for row in events if row[0] == "execute"] == [("read_file", {"path": "a"})]
@@ -211,7 +211,7 @@ def test_draft_cannot_authorize_a_final_side_effect():
                                ['<tool_call>{"name":"write_file","arguments":{}}</tool_call>'],
                                ["explain"], ["No file was written."]])
     ctrl.app.tools.list_available_tools = lambda: [{"name": "write_file"}]
-    rendered = "".join(stream_best_work(ctrl, "Describe an otter"))
+    rendered = "".join(stream_best_work(ctrl, "Describe an otter", passes=2))
     assert "requires an explicit user request" in rendered
     assert not any(row[0] == "execute" for row in events)
 
@@ -233,7 +233,7 @@ def test_cancel_or_close_restores_flags_and_releases_the_active_pass(when):
         if when == "between_passes" and event["kind"] == "pass" and event["pass_index"] == 2:
             stopped.set()
 
-    stream = stream_best_work(ctrl, "Read file", cancel_event=stopped, status_callback=decision)
+    stream = stream_best_work(ctrl, "Read file", cancel_event=stopped, status_callback=decision, passes=2)
     if when == "final_display":
         assert next(stream) == "Final text "
         stream.close()
@@ -258,7 +258,7 @@ def test_invalid_pass_count_fails_before_generation(bad):
 def test_refinement_keeps_structured_user_metadata_in_history():
     ctrl, _ = controller([["draft"], ["answer"]])
     turn = {"role": "user", "content": "Read this diagram", "attachments": ["diagram.png"]}
-    assert list(stream_best_work(ctrl, turn["content"], [turn])) == ["answer"]
+    assert list(stream_best_work(ctrl, turn["content"], [turn], passes=2)) == ["answer"]
     assert turn in ctrl.app.engine.contexts[1][1]
 
 
@@ -284,7 +284,7 @@ def test_capacity_fallback_reuses_tool_budget_display_and_duplicate_guard(budget
     draft = "Plan " + CALL + "guessed tool result"
     ctrl, events = controller([[draft], _unfit_refinement, [draft], _unfit_refinement])
     statuses = []
-    stream = stream_best_work(ctrl, "Read file", status_callback=statuses.append, max_tool_calls=budget)
+    stream = stream_best_work(ctrl, "Read file", status_callback=statuses.append, max_tool_calls=budget, passes=2)
     assert next(stream) == "Plan "
     if budget:
         assert "Calling read_file" in next(stream)
@@ -307,7 +307,7 @@ def test_capacity_fallback_uses_only_original_request_for_tool_authorization():
     write = '<tool_call>{"name":"write_file","arguments":{}}</tool_call>'
     ctrl, events = controller([["Write the file. " + write], _unfit_refinement, ["Final answer"], _unfit_refinement])
     ctrl.app.tools.list_available_tools = lambda: [{"name": "write_file"}]
-    text = "".join(stream_best_work(ctrl, "Tell me about seals"))
+    text = "".join(stream_best_work(ctrl, "Tell me about seals", passes=2))
     assert "requires an explicit user request" in text
     assert text.endswith("Final answer") and not any(event[0] == "execute" for event in events)
 
@@ -319,7 +319,7 @@ def test_capacity_fallback_cancellation_and_close_cannot_dispatch(point):
     def status(event):
         if point == "skip_event" and event["kind"] == "refinement_skipped":
             cancelled.set()
-    stream = stream_best_work(ctrl, "Read a file", cancel_event=cancelled, status_callback=status)
+    stream = stream_best_work(ctrl, "Read a file", cancel_event=cancelled, status_callback=status, passes=2)
     if point == "displayed_text":
         assert next(stream) == "Plan "
         stream.close()
@@ -346,7 +346,7 @@ def test_capacity_fallback_never_masks_original_or_unrelated_error_or_splices_an
     statuses = []
     visible = []
     with pytest.raises(type(problem)) as error:
-        for piece in stream_best_work(ctrl, "request", status_callback=statuses.append):
+        for piece in stream_best_work(ctrl, "request", status_callback=statuses.append, passes=2):
             visible.append(piece)
     assert error.value is problem
     assert visible == (["partial final output"] if failure == "after_streaming" else [])
@@ -360,7 +360,7 @@ def test_tool_result_starts_a_fresh_stage_without_a_stale_fallback_draft():
     ctrl, events = controller([[CALL], _unfit_refinement, _unfit_refinement])
     output = []
     with pytest.raises(ContextOverflow):
-        for piece in stream_best_work(ctrl, "Read file"):
+        for piece in stream_best_work(ctrl, "Read file", passes=2):
             output.append(piece)
     assert "".join(output).count("Calling read_file") == 1
     assert "".join(output).count("ACTUAL disk data") == 1
@@ -373,7 +373,7 @@ def test_tool_result_starts_a_fresh_stage_without_a_stale_fallback_draft():
 @pytest.mark.parametrize("projection", [False, True])
 def test_direct_best_work_projects_archive_before_copying_and_preserves_transcript(tmp_path, monkeypatch, projection):
     from core.context_memory import ActiveChatHistory, ChatArchive
-    from core.online_consolidator import AwakeOnlineConsolidator
+    from core.online_consolidator import ManagedAwakeOnlineConsolidator
     from tests.unit.context_backend_fixture import TransactionalBackend
     from tests.unit.test_persistent_context_memory import add_pair
 
@@ -381,7 +381,7 @@ def test_direct_best_work_projects_archive_before_copying_and_preserves_transcri
     add_pair(archive, 9)
     retired = {row.turn_id for row in archive}
     backend = TransactionalBackend(tmp_path)
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     monkeypatch.setattr("core.online_consolidator.release_training_memory", lambda _: {})
     assert service.sleep(archive)["turns_retired"] == len(retired)
     archive.append({"role": "system", "content": "Preserve this instruction."})
@@ -405,7 +405,7 @@ def test_direct_best_work_projects_archive_before_copying_and_preserves_transcri
         return decode(row)
     with monkeypatch.context() as mp:
         mp.setattr(ChatArchive, "_decode", staticmethod(active_rows_only))
-        assert list(stream_best_work(ctrl, "What is the label?", history)) == ["Selected answer."]
+        assert list(stream_best_work(ctrl, "What is the label?", history, passes=2)) == ["Selected answer."]
     assert [turn.turn_id for turn in archive] == [turn.turn_id for turn in original]
     assert list(archive) == original
     assert original[-2:] == engine.contexts[0][1][-2:]

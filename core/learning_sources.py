@@ -9,8 +9,11 @@ from __future__ import annotations
 import csv
 import json
 import os
+from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+
+from core.learning_implementation import get_learning_implementation
 
 TEXT_SUFFIXES = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".ini", ".cfg", ".toml",
@@ -65,14 +68,18 @@ def learning_media_kinds(source):
     return [kind for kind in MEDIA_SUFFIXES if kind in detected]
 
 
-def inspect_learning_source(source: str | os.PathLike[str]) -> Dict[str, Any]:
+def inspect_learning_source(source: str | os.PathLike[str], *, implementation="legacy") -> Dict[str, Any]:
     path = Path(source).expanduser().resolve()
     if not path.exists():
         raise ValueError(f"Learning source does not exist: {path}")
     text_files: List[str] = []
     media_files: Dict[str, List[str]] = {"image": [], "video": [], "audio": []}
     ignored: List[str] = []
-    for file in _iter_source_files(path):
+    if get_learning_implementation(implementation) == "legacy":
+        files = (path,) if path.is_file() else islice((p for p in sorted(path.rglob("*")) if p.is_file()), 128)
+    else:
+        files = _iter_source_files(path)
+    for file in files:
         suffix = file.suffix.lower()
         kind = media_kind(file)
         if kind:
@@ -100,45 +107,47 @@ def _extract_json(path: Path) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
-def _extract_jsonl(path: Path) -> str:
+def _extract_jsonl(path: Path, legacy: bool) -> str:
     rows = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for index, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines()):
         if not line.strip():
             continue
         try:
             rows.append(json.loads(line))
         except Exception:
             rows.append({"raw": line})
+        if legacy and index >= 1999:
+            break
     return "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
 
 
-def _extract_delimited(path: Path, delimiter: str) -> str:
+def _extract_delimited(path: Path, delimiter: str, legacy: bool) -> str:
     out: List[str] = []
     with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
-        for row in reader:
+        for row in islice(reader, 2000) if legacy else reader:
             out.append(delimiter.join(str(cell) for cell in row))
     return "\n".join(out)
 
 
-def _extract_parquet(path: Path) -> str:
+def _extract_parquet(path: Path, legacy: bool) -> str:
     try:
         import pyarrow.parquet as pq
     except Exception as exc:
         raise RuntimeError("Parquet /learn requires pyarrow") from exc
     table = pq.read_table(path)
-    rows = table.to_pylist()
+    rows = (table.slice(0, 2000) if legacy else table).to_pylist()
     return "\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in rows)
 
 
-def _extract_pdf(path: Path) -> str:
+def _extract_pdf(path: Path, legacy: bool) -> str:
     try:
         from pypdf import PdfReader
     except Exception as exc:
         raise RuntimeError("PDF /learn requires pypdf") from exc
     reader = PdfReader(str(path))
     parts = []
-    for page in reader.pages:
+    for page in islice(reader.pages, 200) if legacy else reader.pages:
         text = page.extract_text() or ""
         if text.strip():
             parts.append(text)
@@ -158,43 +167,67 @@ def _extract_docx(path: Path) -> str:
     return "\n".join(parts)
 
 
-def extract_text_file(path: Path, max_chars: int | None = None) -> str:
+def extract_text_file(path: Path, max_chars: int | None = 120_000) -> str:
+    """Extract one file using the original per-format limits and whitespace rules."""
+    return _extract_text_file(path, max_chars, legacy=True)
+
+
+def extract_complete_text_file(path: Path, max_chars: int | None = None) -> str:
+    return _extract_text_file(path, max_chars, legacy=False)
+
+
+def _extract_text_file(path: Path, max_chars: int | None, *, legacy: bool) -> str:
     suffix = path.suffix.lower()
     if suffix == ".json":
         text = _extract_json(path)
     elif suffix == ".jsonl":
-        text = _extract_jsonl(path)
+        text = _extract_jsonl(path, legacy)
     elif suffix == ".csv":
-        text = _extract_delimited(path, ",")
+        text = _extract_delimited(path, ",", legacy)
     elif suffix == ".tsv":
-        text = _extract_delimited(path, "\t")
+        text = _extract_delimited(path, "\t", legacy)
     elif suffix == ".parquet":
-        text = _extract_parquet(path)
+        text = _extract_parquet(path, legacy)
     elif suffix == ".pdf":
-        text = _extract_pdf(path)
+        text = _extract_pdf(path, legacy)
     elif suffix == ".docx":
         text = _extract_docx(path)
     elif suffix in TEXT_SUFFIXES:
         text = path.read_text(encoding="utf-8", errors="replace")
     else:
         return ""
-    return _clip(text, max_chars)
+    return _clip(text.strip() if legacy else text, max_chars)
 
 
 def extract_learning_text(
     source: str | os.PathLike[str],
     *,
+    max_total_chars: int | None = 240_000,
+    max_chars_per_file: int | None = 120_000,
+) -> Dict[str, Any]:
+    return _extract_learning_text(source, max_total_chars, max_chars_per_file, "legacy")
+
+
+def extract_complete_learning_text(
+    source: str | os.PathLike[str],
+    *,
     max_total_chars: int | None = None,
     max_chars_per_file: int | None = None,
 ) -> Dict[str, Any]:
-    inspection = inspect_learning_source(source)
+    """Extract complete source files with the managed ingestion whitespace and traversal rules."""
+    return _extract_learning_text(source, max_total_chars, max_chars_per_file, "managed")
+
+
+def _extract_learning_text(source, max_total_chars, max_chars_per_file, implementation):
+    inspection = inspect_learning_source(source, implementation=implementation)
+    extract = extract_text_file if implementation == "legacy" else extract_complete_text_file
     chunks: List[str] = []
     total = 0
     errors: List[str] = []
     for raw in inspection["text_files"]:
         path = Path(raw)
         try:
-            text = extract_text_file(path, max_chars=max_chars_per_file)
+            text = extract(path, max_chars=max_chars_per_file)
         except Exception as exc:
             errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
             continue

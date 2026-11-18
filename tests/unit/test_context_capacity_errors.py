@@ -120,7 +120,7 @@ def test_strata_distinguishes_chat_preflight_from_service_and_stream_failures(st
 @pytest.mark.parametrize("use_archive", [False, True])
 def test_unrecallable_oldest_keeps_its_source_while_later_verified_pair_makes_room(tmp_path, monkeypatch, use_archive):
     from core.context_memory import ChatArchive
-    from core.online_consolidator import AwakeOnlineConsolidator
+    from core.online_consolidator import ManagedAwakeOnlineConsolidator
     from tests.unit.context_backend_fixture import TransactionalBackend
     from tests.unit.test_persistent_context_memory import add_pair
 
@@ -145,7 +145,7 @@ def test_unrecallable_oldest_keeps_its_source_while_later_verified_pair_makes_ro
     install_awake_auto_learning(Engine)
     engine = Engine()
     backend = engine.controller_backend = TransactionalBackend(tmp_path)
-    service = engine.awake_consolidator = AwakeOnlineConsolidator(backend, evict_ratio=0.05, session_id="one")
+    service = engine.awake_consolidator = ManagedAwakeOnlineConsolidator(backend, evict_ratio=0.05, session_id="one")
     rows = [{"role": "system", "content": "Always answer precisely."},
             {"role": "user", "content": "Unrecallable first message."},
             {"role": "assistant", "content": "Acknowledged."},
@@ -169,7 +169,7 @@ def test_unrecallable_oldest_keeps_its_source_while_later_verified_pair_makes_ro
     expected = original[:5] + original[7:]
     assert engine.generated_with == expected
     assert history == (original if use_archive else expected)
-    restarted = AwakeOnlineConsolidator(TransactionalBackend(tmp_path), session_id="one")
+    restarted = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path), session_id="one")
     assert list(restarted.active_history(history if use_archive else original)) == expected
     assert not any(getattr(turn, "_capacity_recovery", None) for turn in
                    (list(history) if use_archive else original))
@@ -201,14 +201,14 @@ def test_native_packer_preserves_literal_warnings_and_equal_text_from_distinct_r
 @pytest.mark.parametrize("stop", ["cancel", "storage"])
 def test_operational_failure_stops_alternate_retirement_without_hiding_source(tmp_path, monkeypatch, stop):
     from core.context_memory import ChatArchive
-    from core.online_consolidator import AwakeOnlineConsolidator
+    from core.online_consolidator import ManagedAwakeOnlineConsolidator
     from tests.unit.context_backend_fixture import TransactionalBackend
     from tests.unit.test_persistent_context_memory import add_pair
 
     monkeypatch.setattr("core.online_consolidator.release_training_memory",
                         lambda _: {"after_mb": 0, "released_mb": 0})
     backend = TransactionalBackend(tmp_path)
-    service = AwakeOnlineConsolidator(backend, evict_ratio=0.05)
+    service = ManagedAwakeOnlineConsolidator(backend, evict_ratio=0.05)
     archive = ChatArchive(tmp_path / "archive.sqlite", "one")
     archive.append({"role": "user", "content": "Unknown earliest source"})
     archive.append({"role": "assistant", "content": "Acknowledged."})

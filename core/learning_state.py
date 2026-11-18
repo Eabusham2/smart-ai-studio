@@ -239,7 +239,9 @@ class LearningStateStore:
 
     def for_scope(self, scope, *, require_new=False):
         """Atomically reserve a fresh transient namespace when require_new is set."""
-        return type(self)(self.identity, state_root=self.root, scope=scope, require_new=require_new)
+        scoped = type(self)(self.identity, state_root=self.root, scope=scope, require_new=require_new)
+        scoped.implementation_base_root = getattr(self, "implementation_base_root", self.root)
+        return scoped
 
     def _check_request(self):
         if self.scope.kind == "request":
@@ -409,8 +411,8 @@ class LearningStateStore:
             return None
         return str(_contained(self.directory / "generations" / manifest["generation"], manifest["checkpoint"]))
 
-    def begin(self, update_id=None, metadata=None):
-        return LearningTransaction(self, update_id=update_id, metadata=metadata)
+    def begin(self, update_id=None, metadata=None, *, inherit_metadata=True):
+        return LearningTransaction(self, update_id=update_id, metadata=metadata, inherit_metadata=inherit_metadata)
 
 
 def _contained(directory: Path, relative) -> Path:
@@ -424,7 +426,7 @@ def _contained(directory: Path, relative) -> Path:
 
 
 class LearningTransaction:
-    def __init__(self, store: LearningStateStore, *, update_id=None, metadata=None):
+    def __init__(self, store: LearningStateStore, *, update_id=None, metadata=None, inherit_metadata=True):
         self.store = store
         if store.scope.pin:
             raise RuntimeError("A selected document generation is read-only")
@@ -440,7 +442,7 @@ class LearningTransaction:
             self.rollout_group = supplied.pop("_sampled_rollout_group", None)
             if "expected_parent" in supplied and supplied["expected_parent"] != self.parent:
                 raise RuntimeError("The memory plan belongs to an older parameter generation; retry consolidation")
-            parent_manifest = store.current_manifest(verify=False)
+            parent_manifest = store.current_manifest(verify=False) if inherit_metadata else None
             inherited = dict((parent_manifest or {}).get("metadata") or {})
             inherited.pop("expected_parent", None)
             inherited.pop("update_id", None)
@@ -552,18 +554,27 @@ class LearningTransaction:
 
 
 def bind_learning_state(backend, *, model_path=None, model_info=None, state_root=None, adapter_format="mlx", scope=None) -> LearningStateStore:
+    root = _state_root(state_root)
+    existing = getattr(backend, "learning_state", None)
+    # Scope switches can supply the effective root of an already bound store.
+    # Retain its base so repeated binds, including a mode switch, are idempotent.
+    if isinstance(existing, LearningStateStore) and root == existing.root:
+        root = getattr(existing, "implementation_base_root", root)
+    base_root = root
+    if getattr(backend, "learning_implementation", None) == "legacy":
+        root = root / "legacy-implementation"
     identity = model_identity(
         model_path or getattr(backend, "model_path", None) or getattr(backend, "hf_repo_id", None),
         model_info if model_info is not None else getattr(backend, "model_info", None),
-        adapter_format=adapter_format, state_root=state_root,
+        adapter_format=adapter_format, state_root=base_root,
     )
-    existing = getattr(backend, "learning_state", None)
     scope = as_scope(scope if scope is not None else getattr(backend, "learning_scope", None))
     if (isinstance(existing, LearningStateStore) and existing.identity == identity
-            and existing.scope == scope and existing.root == _state_root(state_root)):
+            and existing.scope == scope and existing.root == root):
         existing._check_request()
         return existing
-    store = LearningStateStore(identity, state_root=state_root, scope=scope)
+    store = LearningStateStore(identity, state_root=root, scope=scope)
+    store.implementation_base_root = base_root
     backend.learning_scope = scope
     backend.learning_state = store
     backend.learning_identity = store.identity

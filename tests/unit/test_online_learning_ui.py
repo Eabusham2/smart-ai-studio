@@ -19,7 +19,7 @@ def app(tmp_path, monkeypatch):
     except tk.TclError:
         pytest.skip("A desktop display is required")
     root.withdraw()
-    app = SmartAIChatbotApp(root, settings=Settings(use_mock=True, auto_download=False,
+    app = SmartAIChatbotApp(root, settings=Settings(use_mock=True, auto_download=False, learning_implementation="managed",
                                                   database_path=str(tmp_path / "chat.sqlite3")))
     app._check_and_run_next_queue = lambda: None
     try:
@@ -42,6 +42,92 @@ def descendants(widget):
     for child in widget.winfo_children():
         yield child
         yield from descendants(child)
+
+
+def test_implementation_control_preserves_both_transcripts_and_original_default_actions(app):
+    from core.memory_preferences import load_learning_implementation
+    app.chat_history[app.active_tab_id].append({"role": "user", "content": "Managed conversation"})
+    archived = app.chat_history[app.active_tab_id]
+    show_online_learning(app)
+    modal = next(child for child in app.root.winfo_children() if isinstance(child, tk.Toplevel))
+    chooser = next(widget for widget in descendants(modal)
+                   if isinstance(widget, ttk.Combobox) and tuple(widget.cget("values")) == ("legacy", "managed"))
+    apply = next(widget for widget in descendants(modal)
+                 if isinstance(widget, ttk.Button) and widget.cget("text") == "Apply implementation")
+
+    def select(mode):
+        chooser.set(mode)
+        apply.invoke()
+        def poll():
+            if not app.is_generating:
+                app.root.quit()
+            else:
+                app.root.after(10, poll)
+        app.root.after(10, poll)
+        app.root.after(3000, app.root.quit)
+        app.root.mainloop()
+        assert not app.is_generating
+        assert app.settings.learning_implementation == mode
+        assert app.engine.awake_consolidator.learning_implementation == mode
+        assert load_learning_implementation(app.settings.database_path) == mode
+
+    select("legacy")
+    assert app.chat_history[app.active_tab_id] == []
+    app.chat_history[app.active_tab_id].append({"role": "user", "content": "Original conversation"})
+    original = app.chat_history[app.active_tab_id]
+    app.models_config["added_in_original_mode"] = dict(app.models_config[app.active_tab_id])
+    select("managed")
+    assert app.chat_history[app.active_tab_id] is archived
+    assert archived[0]["content"] == "Managed conversation"
+    assert "added_in_original_mode" in app.chat_history
+    select("legacy")
+    assert app.chat_history[app.active_tab_id] is original
+    assert original[0]["content"] == "Original conversation"
+
+
+def test_switching_models_in_legacy_reopens_managed_text_for_the_destination_scope(tmp_path, monkeypatch):
+    from core.memory_scopes import LearningScope
+    from tests.unit.test_implementation_switch import SwitchEngine
+
+    engine = SwitchEngine(tmp_path / "weights", "managed")
+    engine.settings.database_path = str(tmp_path / "transcripts.sqlite3")
+    project = LearningScope("project", "A only")
+    engine.learning_scope = project
+    engine.load_model("A", "fixture/A", backend="fixture")
+
+    # Exercise the ordinary GUI history callback with real SQLite transcripts
+    # and model-specific state selection, without requiring a window server.
+    app = SmartAIChatbotApp.__new__(SmartAIChatbotApp)
+    app.settings, app.engine = engine.settings, engine
+    app.models_config = {"A": {}, "B": {}, "audio": {"model_type": "audio"}}
+    app.tools, app.db = object(), object()
+    app._show_transcript_page = lambda: None
+    monkeypatch.setattr("app_gui.make_autonomous_learner", lambda **kwargs: object())
+    app.chat_history = {tab: app._open_tab_history(tab) for tab in app.models_config}
+    private = {"role": "user", "content": "Project-only turn"}
+    app.chat_history["B"].append(private)
+    media = app.chat_history["audio"]
+
+    def choose(mode):
+        receipt = engine.set_learning_implementation(mode)
+        app._learning_implementation_changed(receipt["previous_implementation"])
+
+    choose("legacy")
+    original = app.chat_history["B"]
+    original.append({"role": "user", "content": "Live legacy turn"})
+    engine.load_model("B", "fixture/B", backend="fixture")
+    choose("managed")
+    assert engine.learning_scope == LearningScope()
+    assert app.chat_history["B"].tab == "B" and list(app.chat_history["B"]) == []
+    assert app.chat_history["audio"] is media
+    app.chat_history["B"].append({"role": "user", "content": "Model-wide turn"})
+
+    choose("legacy")
+    assert app.chat_history["B"] is original
+    engine.load_model("A", "fixture/A", backend="fixture")
+    choose("managed")
+    assert engine.learning_scope == project
+    assert list(app.chat_history["B"]) == [private]
 
 
 def test_visible_chat_is_paged_without_deleting_archived_turns(app):

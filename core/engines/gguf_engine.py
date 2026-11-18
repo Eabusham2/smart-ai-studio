@@ -197,6 +197,8 @@ class GGUFReasoningBackend:
                 base_model_id=self.training_base_model_id,
                 adapter_root=self.adapter_root, memory_limit_gb=self.memory_limit_gb,
             )
+            if getattr(self, "learning_implementation", None) == "legacy":
+                return trainer.can_prepare_legacy()
             return bool(trainer.can_prepare())
         except Exception:
             return False
@@ -215,6 +217,8 @@ class GGUFReasoningBackend:
         except Exception:
             return max(1, len(text) // 4)
 
+    supports_learning_modes = True
+
     def train_mini_batch(
         self,
         adapters: Any,
@@ -224,6 +228,26 @@ class GGUFReasoningBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
+        learning_mode=None, **options,
+    ):
+        """Select the original completion trainer or the managed learning objectives."""
+        from core.learning_implementation import resolve_learning_mode
+        mode = resolve_learning_mode(self, learning_mode, options)
+        return GGUFReasoningBackend._train_mini_batch(
+            self, adapters, data, fisher_matrix, lambda_ewc, learning_rate, steps, save_path,
+            learning_mode=mode, **options,
+        )
+
+    def _train_mini_batch(
+        self,
+        adapters: Any,
+        data: List[Dict[str, str]],
+        fisher_matrix: Any = None,
+        lambda_ewc: float = 0.0,
+        learning_rate: float = 1e-4,
+        steps: int = 3,
+        save_path: Optional[str] = None,
+        *, learning_mode,
         cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
         reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
         objective='causal_lm', supervise_prompt=False, max_window_tokens=512, row_weights=None,
@@ -238,7 +262,7 @@ class GGUFReasoningBackend:
         trainer = GGUFLoRATrainer(model_path=self.model_path, base_model_id=self.training_base_model_id,
                                   adapter_root=self.adapter_root, memory_limit_gb=self.memory_limit_gb)
         return update_deployment(
-            self, trainer, data, learning_rate=learning_rate, steps=steps,
+            self, trainer, data, learning_mode=learning_mode, learning_rate=learning_rate, steps=steps,
             fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event,
             validation_callback=validation_callback, learning_metadata=learning_metadata, anchor_texts=anchor_texts,
             reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,

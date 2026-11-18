@@ -82,7 +82,7 @@ def _packed_head(model, rank, scale):
 
 
 def _projection_targets(model, requested):
-    """Resolve checkpoint paths on the actual decoder; fresh adapters use the historical projection set."""
+    """Resolve saved targets or enumerate the available decoder projections for managed training."""
     if requested is not None:
         modules = dict(model.named_modules())
         for path in sorted(requested):

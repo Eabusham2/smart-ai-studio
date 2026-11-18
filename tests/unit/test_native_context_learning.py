@@ -389,9 +389,9 @@ def test_native_adapter_requires_exact_registered_path_and_unit_scale(tmp_path, 
 
 @pytest.mark.parametrize("tiny_controller", [96], indirect=True)
 def test_train_pairs_measures_source_free_recall_on_restarted_cpu_model(tiny_controller):
-    from core.online_consolidator import AwakeOnlineConsolidator
+    from core.online_consolidator import ManagedAwakeOnlineConsolidator
     backend = tiny_controller
-    learner = AwakeOnlineConsolidator(backend)
+    learner = ManagedAwakeOnlineConsolidator(backend)
     data = [{"prompt": "What is the vault color?", "completion": "the vault color is slate"}] * 8
     update = learner.train_pairs(data, evidence=["the vault color is slate"], learning_rate=0.004)
     assert update["probe_nll_after"][0] < update["probe_nll_before"][0]

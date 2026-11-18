@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from core.online_consolidator import AwakeOnlineConsolidator, LearningValidationError
+from core.online_consolidator import ManagedAwakeOnlineConsolidator, LearningValidationError
 from memory.anchor_dataset import get_anchor_dataset
 from memory.db import EpisodicMemoryDB
 from tests.unit.context_backend_fixture import TransactionalBackend
@@ -29,7 +29,7 @@ def test_sleep_uses_original_verified_queue_order_and_shared_scope(tmp_path):
     already = add(db, "previously consolidated", 1.)
     db.mark_consolidated([already])
     backend = TransactionalBackend(tmp_path / "weights")
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     assert service.pending_verified_episodes(db) == 3
     assert service.sleep([])["status"] == "idle"
     with patch.object(backend, "train_mini_batch", wraps=backend.train_mini_batch) as train:
@@ -53,7 +53,7 @@ def test_interrupted_ack_recovers_scope_bound_receipt_after_later_update(tmp_pat
     db = EpisodicMemoryDB(tmp_path / "episodes.sqlite")
     add(db, "old", .5)
     backend = TransactionalBackend(tmp_path / "weights")
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     with monkeypatch.context() as m:
         def interrupted(*args):
             raise InterruptedError("interrupted after durable commit")
@@ -65,10 +65,10 @@ def test_interrupted_ack_recovers_scope_bound_receipt_after_later_update(tmp_pat
     assert not db.fetch_surprise_replay_data()
     add(db, "newer", .95)
     service.train_pairs([{"prompt": "q", "completion": "a"}])
-    other = AwakeOnlineConsolidator(TransactionalBackend(tmp_path / "other-state"))
+    other = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path / "other-state"))
     with pytest.raises(RuntimeError, match="original model and memory scope"):
         other.sleep_verified_episodes(db, settings=SETTINGS)
-    restored = AwakeOnlineConsolidator(TransactionalBackend(tmp_path / "weights"))
+    restored = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path / "weights"))
     recovered = restored.sleep_verified_episodes(db, settings=SETTINGS)
     assert recovered["recovered"] and recovered["memories_consolidated"] == 1
     assert restored.engine.train_calls == 0 and db.get_stats()["consolidation_cycles"] == 1
@@ -80,8 +80,8 @@ def test_concurrent_consumers_train_a_batch_once_and_release_writers(tmp_path):
 
     db = EpisodicMemoryDB(tmp_path / "episodes.sqlite")
     add(db, "once", .9)
-    first = AwakeOnlineConsolidator(TransactionalBackend(tmp_path / "first"))
-    second = AwakeOnlineConsolidator(TransactionalBackend(tmp_path / "second"))
+    first = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path / "first"))
+    second = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path / "second"))
     started, release = threading.Event(), threading.Event()
 
     def pause():
@@ -113,7 +113,7 @@ def test_mutated_episode_cannot_be_acknowledged_with_old_checkpoint(tmp_path):
             conn.execute("UPDATE interactions SET completion='edited' WHERE id=?", (episode_id,))
 
     backend.before_validation = edit
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     with pytest.raises(RuntimeError, match="content changed"):
         service.sleep_verified_episodes(db, settings=SETTINGS)
     with pytest.raises(RuntimeError, match="content changed"):
@@ -133,7 +133,7 @@ def test_cancelled_or_rejected_sleep_releases_episodes(tmp_path, cancel):
     else:
         backend.regress = True
     with pytest.raises(InterruptedError if cancel else LearningValidationError):
-        AwakeOnlineConsolidator(backend).sleep_verified_episodes(db, settings=SETTINGS, cancel_event=event)
+        ManagedAwakeOnlineConsolidator(backend).sleep_verified_episodes(db, settings=SETTINGS, cancel_event=event)
     assert db.get_stats()["consolidation_cycles"] == 0 and backend.learning_state.current_manifest() is None
     assert [row["prompt"] for row in db.fetch_surprise_replay_data()] == ["keep"]
 
@@ -143,7 +143,7 @@ def test_active_controller_verified_sleep_real_ewc_and_checkpoint(tiny_controlle
     db = EpisodicMemoryDB(tmp_path / "episodes.sqlite")
     for i in range(4):
         add(db, "What is the vault color?", .9 - i / 10, completion="slate")
-    service = AwakeOnlineConsolidator(tiny_controller)
+    service = ManagedAwakeOnlineConsolidator(tiny_controller)
     result = service.sleep_verified_episodes(db, settings=SETTINGS)
     assert result["ewc_active"] and result["parameter_drift_l2"] > 0
     assert result["memories_consolidated"] == 4 and service.pending_verified_episodes(db) == 0

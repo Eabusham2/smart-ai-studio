@@ -27,7 +27,8 @@ from config.settings import Settings, get_settings
 from config.strata_models import STRATA_PRESETS, get_strata_preset
 from core.context_memory import ChatArchive, completed_groups
 from core.training_memory import backend_label
-from core.autonomous_learner import AutonomousLearner
+from core.autonomous_learner import make_autonomous_learner
+from consolidation.daemon import SleepConsolidationDaemon
 from core.audio_engine import AudioGenerationEngine
 from core.media_engine import MediaGenerationEngine
 from core.media_orchestrator import MediaController
@@ -585,18 +586,25 @@ class SmartAIChatbotApp:
         # Core Engines & Tools
         self.db = EpisodicMemoryDB(db_path=self.settings.database_path)
         self.tools = AgentToolRegistry(db_path=self.settings.database_path)
+        from core.memory_preferences import load_learning_implementation
+        try:
+            self.settings.learning_implementation = load_learning_implementation(
+                self.settings.database_path, getattr(self.settings, "learning_implementation", "legacy"))
+        except (ValueError, OSError, sqlite3.Error) as error:
+            print(f"Saved learning implementation could not be read: {error}")
         self.engine = ProReasoningEngine(settings=self.settings)
         from core.memory_preferences import load_memory_preference
         # No model is resident yet. The ordinary loader will bind this saved
         # namespace before looking up any learned generation.
         try:
-            self.engine.learning_scope = load_memory_preference(self.settings.database_path)
+            if getattr(self.settings, "learning_implementation", "legacy") == "managed":
+                self.engine.learning_scope = load_memory_preference(self.settings.database_path)
         except (ValueError, OSError, sqlite3.Error) as error:
             print(f"Saved memory selection could not be read: {error}")
         self.audio_engine = AudioGenerationEngine()
         self.media_engine = MediaGenerationEngine()
         self.multimodal = MediaController(self)
-        self.learner = AutonomousLearner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
+        self.learner = make_autonomous_learner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
 
         # State Variables
         self.workspace_dir: Optional[str] = None
@@ -2149,8 +2157,11 @@ class SmartAIChatbotApp:
         self.lbl_res_vram = tk.Label(col1, text="• VRAM Usage: 0.0 GB (Unloaded)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_orange"], anchor="w")
         self.lbl_res_vram.pack(fill="x", pady=2)
 
-        self.lbl_res_synapses = tk.Label(col1, text="• Adapter updates: none this session", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_purple"], anchor="w")
+        self.lbl_res_synapses = tk.Label(col1, text="• Learned Weights: +0 Synapses (EWC Replay Active)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_purple"], anchor="w")
         self.lbl_res_synapses.pack(fill="x", pady=2)
+        self.lbl_res_adapter_updates = tk.Label(col1, text="• Adapter updates: none this session", font=_FONT_SMALL,
+            bg=self.C["bg_resources"], fg=self.C["accent_purple"], anchor="w")
+        self.lbl_res_adapter_updates.pack(fill="x", pady=2)
 
         col2 = tk.Frame(body, bg=self.C["bg_resources"])
         col2.pack(side="right", fill="both", expand=True)
@@ -2324,6 +2335,7 @@ class SmartAIChatbotApp:
         menu.add_command(label="🔍 Select All", command=self._on_select_all_chat)
         menu.add_separator()
         menu.add_command(label="💾 Export Chat to Markdown", command=self._on_export_chat_button)
+        menu.add_command(label="Export complete transcript as…", command=self._on_export_full_transcript)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -3886,12 +3898,25 @@ class SmartAIChatbotApp:
                 self.chat_stream.insert("end", code_content.rstrip(), "code_block")
                 self.chat_stream.insert("end", "\n\n")
 
-    def _open_tab_history(self, tab):
-        if self.models_config[tab].get("model_type", "text") == "text":
+    def _learning_implementation_changed(self, previous):
+        selected = getattr(self.settings, "learning_implementation", "legacy")
+        histories = getattr(self, "_implementation_histories", {})
+        histories[previous] = self.chat_history
+        self._implementation_histories = histories
+        cached = histories.get(selected, {})
+        self.chat_history = {tab: self._open_tab_history(tab, cached.get(tab)) for tab in self.models_config}
+        self.learner = make_autonomous_learner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
+        self._show_transcript_page()
+
+    def _open_tab_history(self, tab, cached=None):
+        if (getattr(self.settings, "learning_implementation", "legacy") == "managed"
+                and self.models_config[tab].get("model_type", "text") == "text"):
             scope = getattr(self.engine, "learning_scope", None)
             key = tab if scope is None or scope.kind == "model" else f"{tab}:scope:{scope.scope_id}"
+            if isinstance(cached, ChatArchive) and cached.path == self.settings.database_path and cached.tab == key:
+                return cached
             return ChatArchive(self.settings.database_path, key)
-        return []
+        return cached if isinstance(cached, list) else []
 
     def _show_transcript_page(self, end=None, *, start=None):
         if getattr(self, "is_generating", False):
@@ -3906,6 +3931,8 @@ class SmartAIChatbotApp:
         self._render_tab_transcript(end=end, start=start)
 
     def _limit_rendered_transcript(self):
+        if getattr(self.settings, "learning_implementation", "legacy") == "legacy":
+            return
         if getattr(self, "is_generating", False) or not hasattr(self, "chat_history"):
             return
         history = self.chat_history.get(self.active_tab_id, [])
@@ -3924,7 +3951,15 @@ class SmartAIChatbotApp:
     def _render_tab_transcript(self, end=None, *, start=None):
         from core.chat_paging import transcript_page
         history = self.chat_history[self.active_tab_id]
-        page = transcript_page(history, end=end, start=start)
+        if getattr(self.settings, "learning_implementation", "legacy") == "legacy":
+            from types import SimpleNamespace
+            page = SimpleNamespace(start=0, end=len(history), total=len(history), turns=history, previewed=False)
+            if hasattr(self, "history_pager"):
+                self.history_pager.pack_forget()
+        else:
+            page = transcript_page(history, end=end, start=start)
+            if hasattr(self, "history_pager"):
+                self.history_pager.pack(fill="x", before=self.chat_stream)
         self._transcript_page_start, self._transcript_page_end = page.start, page.end
         self._transcript_browsing = page.end < page.total
         if hasattr(self, "history_page_label"):
@@ -4079,6 +4114,14 @@ class SmartAIChatbotApp:
             self._on_clear_chat()
 
     def _on_export_chat_button(self):
+        ok, res = self.tools.execute_tool("export_chat_history", {"filename": "chat_history_export.md"})
+        if ok:
+            self._append_ai_message(f"💾 **Chat History Exported**: Saved to `{os.path.abspath('chat_history_export.md')}`.")
+            messagebox.showinfo("Chat Exported", f"Chat history saved to:\n{os.path.abspath('chat_history_export.md')}")
+        else:
+            self._append_ai_message("⚠️ Could not export chat history.")
+
+    def _on_export_full_transcript(self):
         from core.chat_paging import export_transcript
         path = filedialog.asksaveasfilename(title="Export complete conversation", defaultextension=".md",
                                            initialfile="chat_history_export.md", filetypes=[("Markdown", "*.md")])
@@ -4734,7 +4777,7 @@ class SmartAIChatbotApp:
             # Do not flatten Learn attachments into prompt text. Pass the real file/folder
             # path to the existing source readers so PDF/DOCX/Parquet/media remain typed.
             try:
-                inspection = inspect_learning_source(attached)
+                inspection = inspect_learning_source(attached, implementation=getattr(self.settings, "learning_implementation", "legacy"))
                 media_kinds = list(inspection.get("media_kinds") or [])
                 learn_source_path = attached
                 if media_kinds:
@@ -4983,7 +5026,7 @@ class SmartAIChatbotApp:
 
                 inspection = None
                 if learn_source_path:
-                    inspection = inspect_learning_source(learn_source_path)
+                    inspection = inspect_learning_source(learn_source_path, implementation=getattr(self.settings, "learning_implementation", "legacy"))
 
                 # Media Learn is independent of the controller's perception capability:
                 # every text controller may teach a selected generator from real media.
@@ -5322,7 +5365,7 @@ class SmartAIChatbotApp:
                 if use_pro_branches:
                     options.update(best_work_enabled=True, progress_callback=_branch_progress,
                                    status_callback=_decision, route_with_history=route_with_history,
-                                   best_work_passes=getattr(self.settings, "best_work_passes", 2))
+                                   best_work_passes=getattr(self.settings, "best_work_passes", 1))
                 iterator = self.multimodal.stream_solve(full_msg,
                     history=curr_history, cancel_event=self.cancel_event, **options
                 )
@@ -5732,6 +5775,10 @@ class SmartAIChatbotApp:
             elif tps > 0 and not is_native:
                 self.lbl_tps.configure(text=f"⚡ {tps:.1f} tok/s")
         if hasattr(self, "lbl_res_synapses"):
+            syn_str = format_added_synapses(self.synapses_learned_count)
+            self.lbl_res_synapses.configure(text="• Weight training: unavailable for this inference model" if inference_only
+                                           else f"• +Params Learned: {syn_str} (EWC Replay Active)")
+        if hasattr(self, "lbl_res_adapter_updates"):
             service = getattr(self.engine, "awake_consolidator", None)
             result = getattr(service, "last_result", {}) or {}
             state = getattr(getattr(service, "engine", None), "learning_state", None)
@@ -5743,7 +5790,7 @@ class SmartAIChatbotApp:
                 label = "Weight training: unavailable for this inference model"
             else:
                 label = "Adapter updates: none this session"
-            self.lbl_res_synapses.configure(text="• " + label)
+            self.lbl_res_adapter_updates.configure(text="• " + label)
 
     def _on_clear_chat(self):
         learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
@@ -5826,7 +5873,7 @@ assert glyph_res["invariants_passed"] == True
         pass_controls.pack(fill="x", padx=16, pady=(0, 8))
         tk.Label(pass_controls, text="Best Work passes:", font=_FONT_SMALL,
                  bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
-        pass_count = tk.StringVar(master=modal, value=str(getattr(self.settings, "best_work_passes", 2)))
+        pass_count = tk.StringVar(master=modal, value=str(getattr(self.settings, "best_work_passes", 1)))
         pass_entry = ttk.Spinbox(pass_controls, from_=1, to=999, width=5, textvariable=pass_count)
         pass_entry.pack(side="left", padx=8)
         pass_status = tk.Label(pass_controls, text="1 keeps the original pass; 2+ refines the prior result.",
@@ -6162,6 +6209,122 @@ assert glyph_res["invariants_passed"] == True
         _load_data()
 
     def _on_open_sleep_consolidation_panel(self):
+        service = getattr(self.engine, "awake_consolidator", None)
+        mode = getattr(getattr(self, "settings", None), "learning_implementation",
+                       getattr(service, "learning_implementation", "legacy"))
+        if mode == "managed":
+            return SmartAIChatbotApp._on_open_managed_sleep_consolidation_panel(self)
+        return SmartAIChatbotApp._on_open_legacy_sleep_consolidation_panel(self)
+
+    def _on_open_legacy_sleep_consolidation_panel(self):
+        """Opens live sleep consolidation & parameter update monitor."""
+        if self.models_config.get(self.active_tab_id, {}).get("inference_only"):
+            messagebox.showinfo("Inference Only", "Select a trainable model to consolidate dialogue into weights. Strata keeps your conversation as text.")
+            return
+        modal = tk.Toplevel(self.root)
+        modal.title("Sleep Consolidation Control Panel (EWC-LoRA)")
+        modal.geometry("720x520")
+        modal.minsize(640, 440)
+        modal.configure(bg=self.C["bg_hud"])
+        modal.transient(self.root)
+
+        hdr = tk.Frame(modal, bg=self.C["bg_hud"])
+        hdr.pack(fill="x", padx=20, pady=12)
+
+        tk.Label(hdr, text="💤 Sleep Consolidation & EWC Parametric Updates", font=_FONT_H2, bg=self.C["bg_hud"], fg=self.C["accent_purple"]).pack(anchor="w")
+
+        body = tk.Frame(modal, bg=self.C["bg_hud"])
+        body.pack(fill="both", expand=True, padx=20, pady=6)
+
+        # Status cards
+        cards_row = tk.Frame(body, bg=self.C["bg_hud"])
+        cards_row.pack(fill="x", pady=(0, 10))
+
+        def pending_count():
+            from contextlib import closing
+
+            try:
+                with closing(sqlite3.connect(self.settings.database_path)) as conn:
+                    # Match the original daemon's surprise-ordered queue. A managed
+                    # Sleep batch may still own a reservation after an interruption.
+                    return conn.execute("""
+                        SELECT COUNT(*) FROM interactions WHERE verified_reward = 1 AND consolidated = 0
+                        AND id NOT IN (SELECT value FROM verified_sleep_batch, json_each(episode_ids))
+                    """).fetchone()[0]
+            except sqlite3.Error as error:
+                return f"Unavailable ({error})"
+
+        uncons_count = pending_count()
+        lbl_uncons = self._make_badge(cards_row, f"📬 Pending verified episodes: {uncons_count}")
+        self._make_badge(cards_row, f"🧬 Active Adapter: Slow-LoRA (Rank=32, Alpha=64)")
+        self._make_badge(cards_row, f"🔒 EWC Lambda: λ = 400.0")
+
+        # Progress / Output Log Area
+        tk.Label(body, text="📈 Live Sleep Consolidation Progress & Parameter Shift:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w", pady=(8, 2))
+        txt_cons_log = tk.Text(body, height=12, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=12, pady=10)
+        txt_cons_log.pack(fill="both", expand=True, pady=(0, 10))
+        txt_cons_log.insert("1.0", f"✦ EWC Consolidation Daemon Ready.\n• Target Weights: eval_results/adapters.safetensors\n• Fisher Diagonal Matrix: Preserving foundation attention matrices\n• Pending Traces: {uncons_count} verified episodes ready for synaptic integration.\n")
+
+        btn_bar = tk.Frame(body, bg=self.C["bg_hud"])
+        btn_bar.pack(fill="x", pady=(0, 10))
+
+        btn_trigger = tk.Button(
+            btn_bar, text="▶ Trigger Sleep Consolidation Now", font=_FONT_BOLD,
+            bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"],
+            activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"],
+            relief="flat", bd=0, padx=16, pady=8, cursor="hand2", highlightthickness=0
+        )
+        btn_trigger.pack(side="left")
+
+        def _run_daemon():
+            if getattr(self.settings, "learning_implementation", "legacy") != "legacy":
+                txt_cons_log.insert("end", "\nLearning implementation changed; reopen Sleep for the selected implementation.\n")
+                return
+            if (
+                getattr(self, "_speed_ui_running", False)
+                or getattr(self.engine, "speed_tuning_active", False)
+                or getattr(self, "_sleep_consolidating", False)
+            ):
+                txt_cons_log.insert("end", "\nWait for the active speed test or consolidation to finish.\n")
+                return
+            self._sleep_consolidating = True
+            btn_trigger.configure(state="disabled", text="⏳ Consolidating Weights...")
+            txt_cons_log.insert("end", "\n[*] Initiating EWC Consolidation Cycle...\n")
+            txt_cons_log.see("end")
+
+            def finish(report, pending):
+                try:
+                    self._update_telemetry()
+                    if modal.winfo_exists():
+                        txt_cons_log.insert("end", report)
+                        txt_cons_log.see("end")
+                        lbl_uncons.configure(text=f"📬 Pending verified episodes: {pending}")
+                        btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now")
+                finally:
+                    self._sleep_consolidating = False
+
+            def _worker():
+                try:
+                    daemon = SleepConsolidationDaemon(settings=self.settings, use_mock=self.settings.use_mock)
+                    res = daemon.run_consolidation_cycle()
+                    if res["status"] == "success":
+                        report = (f"[✓] Cycle Complete! Memories Consolidated: {res['memories_consolidated']} "
+                                  f"({res['execution_time_seconds']:.2f}s)\n"
+                                  f"• Average Task Loss: {res['avg_task_loss']:.4f}\n"
+                                  f"• Average EWC Penalty: {res['avg_ewc_loss']:.4f}\n"
+                                  f"• Adapter Checkpoint: Saved to {res['adapter_saved_to']}\n")
+                    else:
+                        report = f"Sleep {res['status']}: {res.get('reason') or res['status']}\n"
+                except Exception as exc:
+                    report = f"[!] Consolidation failed: {type(exc).__name__}: {exc}\n"
+                pending = pending_count()
+                self.root.after(0, lambda: finish(report, pending))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_trigger.configure(command=_run_daemon)
+
+    def _on_open_managed_sleep_consolidation_panel(self):
         """Opens live sleep consolidation & parameter update monitor."""
         if self.models_config.get(self.active_tab_id, {}).get("inference_only"):
             messagebox.showinfo("Inference Only", "Select a trainable model to consolidate dialogue into weights. Strata keeps your conversation as text.")

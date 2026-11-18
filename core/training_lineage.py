@@ -52,7 +52,8 @@ def verify_parent(backend, trainer, path, native_tokens, state_root):
     from core.gguf_metadata import inspect_gguf
     from core.learning_state import identity_digest, model_identity
 
-    source = local_training_parent(trainer.base_model_id)
+    acquire = standalone_training_parent if getattr(trainer, "allow_parent_download", False) else local_training_parent
+    source = acquire(trainer.base_model_id)
     metadata = inspect_gguf(path)
     config = json.loads((Path(source) / "config.json").read_text(encoding="utf-8"))
     language = config.get("text_config") or config

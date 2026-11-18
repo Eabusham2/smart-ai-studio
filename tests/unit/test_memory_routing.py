@@ -272,13 +272,13 @@ def test_small_selected_context_governs_the_exact_ordinary_formatter(recall_engi
 
 def test_auto_and_explicit_model_recall_page_the_archive_before_formatting(recall_engine, tmp_path, monkeypatch):
     from core.context_memory import ChatArchive
-    from core.online_consolidator import AwakeOnlineConsolidator
+    from core.online_consolidator import ManagedAwakeOnlineConsolidator
 
     engine = recall_engine
     engine._context_budget_tokens = 4096
     backend = engine.awake_consolidator.engine
     backend.adapter_path = backend.learning_state.current_checkpoint()
-    engine.awake_consolidator = AwakeOnlineConsolidator(backend)
+    engine.awake_consolidator = ManagedAwakeOnlineConsolidator(backend)
     archive = ChatArchive(tmp_path / "archive.sqlite3", "gui")
     archive.append({"role": "system", "content": "Keep this rule."})
     archive.append({"role": "user", "content": "alpha"})

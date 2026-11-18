@@ -150,6 +150,7 @@ def _descendants(widget):
 def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(work_app):
     from tkinter import ttk
     app = work_app
+    app.settings.best_work_passes = 2
     app._on_open_branch_visualizer()
     modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
     widgets = list(_descendants(modal))
@@ -174,6 +175,7 @@ def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(wo
 def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(work_app, capacity_fallback):
     from core.generation_metrics import TokenMeter
     app = work_app
+    app.settings.best_work_passes = 2
     app.is_model_loaded = True
     app.chat_history[app.active_tab_id] = []
     app._set_generating_state(True)

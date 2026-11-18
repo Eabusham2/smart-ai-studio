@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from core.context_memory import ChatArchive
-from core.online_consolidator import AwakeOnlineConsolidator
+from core.online_consolidator import ManagedAwakeOnlineConsolidator
 from core.test_time_learning import OnlineLearning
 from tests.unit.context_backend_fixture import TransactionalBackend
 from tests.unit.test_native_context_learning import tiny_controller
@@ -15,7 +15,7 @@ from tests.unit.test_native_context_learning import tiny_controller
 def workflow(tmp_path, monkeypatch):
     monkeypatch.setattr("core.online_consolidator.release_training_memory",
                         lambda backend: {"after_mb": 0, "released_mb": 0})
-    return OnlineLearning(AwakeOnlineConsolidator(TransactionalBackend(tmp_path / "state")))
+    return OnlineLearning(ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path / "state")))
 
 
 def test_stream_resume_seeks_exact_utf8_boundaries_and_all_files(workflow, tmp_path):
@@ -29,7 +29,7 @@ def test_stream_resume_seeks_exact_utf8_boundaries_and_all_files(workflow, tmp_p
     request = {"method": "ingest", "source": str(root), "chunk_chars": 32, "max_chunks": 3}
     first = workflow.run_request(request)
     assert first["status"] == "paused" and first["next"] == 3
-    resumed = OnlineLearning(AwakeOnlineConsolidator(TransactionalBackend(tmp_path / "state")))
+    resumed = OnlineLearning(ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path / "state")))
     del request["max_chunks"]
     second = resumed.run_request(request)
     assert second["status"] == "completed" and second["source_chars"] == sum(map(len, texts))
@@ -159,7 +159,7 @@ def test_candidate_distillation_preserves_distinct_consensus_traces(workflow):
 @pytest.mark.parametrize("tiny_controller", [96], indirect=True)
 def test_real_cpu_rollouts_and_verifier_policy_checkpoint(tiny_controller):
     import torch
-    service = AwakeOnlineConsolidator(tiny_controller, lambda_ewc=0)
+    service = ManagedAwakeOnlineConsolidator(tiny_controller, lambda_ewc=0)
     workflow = OnlineLearning(service)
     with torch.random.fork_rng():
         torch.manual_seed(91)

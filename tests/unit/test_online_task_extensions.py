@@ -6,7 +6,7 @@ from copy import deepcopy
 import pytest
 
 from core import arc_augmentation as arc
-from core.online_consolidator import AwakeOnlineConsolidator
+from core.online_consolidator import ManagedAwakeOnlineConsolidator
 from core.policy_reference import policy_reference
 from core.test_time_learning import OnlineLearning
 from tests.unit.context_backend_fixture import TransactionalBackend
@@ -16,7 +16,7 @@ from tests.unit.test_native_context_learning import tiny_controller
 @pytest.fixture
 def runner(tmp_path, monkeypatch):
     monkeypatch.setattr("core.online_consolidator.release_training_memory", lambda backend: {})
-    return OnlineLearning(AwakeOnlineConsolidator(TransactionalBackend(tmp_path / "state"), lambda_ewc=0))
+    return OnlineLearning(ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path / "state"), lambda_ewc=0))
 
 
 def test_arc_grid_variants_are_invertible_on_rectangles():
@@ -188,7 +188,7 @@ def test_mlx_native_discover_measures_reference_across_real_updates(tmp_path, mo
     backend.get_training_model = lambda: backend.model
     backend.context_budget_tokens = 512
     store = bind_learning_state(backend, model_info={"resolved_revision": "f"*40}, state_root=tmp_path)
-    workflow = OnlineLearning(AwakeOnlineConsolidator(backend, lambda_ewc=0))
+    workflow = OnlineLearning(ManagedAwakeOnlineConsolidator(backend, lambda_ewc=0))
     result = workflow.discover("q", verifier=lambda text: (ord(text[0]) % 26) / 25,
                                rounds=2, rollouts=8, max_tokens=2, learning_rate=.001, entropic_kl_target=.15)
     assert result["reference_policy"] == "frozen_at_start" and result["reference_generation"] is None
@@ -243,7 +243,7 @@ def test_large_python_rewards_respect_declared_budgets():
 @pytest.mark.parametrize("tiny_controller", [256], indirect=True)
 def test_real_cpu_joint_consolidation_runs_synthesis_on_the_new_generation(tiny_controller, monkeypatch):
     import torch
-    runner = OnlineLearning(AwakeOnlineConsolidator(tiny_controller, lambda_ewc=0))
+    runner = OnlineLearning(ManagedAwakeOnlineConsolidator(tiny_controller, lambda_ewc=0))
     generations = []
     original = tiny_controller.stream_generate_tokens
     def observe(*args, **kwargs):

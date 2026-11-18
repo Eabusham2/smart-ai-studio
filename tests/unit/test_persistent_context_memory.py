@@ -7,7 +7,7 @@ import pytest
 from core.awake_auto_hook import install_awake_auto_learning
 from core.context_memory import ChatArchive, oldest_completed_chunk
 from core.media_orchestrator import MediaController
-from core.online_consolidator import AwakeOnlineConsolidator, REPLAY_LIMIT
+from core.online_consolidator import ManagedAwakeOnlineConsolidator, REPLAY_LIMIT
 from tests.unit.context_backend_fixture import TransactionalBackend
 
 
@@ -31,19 +31,19 @@ def test_receipts_match_checkpoint_on_restart_and_model_switch(tmp_path):
     for i in range(5):
         add_pair(archive, i)
     visible = list(archive)
-    service = AwakeOnlineConsolidator(TransactionalBackend(tmp_path))
+    service = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path))
     assert service.sleep(archive)["status"] == "success"
     first_remaining = service.active_history(archive)
     assert 0 < len(first_remaining) < len(archive)
     assert archive == visible
     resumed_archive = archive_at(tmp_path)
-    resumed = AwakeOnlineConsolidator(TransactionalBackend(tmp_path))
+    resumed = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path))
     assert resumed.active_history(resumed_archive) == first_remaining
     # A genuinely new chat with identical text has unique IDs.
     new_chat = ChatArchive(str(tmp_path / "app.sqlite3"), "other_chat")
     add_pair(new_chat, 0)
     assert resumed.active_history(new_chat) == new_chat
-    other_model = AwakeOnlineConsolidator(TransactionalBackend(tmp_path, identity="different-weights"))
+    other_model = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path, identity="different-weights"))
     assert other_model.active_history(resumed_archive) == visible
 
     while resumed.sleep(resumed_archive)["status"] != "idle":
@@ -62,7 +62,7 @@ def test_rejected_candidate_cannot_hide_archived_turns_or_replace_checkpoint(tmp
     for i in range(6):
         add_pair(archive, i)
     backend = TransactionalBackend(tmp_path)
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     service.sleep(archive)
     pointer = (backend.learning_state.directory / "current.json").read_bytes()
     active = service.active_history(archive)
@@ -76,7 +76,7 @@ def test_rejected_candidate_cannot_hide_archived_turns_or_replace_checkpoint(tmp
         service.sleep(archive, stop)
     assert backend.weight == before
     assert (backend.learning_state.directory / "current.json").read_bytes() == pointer
-    assert AwakeOnlineConsolidator(TransactionalBackend(tmp_path)).active_history(archive) == active
+    assert ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path)).active_history(archive) == active
 
 
 def test_system_tools_and_incomplete_sequences_remain_in_order(tmp_path):
@@ -92,7 +92,7 @@ def test_system_tools_and_incomplete_sequences_remain_in_order(tmp_path):
     selected, retained = oldest_completed_chunk(archive)
     assert selected == archive[5:7]
     assert retained == archive[:5] + archive[7:]
-    service = AwakeOnlineConsolidator(TransactionalBackend(tmp_path))
+    service = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path))
     assert service.consolidate_chunk_sync(selected)
     assert service.active_history(archive) == retained
     assert not any("Policy" in str(row) or "result was 27" in str(row)
@@ -103,15 +103,15 @@ def test_plain_api_resubmission_after_checkpoint_filters_identical_positions(tmp
     history = []
     for _ in range(4):
         add_pair(history, 1)
-    service = AwakeOnlineConsolidator(TransactionalBackend(tmp_path), session_id="named-api-chat")
+    service = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path), session_id="named-api-chat")
     active = service.active_history(history)
     first, retained = oldest_completed_chunk(active, 0.1)
     assert service.consolidate_chunk_sync(first)
     assert [t.turn_id for t in service.active_history([dict(t) for t in history])] == [
         t.turn_id for t in retained]
-    resumed = AwakeOnlineConsolidator(TransactionalBackend(tmp_path), session_id="named-api-chat")
+    resumed = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path), session_id="named-api-chat")
     assert resumed.active_history(history) == retained
-    other = AwakeOnlineConsolidator(TransactionalBackend(tmp_path))
+    other = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path))
     assert other.active_history(history) == history
 
 
@@ -125,7 +125,7 @@ def test_gui_request_copies_keep_retirement_through_both_real_routes(tmp_path, b
         def __init__(self):
             self.settings = SimpleNamespace(max_new_tokens=64, best_work_passes=1)
             self.controller_backend = TransactionalBackend(tmp_path)
-            self.awake_consolidator = AwakeOnlineConsolidator(self.controller_backend)
+            self.awake_consolidator = ManagedAwakeOnlineConsolidator(self.controller_backend)
             self.router = SimpleNamespace(route=lambda *args, **kwargs: ("Instant", 1))
             self._context_budget_tokens = 155
             self.received = []
@@ -168,12 +168,12 @@ def test_projection_follows_rollback_and_never_uses_a_newer_models_receipt(tmp_p
     for i in range(8):
         add_pair(archive, i)
     backend = TransactionalBackend(tmp_path)
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     service.sleep(archive)
     pointer = backend.learning_state.directory / "current.json"
     first_checkpoint = pointer.read_bytes()
     first_active = service.active_history(archive)
-    stale = AwakeOnlineConsolidator(TransactionalBackend(tmp_path))
+    stale = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path))
     service.sleep(archive)
     assert len(service.active_history(archive)) < len(first_active)
     with pytest.raises(RuntimeError, match="Reload"):
@@ -181,7 +181,7 @@ def test_projection_follows_rollback_and_never_uses_a_newer_models_receipt(tmp_p
     # Both committed generations remain. Selecting the older checkpoint must
     # restore its input, including turns retired only by the second update.
     pointer.write_bytes(first_checkpoint)
-    restored = AwakeOnlineConsolidator(TransactionalBackend(tmp_path))
+    restored = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path))
     assert restored.active_history(archive) == first_active
 
 
@@ -191,7 +191,7 @@ def test_archive_cache_scans_only_new_or_still_active_turns(tmp_path, monkeypatc
     archive = archive_at(tmp_path)
     for i in range(20):
         add_pair(archive, i)
-    service = AwakeOnlineConsolidator(TransactionalBackend(tmp_path))
+    service = ManagedAwakeOnlineConsolidator(TransactionalBackend(tmp_path))
     service.sleep(archive)
     active = service.active_history(archive)
     assert len(active) < len(archive)
@@ -256,7 +256,7 @@ def test_sleep_panel_dispatches_to_selected_backend_and_reports_only_committed_r
     monkeypatch.setattr(app_gui.threading, "Thread",
                         lambda target, **kwargs: SimpleNamespace(start=target))
     backend = TransactionalBackend(tmp_path)
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     archive = archive_at(tmp_path)
     add_pair(archive, 0)
     app = SimpleNamespace(engine=SimpleNamespace(awake_consolidator=service), active_tab_id="model_1",
@@ -318,7 +318,7 @@ def test_legacy_gui_import_is_scoped_to_the_original_model_and_keeps_source(tmp_
 def test_ewc_status_requires_trainer_evidence(tmp_path, measured, active):
     backend = TransactionalBackend(tmp_path)
     backend.training_metrics = measured
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     archive = archive_at(tmp_path)
     add_pair(archive, 0)
     assert service.sleep(archive)["ewc_active"] is active

@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from core.online_consolidator import AwakeOnlineConsolidator
+from core.learning_implementation import resolve_learning_mode
+from core.online_consolidator import make_online_consolidator
 
 
 STATE_PATH = Path("eval_results/conversation_teach_state.json")
@@ -195,15 +196,15 @@ def install(p4, cls) -> None:
             persisted = bool(p4._save_rsi_adapter(self))
         else:
             # Preserve the existing non-MLX production path unchanged.
-            consolidator = AwakeOnlineConsolidator(
-                mlx_engine=backend,
+            consolidator = make_online_consolidator(
+                mlx_engine=backend, implementation=resolve_learning_mode(backend, None, {}),
                 memory_db=None,
                 max_context=8192,
             )
             consolidator._run_shadow_consolidation(_chat_history())
             delta = float(consolidator.total_param_shift or 0.0)
             store = getattr(backend, "learning_state", None)
-            actual_checkpoint = store.current_checkpoint() if store is not None else None
+            actual_checkpoint = store.current_checkpoint() if store is not None else p4.RSI_ADAPTER_PATH
             persisted = bool(actual_checkpoint and os.path.exists(actual_checkpoint))
             if consolidator.consolidation_count != 1:
                 raise RuntimeError("Phase 3B conversational teach produced no real parameter update")

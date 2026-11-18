@@ -79,7 +79,16 @@ def test_projected_daemon_gains_lifecycle_telemetry_without_old_architecture_rew
     assert "self.last_error" in daemon
     assert "self.last_update_time" in daemon
     assert "gc.collect(2)" in daemon
-    assert "AwakeOnlineConsolidator" in pro
+    from config.settings import Settings
+    from core.online_consolidator import AwakeOnlineConsolidator, ManagedAwakeOnlineConsolidator
+    from core.pro_engine import ProReasoningEngine
+
+    original = ProReasoningEngine(settings=Settings(use_mock=True))
+    managed = ProReasoningEngine(settings=Settings(use_mock=True, learning_implementation="managed"))
+    assert type(original.awake_consolidator) is AwakeOnlineConsolidator
+    assert original.awake_consolidator.engine is original.mlx_engine
+    assert type(managed.awake_consolidator) is ManagedAwakeOnlineConsolidator
+    assert managed.awake_consolidator.engine is managed.mlx_engine
     # Do not revive the old MLX-only wrapper architecture.
     assert "_LIFRouterAdapter" not in pro
     assert "_MemoryReplayBridge" not in pro

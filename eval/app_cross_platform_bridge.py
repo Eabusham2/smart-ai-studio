@@ -112,6 +112,10 @@ class AppEvalEngineAdapter:
         # This process is eval-only, so give MLX a run-local adapter without
         # changing the normal app's persistent adapter or native runtime/cache.
         settings = get_settings()
+        from core.learning_implementation import get_learning_implementation
+        # Existing saved evaluation configurations used the managed store. New
+        # desktop runs record their selected implementation explicitly.
+        settings.learning_implementation = get_learning_implementation(config.get("learning_implementation", "managed"))
         self.mlx_adapter_export = os.path.abspath(os.path.join(
             run_dir, "backend_state", "mlx", "adapters.safetensors"
         ))

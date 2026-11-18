@@ -209,8 +209,53 @@ def test_mlx_phase3b_conversation_teach_uses_bounded_completion_only_lora_path()
     assert "_run_shadow_consolidation(" not in mlx_body
 
     non_mlx_body = teach[non_mlx:]
-    assert "AwakeOnlineConsolidator(" in non_mlx_body
+    assert "make_online_consolidator(" in non_mlx_body
     assert "consolidator._run_shadow_consolidation(_chat_history())" in non_mlx_body
+
+
+def test_non_mlx_phase3b_updates_the_selected_production_adapter(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from eval import conversation_teach_hardening as teach
+    from tests.unit.context_backend_fixture import TransactionalBackend
+    from tests.unit.test_learn_mode import FakeMLXBackend
+
+    for implementation in ("legacy", "managed"):
+        export = tmp_path / (implementation + ".safetensors")
+        if implementation == "managed":
+            backend = TransactionalBackend(tmp_path / "generations")
+            backend.learning_implementation = implementation
+        else:
+            # Historical non-MLX backends expose a direct trainer and raw checkpoint.
+            backend = FakeMLXBackend(str(export))
+            backend.is_mlx_available = False
+        state_path = tmp_path / (implementation + ".json")
+        monkeypatch.setattr(teach, "STATE_PATH", state_path)
+        def check_live_model(runner, identity, stage):
+            assert id(runner.engine.model) == identity == id(backend.model), stage
+
+        phase = SimpleNamespace(_run_phase3_consolidation=lambda runner: {},
+                                _pro_backend=lambda runner: backend,
+                                _assert_same_model=check_live_model,
+                                RSI_ADAPTER_PATH=str(export))
+        class Runner:
+            def run_full_suite(self):
+                return {}
+
+        runner = Runner()
+        runner.engine = SimpleNamespace(model=backend.model, tokenizer=backend.tokenizer, backend_key="controller")
+        teach.install(phase, Runner)
+        result = phase._run_phase3_consolidation(runner)
+        assert result["conversation_teach_updated"] and result["conversation_teach_delta_l2"] > 0
+        assert backend.train_calls == 1
+        actual_path = Path(json.loads(state_path.read_text())["adapter_path"])
+        assert actual_path.is_file()
+        if implementation == "managed":
+            assert actual_path == Path(backend.learning_state.current_checkpoint())
+            assert backend.learning_state.current_manifest()["metadata"]["mode"] == "awake"
+        else:
+            assert actual_path == export
+
 
 def test_standalone_eval_keeps_bonsai2_while_app_eval_uses_selected_model():
     runtime = _src("run_studio_complete.py")

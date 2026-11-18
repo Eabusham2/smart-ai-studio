@@ -486,6 +486,7 @@ def install_gui_eval_panel() -> None:
         config = {
             "run_dir": str(run_dir),
             "model_info": eval_info,
+            "learning_implementation": getattr(self.settings, "learning_implementation", "legacy"),
             "memory_limit_enabled": memory_enabled,
             "memory_limit_gb": memory_gb,
             "deepswe": bool(self._eval_deepswe_var.get()),

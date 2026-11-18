@@ -13,11 +13,12 @@ import sys
 import tempfile
 from pathlib import Path
 from core.training_memory import release_training_memory
+from core.legacy_torch_learning import LegacyCompletionTrainer, set_legacy_padding_token, update_legacy_lora
 from core.training_lineage import local_training_parent, run_conversion
 from typing import List, Optional
 
 
-class BitNetRebuildTrainer:
+class BitNetRebuildTrainer(LegacyCompletionTrainer):
     def __init__(
         self,
         *,
@@ -34,6 +35,7 @@ class BitNetRebuildTrainer:
         self.deploy_root = Path(deploy_root)
         self.training_source = None
         self.cancel_event = None
+        self._legacy_training = False
         self.quantization = None
         self.peft_dir = self.deploy_root / "peft"
         self.learned_model_path = self.deploy_root / "learned-i2_s.gguf"
@@ -134,6 +136,12 @@ class BitNetRebuildTrainer:
             return False
         return True
 
+    def can_prepare_legacy(self):
+        if self.can_prepare():
+            return True
+        source = self._bitnet_source()
+        return bool(source and self._quantizer(source) and self._training_runtime_available())
+
     @staticmethod
     def _target_modules(model) -> List[str]:
         import torch
@@ -168,6 +176,8 @@ class BitNetRebuildTrainer:
 
         source = self.training_source or local_training_parent(self.base_model_id)
         tokenizer = AutoTokenizer.from_pretrained(source, local_files_only=True, trust_remote_code=True)
+        if self._legacy_training:
+            set_legacy_padding_token(tokenizer)
 
         device_map = "auto"
         dtype = torch.bfloat16
@@ -338,8 +348,25 @@ class BitNetRebuildTrainer:
                 + (proc.stderr or proc.stdout or "learned I2_S GGUF was not produced").strip()
             )
 
-    def train(
-        self, data, *, output_directory=None, previous_peft=None, learning_rate=1e-4,
+    def train(self, data, *, learning_rate=1e-4, steps=3, max_length=512, learning_mode=None, **options):
+        """Historical calls use per-example AdamW. Managed calls can use scoped objectives and replay."""
+        from core.learning_implementation import resolve_learning_mode
+
+        if "fisher_matrix" in options or "lambda_ewc" in options:
+            if learning_mode == "legacy":
+                raise ValueError("Standalone Fisher regularization requires the managed learning mode")
+            learning_mode = learning_mode or "managed"
+        routing = options
+        if learning_mode == "legacy":
+            # A serving backend stages even historical updates before hot-reload.
+            routing = {key: value for key, value in options.items()
+                       if key not in {"output_directory", "previous_peft", "cancel_event"}}
+        mode = resolve_learning_mode(self, learning_mode, routing)
+        return self._train(data, learning_mode=mode, learning_rate=learning_rate, steps=steps,
+                           max_length=max_length, **options)
+
+    def _train(
+        self, data, *, learning_mode, output_directory=None, previous_peft=None, learning_rate=1e-4,
         steps=3, max_length=512, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
         reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
         objective='causal_lm', supervise_prompt=False, row_weights=None, context_text=None, max_context_tokens=None,
@@ -354,6 +381,7 @@ class BitNetRebuildTrainer:
         with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data, objective) as stage:
             output, previous_peft, published, data = stage
             self.cancel_event = cancel_event
+            self._legacy_training = learning_mode == "legacy"
             peft_path = output / "peft"
             if previous_peft is not None and not (Path(previous_peft) / "adapter_config.json").is_file():
                 raise RuntimeError("The active deployment is missing its cumulative PEFT checkpoint")
@@ -361,14 +389,20 @@ class BitNetRebuildTrainer:
             check_cancelled(cancel_event)
             model, tokenizer = self._load_trainable_model()
             try:
-                metrics, drift = update_lora(
-                    model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
-                    fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
-                    previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
-                    reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
-                    objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
-                    context_text=context_text, max_context_tokens=max_context_tokens,
-                )
+                if learning_mode == "legacy":
+                    metrics, drift = update_legacy_lora(
+                        model, tokenizer, data, trainer=self, learning_rate=learning_rate, steps=steps,
+                        max_length=max_length, output_directory=output, cancel_event=cancel_event,
+                    )
+                else:
+                    metrics, drift = update_lora(
+                        model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
+                        fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+                        previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
+                        reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                        objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
+                        context_text=context_text, max_context_tokens=max_context_tokens,
+                    )
                 check_cancelled(cancel_event)
                 model.save_pretrained(peft_path, safe_serialization=True, save_embedding_layers=False)
                 verify_saved_lora(model, peft_path)

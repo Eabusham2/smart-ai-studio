@@ -29,7 +29,7 @@ from core.engines.strata_engine import StrataCancelled, StrataReasoningBackend
 from core.hardware import resolve_optimal_backend, detect_system_hardware
 from core.hf_downloader import is_model_cached_locally
 from core.mlx_engine import MLXReasoningBackend
-from core.online_consolidator import AwakeOnlineConsolidator
+from core.online_consolidator import make_online_consolidator
 from core.platform import get_auto_context_window_size
 from core.speculative_engine import SpeculativeEngine
 from core.verifier import GroundTruthVerifier, VerificationResult, get_sandbox_preexec
@@ -154,10 +154,11 @@ class ProReasoningEngine:
             max_draft_tokens=self.settings.speculative_tokens
         )
 
-        self.awake_consolidator = AwakeOnlineConsolidator(
+        self.awake_consolidator = make_online_consolidator(
             mlx_engine=self.mlx_engine,
             memory_db=None,
-            max_context=8192
+            max_context=8192,
+            implementation=getattr(self.settings, "learning_implementation", "legacy"),
         )
 
     @property
@@ -282,15 +283,24 @@ class ProReasoningEngine:
                 target_backend = "bitnet"
             else:
                 resolved_backend, resolved_device = resolve_optimal_backend(model_type)
-                target_backend = backend or (self.backend if self.backend != "auto" else resolved_backend)
+                target_backend = backend or self.backend
+                if target_backend == "auto":
+                    target_backend = resolved_backend
 
-            # All Transformers execution uses the same persistent, capability-
-            # checked backend. The old direct CUDA branch had no trainer or
-            # checkpoint reload path and left CPU/MPS selections without one.
+            # The original CUDA text loader owned the model and tokenizer directly.
+            # The managed controller supplies PEFT, scope switching and CPU/MPS placement.
             direct_torch = target_backend in ("torch", "cuda", "cpu", "mps")
             requested_backend = target_backend
             direct_cuda = target_backend in ("torch", "cuda") and getattr(self, "device", None) == "cuda"
-            if direct_torch:
+            original_cuda = False
+            if (direct_cuda and getattr(self.settings, "learning_implementation", "legacy") == "legacy"
+                    and not info.get("legacy_adapter_path")):
+                try:
+                    import torch
+                    original_cuda = torch.cuda.is_available()
+                except (ImportError, OSError):
+                    pass
+            if direct_torch and not original_cuda:
                 target_backend = "controller"
                 controller_runtime = "transformers_auto"
                 info["controller_runtime"] = controller_runtime
@@ -334,6 +344,17 @@ class ProReasoningEngine:
                 return {}
 
             try:
+                if original_cuda:
+                    from transformers import AutoModelForCausalLM, AutoTokenizer
+                    tokenizer = AutoTokenizer.from_pretrained(target_path, trust_remote_code=True)
+                    model = AutoModelForCausalLM.from_pretrained(
+                        target_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+                    )
+                    model.eval()
+                    self.tokenizer, self.model = tokenizer, model
+                    self.awake_consolidator.engine = None
+                    return {"status": "loaded", "model": model_name, "backend": "cuda", "path": target_path}
+
                 # 0. Architecture-specific controller adapter (VLM/audio-language/etc.)
                 if target_backend == "controller":
                     controller_cls = StrataReasoningBackend if controller_runtime == "strata" else UniversalControllerBackend
@@ -347,6 +368,7 @@ class ProReasoningEngine:
                         self.controller_backend.direct_cuda = direct_cuda
                         self.controller_backend.direct_backend_name = requested_backend
                     self.controller_backend.learning_scope = getattr(self, "learning_scope", None)
+                    self.controller_backend.learning_implementation = getattr(self.settings, "learning_implementation", "legacy")
                     self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
                     self.controller_backend.context_tokens = int(
                         getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768
@@ -400,6 +422,7 @@ class ProReasoningEngine:
                         model_info=info,
                     )
                     self.mlx_backend.learning_scope = getattr(self, "learning_scope", None)
+                    self.mlx_backend.learning_implementation = getattr(self.settings, "learning_implementation", "legacy")
                     if getattr(self, "mlx_learning_state_root", None) is not None:
                         self.mlx_backend.learning_state_root = self.mlx_learning_state_root
                     if self.mlx_backend.load_model():
@@ -460,6 +483,7 @@ class ProReasoningEngine:
                         **native_options,
                     )
                     self.gguf_backend.learning_scope = getattr(self, "learning_scope", None)
+                    self.gguf_backend.learning_implementation = getattr(self.settings, "learning_implementation", "legacy")
                     loading_backend = self.gguf_backend
                     load_options = {"cancelled": load_cancelled} if server_path else {}
                     if self.gguf_backend.load_model(**load_options):
@@ -494,6 +518,7 @@ class ProReasoningEngine:
                         if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                     )
                     self.bitnet_backend.learning_scope = getattr(self, "learning_scope", None)
+                    self.bitnet_backend.learning_implementation = getattr(self.settings, "learning_implementation", "legacy")
                     loading_backend = self.bitnet_backend
                     if self.bitnet_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:

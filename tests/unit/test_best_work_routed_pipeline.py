@@ -19,7 +19,7 @@ def _gguf_engine(model, entropy):
     backend.is_gguf_available = True
     backend.n_ctx = model.n_ctx()
     backend.calculate_token_entropy = entropy
-    settings = Settings(use_mock=False, auto_download=False, backend='gguf', max_new_tokens=1)
+    settings = Settings(use_mock=False, auto_download=False, backend='gguf', max_new_tokens=1, best_work_passes=2)
     engine = ProReasoningEngine(settings=settings)
     engine.mlx_backend = engine.bitnet_backend = engine.controller_backend = None
     engine.gguf_backend = backend
@@ -136,7 +136,7 @@ def test_real_pro_winner_alone_enters_next_pass_with_full_routing_and_usage():
     history = [{"role": "system", "content": "Use complete sentences."}]
     request = RequestMetrics()
     with observe_generations(request.update):
-        response = "".join(stream_best_work(ctrl, "Which gallery?", history, status_callback=decisions.append))
+        response = "".join(stream_best_work(ctrl, "Which gallery?", history, status_callback=decisions.append, passes=2))
     assert response == "The north gallery needs inspection."
     assert len(entropies) == 2 and winner in entropies[1] and loser not in entropies[1]
     assert [call["temperature"] for call in decoded] == pro_ladder(8) + pro_ladder(1)
@@ -182,7 +182,7 @@ def test_full_window_selected_draft_survives_unfit_refinement(branches, monkeypa
     engine._context_budget_tokens = len(packed.encode()) + len(selected)
     ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
     events = []
-    assert list(stream_best_work(ctrl, question, history, status_callback=events.append)) == [selected]
+    assert list(stream_best_work(ctrl, question, history, status_callback=events.append, passes=2)) == [selected]
     assert len(decoded) == branches
     assert [call["temperature"] for call in decoded] == pro_ladder(8 if branches > 1 else 1)
     assert question in packed_inputs[-1] and selected in packed_inputs[-1] and lost not in packed_inputs[-1]
@@ -238,7 +238,7 @@ def test_real_cpu_transformers_decoder_consumes_previous_sampled_answer(cpu_deco
                                                             - set(terminal_ids))
     ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
     question = "What is the vault color?"
-    text = "".join(stream_best_work(ctrl, question))
+    text = "".join(stream_best_work(ctrl, question, passes=2))
     assert len(samples) == 2 and all(len(output) == 1 for _, output in samples)
     first_input, first_answer = samples[0]
     second_input, second_answer = samples[1]
@@ -268,7 +268,7 @@ def test_real_cpu_full_physical_window_returns_entire_selected_sample(cpu_decode
     backend.model.generation_config.suppress_tokens = sorted(set(range(backend.model.config.vocab_size)) - words)
     ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
     question = "What is the vault color?"
-    text = "".join(stream_best_work(ctrl, question))
+    text = "".join(stream_best_work(ctrl, question, passes=2))
     assert len(samples) == 1
     input_ids, output_ids = samples[0]
     assert len(input_ids) + len(output_ids) == capacity
@@ -279,5 +279,5 @@ def test_real_cpu_full_physical_window_returns_entire_selected_sample(cpu_decode
     assert meta["pass_summaries"][1]["skip_reason"] == "context_limit"
     # A new request without a completed candidate retains the real error.
     with pytest.raises(ContextOverflow):
-        list(stream_best_work(ctrl, "vault " * capacity))
+        list(stream_best_work(ctrl, "vault " * capacity, passes=2))
     assert len(samples) == 1

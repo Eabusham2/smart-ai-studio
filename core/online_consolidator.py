@@ -16,7 +16,10 @@ from core.context_memory import (ChatArchive, ContextOverflow, RetirementLedger,
                                  iter_completed_exchanges, oldest_completed_chunk, working_history)
 from core.learning_recall import (PromptTooLong, RecallBank, ReplayBank, SegmentedRecall, StreamCursorBank, check_cancel,
                                   generation_room, needs_segmented_recall, passes_recall, retirement_probes)
-from core.training_memory import backend_label, process_rss_mb, release_training_memory
+from core.legacy_online_consolidator import LegacyAwakeOnlineConsolidator
+from core.learning_implementation import get_learning_implementation, learning_mode_kwargs
+from core.training_memory import backend_label, process_rss_mb
+from core.training_memory import release_training_memory_on_owner as release_training_memory
 from memory.anchor_dataset import get_anchor_dataset, get_anchor_texts
 
 logger = logging.getLogger(__name__)
@@ -120,7 +123,9 @@ def _scores(backend, probes):
     return values, sorted(sources)
 
 
-class AwakeOnlineConsolidator:
+class ManagedAwakeOnlineConsolidator:
+    learning_implementation = "managed"
+
     def __init__(self, mlx_engine, memory_db=None, max_context=8192, watermark=0.80,
                  evict_ratio=0.40, lambda_ewc=400.0, *, session_id=None):
         self.engine = mlx_engine
@@ -548,11 +553,7 @@ class AwakeOnlineConsolidator:
                 return result
             finally:
                 try:
-                    owner = getattr(backend, "run_on_mlx_owner", None)
-                    if callable(owner) and getattr(backend, "_mlx_owner", None) is not None:
-                        cleanup = owner(release_training_memory, backend)
-                    else:
-                        cleanup = release_training_memory(backend)
+                    cleanup = release_training_memory(backend)
                     if result is not None:
                         result.update(ram_after_cleanup_mb=cleanup["after_mb"], ram_released_mb=cleanup["released_mb"])
                 except Exception as error:
@@ -732,6 +733,7 @@ class AwakeOnlineConsolidator:
                 lambda_ewc=strength, anchor_texts=fisher_anchors,
                 learning_rate=learning_rate, steps=steps, cancel_event=cancel_event,
                 validation_callback=validate, learning_metadata=metadata, **options,
+                **learning_mode_kwargs(backend.train_mini_batch, "managed"),
             )
             # Backends check finite drift and verify persisted native tensors before
             # publishing. Verify that this exact transaction became durable.
@@ -766,3 +768,16 @@ class AwakeOnlineConsolidator:
                     "updated_projection", "kv_prefills", "cached_context_tokens", "group_size",
                     "adapter_target") if k in backend_metrics},
                 "adapter_saved_to": str(checkpoint), "execution_time_seconds": time.monotonic() - start, **metrics}
+
+
+# The original public constructor retains the original learning behavior.
+AwakeOnlineConsolidator = LegacyAwakeOnlineConsolidator
+
+
+def make_online_consolidator(mlx_engine, memory_db=None, max_context=8192, watermark=0.80,
+                             evict_ratio=0.40, lambda_ewc=400.0, *, session_id=None, implementation=None):
+    """Construct the selected chat consolidation service for this model."""
+    args = mlx_engine, memory_db, max_context, watermark, evict_ratio, lambda_ewc
+    if get_learning_implementation(implementation) == "managed":
+        return ManagedAwakeOnlineConsolidator(*args, session_id=session_id)
+    return LegacyAwakeOnlineConsolidator(*args)

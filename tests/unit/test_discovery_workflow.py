@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from core.discovery_search import DiscoveryArchive
-from core.online_consolidator import AwakeOnlineConsolidator, LearningValidationError
+from core.online_consolidator import ManagedAwakeOnlineConsolidator, LearningValidationError
 from core.test_time_learning import OnlineLearning
 from tests.unit.context_backend_fixture import TransactionalBackend
 from tests.unit.test_native_context_learning import tiny_controller
@@ -31,7 +31,7 @@ def test_ranked_puct_tracks_direct_child_quality_and_ancestor_visits_after_evict
 @pytest.fixture
 def workflow(tmp_path, monkeypatch):
     backend = TransactionalBackend(tmp_path)
-    service = AwakeOnlineConsolidator(backend, lambda_ewc=0)
+    service = ManagedAwakeOnlineConsolidator(backend, lambda_ewc=0)
     runner = OnlineLearning(service)
     monkeypatch.setattr(runner, "_require", lambda method: None)
     monkeypatch.setattr("core.online_consolidator.release_training_memory",
@@ -91,7 +91,7 @@ def test_rejected_discovery_candidate_preserves_measured_solution(workflow, monk
 @pytest.mark.parametrize("tiny_controller", [96], indirect=True)
 def test_real_discovery_gradient_on_fresh_cpu_rollouts(tiny_controller):
     import torch
-    runner = OnlineLearning(AwakeOnlineConsolidator(tiny_controller, lambda_ewc=0))
+    runner = OnlineLearning(ManagedAwakeOnlineConsolidator(tiny_controller, lambda_ewc=0))
     def reward(answer):
         return .1 + .3 * ("slate" in answer) + .2 * ("color" in answer) + .25 * ("red" in answer)
     with torch.random.fork_rng():

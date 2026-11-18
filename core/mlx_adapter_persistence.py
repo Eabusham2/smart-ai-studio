@@ -147,10 +147,13 @@ def _commit_with_export(backend, txn, checkpoint, details, save_path, cancel_eve
     import hashlib
 
     target = Path(save_path).expanduser().resolve() if save_path else None
-    if target is not None and target.is_relative_to(txn.store.root):
-        relative = target.relative_to(txn.store.root)
-        managed = relative.parts and (relative.parts[0] in {"scopes", "identity_cache", "export_locks"}
-                                      or len(relative.parts[0]) == 64 and all(c in "0123456789abcdef" for c in relative.parts[0]))
+    protected_root = getattr(txn.store, "implementation_base_root", txn.store.root)
+    if target is not None and target.is_relative_to(protected_root):
+        parts = target.relative_to(protected_root).parts
+        if parts and parts[0] == "legacy-implementation":
+            parts = parts[1:]
+        managed = parts and (parts[0] in {"scopes", "identity_cache", "export_locks"}
+                             or len(parts[0]) == 64 and all(c in "0123456789abcdef" for c in parts[0]))
         if managed:
             # Earlier callers passed the live adapter_path back as save_path.
             # That immutable generation remains a recoverable parent.
@@ -162,7 +165,7 @@ def _commit_with_export(backend, txn, checkpoint, details, save_path, cancel_eve
         return txn.commit(checkpoint=checkpoint.name, metadata=details, cancel_event=cancel_event)
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    lock = txn.store.root / "export_locks" / hashlib.sha256(os.fsencode(target)).hexdigest()
+    lock = protected_root / "export_locks" / hashlib.sha256(os.fsencode(target)).hexdigest()
     lock.mkdir(parents=True, exist_ok=True)
     with _process_commit_lock(lock), tempfile.TemporaryDirectory(dir=target.parent) as temporary:
         stage = Path(temporary) / "adapters.safetensors"

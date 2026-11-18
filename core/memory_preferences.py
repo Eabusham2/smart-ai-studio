@@ -26,3 +26,20 @@ def save_memory_preference(database_path, scope):
         db.execute("CREATE TABLE IF NOT EXISTS memory_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         db.execute("INSERT OR REPLACE INTO memory_preferences VALUES ('active_scope', ?)",
                    (json.dumps({"kind": scope.kind, "key": scope.key}),))
+
+
+def load_learning_implementation(database_path, default="legacy"):
+    from core.learning_implementation import get_learning_implementation
+    with closing(sqlite3.connect(database_path)) as db:
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_preferences'").fetchone()
+        row = db.execute("SELECT value FROM memory_preferences WHERE key='learning_implementation'").fetchone() if exists else None
+    return get_learning_implementation(json.loads(row[0]) if row else default)
+
+
+def save_learning_implementation(database_path, implementation):
+    from core.learning_implementation import get_learning_implementation
+    implementation = get_learning_implementation(implementation)
+    with closing(sqlite3.connect(database_path)) as db, db:
+        db.execute("CREATE TABLE IF NOT EXISTS memory_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("INSERT OR REPLACE INTO memory_preferences VALUES ('learning_implementation', ?)",
+                   (json.dumps(implementation),))

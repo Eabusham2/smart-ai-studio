@@ -144,3 +144,11 @@ def release_training_memory(backend: Any = None) -> Dict[str, float]:
         "after_mb": float(after),
         "released_mb": max(0.0, float(before) - float(after)),
     }
+
+
+def release_training_memory_on_owner(backend: Any) -> Dict[str, float]:
+    """Clear an active MLX model's allocator on the thread owning its tensors."""
+    owner = getattr(backend, "run_on_mlx_owner", None)
+    if callable(owner) and getattr(backend, "_mlx_owner", None) is not None:
+        return owner(release_training_memory, backend)
+    return release_training_memory(backend)

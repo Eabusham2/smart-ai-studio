@@ -11,6 +11,7 @@ import shutil
 import sys
 from pathlib import Path
 from core.training_memory import release_training_memory
+from core.legacy_torch_learning import LegacyCompletionTrainer, set_legacy_padding_token, update_legacy_lora
 from core.training_lineage import local_training_parent, run_conversion
 
 
@@ -111,7 +112,7 @@ def _check_parent_nf4(source, device):
         _check_nf4_kernel(target, inputs, tile)
 
 
-class GGUFLoRATrainer:
+class GGUFLoRATrainer(LegacyCompletionTrainer):
     def __init__(
         self,
         *,
@@ -131,29 +132,97 @@ class GGUFLoRATrainer:
         self.peft_dir = os.path.join(self.adapter_root, "peft")
         self.gguf_adapter_path = os.path.join(self.adapter_root, "adapter.gguf")
         self.cancel_event = None
+        self._legacy_training = False
         self.memory_limit_gb = memory_limit_gb
         self.rank = int(rank)
         self.alpha = int(alpha)
 
-    def _training_placement(self, source):
-        import torch
+    @staticmethod
+    def _training_backend_available() -> bool:
+        try:
+            import torch
+            import bitsandbytes  # noqa: F401
+        except Exception:
+            return False
+
+        if torch.cuda.is_available():
+            # CUDA and ROCm both surface through torch.cuda.
+            return True
+        xpu = getattr(torch, "xpu", None)
+        if xpu is not None:
+            try:
+                if xpu.is_available():
+                    return True
+            except Exception:
+                pass
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        if mps is not None:
+            try:
+                if mps.is_available():
+                    return True
+            except Exception:
+                pass
+
+        # Current bitsandbytes also has a CPU backend. A 27B 4-bit training graph
+        # still needs substantial host RAM, so fail closed on small systems.
+        try:
+            import psutil
+            return (psutil.virtual_memory().total / (1024 ** 3)) >= 24.0
+        except Exception:
+            return False
+
+    def _training_budgets(self, torch, legacy):
         from core.transformers_placement import transformers_memory_limits
+
+        budgets = transformers_memory_limits(torch, self.memory_limit_gb)
+        xpu = getattr(torch, "xpu", None)
+        if legacy and not torch.cuda.is_available() and xpu is not None and xpu.is_available():
+            # The pre-PR QLoRA loader let Accelerate place weights on Intel
+            # accelerators. Measure each device before admitting a training graph.
+            for index in range(xpu.device_count()):
+                try:
+                    free, total = xpu.mem_get_info(index)
+                except (AttributeError, RuntimeError, OSError):
+                    continue
+                usable = int(free) - max(1024**3, int(total * 0.10))
+                if usable >= 256 * 1024**2:
+                    budgets[f"xpu:{index}"] = usable
+        return budgets
+
+    def _training_placement(self, source, *, legacy=None):
+        import torch
 
         weights = list(Path(source).glob("*.safetensors")) or list(Path(source).glob("pytorch_model*.bin"))
         weight_bytes = sum(path.stat().st_size for path in weights)
         if not weight_bytes:
             raise RuntimeError("The selected training parent contains no weight data")
-        budgets = transformers_memory_limits(torch, self.memory_limit_gb)
+        if legacy is None:
+            legacy = self._legacy_training
+        budgets = self._training_budgets(torch, legacy)
         # Prefer a resident CPU or Metal parent whenever it fits. A published
         # device tag alone does not establish support for a GQA projection's
         # width, double quantization, or the backward kernel on this machine.
         rejected = []
+        prefer_nf4 = legacy and self._training_backend_available()
+        accelerators = {device: size for device, size in budgets.items()
+                        if isinstance(device, int) or str(device).startswith("xpu:")}
+        required = weight_bytes * 0.6 + 512 * 1024**2
+        if prefer_nf4 and len(accelerators) > 1 and sum(accelerators.values()) > required:
+            # The original QLoRA loader used Accelerate's auto map. Preserve
+            # sharded training without claiming an untested NF4 device.
+            try:
+                for device in accelerators:
+                    _check_parent_nf4(source, device)
+            except (AssertionError, AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
+                rejected.append(f"multi-device NF4: {error}")
+            else:
+                return "auto", "nf4"
         for device in sorted(budgets, key=lambda d: d == "cpu"):
             available = budgets[device]
             resident = available > weight_bytes * 2 + 512 * 1024**2
-            if device in {"cpu", "mps"} and resident:
+            if device in {"cpu", "mps"} and resident and not prefer_nf4:
                 return device, "resident"
-            if available > weight_bytes * 0.6 + 512 * 1024**2:
+            if available > required:
                 try:
                     _check_parent_nf4(source, device)
                 except (AssertionError, AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
@@ -167,16 +236,60 @@ class GGUFLoRATrainer:
             reason += ". NF4 unavailable (" + ", ".join(rejected) + ")"
         raise RuntimeError(reason)
 
-    def can_prepare(self) -> bool:
+    def can_prepare(self, *, legacy=False) -> bool:
         if not os.path.isfile(self.model_path) or not self.base_model_id:
             return False
         try:
             import transformers  # noqa: F401
             import peft  # noqa: F401
-            self._training_placement(local_training_parent(self.base_model_id))
+            source = local_training_parent(self.base_model_id)
+            self._training_placement(source, legacy=legacy)
         except Exception:
             return False
         return bool(shutil.which("git") or (Path(os.getenv("LLAMA_CPP_DIR", "")) / "convert_lora_to_gguf.py").is_file())
+
+    def can_prepare_legacy(self):
+        """An explicit legacy update can fetch its declared training parent."""
+        try:
+            local_training_parent(self.base_model_id)
+        except RuntimeError:
+            pass
+        else:
+            return self.can_prepare(legacy=True)
+        if not os.path.isfile(self.model_path) or not self._training_backend_available():
+            return False
+        try:
+            import peft  # noqa: F401
+            import transformers  # noqa: F401
+        except ImportError:
+            return False
+        return bool(shutil.which("git") or (Path(os.getenv("LLAMA_CPP_DIR", "")) / "convert_lora_to_gguf.py").is_file())
+
+    @staticmethod
+    def _legacy_lora_targets(base):
+        import torch
+
+        candidate_suffixes = {
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+            "in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b", "out_proj",
+        }
+        target_modules = []
+        for module_name, module in base.named_modules():
+            leaf = module_name.rsplit(".", 1)[-1]
+            if leaf not in candidate_suffixes:
+                continue
+            lowered = module_name.lower()
+            if any(marker in lowered for marker in ("visual", "vision", "mtp")):
+                continue
+            # Keep only decoder/language paths. Full conditional-generation
+            # checkpoints expose these under language_model/model.layers.
+            if ".layers." not in module_name and not module_name.startswith("model.layers."):
+                continue
+            if isinstance(module, torch.nn.Linear):
+                target_modules.append(module_name)
+
+        return target_modules
 
     def _load_trainable_model(self):
         import torch
@@ -186,24 +299,39 @@ class GGUFLoRATrainer:
         source = self.training_source or local_training_parent(self.base_model_id)
         device, self.training_mode = self._training_placement(source)
         options = {"device_map": {"": device}, "torch_dtype": "auto"}
+        if device == "auto":
+            budgets = self._training_budgets(torch, self._legacy_training)
+            # Accelerate accepts integer indices for accelerator memory caps.
+            limits = {int(d.split(":")[1]) if isinstance(d, str) and d.startswith("xpu:") else d: size
+                      for d, size in budgets.items()}
+            options.update(device_map="auto", max_memory={**limits, "cpu": 0})
         if self.training_mode == "nf4":
             options["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
             )
         tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True, local_files_only=True)
+        if self._legacy_training:
+            set_legacy_padding_token(tokenizer)
         base = AutoModelForCausalLM.from_pretrained(
             source, low_cpu_mem_usage=True, trust_remote_code=True, local_files_only=True, **options,
         )
         base.config.use_cache = False
         if self.training_mode == "nf4":
+            if self._legacy_training and hasattr(base, "gradient_checkpointing_enable"):
+                try:
+                    base.gradient_checkpointing_enable()
+                except (RuntimeError, ValueError, NotImplementedError):
+                    pass
             base = prepare_model_for_kbit_training(base)
 
         if os.path.isfile(os.path.join(self.peft_dir, "adapter_config.json")):
             model = PeftModel.from_pretrained(base, self.peft_dir, is_trainable=True)
         else:
             from core.controller_runtime import UniversalControllerBackend
-            target_modules = UniversalControllerBackend._transformers_lora_targets(base)
+            target_modules = self._legacy_lora_targets(base) if self._legacy_training else []
+            if not target_modules:
+                target_modules = UniversalControllerBackend._transformers_lora_targets(base)
             if not target_modules:
                 raise RuntimeError("GGUF training parent exposes no compatible language projections")
 
@@ -248,8 +376,25 @@ class GGUFLoRATrainer:
             )
         return output_path
 
-    def train(
-        self, data, *, output_directory=None, previous_peft=None, learning_rate=1e-4,
+    def train(self, data, *, learning_rate=1e-4, steps=3, max_length=512, learning_mode=None, **options):
+        """Historical calls use per-example AdamW. Managed calls can use scoped objectives and replay."""
+        from core.learning_implementation import resolve_learning_mode
+
+        if "fisher_matrix" in options or "lambda_ewc" in options:
+            if learning_mode == "legacy":
+                raise ValueError("Standalone Fisher regularization requires the managed learning mode")
+            learning_mode = learning_mode or "managed"
+        routing = options
+        if learning_mode == "legacy":
+            # A serving backend stages even historical updates before hot-reload.
+            routing = {key: value for key, value in options.items()
+                       if key not in {"output_directory", "previous_peft", "cancel_event"}}
+        mode = resolve_learning_mode(self, learning_mode, routing)
+        return self._train(data, learning_mode=mode, learning_rate=learning_rate, steps=steps,
+                           max_length=max_length, **options)
+
+    def _train(
+        self, data, *, learning_mode, output_directory=None, previous_peft=None, learning_rate=1e-4,
         steps=3, max_length=512, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
         reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
         objective='causal_lm', supervise_prompt=False, row_weights=None, context_text=None, max_context_tokens=None,
@@ -262,6 +407,7 @@ class GGUFLoRATrainer:
         with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data, objective) as stage:
             output, previous_peft, published, data = stage
             self.cancel_event = cancel_event
+            self._legacy_training = learning_mode == "legacy"
             peft_path = output / "peft"
             if previous_peft is not None and not (Path(previous_peft) / "adapter_config.json").is_file():
                 raise RuntimeError("The active deployment is missing its cumulative PEFT checkpoint")
@@ -269,14 +415,20 @@ class GGUFLoRATrainer:
             check_cancelled(cancel_event)
             model, tokenizer = self._load_trainable_model()
             try:
-                metrics, drift = update_lora(
-                    model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
-                    fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
-                    previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
-                    reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
-                    objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
-                    context_text=context_text, max_context_tokens=max_context_tokens,
-                )
+                if learning_mode == "legacy":
+                    metrics, drift = update_legacy_lora(
+                        model, tokenizer, data, trainer=self, learning_rate=learning_rate, steps=steps,
+                        max_length=max_length, output_directory=output, cancel_event=cancel_event,
+                    )
+                else:
+                    metrics, drift = update_lora(
+                        model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
+                        fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+                        previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
+                        reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                        objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
+                        context_text=context_text, max_context_tokens=max_context_tokens,
+                    )
                 check_cancelled(cancel_event)
                 model.save_pretrained(peft_path, safe_serialization=True, save_embedding_layers=False)
                 verify_saved_lora(model, peft_path)

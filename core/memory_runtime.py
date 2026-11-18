@@ -22,6 +22,73 @@ def active_learning_backend(engine):
     return getattr(getattr(engine, "awake_consolidator", None), "engine", None)
 
 
+def _runtime_identity(engine):
+    name = getattr(engine, "active_model_name", None)
+    source = getattr(engine, "active_model_path", None)
+    active = getattr(engine, "active_backend", None)
+    backend = active_learning_backend(engine)
+    controller = getattr(engine, "controller_backend", None)
+    if getattr(engine, "device", None) == "cuda":
+        if (active in ("torch", "cuda") and controller is None
+                and getattr(engine, "model", None) is not None and getattr(engine, "tokenizer", None) is not None):
+            return name, source, "direct_cuda", active
+        if (active == "controller" and controller is backend and getattr(controller, "direct_cuda_loaded", False)
+                and getattr(controller, "direct_torch_generation", False)
+                and getattr(controller, "direct_backend_name", None) in ("torch", "cuda")):
+            return name, source, "direct_cuda", controller.direct_backend_name
+    return name, source, active, getattr(backend, "runtime", None)
+
+
+def _implementation_binding(engine, mode, runtime, info):
+    store = getattr(active_learning_backend(engine), "learning_state", None)
+    if store is not None:
+        return store.identity, getattr(store, "implementation_base_root", store.root)
+    if runtime[2] == "direct_cuda" and mode == "legacy" and getattr(engine, "controller_backend", None) is None:
+        # The original CUDA inference loader has no store. Authenticate the same
+        # local weights and tokenizer the managed PEFT controller resolves.
+        from core.controller_runtime import controller_learning_root
+        from core.learning_state import cached_model_source, model_identity
+        root = controller_learning_root()
+        source = str(cached_model_source(runtime[1], info))
+        identity = model_identity(source, info, adapter_format="peft", state_root=root)
+        revision = getattr(getattr(engine.model, "config", None), "_commit_hash", None)
+        if not identity["source_verified"] or (revision and identity["revision"] and revision != identity["revision"]):
+            raise RuntimeError("Cannot verify the source of the resident direct CUDA model")
+        return identity, root
+    return None
+
+
+def _live_checkpoint(backend):
+    for key in ("_loaded_learning_checkpoint", "_last_managed_checkpoint", "_loaded_legacy_deployment", "adapter_path"):
+        value = getattr(backend, key, None)
+        if value:
+            return Path(value).resolve()
+    return None
+
+
+def _verify_implementation(engine, mode, scope, runtime, binding, info):
+    if not engine.is_model_loaded or _runtime_identity(engine) != runtime:
+        raise RuntimeError("The reloaded model or runtime differs from the selected model")
+    backend = active_learning_backend(engine)
+    if getattr(backend, "learning_implementation", mode) != mode:
+        raise RuntimeError("The reloaded backend uses a different learning implementation")
+    if _implementation_binding(engine, mode, runtime, info) != binding:
+        raise RuntimeError("The reloaded model identity or learned-state location changed")
+    store = getattr(backend, "learning_state", None)
+    if store is None:
+        return
+    base_root = binding[1]
+    expected_root = base_root / "legacy-implementation" if mode == "legacy" else base_root
+    if store.scope != scope or store.root != expected_root:
+        raise RuntimeError("The reloaded model identity, memory scope or storage root differs from the selection")
+    current = store.current_checkpoint()
+    if current:
+        checkpoint = Path(current).resolve()
+        generation = getattr(backend, "_mlx_parent_generation", checkpoint.parent.name)
+        if _live_checkpoint(backend) != checkpoint or generation != checkpoint.parent.name:
+            raise RuntimeError("The reloaded backend did not activate the selected checkpoint")
+
+
 class _PeakRSS:
     """Measure this process during the complete operation, including reloads."""
 
@@ -69,6 +136,9 @@ def install_memory_runtime(cls):
         original_init(self, *args, **kwargs)
         self.learning_scope = LearningScope()
         self._memory_load_spec = None
+        self._implementation_scopes = {}
+        self._implementation_seeds = {}
+        self._managed_session_id = None
         self._owned_request_stores = {}
         self._temporary_scope_depth = 0
         self.memory_auto_recall = True
@@ -93,6 +163,8 @@ def install_memory_runtime(cls):
             return result
 
     def prepare_call(self, method, args, kwargs):
+        if getattr(getattr(self, "awake_consolidator", None), "learning_implementation", None) == "legacy":
+            return args, kwargs, None
         current_scope = getattr(self, "learning_scope", LearningScope())
         if (not getattr(self, "memory_auto_recall", True) or not getattr(self, "is_model_loaded", False)
                 or current_scope.pin or current_scope.kind == "request" or getattr(self, "_temporary_scope_depth", 0)):
@@ -153,12 +225,129 @@ def install_memory_runtime(cls):
             finally:
                 self._memory_routing_active = False
 
+    def set_implementation(self, implementation, *, cancel_event=None):
+        """Select the original or managed algorithm through the normal model loader."""
+        from core.learning_implementation import get_learning_implementation
+        from core.online_consolidator import make_online_consolidator
+        selected = get_learning_implementation(implementation)
+
+        def check_cancelled():
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Learning implementation change cancelled")
+
+        def require_status(receipt, expected, message):
+            if not isinstance(receipt, dict) or receipt.get("status") != expected:
+                detail = receipt.get("error") if isinstance(receipt, dict) else None
+                raise RuntimeError(f"{message}: {detail or receipt}")
+
+        with self._model_lock:
+            service = getattr(self, "awake_consolidator", None)
+            previous = get_learning_implementation(getattr(self.settings, "learning_implementation", None))
+            response = {"learning_implementation": selected, "previous_implementation": previous}
+            if selected == previous and getattr(service, "learning_implementation", None) == selected:
+                return {"status": "unchanged", **response}
+            if (getattr(service, "is_consolidating", False) or self._temporary_scope_depth
+                    or getattr(self, "speed_tuning_active", False)):
+                raise RuntimeError("Finish the current model operation before changing the learning implementation")
+            check_cancelled()
+            loaded = bool(self.is_model_loaded and not getattr(self.settings, "use_mock", False))
+            spec = deepcopy(self._memory_load_spec)
+            if loaded and spec is None:
+                raise RuntimeError("Reload this model before changing its learning implementation")
+            backend = active_learning_backend(self)
+            store = getattr(backend, "learning_state", None) if loaded else None
+            runtime = _runtime_identity(self)
+            info = (spec or {}).get("model_info", {})
+            binding = _implementation_binding(self, previous, runtime, info) if loaded else None
+            from core.learning_state import identity_digest
+            model_key = (runtime, identity_digest(binding[0]) if binding else None) if loaded else None
+            previous_scope = self.learning_scope
+            if loaded:
+                _verify_implementation(self, previous, previous_scope, runtime, binding, info)
+            previous_checkpoint = _live_checkpoint(backend) if loaded else None
+            remember_seed = bool(previous_checkpoint and store is not None and not store.current_checkpoint())
+            selected_scope = (self._implementation_scopes.get(model_key, LearningScope())
+                              if selected == "managed" else LearningScope())
+            replacement = make_online_consolidator(
+                None if loaded else backend, getattr(service, "db", None),
+                max_context=getattr(service, "max_context", 8192),
+                evict_ratio=getattr(service, "evict_ratio", .40), lambda_ewc=getattr(service, "lambda_ewc", 400.0),
+                session_id=self._managed_session_id, implementation=selected)
+            replacement.watermark_tokens = getattr(service, "watermark_tokens", replacement.watermark_tokens)
+            if loaded:
+                require_status(self.unload_model(), "unloaded", "The previous runtime could not unload")
+            global_seed = getattr(self, "lora_adapter_path", None)
+            old_cancel = getattr(self, "_model_load_cancelled", None)
+            attempted_load = False
+            try:
+                check_cancelled()
+                self.settings.learning_implementation = selected
+                self.awake_consolidator = replacement
+                self.learning_scope = selected_scope
+                result = {"status": "selected"}
+                if loaded:
+                    selected_spec = deepcopy(spec)
+                    selected_info = selected_spec["model_info"]
+                    selected_info.pop("legacy_adapter_path", None)
+                    seed = self._implementation_seeds.get((model_key, selected, selected_scope))
+                    if seed:
+                        selected_info["legacy_adapter_path"] = seed
+                    # The global explicit seed belongs to the source selection.
+                    # A previously visited destination may have its own seed.
+                    self.lora_adapter_path = None
+                    if cancel_event is not None:
+                        self._model_load_cancelled = lambda: cancel_event.is_set() or bool(old_cancel and old_cancel())
+                    attempted_load = True
+                    result = self.load_model(**selected_spec)
+                    check_cancelled()
+                    require_status(result, "loaded", "The selected implementation could not load")
+                    _verify_implementation(self, selected, selected_scope, runtime, binding, selected_info)
+            except BaseException as error:
+                if attempted_load:
+                    try:
+                        require_status(self.unload_model(), "unloaded", "The candidate runtime could not unload")
+                    except BaseException as shutdown:
+                        raise RuntimeError(f"Implementation recovery could not stop the candidate: {shutdown}") from error
+                self.settings.learning_implementation = previous
+                self.awake_consolidator = service
+                self.learning_scope = previous_scope
+                if loaded:
+                    self.lora_adapter_path = global_seed
+                    self._model_load_cancelled = None
+                    try:
+                        restored = self.load_model(**spec)
+                        require_status(restored, "loaded", "The previous model could not reload")
+                        _verify_implementation(self, previous, previous_scope, runtime, binding, info)
+                        if _live_checkpoint(active_learning_backend(self)) != previous_checkpoint:
+                            raise RuntimeError("The previous checkpoint could not be restored")
+                    except BaseException as restore_error:
+                        raise RuntimeError(f"Implementation selection failed and recovery failed: {restore_error}") from error
+                raise
+            finally:
+                if loaded:
+                    self.lora_adapter_path = global_seed
+                    self._model_load_cancelled = old_cancel
+            if previous == "managed":
+                self._implementation_scopes[model_key] = previous_scope
+                self._managed_session_id = getattr(service, "session_id", None)
+            seed_key = model_key, previous, previous_scope
+            if remember_seed:
+                # Return to the caller's explicitly selected, uncommitted raw adapter.
+                self._implementation_seeds[seed_key] = str(previous_checkpoint)
+            else:
+                self._implementation_seeds.pop(seed_key, None)
+            self._last_memory_recall = None
+            return {**result, **response}
+
     def set_scope(self, scope, *, seed_from_current=False, cancel_event=None, _temporary=False):
         """Select persistent state. On load failure restore the previous selection."""
         scope = as_scope(scope)
         if scope.kind == "request" and not _temporary:
             raise ValueError("Use use_learning_scope() to manage request memory and cleanup")
         with self._model_lock:
+            if getattr(getattr(self, "awake_consolidator", None), "learning_implementation", None) == "legacy":
+                if scope != getattr(self, "learning_scope", LearningScope()):
+                    raise RuntimeError("Select managed persistent learning before changing memory scopes")
             if self._temporary_scope_depth and not _temporary:
                 raise RuntimeError("Finish the temporary memory operation before changing scope")
             previous = self.learning_scope
@@ -341,6 +530,9 @@ def install_memory_runtime(cls):
             raise ValueError("Select the saved-memory owner with set_learning_scope before managing its bank")
         started = time.perf_counter()
         with self._model_lock, _PeakRSS() as measured:
+            if (method != "capabilities" and
+                    getattr(getattr(self, "awake_consolidator", None), "learning_implementation", None) == "legacy"):
+                raise RuntimeError("Select managed persistent learning in Learning & saved memory before running this task")
             if not self.is_model_loaded:
                 raise RuntimeError("Load a model before starting online learning")
             if method == "capabilities":
@@ -421,6 +613,7 @@ def install_memory_runtime(cls):
     if original_stream is not None:
         cls.stream_solve = stream_solve
     cls.set_learning_scope = set_scope
+    cls.set_learning_implementation = set_implementation
     cls.use_learning_scope = use_scope
     cls.adapter_memory_bank = bank
     cls.solve_with_memory = solve_with_memory

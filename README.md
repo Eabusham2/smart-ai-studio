@@ -1,5 +1,7 @@
 <div align="center">
 
+> **Original implementations restored:** Studio now starts with the original learning algorithms and one-pass Best Work. The newer persistent-learning mode and multiple sequential passes remain available through **Learning & saved memory… → Learning implementation → managed** and **Branches → Best Work passes**. See [Original and managed implementations](docs/original-and-managed-learning.md) for the behavior and checkpoint separation. Historical descriptions below of automatic managed learning or two default passes apply only when those features are selected.
+
 # 🧠 Smart AI Studio
 ### Autonomous 1.58-Bit Local AI & Multi-Agent Reasoning Desktop Engine
 

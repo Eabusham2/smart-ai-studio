@@ -8,7 +8,7 @@ import pytest
 
 from core.awake_auto_hook import install_awake_auto_learning
 from core.context_memory import ActiveChatHistory, ChatArchive
-from core.online_consolidator import AwakeOnlineConsolidator
+from core.online_consolidator import ManagedAwakeOnlineConsolidator
 from tests.unit.context_backend_fixture import TransactionalBackend
 from tests.unit.test_native_context_learning import tiny_controller
 
@@ -81,7 +81,7 @@ def test_cancel_resume_segment_addresses_full_recall_and_rollback(tmp_path):
     backend = PassageBackend(tmp_path)
     event = Event()
     backend.cancel_after = event.set
-    first = AwakeOnlineConsolidator(backend)
+    first = ManagedAwakeOnlineConsolidator(backend)
     with pytest.raises(RuntimeError, match="cancelled"):
         first.sleep(archive, cancel_event=event)
     assert backend.train_calls == 1
@@ -90,7 +90,7 @@ def test_cancel_resume_segment_addresses_full_recall_and_rollback(tmp_path):
     intermediate = []
     resumed = PassageBackend(tmp_path)
     resumed.cancel_after = lambda: intermediate.append(pointer.read_bytes())
-    service = AwakeOnlineConsolidator(resumed)
+    service = ManagedAwakeOnlineConsolidator(resumed)
     result = service.sleep(archive)
     assert result["turns_retired"] == 2 and result["retirement_checks"] > 5
     assert service.active_history(archive) == [] and archive[0]["content"] == original
@@ -102,7 +102,7 @@ def test_cancel_resume_segment_addresses_full_recall_and_rollback(tmp_path):
     assert any("character 0." in p for p in source_free)
     assert len(intermediate) >= 2
     pointer.write_bytes(intermediate[-2])
-    rollback = AwakeOnlineConsolidator(PassageBackend(tmp_path))
+    rollback = ManagedAwakeOnlineConsolidator(PassageBackend(tmp_path))
     assert rollback.active_history(archive) == list(archive)
     assert rollback.sleep(archive)["turns_retired"] == 2
 
@@ -111,7 +111,7 @@ def test_missing_final_whitespace_keeps_complete_source_then_can_retry(tmp_path)
     archive, _ = new_archive(tmp_path)
     backend = PassageBackend(tmp_path)
     backend.fault = lambda cue, value: json.dumps(json.loads(value).rstrip()) if "Recall assistant" in cue else value
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     result = service.sleep(archive)
     assert result["status"] == "retained" and result["turns_retired"] == 0
     assert service.active_history(archive) == list(archive)
@@ -121,7 +121,7 @@ def test_missing_final_whitespace_keeps_complete_source_then_can_retry(tmp_path)
 
 def test_large_active_projection_is_lazy_after_restart(tmp_path, monkeypatch):
     archive, _ = new_archive(tmp_path)
-    service = AwakeOnlineConsolidator(PassageBackend(tmp_path))
+    service = ManagedAwakeOnlineConsolidator(PassageBackend(tmp_path))
     assert service.sleep(archive)["turns_retired"] == 2
     for i in range(140):
         archive.append({"role": "system", "content": str(i)})
@@ -131,7 +131,7 @@ def test_large_active_projection_is_lazy_after_restart(tmp_path, monkeypatch):
         decoded.append(row[0])
         return original(row)
     monkeypatch.setattr(ChatArchive, "_decode", staticmethod(decode))
-    fresh = AwakeOnlineConsolidator(PassageBackend(tmp_path))
+    fresh = ManagedAwakeOnlineConsolidator(PassageBackend(tmp_path))
     history = fresh.active_history(archive)
     assert isinstance(history, ActiveChatHistory) and len(history) == 140 and decoded == []
     assert [t["content"] for t in history[-2:]] == ["138", "139"] and len(decoded) == 2
@@ -144,7 +144,7 @@ class ChatEngine:
     def __init__(self, tmp, branches):
         self.active_backend = "controller"
         self.controller_backend = PassageBackend(tmp)
-        self.awake_consolidator = AwakeOnlineConsolidator(self.controller_backend)
+        self.awake_consolidator = ManagedAwakeOnlineConsolidator(self.controller_backend)
         self.settings = SimpleNamespace(max_new_tokens=64)
         self._context_budget_tokens = 512
         self._best_work_route_with_history = True
@@ -223,14 +223,14 @@ def test_previously_learned_document_is_rechecked_before_reuse(tmp_path):
 
 
 def test_folder_inspection_and_legacy_extraction_include_final_file_and_row(tmp_path):
-    from core.learning_sources import extract_learning_text, inspect_learning_source
+    from core.learning_sources import extract_complete_learning_text, inspect_learning_source
     for i in range(140):
         (tmp_path / f"a{i:03}.ignored").touch()
     content = "cedar " * 41_000 + "\nlast value \t"
     (tmp_path / "text.txt").write_text(content)
     (tmp_path / "rows.jsonl").write_text("42\n" * 2001 + '"final row"\n')
-    assert {Path(p).name for p in inspect_learning_source(tmp_path)["text_files"]} == {"rows.jsonl", "text.txt"}
-    text = extract_learning_text(tmp_path)["text"]
+    assert {Path(p).name for p in inspect_learning_source(tmp_path, implementation="managed")["text_files"]} == {"rows.jsonl", "text.txt"}
+    text = extract_complete_learning_text(tmp_path)["text"]
     assert content in text and '"final row"' in text
 
 
@@ -261,7 +261,7 @@ def test_real_cpu_peft_answers_older_fact_after_multiwindow_update_and_reload(ti
     backend.unload_model()
     assert backend.load_model()
     assert {parameter.device.type for parameter in backend.model.parameters()} == {"cpu"}
-    service = AwakeOnlineConsolidator(backend)
+    service = ManagedAwakeOnlineConsolidator(backend)
     fact = {"prompt": "What is the vault color?", "completion": "slate"}
 
     def answer():
@@ -304,7 +304,7 @@ def test_stale_model_can_still_answer_with_complete_archive_if_it_fits(tmp_path)
     archive = ChatArchive(tmp_path / "history.sqlite3", "gui")
     archive.append({"role": "system", "content": "Keep the original instructions"})
     backend = TransactionalBackend(tmp_path)
-    other = AwakeOnlineConsolidator(backend)
+    other = ManagedAwakeOnlineConsolidator(backend)
     other.train_pairs([{"prompt": "earlier label", "completion": "red"}])
     assert "".join(engine.stream_solve("Proceed.", history=archive)) == "answer"
     assert "Keep the original instructions" in engine.seen[-1]
@@ -312,7 +312,7 @@ def test_stale_model_can_still_answer_with_complete_archive_if_it_fits(tmp_path)
 
 def test_unloaded_backend_pending_count_still_pages_visible_exchanges(tmp_path):
     archive, _ = new_archive(tmp_path)
-    assert AwakeOnlineConsolidator(SimpleNamespace(model=None)).pending_exchanges(archive) == 1
+    assert ManagedAwakeOnlineConsolidator(SimpleNamespace(model=None)).pending_exchanges(archive) == 1
 
 
 @pytest.mark.parametrize("before,after", [("Reproduce this sample.\n```xml\n", "\n```"),

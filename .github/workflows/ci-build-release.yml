@@ -373,13 +373,17 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
           MLX_TEST_DEVICE: ${{ matrix.device }}
         run: |
-          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py
+          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py
           python - <<'PY'
           import xml.etree.ElementTree as ET
           cases = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
                    if 'test_mlx_packed_terminal' in c.get('classname', '')]
           assert len(cases) >= 2, 'Both packed Bonsai layouts must be exercised'
           assert all(c.find('skipped') is None for c in cases), 'Packed native MLX tests cannot be skipped'
+          parity = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
+                    if 'test_mlx_learning_implementations' in c.get('classname', '')]
+          assert len(parity) >= 7, 'Original MLX algorithms and namespace isolation must be exercised'
+          assert all(c.find('skipped') is None for c in parity), 'Original MLX parity tests cannot be skipped'
           PY
       - name: Preserve native learning results
         if: always()

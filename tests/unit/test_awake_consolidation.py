@@ -11,15 +11,37 @@ from core.mlx_engine import MLXReasoningBackend
 from core.online_consolidator import AwakeOnlineConsolidator
 from core.pro_engine import ProReasoningEngine
 from memory.db import EpisodicMemoryDB
-from tests.unit.context_backend_fixture import TransactionalBackend
 from app_gui import SmartAIChatbotApp
 
+
+class FakeTrainableEngine:
+    def __init__(self, adapter_path=None):
+        self.model = object()
+        self.tokenizer = object()
+        self.is_mlx_available = True
+        self.adapters = {"layer_0_lora": 0.05}
+        self.adapter_path = adapter_path
+        self.last_save_path = None
+
+    @staticmethod
+    def count_tokens(messages):
+        return max(1, sum(len(m.get("content", "")) for m in messages) // 4)
+
+    def train_mini_batch(self, adapters, data, lambda_ewc=400.0, steps=3, **kwargs):
+        self.last_save_path = kwargs.get("save_path")
+        updated = dict(adapters or {})
+        updated["layer_0_lora"] = float(updated.get("layer_0_lora", 0.0)) + 0.01
+        self.adapters = updated
+        if self.last_save_path:
+            os.makedirs(os.path.dirname(os.path.abspath(self.last_save_path)), exist_ok=True)
+            with open(self.last_save_path, "wb") as f:
+                f.write(b"adapter")
+        return updated, 0.01
 
 
 class TestAwakeConsolidationSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.state_root = tempfile.TemporaryDirectory()
         cls.settings = get_settings(use_mock=True)
         cls.db_fd, cls.db_path = tempfile.mkstemp(suffix=".db")
         cls.db = EpisodicMemoryDB(db_path=cls.db_path)
@@ -29,7 +51,6 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         try:
-            cls.state_root.cleanup()
             os.close(cls.db_fd)
             if os.path.exists(cls.db_path):
                 os.remove(cls.db_path)
@@ -38,7 +59,7 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
 
     def test_01_watermark_detection_and_no_prune_below_threshold(self):
         consolidator = AwakeOnlineConsolidator(
-            mlx_engine=TransactionalBackend(self.state_root.name),
+            mlx_engine=FakeTrainableEngine(),
             memory_db=self.db,
             max_context=1000,
             watermark=0.80,
@@ -53,7 +74,12 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
         self.assertEqual(len(retained), 2)
 
     def test_02_watermark_prune_requires_real_training_updates_and_persists(self):
-        trainable = TransactionalBackend(self.state_root.name)
+        adapter_path = os.path.join(tempfile.gettempdir(), "awake-test-adapter.safetensors")
+        try:
+            os.remove(adapter_path)
+        except FileNotFoundError:
+            pass
+        trainable = FakeTrainableEngine(adapter_path=adapter_path)
         consolidator = AwakeOnlineConsolidator(
             mlx_engine=trainable,
             memory_db=self.db,
@@ -62,9 +88,11 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
             evict_ratio=0.40,
         )
         long_history = []
-        for i in range(8):
-            long_history.append({"role": "user", "content": f"The archive label for sample {i} is cedar{i}."})
-            long_history.append({"role": "assistant", "content": f"I recorded sample {i} as cedar{i}."})
+        for i in range(10):
+            role = "user" if i % 2 == 0 else "assistant"
+            long_history.append(
+                {"role": role, "content": f"This is turn number {i} containing enough detailed context words." * 4}
+            )
 
         retained, triggered = consolidator.check_and_prune(long_history)
         self.assertTrue(triggered)
@@ -78,8 +106,12 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
         self.assertGreaterEqual(consolidator.consolidation_count, 1)
         self.assertGreater(consolidator.total_param_shift, 0.0)
         self.assertGreater(trainable.adapters["layer_0_lora"], 0.05)
-        self.assertTrue(os.path.isfile(trainable.learning_state.current_checkpoint()))
-        self.assertEqual(trainable.learning_state.current_manifest()["metadata"]["mode"], "awake")
+        self.assertEqual(trainable.last_save_path, adapter_path)
+        self.assertTrue(os.path.exists(adapter_path))
+        try:
+            os.remove(adapter_path)
+        except Exception:
+            pass
 
     def test_03_unloaded_engine_never_prunes_or_claims_learning(self):
         consolidator = AwakeOnlineConsolidator(

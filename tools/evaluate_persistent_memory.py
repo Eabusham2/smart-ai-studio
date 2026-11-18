@@ -93,7 +93,7 @@ def _load_engine(job, target):
     state_directory = os.environ.get("SMARTAI_DATA_DIR")
     if not state_directory:
         raise RuntimeError("The evaluation worker requires an isolated state directory")
-    settings = get_settings(backend="mlx", use_mock=False, live_mode=True, auto_download=False,
+    settings = get_settings(backend="mlx", learning_implementation="managed", use_mock=False, live_mode=True, auto_download=False,
                             lora_adapter_path=None,
                             database_path=str(Path(state_directory) / "evaluation.sqlite3"))
     engine = ProReasoningEngine(settings=settings)

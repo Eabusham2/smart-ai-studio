@@ -28,6 +28,14 @@ from core.training_memory import release_training_memory
 _RUNTIME_FAMILY_RESOLVERS: Dict[str, Any] = {}
 
 
+def controller_learning_root() -> Path:
+    """Portable generation directory shared by direct and managed Transformers selection."""
+    from config.paths import get_portable_data_dir
+    configured = os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "").strip()
+    parent = Path(configured).expanduser() if configured else Path(get_portable_data_dir()) / "controller_lora"
+    return (parent / "learned_memory").resolve()
+
+
 def register_runtime_family(name: str, resolver) -> None:
     """Register an architecture-family -> concrete runtime resolver."""
     key = str(name or "").strip().lower()
@@ -426,11 +434,9 @@ class UniversalControllerBackend:
         # Persistent controller LoRA lives beside other portable app state. Reload it
         # transactionally on every model load so learned chat state survives restarts.
         key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
-        eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
         from core.learning_state import bind_learning_state, select_legacy_checkpoint
-        legacy_root = os.path.abspath(eval_root) if eval_root else os.path.join(get_portable_data_dir(), "controller_lora")
-        legacy_path = os.path.join(legacy_root, key)
-        state_root = os.path.join(legacy_root, "learned_memory")
+        state_root = controller_learning_root()
+        legacy_path = state_root.parent / key
         store = bind_learning_state(self, model_path=source, model_info=self.model_info,
                                     state_root=state_root, adapter_format="peft")
         self._loaded_learning_checkpoint = self.adapter_path = store.current_checkpoint()
@@ -494,7 +500,7 @@ class UniversalControllerBackend:
         return max(1, len(text) // 4)
 
     @staticmethod
-    def _transformers_lora_targets(model) -> List[str]:
+    def _transformers_lora_targets(model, *, legacy=False) -> List[str]:
         import torch
         from transformers.pytorch_utils import Conv1D
         suffixes = {
@@ -506,12 +512,15 @@ class UniversalControllerBackend:
         }
         blocked = (
             "vision", "visual", "image", "audio", "speech",
-            "projector", "mm_projector", "vision_tower", "mtp",
+            "projector", "mm_projector", "vision_tower",
         )
+        module_types = (torch.nn.Linear,) if legacy else (torch.nn.Linear, Conv1D)
+        if not legacy:
+            blocked += ("mtp",)
         targets: List[str] = []
         for name, module in model.named_modules():
             leaf = name.rsplit(".", 1)[-1]
-            if leaf not in suffixes or not isinstance(module, (torch.nn.Linear, Conv1D)):
+            if leaf not in suffixes or not isinstance(module, module_types):
                 continue
             low = name.lower()
             if any(marker in low for marker in blocked):
@@ -519,7 +528,7 @@ class UniversalControllerBackend:
             targets.append(name)
         return sorted(set(targets))
 
-    def _ensure_transformers_lora(self):
+    def _ensure_transformers_lora(self, *, legacy=False):
         if self.runtime not in ("transformers_auto", "transformers", "hf_transformers"):
             raise RuntimeError("Controller runtime has no generic PEFT training bridge")
         if not self.training_ready():
@@ -529,7 +538,10 @@ class UniversalControllerBackend:
         if isinstance(self.model, PeftModel):
             return self.model
 
-        targets = self._transformers_lora_targets(self.model)
+        targets = self._transformers_lora_targets(self.model, legacy=legacy)
+        if legacy and not targets:
+            # Conv1D controllers were added after the original linear-only LoRA bridge.
+            targets = self._transformers_lora_targets(self.model)
         if not targets:
             raise RuntimeError(
                 "No compatible language projection modules were found for controller LoRA; "
@@ -546,6 +558,8 @@ class UniversalControllerBackend:
         self.model = get_peft_model(self.model, cfg)
         return self.model
 
+    supports_learning_modes = True
+
     def train_mini_batch(
         self,
         adapters: Any,
@@ -555,6 +569,29 @@ class UniversalControllerBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
+        learning_mode=None, **options,
+    ):
+        """Select the original completion trainer or the managed learning objectives."""
+        from core.learning_implementation import resolve_learning_mode
+        mode = resolve_learning_mode(self, learning_mode, options)
+        if mode == "legacy" and getattr(self, "learning_state", None) is None:
+            from core.legacy_torch_learning import update_standalone_controller
+            return update_standalone_controller(self, data, learning_rate=learning_rate, steps=steps)
+        return UniversalControllerBackend._train_mini_batch(
+            self, adapters, data, fisher_matrix, lambda_ewc, learning_rate, steps, save_path,
+            learning_mode=mode, **options,
+        )
+
+    def _train_mini_batch(
+        self,
+        adapters: Any,
+        data: List[Dict[str, str]],
+        fisher_matrix: Any = None,
+        lambda_ewc: float = 0.0,
+        learning_rate: float = 1e-4,
+        steps: int = 3,
+        save_path: Optional[str] = None,
+        *, learning_mode,
         cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
         reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
         objective='causal_lm', supervise_prompt=False, max_window_tokens=512, row_weights=None,
@@ -568,7 +605,7 @@ class UniversalControllerBackend:
             from core.reward_adaptation import reward_advantages
             reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
         store = self.learning_state
-        txn = store.begin(metadata=learning_metadata)
+        txn = store.begin(metadata=learning_metadata, inherit_metadata=learning_mode == "managed")
         before = {}
         base_trainability = []
         original_model = self.model
@@ -578,23 +615,32 @@ class UniversalControllerBackend:
             if store.current_checkpoint() != self._loaded_learning_checkpoint:
                 raise RuntimeError("Reload the latest committed controller checkpoint before learning")
             check_cancelled(cancel_event)
-            if validation_callback is None:
+            if learning_mode == "managed" and validation_callback is None:
                 validation_callback = default_validation(self, data, objective=objective, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
             if not getattr(original_model, "peft_config", None):
                 base_trainability = [(p, p.requires_grad) for p in original_model.parameters()]
-            model = self._ensure_transformers_lora()
+            model = self._ensure_transformers_lora(legacy=learning_mode == "legacy")
             named = lora_parameters(model)
             before = {name: param.detach().cpu().clone() for name, param in named.items()}
-            metrics, drift = update_lora(
-                model, self.tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_window_tokens,
-                reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
-                objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
-                context_text=context_text, max_context_tokens=max_context_tokens,
-                fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, before=before,
-                anchor_texts=anchor_texts, output_directory=txn.directory,
-                previous_directory=Path(self._loaded_learning_checkpoint).parent if self._loaded_learning_checkpoint else None,
-            )
-            evidence = validate_candidate(self, validation_callback, cancel_event)
+            if learning_mode == "legacy":
+                from core.legacy_torch_learning import LegacyControllerTrainer, update_legacy_lora
+                metrics, drift = update_legacy_lora(
+                    model, self.tokenizer, data, trainer=LegacyControllerTrainer,
+                    learning_rate=learning_rate, steps=steps, max_length=512,
+                    output_directory=txn.directory, before=before, cancel_event=cancel_event,
+                )
+                evidence = {"method": "parameter_drift"}
+            else:
+                metrics, drift = update_lora(
+                    model, self.tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_window_tokens,
+                    reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                    objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
+                    context_text=context_text, max_context_tokens=max_context_tokens,
+                    fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, before=before,
+                    anchor_texts=anchor_texts, output_directory=txn.directory,
+                    previous_directory=Path(self._loaded_learning_checkpoint).parent if self._loaded_learning_checkpoint else None,
+                )
+                evidence = validate_candidate(self, validation_callback, cancel_event)
             tmp = txn.directory / "peft"
             model.save_pretrained(tmp, safe_serialization=True, save_embedding_layers=False)
             verify_saved_lora(model, tmp)
