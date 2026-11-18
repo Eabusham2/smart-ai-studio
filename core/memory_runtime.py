@@ -1,6 +1,7 @@
 """User-facing online learning and scoped parameter-memory lifecycle.
 
-Every scope transition uses the normal model loader, so tokenizer/source checks,
+Scope transitions use an authenticated same-model adapter switch when the
+backend supports it, otherwise the normal model loader. Tokenizer/source checks,
 native deployment, MLX owner-thread execution and cache invalidation still apply.
 The existing model lifecycle lock serializes scope changes with inference.
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 import functools
+import inspect
 from pathlib import Path
 import threading
 import time
@@ -69,6 +71,9 @@ def install_memory_runtime(cls):
         self._memory_load_spec = None
         self._owned_request_stores = {}
         self._temporary_scope_depth = 0
+        self.memory_auto_recall = True
+        self._memory_routing_active = False
+        self._last_memory_recall = None
         # Production already installs a reentrant speed/lifecycle lock. Small
         # embedders without that extension need the same lifecycle contract.
         if not hasattr(self, "_model_lock"):
@@ -87,17 +92,66 @@ def install_memory_runtime(cls):
                 result = {**result, "learning_scope": self.learning_scope.record}
             return result
 
+    def prepare_call(self, method, args, kwargs):
+        current_scope = getattr(self, "learning_scope", LearningScope())
+        if (not getattr(self, "memory_auto_recall", True) or not getattr(self, "is_model_loaded", False)
+                or current_scope.pin or current_scope.kind == "request" or getattr(self, "_temporary_scope_depth", 0)):
+            return args, kwargs, None
+        backend = active_learning_backend(self)
+        if (getattr(backend, "learning_state", None) is None
+                or not callable(getattr(backend, "stream_generate_tokens", None))):
+            return args, kwargs, None
+        catalog = self.adapter_memory_bank()
+        if not catalog.list_entries(limit=1):
+            return args, kwargs, None
+        bound = inspect.signature(method).bind_partial(self, *args, **kwargs)
+        question = bound.arguments.get("prompt")
+        if not isinstance(question, str):
+            return args, kwargs, None
+        extra = bound.arguments.get("kwargs", {})
+        from core.memory_routing import prepare_recall_request
+        history = bound.arguments.get("history", extra.get("history"))
+        augmented, prepared_history, report = prepare_recall_request(self, question, history=history,
+            cancel_event=bound.arguments.get("cancel_event", extra.get("cancel_event")))
+        bound.arguments["prompt"] = augmented
+        if prepared_history is not history:
+            if "history" in bound.arguments:
+                bound.arguments["history"] = prepared_history
+            else:
+                extra["history"] = prepared_history
+        return bound.args[1:], bound.kwargs, report
+
     @functools.wraps(original_solve)
     def solve(self, *args, **kwargs):
         with self._model_lock:
-            return original_solve(self, *args, **kwargs)
+            if getattr(self, "_memory_routing_active", False):
+                return original_solve(self, *args, **kwargs)
+            self._memory_routing_active = True
+            try:
+                args, kwargs, report = prepare_call(self, original_solve, args, kwargs)
+                self._last_memory_recall = report
+                result = original_solve(self, *args, **kwargs)
+                if report is not None and isinstance(result, tuple) and len(result) == 2:
+                    return result[0], {**(result[1] or {}), "memory_recall": report}
+                return result
+            finally:
+                self._memory_routing_active = False
 
     @functools.wraps(original_stream)
     def stream_solve(self, *args, **kwargs):
         # Generator creation performs no inference. Hold the lock through
         # iteration and close, not merely while returning the generator object.
         with self._model_lock:
-            yield from original_stream(self, *args, **kwargs)
+            if getattr(self, "_memory_routing_active", False):
+                yield from original_stream(self, *args, **kwargs)
+                return
+            self._memory_routing_active = True
+            try:
+                args, kwargs, report = prepare_call(self, original_stream, args, kwargs)
+                self._last_memory_recall = report
+                yield from original_stream(self, *args, **kwargs)
+            finally:
+                self._memory_routing_active = False
 
     def set_scope(self, scope, *, seed_from_current=False, cancel_event=None, _temporary=False):
         """Select persistent state. On load failure restore the previous selection."""
@@ -162,7 +216,12 @@ def install_memory_runtime(cls):
                 return {"status": "selected", "learning_scope": scope.record}
             self.learning_scope = scope
             try:
-                result = self.load_model(**spec)
+                switch = getattr(active_learning_backend(self), "switch_learning_checkpoint", None)
+                if callable(switch) and switch(scope) is True:
+                    result = {"status": "loaded", "learning_scope": scope.record,
+                              "activation": "same_model_adapter_switch"}
+                else:
+                    result = self.load_model(**spec)
                 if not isinstance(result, dict) or result.get("status") != "loaded":
                     raise RuntimeError((result or {}).get("error") or "The selected memory could not load")
                 selected_store = getattr(active_learning_backend(self), "learning_state", None)
@@ -224,14 +283,37 @@ def install_memory_runtime(cls):
             raise RuntimeError("Load a model with verified learned-state support first")
         return AdapterMemoryBank(store)
 
-    def solve_with_memory(self, prompt, *, memory_query=None, **kwargs):
+    def solve_with_memory(self, prompt, *, memory_query=None, routing="lexical", top_k=3,
+                          candidate_limit=8, memory_max_tokens=192, cache=True, **kwargs):
         """Route to the best matching pinned document adapter for this answer only."""
         with self._model_lock:
+            if routing == "model":
+                from core.memory_routing import prepare_recall_request
+                previous = self._memory_routing_active
+                self._memory_routing_active = True
+                try:
+                    augmented, history, report = prepare_recall_request(self, prompt, query=memory_query,
+                        history=kwargs.get("history"), cancel_event=kwargs.get("cancel_event"),
+                        top_k=top_k, candidate_limit=candidate_limit, max_tokens=memory_max_tokens, cache=cache)
+                    if history is not kwargs.get("history"):
+                        kwargs["history"] = history
+                    response, meta = original_solve(self, augmented, **kwargs)
+                    self._last_memory_recall = report
+                    return response, {**(meta or {}), "memory_recall": report}
+                finally:
+                    self._memory_routing_active = previous
+            if routing != "lexical":
+                raise ValueError("Memory routing must be model or lexical")
             catalog = self.adapter_memory_bank()
             entries = catalog.select(memory_query or prompt, top_k=1)
             if not entries:
-                response, meta = self.solve(prompt, **kwargs)
-                return response, {**(meta or {}), "memory_selection": None}
+                previous = self._memory_routing_active
+                self._memory_routing_active = True
+                try:
+                    response, meta = original_solve(self, prompt, **kwargs)
+                    return response, {**(meta or {}), "memory_selection": None}
+                finally:
+                    self._memory_routing_active = previous
             entry = entries[0]
             with self.use_learning_scope(catalog.activation_scope(entry), seed_from_current=False):
                 catalog.resolve(entry, active_learning_backend(self).learning_state)
@@ -240,13 +322,23 @@ def install_memory_runtime(cls):
             return response, {**(meta or {}), "memory_selection": provenance}
 
     def run_learning(self, request, *, cancel_event=None, progress=None):
-        """Run a bounded online method; ephemeral task adaptation is the default."""
+        """Run online learning in the selected scope, or temporary practice on request."""
         from core.test_time_learning import OnlineLearning
         if not isinstance(request, dict):
             raise ValueError("An online learning request must be an object")
         options = dict(request)
         method = options.get("method", "ingest")
         requested_scope = options.pop("scope", None)
+        temporary = options.pop("temporary", False)
+        if type(temporary) is not bool:
+            raise ValueError("temporary must be a boolean")
+        if temporary and requested_scope is not None:
+            raise ValueError("Choose temporary practice or a persistent scope, not both")
+        if temporary and (method.startswith("bank_") or method == "capabilities"):
+            raise ValueError("Temporary practice applies to learning tasks, not saved-memory management")
+        if (requested_scope is not None and method.startswith("bank_")
+                and as_scope(requested_scope) != self.learning_scope):
+            raise ValueError("Select the saved-memory owner with set_learning_scope before managing its bank")
         started = time.perf_counter()
         with self._model_lock, _PeakRSS() as measured:
             if not self.is_model_loaded:
@@ -274,7 +366,11 @@ def install_memory_runtime(cls):
                 solve_options = {"cancel_event": cancel_event}
                 if "force_branch_count" in options:
                     solve_options["force_branch_count"] = options["force_branch_count"]
-                response, metadata = self.solve_with_memory(options["query"], **solve_options)
+                response, metadata = self.solve_with_memory(options["query"],
+                    routing=options.get("routing", "model"), top_k=options.get("top_k", 3),
+                    candidate_limit=options.get("candidate_limit", 8),
+                    memory_max_tokens=options.get("max_tokens", 192), cache=options.get("cache", True),
+                    **solve_options)
                 result = {"status": "completed", "response": response, "metadata": metadata}
             elif method == "bank_ingest":
                 catalog = self.adapter_memory_bank()
@@ -304,8 +400,6 @@ def install_memory_runtime(cls):
                                                  expected_content_sha256=source_hash, cancel_event=cancel_event)
                         result = {**result, "memory_entry": {k: v for k, v in entry.items() if k != "pin"}}
             else:
-                temporary = requested_scope is None and method in {
-                    "few_shot", "reinforce", "query_adapt", "consolidate_candidates", "discover"}
                 selected = LearningScope.request() if temporary else (
                     as_scope(requested_scope) if requested_scope is not None else self.learning_scope)
                 if selected == self.learning_scope:

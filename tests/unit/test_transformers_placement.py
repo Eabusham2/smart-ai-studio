@@ -299,3 +299,16 @@ def test_real_small_checkpoint_runs_with_cpu_and_disk_offload(monkeypatch, tmp_p
         assert next(backend.model.parameters()).dtype == torch.float32
     finally:
         backend.unload_model()
+
+
+def test_only_resident_cuda_model_parallel_map_can_train():
+    params = [SimpleNamespace(device="cuda:0"), SimpleNamespace(device="cuda:1")]
+    child = SimpleNamespace(_hf_hook=SimpleNamespace(offload=False))
+    model = SimpleNamespace(hf_device_map={"a": 0, "b": 1}, parameters=lambda: iter(params),
+                            modules=lambda: iter([child]))
+    assert not placement.describe_transformers_placement(model)["inference_only"]
+    child._hf_hook.offload = True
+    assert placement.describe_transformers_placement(model)["inference_only"]
+    child._hf_hook.offload = False
+    params[1].device = "meta"
+    assert placement.describe_transformers_placement(model)["inference_only"]

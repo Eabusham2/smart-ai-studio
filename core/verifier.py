@@ -9,6 +9,7 @@ Provides objective RLVR validation to prevent neural verifier hacking via:
 
 import ast
 import collections
+import errno
 import logging
 import math
 import random
@@ -143,13 +144,14 @@ class GroundTruthVerifier:
             # Set memory limits on POSIX platforms where preexec_fn is supported
             preexec = get_sandbox_preexec(self.max_memory_mb)
 
-            res = subprocess.run(
-                [sys.executable, "-c", test_harness],
-                capture_output=True,
-                text=True,
-                timeout=self.sandbox_timeout,
-                preexec_fn=preexec
-            )
+            options = dict(capture_output=True, text=True, timeout=self.sandbox_timeout, preexec_fn=preexec)
+            try:
+                res = subprocess.run([sys.executable, "-c", test_harness], **options)
+            except OSError as error:
+                if error.errno != errno.E2BIG and getattr(error, "winerror", None) != 206:
+                    raise
+                # Large user-declared case sets can exceed the OS argument limit.
+                res = subprocess.run([sys.executable, "-"], input=test_harness, **options)
             exec_time = (time.perf_counter() - start_time) * 1000
             passed = (res.returncode == 0)
 

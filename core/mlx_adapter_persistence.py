@@ -38,6 +38,82 @@ def _validate_weights(weights, expected):
     check_finite(weights.values(), "checkpoint weights")
 
 
+def switch_learning_checkpoint(backend, scope):
+    """Swap authenticated raw LoRA modules while retaining the same resident foundation."""
+    import mlx.core as mx
+    from mlx.utils import tree_unflatten
+    from core.learning_state import model_identity
+    from core.mlx_learning import _projection_targets, ensure_adapters
+    from core.native_speed import runtime_lock
+    from types import SimpleNamespace
+
+    with runtime_lock(backend):
+        prior = getattr(backend, "learning_state", None)
+        source = getattr(backend, "_mlx_loaded_source", None)
+        if prior is None or not source or not backend.is_mlx_available or backend.model is None:
+            return False
+        current = prior.current_checkpoint()
+        if current != (backend.adapter_path or None) or getattr(backend, "_mlx_imported_source", None):
+            return False
+        info = dict(getattr(backend, "model_info", {}) or {})
+        if not Path(backend.model_path).expanduser().exists():
+            info.setdefault("repo_id", str(backend.model_path))
+        if model_identity(source, info, state_root=prior.root) != prior.identity:
+            raise RuntimeError("The resident MLX source differs from its learned model identity")
+        store = prior.for_scope(scope)
+        manifest = store.current_manifest()
+        if manifest and (manifest["checkpoint"] != "adapters.safetensors" or manifest["checkpoint"] not in manifest["artifacts"]):
+            return False
+        selected = str(store.directory / "generations" / manifest["generation"] / manifest["checkpoint"]) if manifest else None
+        language = backend.get_training_model()
+        previous = {path: module for path, module in language.named_modules()
+                    if hasattr(module, "lora_a") and hasattr(module, "lora_b")}
+        if previous and (not current or any(getattr(module, "linear", None) is None for module in previous.values())):
+            return False
+        weights, rank, layout, scale = {}, None, None, None
+        if selected:
+            if not selected.endswith(".safetensors"):
+                return False
+            weights, metadata = mx.load(selected, return_metadata=True)
+            if metadata.get("smartai_identity") != store.identity_digest:
+                raise ValueError("The selected raw MLX adapter has no matching model identity")
+            rank = _infer_rank(weights)
+            layout = metadata.get("smartai_lora_layout", "legacy")
+            scale = float(metadata.get("smartai_lora_scale", 2.0))
+            if layout not in {"head", "legacy", "packed_terminal"} or not math.isfinite(scale) or scale <= 0:
+                raise ValueError("Invalid managed MLX adapter layout or scale")
+        old_modules = [(p, k, getattr(p, k)) for p, k in _projection_targets(language, previous)]
+        installed = []
+        proxy = SimpleNamespace(model=language, _vlm_runtime=getattr(backend, "_vlm_runtime", None))
+        backend.invalidate_prompt_reuse("learning scope changed")
+        try:
+            for parent, key, adapter in old_modules:
+                setattr(parent, key, adapter.linear)
+            if selected:
+                targets = {key.rsplit(".", 1)[0] for key in weights}
+                expected = ensure_adapters(proxy, rank, scale, layout, target_paths=targets, installed=installed)
+                _validate_weights(weights, expected)
+                language.update(tree_unflatten(list(weights.items())))
+                mx.eval(*weights.values())
+        except BaseException:
+            for parent, key, base in reversed(installed):
+                setattr(parent, key, base)
+            for parent, key, adapter in old_modules:
+                setattr(parent, key, adapter)
+            raise
+        backend.learning_state = store
+        backend.learning_scope = store.scope
+        backend.learning_identity = store.identity
+        backend.adapters = weights
+        backend.last_learning_metrics = manifest["metadata"].get("metrics", {}) if manifest else {}
+        backend._last_managed_checkpoint = backend.adapter_path = backend.last_restored_adapter_path = selected
+        backend._mlx_parent_generation = manifest["generation"] if manifest else None
+        backend.last_restored_adapter_rank = rank
+        backend.last_restored_adapter_provenance = "model-bound" if selected else None
+        backend._packed_learning_fallback = None
+        return True
+
+
 def resume_optimizer(backend, optimizer, txn, learning_rate):
     if txn is None or txn.parent is None:
         return False
@@ -79,6 +155,7 @@ def persist_candidate(backend, candidate, save_path, txn, metadata, metrics, can
     provenance["smartai_lora_scale"] = str(scales.pop())
     provenance["smartai_lora_layout"] = (
         "head" if getattr(getattr(backend.model, "lm_head", None), "_smartai_output_lora", False)
+        else "packed_terminal" if any(getattr(m, "_smartai_packed_lora", False) for _, m in backend.model.named_modules())
         else "legacy")
     destination = txn.directory / "adapters.safetensors" if txn is not None else Path(save_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +308,7 @@ def install_mlx_adapter_persistence(cls):
             only_head = set(weights) == {"lm_head.lora_a", "lm_head.lora_b"}
             specialized = getattr(self, "_vlm_runtime", None) in {"mlx_repo_vlm", "jang_vlm"}
             layout = metadata.get("smartai_lora_layout", "head" if only_head and specialized else "legacy")
-            if layout not in {"legacy", "head"} or (layout == "head" and not only_head):
+            if layout not in {"legacy", "head", "packed_terminal"} or (layout == "head" and not only_head):
                 raise ValueError("Invalid MLX adapter layout in checkpoint metadata")
             target_paths = {key.rsplit(".", 1)[0] for key in weights}
             expected = self.inject_lora_adapters(r=rank, scale=scale, layout=layout, target_paths=target_paths)

@@ -613,6 +613,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             raise RuntimeError("MLX model owner is unavailable; load the model first")
         return owner.call(operation, *args, **kwargs)
 
+    def switch_learning_checkpoint(self, scope):
+        from core.mlx_adapter_persistence import switch_learning_checkpoint
+        return self.run_on_mlx_owner(switch_learning_checkpoint, self, scope)
+
     def get_training_model(self):
         """Return the real causal language module used for text Learn/RSI updates."""
         if self._vlm_runtime is not None:
@@ -625,9 +629,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         # Invalidate even on failed/partial updates: weights may already differ.
         if method_name in {"inject_lora_adapters", "compute_mlx_fisher", "train_mini_batch"}:
             self.invalidate_prompt_reuse("training or adapter mutation")
+        from core.policy_reference import private_text_positions
         target = self.get_training_model()
         if target is None or target is self.model:
-            return getattr(super(), method_name)(*args, **kwargs)
+            with private_text_positions(target):
+                return getattr(super(), method_name)(*args, **kwargs)
         wrapper = self.model
         validation = kwargs.get("validation_callback")
         if validation is not None:
@@ -640,7 +646,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             kwargs["validation_callback"] = validate_wrapper
         self.model = target
         try:
-            return getattr(super(), method_name)(*args, **kwargs)
+            with private_text_positions(target):
+                return getattr(super(), method_name)(*args, **kwargs)
         finally:
             self.model = wrapper
 

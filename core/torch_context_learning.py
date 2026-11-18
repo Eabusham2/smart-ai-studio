@@ -29,34 +29,31 @@ def validate_candidate(backend, callback, cancel_event):
 def default_validation(backend, data, *, objective='causal_lm', reward_weighting="group_relative", entropic_kl_target=None):
     """Acceptance for standalone backend callers without a consolidator."""
     from memory.anchor_dataset import get_anchor_dataset
-    from core.online_consolidator import RETENTION_TOLERANCE
+    from core.online_consolidator import RETENTION_TOLERANCE, _scores
     if not data:
         raise ValueError("No training examples were supplied")
     if objective == "reward_policy":
         from core.reward_adaptation import reward_advantages, validation_contrast_weights, validation_gain_tolerance
         _, weights = reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
         weights = validation_contrast_weights(weights)
-        probes = [(str(row["prompt"]), str(row["completion"])) for row in data]
+        probes = data
     else:
         first = data[0]
         weights = (1.0,)
-        probes = [(str(first["prompt"])[-180:], str(first["completion"])[:48])]
+        probes = [{"prompt": str(first["prompt"])[-180:], "completion": str(first["completion"])[:48]}]
     heldout = get_anchor_dataset()[2]
     guard = (heldout["prompt"], heldout["completion"])
-
-    def losses(candidate):
-        return [candidate.score_learning_probe(*pair) for pair in probes]
 
     def score(values):
         return math.fsum(w * loss for w, loss in zip(weights, values)) / len(values)
 
-    before = losses(backend)
+    before, probe_sources = _scores(backend, probes)
     baseline, retained = score(before), backend.score_learning_probe(*guard)
     if not all(math.isfinite(value) for value in (*before, baseline, retained)):
         raise RuntimeError("Parameter-learning baseline is non-finite")
 
     def validate(candidate):
-        after = losses(candidate)
+        after, candidate_sources = _scores(candidate, probes)
         guard_after = candidate.score_learning_probe(*guard)
         gains = [previous - candidate_loss for previous, candidate_loss in zip(before, after)]
         # Subtract the common shift first to avoid roundoff crediting an equal
@@ -67,9 +64,10 @@ def default_validation(backend, data, *, objective='causal_lm', reward_weighting
             shift = math.fsum(gains) / len(gains)
             gains = [gain - shift for gain in gains]
         gain = score(gains)
-        accepted = (all(math.isfinite(value) for value in (*after, guard_after))
+        accepted = (candidate_sources == probe_sources and all(math.isfinite(value) for value in (*after, guard_after))
                     and gain > min_gain and guard_after <= retained + RETENTION_TOLERANCE)
         return {"accepted": accepted, "probe_nll_before": baseline, "probe_nll_after": score(after),
+                **({"reward_validation_sources": probe_sources} if objective == "reward_policy" else {}),
                 "score_kind": (reward_weighting + "_advantage_mean_nll_contrast"
                                if objective == "reward_policy" else "completion_nll"),
                 "retention_nll_before": retained, "retention_nll_after": guard_after}
@@ -87,12 +85,12 @@ def lora_parameters(model):
 def window_limit(model, requested):
     cfg = getattr(model, "config", None)
     language = getattr(cfg, "text_config", None) or cfg
-    sizes = [int(requested)]
+    sizes = [int(requested)] if requested is not None else []
     for field in ("max_position_embeddings", "n_positions", "max_sequence_length"):
         size = getattr(language, field, None)
         if isinstance(size, int) and size > 1:
             sizes.append(size)
-    return min(sizes)
+    return min(sizes) if sizes else None
 
 
 def window_loss(model, window):
@@ -244,10 +242,10 @@ def update_lora(model, tokenizer, data, *, learning_rate, steps, max_tokens,
     rows = tuple(data)
     if objective not in {"causal_lm", "reward_policy", "query_only"}:
         raise ValueError("Unknown test-time training objective")
-    if not 2 <= int(max_tokens) <= 512:
-        raise ValueError("Training window must be 2–512 tokens")
-    if objective != "causal_lm" and (int(steps) > 8 or row_weights is not None):
-        raise ValueError("Policy and query objectives use their own weights and at most eight steps")
+    if int(max_tokens) < 2:
+        raise ValueError("Training window must admit a causal token pair")
+    if objective != "causal_lm" and row_weights is not None:
+        raise ValueError("Policy and query objectives supply their own weights")
     all_named = lora_parameters(model)
     named = {k: v for k, v in all_named.items() if objective != "query_only" or is_query_adapter(k)}
     if not named:

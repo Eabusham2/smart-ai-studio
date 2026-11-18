@@ -6040,8 +6040,7 @@ assert glyph_res["invariants_passed"] == True
         backend = service.engine
 
         def pending_exchanges():
-            active = service.active_history(self.chat_history.get(tab_id, []))
-            return len(completed_groups(active))
+            return service.pending_exchanges(self.chat_history.get(tab_id, []))
 
         try:
             pending = str(pending_exchanges())

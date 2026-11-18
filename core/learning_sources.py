@@ -37,17 +37,19 @@ def media_kind(path: Path) -> str | None:
     return None
 
 
-def _iter_source_files(source: Path, max_files: int = 128) -> Iterable[Path]:
+def _iter_source_files(source: Path, *, exclude=()) -> Iterable[Path]:
     if source.is_file():
         yield source
         return
-    count = 0
-    for path in sorted(source.rglob("*")):
-        if path.is_file():
-            yield path
-            count += 1
-            if count >= max_files:
-                break
+    excluded = {Path(path).resolve() for path in exclude}
+    skip = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+    for directory, folders, files in os.walk(source, followlinks=False):
+        folders[:] = sorted(name for name in folders if name not in skip and Path(directory) / name not in excluded
+                            and not (Path(directory) / name).is_symlink())
+        for name in sorted(files):
+            path = Path(directory) / name
+            if not path.is_symlink() and path.is_file():
+                yield path
 
 
 def inspect_learning_source(source: str | os.PathLike[str]) -> Dict[str, Any]:
@@ -76,9 +78,8 @@ def inspect_learning_source(source: str | os.PathLike[str]) -> Dict[str, Any]:
     }
 
 
-def _clip(text: str, max_chars: int) -> str:
-    text = str(text or "").strip()
-    return text if len(text) <= max_chars else text[:max_chars] + "\n[...truncated...]"
+def _clip(text: str, max_chars: int | None) -> str:
+    return text if max_chars is None or len(text) <= max_chars else text[:max_chars] + "\n[...truncated...]"
 
 
 def _extract_json(path: Path) -> str:
@@ -88,15 +89,13 @@ def _extract_json(path: Path) -> str:
 
 def _extract_jsonl(path: Path) -> str:
     rows = []
-    for index, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines()):
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
         try:
             rows.append(json.loads(line))
         except Exception:
             rows.append({"raw": line})
-        if index >= 1999:
-            break
     return "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
 
 
@@ -104,10 +103,8 @@ def _extract_delimited(path: Path, delimiter: str) -> str:
     out: List[str] = []
     with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
-        for index, row in enumerate(reader):
+        for row in reader:
             out.append(delimiter.join(str(cell) for cell in row))
-            if index >= 1999:
-                break
     return "\n".join(out)
 
 
@@ -117,8 +114,6 @@ def _extract_parquet(path: Path) -> str:
     except Exception as exc:
         raise RuntimeError("Parquet /learn requires pyarrow") from exc
     table = pq.read_table(path)
-    if table.num_rows > 2000:
-        table = table.slice(0, 2000)
     rows = table.to_pylist()
     return "\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in rows)
 
@@ -130,7 +125,7 @@ def _extract_pdf(path: Path) -> str:
         raise RuntimeError("PDF /learn requires pypdf") from exc
     reader = PdfReader(str(path))
     parts = []
-    for page in reader.pages[:200]:
+    for page in reader.pages:
         text = page.extract_text() or ""
         if text.strip():
             parts.append(text)
@@ -150,7 +145,7 @@ def _extract_docx(path: Path) -> str:
     return "\n".join(parts)
 
 
-def extract_text_file(path: Path, max_chars: int = 120_000) -> str:
+def extract_text_file(path: Path, max_chars: int | None = None) -> str:
     suffix = path.suffix.lower()
     if suffix == ".json":
         text = _extract_json(path)
@@ -176,8 +171,8 @@ def extract_text_file(path: Path, max_chars: int = 120_000) -> str:
 def extract_learning_text(
     source: str | os.PathLike[str],
     *,
-    max_total_chars: int = 240_000,
-    max_chars_per_file: int = 120_000,
+    max_total_chars: int | None = None,
+    max_chars_per_file: int | None = None,
 ) -> Dict[str, Any]:
     inspection = inspect_learning_source(source)
     chunks: List[str] = []
@@ -192,10 +187,11 @@ def extract_learning_text(
             continue
         if not text.strip():
             continue
-        remaining = max_total_chars - total
-        if remaining <= 0:
-            break
-        text = text[:remaining]
+        if max_total_chars is not None:
+            remaining = max_total_chars - total
+            if remaining <= 0:
+                break
+            text = text[:remaining]
         chunks.append(f"===== SOURCE FILE: {path.name} =====\n{text}")
         total += len(text)
     return {
@@ -214,15 +210,9 @@ def iter_learning_files(source, *, exclude=()):
             raise ValueError("Unsupported text-learning file: " + root.name)
         yield root
         return
-    excluded = {Path(path).resolve() for path in exclude}
-    skip = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
-    for directory, folders, files in os.walk(root, followlinks=False):
-        folders[:] = sorted(name for name in folders if name not in skip and Path(directory) / name not in excluded
-                            and not (Path(directory) / name).is_symlink())
-        for name in sorted(files):
-            path = Path(directory) / name
-            if path.suffix.lower() in SUPPORTED_TEXT_SUFFIXES and not path.is_symlink() and path.is_file():
-                yield path
+    for path in _iter_source_files(root, exclude=exclude):
+        if path.suffix.lower() in SUPPORTED_TEXT_SUFFIXES:
+            yield path
 
 
 def source_snapshot(source, cancel_event=None, *, exclude=()):

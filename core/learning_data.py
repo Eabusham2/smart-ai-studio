@@ -7,6 +7,7 @@ The module deliberately imports no model framework.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import islice, zip_longest
 from typing import Iterable, Iterator, Mapping, Sequence
 
 
@@ -113,16 +114,26 @@ def windows_from_tokens(tokens: Sequence[int], labels: Sequence[int] | None = No
     if isinstance(max_tokens, bool) or int(max_tokens) < 2:
         raise ValueError("A causal training window requires at least two tokens")
     size = int(max_tokens)
-    ids = tuple(int(value) for value in tokens)
-    targets = tuple(int(value) for value in (labels if labels is not None else ids))
-    if len(ids) != len(targets):
-        raise ValueError("Training token and label lengths differ")
-    for start in range(0, max(0, len(ids) - 1), size - 1):
-        stop = min(len(ids), start + size)
-        local_labels = (IGNORE_INDEX,) + targets[start + 1:stop]
-        window = TrainingWindow(ids[start:stop], local_labels, row_index, start, stop)
+    missing = object()
+    pairs = (((token, token) for token in tokens) if labels is None
+             else zip_longest(tokens, labels, fillvalue=missing))
+    predecessor = next(pairs, None)
+    start = 0
+    while predecessor is not None:
+        if missing in predecessor:
+            raise ValueError("Training token and label lengths differ")
+        tail = list(islice(pairs, size - 1))
+        if not tail:
+            break
+        if any(missing in pair for pair in tail):
+            raise ValueError("Training token and label lengths differ")
+        ids = (int(predecessor[0]), *(int(token) for token, _ in tail))
+        targets = (IGNORE_INDEX, *(int(label) for _, label in tail))
+        window = TrainingWindow(ids, targets, row_index, start, start + len(ids))
         if window.supervised_tokens:
             yield window
+        predecessor = tail[-1]
+        start += len(tail)
 
 
 def iter_training_windows(tokenizer, data: Iterable[Mapping], *, max_tokens: int = 256, supervise_prompt: bool = True) -> Iterator[TrainingWindow]:
@@ -169,13 +180,13 @@ one preceding answer token; a cue that cannot fit is rejected explicitly.
 
 
 def training_coverage(tokenizer, data: Iterable[Mapping], *, max_tokens: int = 256, supervise_prompt: bool = True) -> dict:
-    rows = list(data)
-    windows = list(iter_training_windows(tokenizer, rows, max_tokens=max_tokens, supervise_prompt=supervise_prompt))
-    visited = {window.row_index for window in windows}
+    rows = windows = supervised = maximum = 0
+    for window in iter_training_windows(tokenizer, data, max_tokens=max_tokens, supervise_prompt=supervise_prompt):
+        rows = window.row_index + 1
+        windows += 1
+        supervised += window.supervised_tokens
+        maximum = max(maximum, len(window.input_ids))
     return {
-        "rows": len(rows), "trained_rows": len(visited), "windows": len(windows),
-        "supervised_tokens": sum(window.supervised_tokens for window in windows),
-        "max_window_tokens": max((len(window.input_ids) for window in windows), default=0),
-        "complete": len(visited) == len(rows) and bool(rows),
-        "supervise_prompt": bool(supervise_prompt),
+        "rows": rows, "trained_rows": rows, "windows": windows, "supervised_tokens": supervised,
+        "max_window_tokens": maximum, "complete": bool(rows), "supervise_prompt": bool(supervise_prompt),
     }

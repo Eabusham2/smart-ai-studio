@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import codecs
 from contextlib import closing
 import hashlib
 import itertools
@@ -20,7 +21,6 @@ from core.memory_scopes import LearningScope
 
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _COLUMNS = "entry_key AS key, title, source, content_sha256, generation, registered_at"
-_PREFIX_CHARS = 48_000
 _COMMON = frozenset("a an and are as at be by can did do does for from how i in is it of on or "
                     "that the their this to was were what which with would you your".split())
 
@@ -29,32 +29,61 @@ def _terms(text):
     return (word[:64] for word in _WORD.findall(text.casefold()) if len(word) >= 2 and word not in _COMMON)
 
 
-def _content_digest(content, cancel_event):
-    """Hash the full source in chunks and retain only a capped lexical sample."""
-    _check_cancelled(cancel_event)
-    digest = hashlib.sha256()
-    if isinstance(content, str):
-        for offset in range(0, len(content), 64 * 1024):
-            _check_cancelled(cancel_event)
-            digest.update(content[offset:offset + 64 * 1024].encode("utf-8"))
-        sample = content[:_PREFIX_CHARS]
+def _content_blocks(content):
+    """Read the complete source without loading its vocabulary or text into RAM."""
+    if isinstance(content, Path):
+        with content.open("rb") as stream:
+            yield from iter(lambda: stream.read(64 * 1024), b"")
+    elif isinstance(content, str):
+        for offset in range(0, len(content), 16 * 1024):
+            yield content[offset:offset + 16 * 1024].encode("utf-8")
     elif isinstance(content, (bytes, bytearray)):
         view = memoryview(content)
-        for offset in range(0, len(view), 1024 * 1024):
-            _check_cancelled(cancel_event)
-            digest.update(view[offset:offset + 1024 * 1024])
-        sample = content[:_PREFIX_CHARS].decode("utf-8", errors="replace")
-    elif isinstance(content, Path):
-        with content.open("rb") as stream:
-            prefix = stream.read(_PREFIX_CHARS)
-            digest.update(prefix)
-            for chunk in iter(lambda: stream.read(64 * 1024), b""):
-                _check_cancelled(cancel_event)
-                digest.update(chunk)
-        sample = prefix.decode("utf-8", errors="replace")
+        for offset in range(0, len(view), 64 * 1024):
+            yield view[offset:offset + 64 * 1024]
     else:
         raise TypeError("Document content must be text, bytes, or a local Path")
-    return digest.hexdigest(), sample
+
+
+def _index_content(db, owner, key, content, cancel_event):
+    digest = hashlib.sha256()
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    word = ""
+
+    def index(text, final=False):
+        nonlocal word
+        counts = Counter()
+        for char in text.casefold() + (" " if final else ""):
+            if char.isalnum():
+                if len(word) < 64:
+                    word += char
+            elif word:
+                if len(word) >= 2 and word not in _COMMON:
+                    counts[word] += 1
+                word = ""
+        db.executemany("""INSERT INTO terms(owner,entry_key,term,weight) VALUES (?,?,?,?)
+            ON CONFLICT(owner,term,entry_key) DO UPDATE SET weight=min(6,terms.weight+excluded.weight)""",
+            ((owner, key, term, min(count, 6)) for term, count in counts.items()))
+
+    extracted = isinstance(content, Path) and content.suffix.lower() in {".pdf", ".docx", ".parquet"}
+    for block in _content_blocks(content):
+        _check_cancelled(cancel_event)
+        digest.update(block)
+        if not extracted:
+            index(decoder.decode(block))
+    if extracted:
+        # Registration binds the original file digest while ranking the same
+        # extracted passages that supplied the learning objective.
+        from core.learning_sources import iter_file_chunks
+        from core.learning_state import file_sha256
+        for fragment in iter_file_chunks(content, 16384):
+            _check_cancelled(cancel_event)
+            index(fragment)
+        if file_sha256(content, cancel_event=cancel_event) != digest.hexdigest():
+            raise RuntimeError("Document content changed during indexing")
+    index(decoder.decode(b"", final=True), final=True)
+    _check_cancelled(cancel_event)
+    return digest.hexdigest()
 
 
 def _bounded_text(value, name, limit):
@@ -114,11 +143,7 @@ class AdapterMemoryBank:
         if isinstance(keywords, str):
             keywords = [keywords]
         hints = " ".join(_bounded_text(word, "Keyword", 128) for word in itertools.islice(keywords, 64))
-        digest, sample = _content_digest(content, cancel_event)
-        if expected_content_sha256 is not None and digest != expected_content_sha256:
-            raise RuntimeError("Document content changed during learning")
-        counts = Counter(_terms(sample))
-        weights = {term: min(count, 6) for term, count in counts.most_common(512)}
+        weights = {}
         for text, bonus in [(title, 10), (source, 2), (hints, 8)]:
             for term in set(_terms(text)):
                 weights[term] = weights.get(term, 0) + bonus
@@ -132,9 +157,15 @@ class AdapterMemoryBank:
                 db.execute("DELETE FROM entries WHERE owner=? AND entry_key=?", (self.owner_id, key))
                 db.execute("""INSERT INTO entries(owner,entry_key,document_scope,title,source,content_sha256,
                               generation,manifest_sha256,pin,registered_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                           (self.owner_id, key, scope.scope_id, title, source, digest, generation,
+                           (self.owner_id, key, scope.scope_id, title, source, "", generation,
                             pointer["manifest_sha256"], uuid4().hex, time.time()))
-                db.executemany("INSERT INTO terms(owner,entry_key,term,weight) VALUES (?,?,?,?)",
+                digest = _index_content(db, self.owner_id, key, content, cancel_event)
+                if expected_content_sha256 is not None and digest != expected_content_sha256:
+                    raise RuntimeError("Document content changed during learning")
+                db.execute("UPDATE entries SET content_sha256=? WHERE owner=? AND entry_key=?",
+                           (digest, self.owner_id, key))
+                db.executemany("""INSERT INTO terms(owner,entry_key,term,weight) VALUES (?,?,?,?)
+                    ON CONFLICT(owner,term,entry_key) DO UPDATE SET weight=terms.weight+excluded.weight""",
                                ((self.owner_id, key, term, weight) for term, weight in weights.items()))
                 _check_cancelled(cancel_event)
                 return self._entry(db, key)
@@ -155,21 +186,24 @@ class AdapterMemoryBank:
             return [dict(row) for row in rows]
 
     def select(self, query, top_k=1):
-        if not isinstance(top_k, int) or not 1 <= top_k <= 32:
-            raise ValueError("top_k must be between 1 and 32")
-        terms = list(itertools.islice(dict.fromkeys(_terms(query[:4096])), 64))
+        if type(top_k) is not int or top_k < 1:
+            raise ValueError("top_k must be positive")
+        if not isinstance(query, str):
+            raise ValueError("Memory query must be text")
+        terms = set(_terms(query))
         if not terms:
             return []
-        placeholders = ",".join("?" for _ in terms)
         # Only postings matching this owner's query terms enter ranking. SQLite sorts on disk as needed.
         with closing(self._connect()) as db:
+            db.execute("CREATE TEMP TABLE query_terms(term TEXT PRIMARY KEY)")
+            db.executemany("INSERT INTO query_terms(term) VALUES (?)", ((term,) for term in terms))
             rows = db.execute(f"""WITH ranked AS (
                 SELECT entry_key,count(*) AS overlap,sum(weight) AS score FROM terms
-                WHERE owner=? AND term IN ({placeholders}) GROUP BY entry_key
+                WHERE owner=? AND term IN (SELECT term FROM query_terms) GROUP BY entry_key
                 ORDER BY overlap DESC,score DESC,entry_key LIMIT ?
             ) SELECT e.entry_key AS key,title,source,content_sha256,generation,registered_at,pin,score,overlap
               FROM ranked JOIN entries AS e ON e.owner=? AND e.entry_key=ranked.entry_key
-              ORDER BY overlap DESC,score DESC,e.entry_key""", (self.owner_id, *terms, top_k, self.owner_id))
+              ORDER BY overlap DESC,score DESC,e.entry_key""", (self.owner_id, top_k, self.owner_id))
             return [dict(row) for row in rows]
 
     def _pinned_scope(self, entry):

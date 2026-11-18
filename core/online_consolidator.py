@@ -5,14 +5,17 @@ import hashlib
 import logging
 import math
 import re
+import sqlite3
 import threading
 import time
-from itertools import chain
+from itertools import chain, islice
 from pathlib import Path
 from uuid import uuid4
 
-from core.context_memory import ChatArchive, RetirementLedger, completed_groups, oldest_completed_chunk, working_history
-from core.learning_recall import RecallBank, ReplayBank, StreamCursorBank, passes_recall, retirement_probes
+from core.context_memory import (ChatArchive, ContextOverflow, RetirementLedger, TranscriptTurn, completed_groups,
+                                 iter_completed_exchanges, oldest_completed_chunk, working_history)
+from core.learning_recall import (RecallBank, ReplayBank, SegmentedRecall, StreamCursorBank, check_cancel,
+                                  generation_room, needs_segmented_recall, passes_recall, retirement_probes)
 from core.training_memory import backend_label, process_rss_mb, release_training_memory
 from memory.anchor_dataset import get_anchor_dataset, get_anchor_texts
 
@@ -29,14 +32,33 @@ class LearningValidationError(RuntimeError):
 
 def source_probe(text):
     """A bounded verbatim continuation; the expected span is absent from the cue."""
-    words = re.findall(r'\S+', text.strip())
-    if len(words) < 2:
-        return None
-    # Prefer the value of an explicit association over a generic sentence suffix.
-    split = next((i + 1 for i, w in enumerate(words[:-1]) if w.casefold() in
-                  {"is", "equals", "means", "called", "named", "to", "="}), len(words) // 2)
-    cue = " ".join(words[max(0, split - 16):split])[-256:]
-    expected = " ".join(words[split:split + 12])[:192]
+    markers = {"is", "equals", "means", "called", "named", "to", "="}
+    split = None
+    count = 0
+    marker = False
+    for word in re.finditer(r'\S+', text):
+        if marker:
+            split = count
+            break
+        count += 1
+        marker = word.end() - word.start() <= 6 and word.group().casefold() in markers
+    if split is None:
+        if count < 2:
+            return None
+        split = count // 2
+    # Bound even the temporary strings for a megabyte-long identifier.
+    cue = expected = ""
+    for i, word in enumerate(re.finditer(r'\S+', text)):
+        if i < split - 16:
+            continue
+        if i >= split + 12:
+            break
+        if i < split:
+            suffix = text[max(word.start(), word.end() - 256):word.end()]
+            cue = (cue + " " + suffix).lstrip()[-256:]
+        elif len(expected) < 192:
+            prefix = text[word.start():min(word.end(), word.start() + 192)]
+            expected = (expected + " " + prefix).lstrip()[:192]
     if not expected or expected.casefold() in cue.casefold():
         return None
     return {"prompt": "Complete the earlier statement: " + cue, "completion": expected}
@@ -80,10 +102,22 @@ def _rehearsal(previous, new):
 
 
 def _scores(backend, probes):
-    values = [float(backend.score_learning_probe(p["prompt"], p["completion"])) for p in probes]
+    values = []
+    sources = set()
+    for row in probes:
+        score = None
+        if "rollout_completion_ids" in row:
+            from core.policy_reference import sampled_action_nll
+            score = sampled_action_nll(backend, row)
+        if score is None:
+            score = backend.score_learning_probe(row["prompt"], row["completion"])
+            sources.add("serving_text_probe")
+        else:
+            sources.add("sampled_token_ids")
+        values.append(float(score))
     if not all(math.isfinite(value) and value >= 0 for value in values):
         raise ValueError("The active model produced invalid continuation scores")
-    return values
+    return values, sorted(sources)
 
 
 class AwakeOnlineConsolidator:
@@ -165,7 +199,7 @@ class AwakeOnlineConsolidator:
             return history if isinstance(history, ChatArchive) else working_history(history, self.session_id)
         ledger = self._retirement_ledger(store)
         if isinstance(history, ChatArchive):
-            return history.active_view(ledger, head)
+            return history.projected_history(ledger, head)
         return ledger.active_turns(working_history(history, self.session_id), head)
 
     def check_and_prune(self, conversation_history):
@@ -184,8 +218,12 @@ class AwakeOnlineConsolidator:
         if not chunk:
             return False
         try:
-            result = self.train_pairs(self._conversation_training_pairs(chunk), turns=working_history(chunk, self.session_id),
-                             cancel_event=cancel_event, mode=mode)
+            turns = working_history(chunk, self.session_id)
+            if needs_segmented_recall(self.engine, turns):
+                result = self._train_segments(turns, mode, cancel_event)
+            else:
+                result = self.train_pairs(self._conversation_training_pairs(turns), turns=turns,
+                                          cancel_event=cancel_event, mode=mode)
             if result["turns_retired"] != len(chunk):
                 self.last_error = result["retirement_reason"]
                 return False
@@ -205,39 +243,152 @@ class AwakeOnlineConsolidator:
         """Compatibility with the conversation-teach evaluation entry point."""
         return self.consolidate_chunk_sync(chunk)
 
-    def _sleep_chunk(self, rows, request_size):
-        """Read ordinary exchanges with one-turn lookahead, even across page boundaries."""
+    def _train_segments(self, turns, mode, event):
+        # Every interim checkpoint records an exact restart position. Only the
+        # last candidate can publish a retirement receipt for the whole input.
+        with self._update_lock:
+            plan = SegmentedRecall(self.engine, turns, event)
+            store = self.engine.learning_state
+            memory = self._memory(store.current_manifest(verify=False))
+            room = generation_room(self.engine, "", 10000000)
+            job = hashlib.sha256(("chat-passages-v1/" + str(room) + "/" +
+                                  "/".join(t.turn_id for t in turns)).encode()).hexdigest()
+            cursor = StreamCursorBank(store.directory).lookup(memory.get("stream_head"), job)
+            position = cursor.get("position", (0, 0))
+            serial = cursor.get("next", 0)
+            passages = plan.passages(*position)
+            upcoming = next(passages, None)
+            while upcoming:
+                # Keep at most four addressed passages and one lookahead in
+                # RAM. Large dialogue never becomes one giant optimizer batch.
+                batch = [upcoming, *islice(passages, 3)]
+                upcoming = next(passages, None)
+                serial += 1
+                rows = [r for r, _, _ in batch]
+                # Start a fresh pass if a completed attempt cannot reconstruct
+                # all earlier segments; an interruption resumes the current pass.
+                next_state = {"next": serial, "position": batch[-1][2] if upcoming else [0, 0]}
+                result = self.train_pairs(rows, turns=() if upcoming else turns, mode=mode,
+                                          stream_cursor=(job, next_state), cancel_event=event,
+                                          recall_plan=None if upcoming else plan,
+                                          evidence=[r["completion"] for r in rows],
+                                          training_options={"supervise_prompt": False})
+                if not upcoming:
+                    return result
+            raise ValueError("No contiguous source passages to learn")
+
+    def learn_current_document(self, source, cancel_event=None):
+        """Verify explicit source material before substituting its address on the current request."""
+        digest = hashlib.sha256()
+        for offset in range(0, len(source), 8192):
+            check_cancel(cancel_event)
+            digest.update(source[offset:offset + 8192].encode())
+        key = digest.hexdigest()
+        turn = TranscriptTurn({"role": "document", "content": source}, key)
+        if self.active_history([turn]):
+            result = self._train_segments([turn], "current_document", cancel_event)
+            verified = bool(result["turns_retired"])
+        else:
+            # A subsequent checkpoint may have sampled a different historical
+            # receipt. Recheck this particular source before omitting it again.
+            plan = SegmentedRecall(self.engine, [turn], cancel_event)
+            verified = passes_recall(self.engine, plan.checks(), cancel_event)
+        if not verified:
+            raise RuntimeError("The complete document could not be recalled. Its source was retained.")
+        return key
+
+    def _archive_pages(self, archive, page_size=16):
+        store = getattr(self.engine, "learning_state", None)
+        head = self._loaded_head(store) if store is not None else None
+        ledger = self._retirement_ledger(store) if head else None
+        return archive.iter_active_pages(ledger, head, page_size=page_size)
+
+    def pending_exchanges(self, history):
+        if not isinstance(history, ChatArchive):
+            return len(completed_groups(self.active_history(history)))
+        pages = self._archive_pages(history)
+        try:
+            return sum(1 for _ in iter_completed_exchanges(chain.from_iterable(pages)))
+        finally:
+            pages.close()
+
+    def _sleep_chunk(self, rows, request_size, keep_recent=False):
         target = min(32, max(2, int(request_size * self.evict_ratio)))
         selected = []
-        pending = []
-        oversized = False
-        pending_chars = 0
-        for row in chain(rows, (None,)):
-            if pending and pending[-1]["role"] == "assistant":
-                lookahead = pending + ([row] if row is not None else [])
-                for group in completed_groups(lookahead):
-                    selected.extend(lookahead[i] for i in group)
-                pending = []
-                pending_chars = 0
-                if len(selected) >= target:
-                    break
-            if row is None:
-                break
-            role = row.get("role")
-            if role == "user":
-                pending_chars += len(str(row.get("content", "")))
-                if pending_chars > 64000 or len(pending) >= 32:
-                    oversized = True
-                    pending = []
-                if not oversized:
-                    pending.append(row)
-            elif role == "assistant" and pending and not oversized:
-                pending.append(row)
+        recent = None
+        for group in iter_completed_exchanges(rows):
+            if not keep_recent:
+                selected.extend(group)
             else:
-                pending = []
-                pending_chars = 0
-                oversized = False
+                if recent:
+                    selected.extend(recent)
+                recent = group
+            if len(selected) >= target:
+                break
         return selected
+
+    def prepare_archive(self, archive, packed_count, budget, cancel_event=None):
+        """Page a cold/backlogged archive before any UI route copies it into the prompt.
+
+        Stop collecting as soon as a page reaches the physical boundary. Retire
+        from the oldest complete exchanges, then reopen at the published head.
+        """
+        trigger = max(1, int(budget * 0.8))
+        target = max(1, int(budget * 0.6))
+        retiring = False
+        def preview(pages):
+            active = []
+            count = packed_count(active)
+            try:
+                for page in pages:
+                    check_cancel(cancel_event)
+                    active.extend(page)
+                    count = packed_count(active)
+                    if count >= budget:
+                        return active, count, False
+            finally:
+                pages.close()
+            return active, count, True
+
+        while True:
+            check_cancel(cancel_event)
+            try:
+                active, count, exhausted = preview(self._archive_pages(archive))
+            except InterruptedError:
+                raise
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+                # A different process may have published a new checkpoint.
+                # This live model can still use the original visible transcript.
+                self.last_error = str(exc)
+                active, count, exhausted = preview(archive.iter_pages(page_size=16))
+                if not exhausted or count >= budget:
+                    raise ContextOverflow(f"Original transcript retained. Active context requires at least {count} "
+                                          f"tokens with a budget of {budget}. {exc}") from exc
+                return active
+            if exhausted and (count <= target if retiring else count < trigger):
+                return active
+            retiring = True
+            pages = self._archive_pages(archive)
+            try:
+                chunk = self._sleep_chunk(chain.from_iterable(pages), len(active), keep_recent=True)
+            finally:
+                pages.close()
+            if not chunk and count >= budget:
+                # Even the most recent completed exchange can be learned if it
+                # would otherwise make the next request physically impossible.
+                pages = self._archive_pages(archive)
+                try:
+                    chunk = self._sleep_chunk(chain.from_iterable(pages), len(active))
+                finally:
+                    pages.close()
+            if chunk and self.consolidate_chunk_sync(chunk, cancel_event=cancel_event):
+                continue
+            check_cancel(cancel_event)
+            if count >= budget:
+                detail = self.last_error if chunk else "No complete ordinary exchange can be retired."
+                raise ContextOverflow(f"Active context requires at least {count} tokens with a budget of {budget}. "
+                                   f"Original transcript retained. {detail}")
+            return active
 
     def sleep(self, transcript, cancel_event=None):
         if isinstance(transcript, ChatArchive):
@@ -262,7 +413,7 @@ class AwakeOnlineConsolidator:
 
     def train_pairs(self, pairs, *, turns=(), evidence=(), mode="learn", cancel_event=None,
                     learning_rate=1e-4, steps=3, training_options=None, stream_cursor=None,
-                    validation_rows=None, policy_parent=...):
+                    validation_rows=None, policy_parent=..., recall_plan=None):
         """Serialize real updates. A committed manifest carries the exact retirement receipt."""
         with self._update_lock:
             with self.lock:
@@ -273,7 +424,7 @@ class AwakeOnlineConsolidator:
                 if not self._real_training_ready():
                     raise RuntimeError(self.last_error or "The active backend lacks a verified persistent trainer or probe scorer")
                 result = self._train(backend, pairs, turns, evidence, mode, cancel_event, learning_rate,
-                                     steps, dict(training_options or {}), stream_cursor, validation_rows, policy_parent)
+                                     steps, dict(training_options or {}), stream_cursor, validation_rows, policy_parent, recall_plan)
                 self.consolidation_count += 1
                 self.total_param_shift += result["parameter_drift_l2"]
                 self.last_result = result
@@ -295,7 +446,7 @@ class AwakeOnlineConsolidator:
                         self.is_consolidating = False
 
     def _train(self, backend, pairs, turns, evidence, mode, cancel_event, learning_rate,
-               steps, options, stream_cursor, validation_rows, policy_parent):
+               steps, options, stream_cursor, validation_rows, policy_parent, recall_plan):
         def check_cancel():
             if cancel_event is not None and cancel_event.is_set():
                 raise InterruptedError("Learning cancelled before checkpoint commit")
@@ -326,7 +477,7 @@ class AwakeOnlineConsolidator:
         if objective == "reward_policy":
             # Only a *relative* gain on the rewarded actions is evidence of
             # learning this objective. Lower NLL on every rollout is insufficient.
-            probes = [{"prompt": row["prompt"], "completion": row["completion"]} for row in pairs]
+            probes = pairs
             from core.reward_adaptation import reward_advantages, validation_contrast_weights, validation_gain_tolerance
             weighting = {}
             _, advantages = reward_advantages(
@@ -351,16 +502,8 @@ class AwakeOnlineConsolidator:
         guard = [anchors[2], *_sample([r for r in historical + old_replay if r not in rehearsal], 3)]
         bank = RecallBank(store.directory)
         old_checks = bank.sample(parent_head, (manifest or {}).get("generation"))
-        new_checks = []
-        if turns:
-            try:
-                new_checks = retirement_probes(backend, turns, cancel_event)
-            except InterruptedError:
-                raise
-            except Exception as exc:
-                logger.info("Could not construct independent recall checks: %s", exc)
-        baseline = _scores(backend, probes)
-        baseline_guard = _scores(backend, guard)
+        baseline, probe_sources = _scores(backend, probes)
+        baseline_guard, _ = _scores(backend, guard)
         metrics = {}
         new_memory = {**memory, "retirement_head": parent_head, "recall_version": 1,
                       "replay": _rehearsal(old_replay, [] if objective == "reward_policy" else probes)}
@@ -374,8 +517,10 @@ class AwakeOnlineConsolidator:
 
         def validate(candidate):
             check_cancel()
-            after = _scores(candidate, probes)
-            after_guard = _scores(candidate, guard)
+            after, candidate_sources = _scores(candidate, probes)
+            if candidate_sources != probe_sources:
+                raise LearningValidationError("The candidate changed the validation scoring route")
+            after_guard, _ = _scores(candidate, guard)
             metrics.update(probe_nll_before=baseline, probe_nll_after=after,
                            retention_nll_before=baseline_guard, retention_nll_after=after_guard)
             if objective == "reward_policy":
@@ -387,6 +532,7 @@ class AwakeOnlineConsolidator:
                 gain = math.fsum(a * (d - mean_delta) for a, d in zip(contrast_weights, deltas)) / len(deltas)
                 metrics["reward_logprob_contrast_gain"] = gain
                 metrics["reward_logprob_weighted_gain"] = math.fsum(a * d for a, d in zip(advantages, deltas)) / len(deltas)
+                metrics["reward_validation_sources"] = probe_sources
                 metrics["reward_validation_measure"] = "centered change in mean serving log probability per token"
                 metrics.update(weighting)
                 metrics["reward_validation_tolerance"] = validation_gain_tolerance(baseline, after)
@@ -408,10 +554,11 @@ class AwakeOnlineConsolidator:
                 new_memory["replay_head"] = update_id
             if old_checks and not passes_recall(candidate, old_checks, cancel_event):
                 raise LearningValidationError("The candidate regressed on previously retired source-free recall")
-            metrics.update(retention_recall_checks=len(old_checks), retirement_checks=len(new_checks),
+            metrics.update(retention_recall_checks=len(old_checks), retirement_checks=0,
                            turns_retired=0, retirement_reason="")
             if turns:
                 try:
+                    metrics["retirement_checks"] = len(new_checks)
                     passed = bool(new_checks) and passes_recall(candidate, new_checks, cancel_event)
                 except InterruptedError:
                     raise
@@ -419,19 +566,20 @@ class AwakeOnlineConsolidator:
                     logger.info("Could not verify full exchange recall: %s", exc)
                     passed = False
                 if passed:
-                    # The transaction shares this nested memory dictionary. Stage
-                    # receipts first, then publish their head with the adapter.
                     ledger.stage(update_id, parent_head, [turn.turn_id for turn in turns])
-                    bank.stage(update_id, parent_head, new_checks)
                     new_memory["retirement_head"] = update_id
                     metrics["turns_retired"] = len(turns)
                 else:
+                    bank.discard(update_id)
                     metrics["retirement_reason"] = "Parameters updated; complete source-free recall was unproven."
             check_cancel()
             return {"accepted": True, **metrics}
 
         metadata = {"update_id": update_id, "mode": mode, "memory": new_memory,
                     "expected_parent": (manifest or {}).get("generation")}
+        if objective == "reward_policy":
+            from core.reward_adaptation import rollout_audit
+            metadata["_sampled_rollout_group"] = rollout_audit(pairs, options)
         # RSI trains the self-generated trace only. Retention scores are evaluated
         # independently after the trace is written and never fed into its generation.
         data = list(pairs)
@@ -441,6 +589,15 @@ class AwakeOnlineConsolidator:
         ram = process_rss_mb()
         try:
             check_cancel()
+            new_checks = []
+            if turns:
+                try:
+                    checks = recall_plan.checks() if recall_plan else retirement_probes(backend, turns, cancel_event)
+                    new_checks = bank.stage(update_id, parent_head, checks)
+                except InterruptedError:
+                    raise
+                except Exception as exc:
+                    logger.info("Could not construct full exchange recall probes: %s", exc)
             updated, drift = backend.train_mini_batch(
                 adapters=getattr(backend, "adapters", {}) or {}, data=data,
                 lambda_ewc=self.lambda_ewc, anchor_texts=get_anchor_texts()[:2],

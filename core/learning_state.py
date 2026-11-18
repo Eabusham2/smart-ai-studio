@@ -325,6 +325,9 @@ class LearningStateStore:
                     UNION ALL SELECT r.head,r.parent,r.depth,r.checks FROM origin.probe_sets AS r
                     JOIN sets AS s ON s.parent=r.head
                 ) INSERT OR IGNORE INTO main.probe_sets SELECT * FROM sets""", (head,))
+                if db.execute("SELECT 1 FROM origin.sqlite_master WHERE type='table' AND name='probes'").fetchone():
+                    db.execute("""INSERT OR IGNORE INTO main.probes
+                                  SELECT p.* FROM origin.probes p JOIN main.probe_sets s ON s.head=p.head""")
                 _check_cancelled(cancel_event)
 
     def _read_pointer(self) -> dict | None:
@@ -428,12 +431,14 @@ class LearningTransaction:
             pointer = store._read_pointer()
             self.parent = pointer["generation"] if pointer else None
             supplied = dict(metadata or {})
+            self.rollout_group = supplied.pop("_sampled_rollout_group", None)
             if "expected_parent" in supplied and supplied["expected_parent"] != self.parent:
                 raise RuntimeError("The memory plan belongs to an older parameter generation; retry consolidation")
             parent_manifest = store.current_manifest(verify=False)
             inherited = dict((parent_manifest or {}).get("metadata") or {})
             inherited.pop("expected_parent", None)
             inherited.pop("update_id", None)
+            inherited.pop("_sampled_rollout_group", None)
             self.metadata = {**inherited, **supplied}
             self.directory.mkdir(parents=True, exist_ok=False)
         self.committed = False
@@ -447,6 +452,11 @@ class LearningTransaction:
             target = _contained(self.directory, checkpoint)
             if not target.exists():
                 raise RuntimeError("Training did not produce its declared checkpoint")
+            if self.rollout_group is not None:
+                # This file is hashed and fsynced alongside the weights. Fresh
+                # policy groups never enter supervised replay or a descendant manifest.
+                with (self.directory / "sampled-rollouts.json").open("x", encoding="utf-8") as file:
+                    json.dump(self.rollout_group, file, separators=(",", ":"), allow_nan=False)
             artifacts = {}
             for path in sorted(self.directory.rglob("*")):
                 _check_cancelled(cancel_event)
@@ -462,19 +472,21 @@ class LearningTransaction:
                 raise RuntimeError("Training produced no persisted parameters")
             relative_target = target.relative_to(self.directory).as_posix()
             if target.is_file():
-                authenticated = relative_target in artifacts
+                authenticated = relative_target in artifacts and relative_target != "sampled-rollouts.json"
             else:
                 prefix = "" if relative_target == "." else relative_target + "/"
-                authenticated = any(name.startswith(prefix) for name in artifacts)
+                authenticated = any(name.startswith(prefix) and name != "sampled-rollouts.json" for name in artifacts)
             if not authenticated:
                 raise RuntimeError("Declared checkpoint contains no authenticated artifact")
+            published_metadata = {**self.metadata, **dict(metadata or {})}
+            published_metadata.pop("_sampled_rollout_group", None)
             manifest = {
                 "schema": SCHEMA_VERSION, "identity": self.store.identity,
                 "identity_digest": self.store.identity_digest,
                 "generation": self.generation, "parent": self.parent,
                 "update_id": self.update_id, "committed_at": time.time(),
                 "checkpoint": Path(checkpoint).as_posix(), "artifacts": artifacts,
-                "metadata": {**self.metadata, **dict(metadata or {})},
+                "metadata": published_metadata,
             }
             if self.store.scope.kind != "model":
                 manifest["scope"] = self.store.scope.record

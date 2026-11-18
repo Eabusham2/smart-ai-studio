@@ -27,9 +27,12 @@ class DiscoveryState:
 class DiscoveryArchive:
     """Keep candidate text only for selected archive members, retaining small ancestry records."""
 
-    def __init__(self, seeds, capacity, exploration):
+    def __init__(self, seeds, capacity, exploration, children_per_expansion=2):
         if not seeds or capacity <= len(seeds):
             raise ValueError("archive_size must leave room for a child in addition to the seeds")
+        if type(children_per_expansion) is not int or children_per_expansion < 1:
+            raise ValueError("children_per_expansion must be a positive integer")
+        self.children_per_expansion = children_per_expansion
         self.capacity = capacity
         self.exploration = exploration
         self.expansions = 0
@@ -79,7 +82,7 @@ class DiscoveryArchive:
             if text in seen:
                 previous = self.states[seen[text]]
                 previous.reward = max(previous.reward, reward)
-            elif len(inserted) < 2:
+            elif len(inserted) < self.children_per_expansion:
                 state_id = self._add(text, reward, parent)
                 seen[text] = state_id
                 inserted.append(state_id)

@@ -106,9 +106,12 @@ def _entropic_advantages(rewards, gamma):
     achieved, weights = tilt(high)
     epsilon = 1e-8
     # Summing peers directly avoids cancellation for a single dominant winner.
+    total = math.fsum(weights)
     advantages = []
     for i, weight in enumerate(weights):
-        peers = math.fsum(weights[:i] + weights[i + 1:]) / (count - 1)
+        other_mass = (math.fsum(w for j, w in enumerate(weights) if j != i)
+                      if weight > .5 * total else total - weight)
+        peers = other_mass / (count - 1)
         advantages.append(weight / (peers + epsilon) - 1.0)
     if max(advantages) <= 0:
         raise ValueError("Entropic KL target yields no resolvable positive advantage")
@@ -122,8 +125,8 @@ def _entropic_advantages(rewards, gamma):
 
 
 def reward_advantages(rows, *, reward_weighting="group_relative", entropic_kl_target=None, diagnostics=None):
-    if not 2 <= len(rows) <= 16:
-        raise ValueError("A reward group requires between two and sixteen rollouts")
+    if len(rows) < 2:
+        raise ValueError("A reward group requires at least two rollouts")
     rewards = tuple(row.get("reward") for row in rows)
     if any(isinstance(score, bool) or not isinstance(score, Real) or
            not math.isfinite(score) or not 0 <= score <= 1 for score in rewards):
@@ -179,8 +182,12 @@ def policy_advantages(group, rows, current_nlls, coefficient):
         advantages = tuple(a - coefficient * ratio for a, ratio in zip(advantages, log_ratios))
         if not all(math.isfinite(a) for a in advantages):
             raise ValueError("Non-finite initial-reference shaped advantage")
-        diagnostics.update(reference_logprob_source="supplied_initial_trajectory_logprobs",
+        source = ("captured_initial_trajectory_logprobs" if all(row.get("reference_logprob_source") ==
+                  "captured_initial_trajectory_logprobs" for row in rows) else "supplied_initial_trajectory_logprobs")
+        diagnostics.update(reference_logprob_source=source, reference_logprob_distribution="raw_causal_logits",
                            sampled_initial_log_ratios=log_ratios, shaped_advantages=list(advantages))
+    if "sampling_rule" in rows[0]:
+        diagnostics.update(sampling_rule=rows[0]["sampling_rule"], sampling_temperature=rows[0]["sampling_temperature"])
     # Extreme LOO weights (e.g., one winner in a two-sample group) can reach
     # 1/epsilon. Scale the whole group uniformly before mixed-precision backward.
     # Preserve the exact LOO estimates above and the gradient direction.
@@ -196,3 +203,20 @@ def causal_row_weights(rows, weights):
             not any(values)):
         raise ValueError("Causal learning needs one finite nonnegative weight per row and at least one positive weight")
     return values
+
+
+def rollout_audit(rows, options):
+    """Store one conditioning sequence and the evidence for each sampled action sequence."""
+    if not all("rollout_prompt_ids" in row and "rollout_completion_ids" in row for row in rows):
+        return None
+    prompt_ids = _token_ids(rows[0]["rollout_prompt_ids"])
+    if any(_token_ids(row["rollout_prompt_ids"]) != prompt_ids for row in rows):
+        raise ValueError("Reward group contains different conditioning prompts")
+    keys = ("completion", "reward", "reference_logprob", "reference_logprob_source")
+    return {"version": 1, "prompt": rows[0]["prompt"], "rollout_prompt_ids": prompt_ids,
+            "reference_generation": rows[0].get("reference_generation"),
+            "reference_logprob_distribution": "raw_causal_logits" if "reference_logprob" in rows[0] else None,
+            "sampling_rule": rows[0].get("sampling_rule"), "sampling_temperature": rows[0].get("sampling_temperature"),
+            "reference_kl_coef": options.get("reference_kl_coef", 0.),
+            "samples": [{**{key: row[key] for key in keys if key in row},
+                         "rollout_completion_ids": _token_ids(row["rollout_completion_ids"])} for row in rows]}

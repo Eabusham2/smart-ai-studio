@@ -1,7 +1,7 @@
 """Report test-time objectives exposed by the currently loaded serving backend."""
 from __future__ import annotations
 
-from core.query_adaptation import MLX_QUERY_MODELS, TORCH_QUERY_MODELS, is_query_adapter
+from core.query_adaptation import is_query_adapter, split_query_geometry, torch_query_config
 
 
 def adaptation_capabilities(backend):
@@ -21,14 +21,17 @@ def adaptation_capabilities(backend):
             packed = getattr(backend, "_vlm_runtime", None) in {"mlx_repo_vlm", "jang_vlm"}
             existing = [name for name, m in model.named_modules() if hasattr(m, "lora_a") and hasattr(m, "lora_b")]
             if packed:
-                reason = "Packed MLX learning exposes output-head adapters only."
-                return bool(existing or callable(getattr(model, "lm_head", None))), False, reason
+                from core.mlx_packed_learning import terminal_targets
+                queries = any(is_query_adapter(name) for name in existing) if existing else bool(terminal_targets(model))
+                reason = (getattr(backend, "_packed_learning_fallback", None) or
+                          "This packed checkpoint does not expose a trainable terminal full-attention query projection.")
+                return bool(existing or callable(getattr(model, "lm_head", None))), queries, reason
             targets = list(_projection_targets(model, None))
             import mlx.nn as nn
             trainable = bool(existing) or bool(targets) and all(
                 isinstance(getattr(parent, key), (nn.Linear, nn.QuantizedLinear)) for parent, key in targets)
             queries = any(is_query_adapter(name) for name in existing) if existing else any(k == "q_proj" for _, k in targets)
-            query_ready = bool(trainable and queries and type(model).__module__.split(".")[-1] in MLX_QUERY_MODELS)
+            query_ready = bool(trainable and queries and split_query_geometry(model, getattr(model, "args", None)))
             if query_ready:
                 try:
                     from mlx_lm.models.cache import KVCache, make_prompt_cache
@@ -54,14 +57,28 @@ def adaptation_capabilities(backend):
             targets = [name for name, _ in model.named_modules() if is_query_adapter(name) and ".lora_A." in name]
         else:
             targets = [name for name in backend._transformers_lora_targets(model) if is_query_adapter(name)] if ready else []
-        result["query_only"] = bool(ready and targets and getattr(base_cfg, "model_type", "") in TORCH_QUERY_MODELS
-                                    and getattr(base_cfg, "_attn_implementation", None) in {None, "eager", "sdpa"})
+        result["query_only"] = bool(ready and targets and torch_query_config(base_cfg)
+                                    and split_query_geometry(model, base_cfg))
         reason = ("This controller is inference-only or has no trainable language projection." if not ready else
                   "Query-only adaptation requires a supported split query projection and full KV cache.")
     elif callable(getattr(backend, "_verify_training_parent", None)):
         ready = bool(backend.training_ready())
         result["causal_lm"] = result["reward_policy"] = ready
-        reason = ("The native runtime cannot differentiate queries against its serving KV cache." if ready else
+        if ready:
+            from core.training_lineage import local_training_parent
+            from pathlib import Path
+            import json
+            try:
+                source = Path(local_training_parent(backend.training_base_model_id))
+                config = json.loads((source / "config.json").read_text())
+                from types import SimpleNamespace
+                result["query_only"] = torch_query_config(SimpleNamespace(**config)) and config.get("model_type") in {
+                    "llama", "qwen2", "qwen3", "mistral", "bitnet", "gemma", "olmo", "olmo2", "cohere"}
+            except (OSError, ValueError, AttributeError, RuntimeError):
+                pass
+            if result["query_only"]:
+                result["query_cache_runtime"] = "verified_transformers_parent"
+        reason = ("The local training parent has no supported full-attention query cache." if ready else
                   "Native adaptation needs a matching local training parent, memory and converter.")
     else:
         reason = getattr(backend, "learning_unavailable_reason", None) or (

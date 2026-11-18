@@ -40,10 +40,11 @@ def select_deployment(backend, base_path, root, kind, legacy_path):
 def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_matrix,
                       lambda_ewc, cancel_event, validation_callback, learning_metadata, anchor_texts=None,
                       objective='causal_lm', supervise_prompt=True, row_weights=None, max_window_tokens=256,
+                      context_text=None, max_context_tokens=None,
                       reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0):
     """Validate a candidate using the *serving* backend before switching current.json."""
-    if objective not in {"causal_lm", "reward_policy"}:
-        raise ValueError("Native conversion bridges do not expose frozen serving KV for query adaptation")
+    if objective not in {"causal_lm", "reward_policy", "query_only"}:
+        raise ValueError("Unknown native conversion objective")
     if backend.model is None:
         raise RuntimeError("Load the selected model before learning")
     if objective == "reward_policy":
@@ -73,8 +74,11 @@ def update_deployment(backend, trainer, data, *, learning_rate, steps, fisher_ma
             lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
             reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
             objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_length=max_window_tokens,
+            **({"context_text": context_text, "max_context_tokens": max_context_tokens} if objective == "query_only" else {}),
         )
         metrics["training_parent_sha256"] = lineage
+        if objective == "query_only":
+            metrics["kv_cache_runtime"] = "verified_transformers_parent"
         if not math.isfinite(drift) or drift <= 0 or touched <= 0:
             raise RuntimeError("Candidate trainer reported invalid parameter drift")
         check_cancelled(cancel_event)

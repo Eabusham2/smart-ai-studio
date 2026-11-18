@@ -321,8 +321,8 @@ class MLXReasoningBackend:
         cancel_if_requested(cancel_event)
         if objective not in {"causal_lm", "reward_policy", "query_only"}:
             raise ValueError("Unknown test-time training objective")
-        if objective != "causal_lm" and (int(steps) > 8 or row_weights is not None):
-            raise ValueError("Policy and query objectives use their own weights and at most eight steps")
+        if objective != "causal_lm" and row_weights is not None:
+            raise ValueError("Policy and query objectives supply their own weights")
         if objective == "reward_policy":
             from core.reward_adaptation import reward_advantages
             reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
@@ -385,8 +385,7 @@ class MLXReasoningBackend:
                 self, rows, objective=objective, row_weights=row_weights, supervise_prompt=supervise_prompt,
                 reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
                 optimizer=optimizer, penalty=penalty, steps=int(steps), max_tokens=max_tokens,
-                context_text=context_text, max_context_tokens=min(max_context_tokens,
-                    int(getattr(self, "context_budget_tokens", 0) or max_context_tokens)), cancel_event=cancel_event)
+                context_text=context_text, max_context_tokens=bounded_tokens(self, max_context_tokens), cancel_event=cancel_event)
             candidate = flat_trainables(self.model)
             squared = []
             changed = []
@@ -410,6 +409,8 @@ class MLXReasoningBackend:
                 "optimizer_resumed": resumed_optimizer,
                 "adapter_target": "language_output_head" if head_only else "language_projections",
             }
+            if getattr(self, "_packed_learning_fallback", None):
+                metrics["packed_projection_fallback"] = self._packed_learning_fallback
             if retention_data:
                 after = score_rows(self.model, self.tokenizer, retention_data, max_tokens, cancel_event)
                 metrics.update(retention_loss_before=retention_before, retention_loss_after=after)

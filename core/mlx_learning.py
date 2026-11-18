@@ -114,7 +114,7 @@ def ensure_adapters(backend, rank=8, scale=2.0, layout=None, *, target_paths=Non
     model = backend.model
     existing = [module for _, module in model.named_modules()
                 if hasattr(module, "lora_a") and hasattr(module, "lora_b")]
-    external = [m for m in existing if not getattr(m, "_smartai_output_lora", False)]
+    external = [m for m in existing if not (getattr(m, "_smartai_output_lora", False) or getattr(m, "_smartai_packed_lora", False))]
     if external:
         from mlx_lm.tuner.lora import LoRALinear
         if any(type(module) is not LoRALinear for module in external):
@@ -122,13 +122,64 @@ def ensure_adapters(backend, rank=8, scale=2.0, layout=None, *, target_paths=Non
     model.freeze()
     if not existing:
         packed = getattr(backend, "_vlm_runtime", None) in {"mlx_repo_vlm", "jang_vlm"}
-        if layout == "head" or (packed and layout is None):
+        from core.mlx_packed_learning import packed_lora, terminal_targets
+        terminal = terminal_targets(model) if packed and layout in {None, "packed_terminal"} else []
+        if layout == "packed_terminal" and not terminal:
+            raise ValueError("Saved packed LoRA requires a terminal full-attention block")
+        if terminal:
+            from mlx.utils import tree_flatten
+            import mlx.core as mx
+            replaced = []
+            try:
+                if target_paths is not None:
+                    required = {(id(parent), key) for parent, key in _projection_targets(model, target_paths)}
+                    if required != {(id(parent), key) for parent, key in terminal}:
+                        raise ValueError("Saved packed adapter targets differ from the terminal decoder projections")
+                for parent, name in terminal:
+                    base = getattr(parent, name)
+                    width = _config_dimension(model, "hidden_size" if name == "q_proj" else "intermediate_size")
+                    query_shape = None
+                    if name == "q_proj":
+                        heads = _config_dimension(model, "num_attention_heads")
+                        try:
+                            dim = _config_dimension(model, "head_dim")
+                        except RuntimeError:
+                            dim = width // heads
+                        query_shape = heads, dim
+                    module = packed_lora(base, width, rank, scale, query_shape=query_shape)
+                    replaced.append((parent, name, base))
+                    setattr(parent, name, module)
+                    existing.append(module)
+                # Establish native backward support before selecting this layout.
+                # Custom Metal kernels can serve the same weights but lack an input VJP.
+                if layout is None:
+                    ids = mx.array([[0, 1]])
+                    def test_loss(m):
+                        out = m(ids)
+                        logits = getattr(out, "logits", out)
+                        return nn.losses.cross_entropy(logits[:, -1].astype(mx.float32), ids[:, 0], reduction="mean")
+                    loss, gradients = nn.value_and_grad(model, test_loss)(model)
+                    check_finite([loss, *(g for _, g in tree_flatten(gradients))], "packed projection gradients")
+                    if not all(bool(mx.any(g != 0).item()) for k, g in tree_flatten(gradients) if k.endswith("lora_b")):
+                        raise ValueError("Packed terminal block supplied no gradient to a selected projection")
+            except (ValueError, TypeError, RuntimeError, NotImplementedError) as error:
+                for parent, name, base in reversed(replaced):
+                    setattr(parent, name, base)
+                if layout is not None:
+                    raise
+                backend._packed_learning_fallback = str(error)
+                existing = []
+            else:
+                backend._packed_learning_fallback = None
+                if installed is not None:
+                    installed.extend(replaced)
+        if not existing and (layout == "head" or (packed and layout is None)):
             replacement = _packed_head(model, rank, scale)
             if installed is not None:
                 installed.append((model, "lm_head", model.lm_head))
             model.lm_head = replacement
             existing = [replacement]
-        else:
+        elif not existing:
             from mlx_lm.tuner.lora import LoRALinear
 
             replacements = []
@@ -188,13 +239,19 @@ def score_rows(model, tokenizer, rows, max_tokens, cancel_event=None):
 
 
 def bounded_tokens(backend, requested):
-    limit = int(requested)
-    if not 2 <= limit <= 512:
-        raise ValueError("MLX learning window must be between 2 and 512 tokens")
-    context = int(getattr(backend, "context_budget_tokens", 0) or limit)
-    if context < 2:
+    limits = [int(requested)] if requested is not None else []
+    context = getattr(backend, "context_budget_tokens", None)
+    if context:
+        limits.append(int(context))
+    try:
+        limits.append(_config_dimension(backend.model, "max_position_embeddings"))
+    except (AttributeError, RuntimeError):
+        pass
+    if not limits:
+        return None
+    if min(limits) < 2:
         raise ValueError("MLX context must admit a causal token pair")
-    return min(limit, context)
+    return min(limits)
 
 
 def fisher_diagonal(backend, texts, max_tokens, cancel_event=None):
@@ -275,10 +332,11 @@ def optimize_windows(backend, rows, *, objective, row_weights, supervise_prompt,
     if objective == "query_only":
         if not any(is_query_adapter(k) for k in flat_trainables(model)):
             raise ValueError("The loaded MLX adapter exposes no trainable query projection")
-        if getattr(backend, "_vlm_runtime", None) in {"mlx_repo_vlm", "jang_vlm"}:
-            raise ValueError("The packed MLX output-head bridge exposes no query gradients")
+        packed = getattr(backend, "_vlm_runtime", None) in {"mlx_repo_vlm", "jang_vlm"}
         span_loss, spans, length = mlx_query_loss(model, backend.tokenizer, context_text,
-                                                 max_context_tokens, max_tokens, steps)
+                                                 max_context_tokens, max_tokens, steps, packed=packed)
+        if packed:
+            details["query_replay"] = "terminal_attention_with_frozen_hybrid_prefix"
         try:
             for path, module in model.named_modules():
                 if hasattr(module, "lora_a") and hasattr(module, "lora_b") and not is_query_adapter(path):

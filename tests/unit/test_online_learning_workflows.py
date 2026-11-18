@@ -145,9 +145,10 @@ def test_full_reconstruction_guards_each_exchange_and_earlier_receipts(workflow,
 
 def test_candidate_distillation_preserves_distinct_consensus_traces(workflow):
     generated = iter(["A calculation.\nFinal answer: 36", "Another route.\nFinal answer: 36",
-                      "A guess.\nFinal answer: 20"])
+                      "A guess.\nFinal answer: 20", "A fresh synthesis: 36"])
     workflow.generate = lambda prompt, **kw: next(generated)
     result = workflow.consolidate_candidates("Square six", rollouts=3)
+    assert result["synthesized"] and result["answer"] == "A fresh synthesis: 36"
     data = workflow.backend.received_batches[-1]
     assert result["updates"] == 1 and result["reward_source"] == "model_consensus"
     assert len([r for r in data if r["prompt"] == "Square six"]) == 2
@@ -206,7 +207,7 @@ def test_python_verifier_checks_only_candidate_training_cases_and_reports_timing
     pytest.importorskip("resource")
     correct = "def square(value):\n    return value * value"
     wrong = "def square(value):\n    return value + value"
-    generated = iter([correct, wrong])
+    generated = iter([correct, wrong, correct])
     seen = []
     def generate(prompt, **kwargs):
         seen.append(prompt)
@@ -218,7 +219,7 @@ def test_python_verifier_checks_only_candidate_training_cases_and_reports_timing
     measured = result["verifier_measurements"]
     assert measured[0]["passed"] and measured[0]["median_cases_ms"] >= 0 and not measured[1]["passed"]
     assert 0 < result["rounds"][0]["rewards"][0] <= 1 and result["rounds"][0]["rewards"][1] == 0
-    assert seen == ["Implement square(value)."] * 2
+    assert seen == ["Implement square(value)."] * 3
     assert workflow.backend.received_batches[0][0] == {"prompt": seen[0], "completion": correct}
 
 
@@ -227,7 +228,7 @@ def test_python_verifier_rejects_unbounded_program_shapes_and_data():
     assert not pure_function("def f(a):\n    import sys\n    return a", "f")
     assert not pure_function("def f(a):\n    return a.__class__", "f")
     assert not pure_function("def f(a):\n    return open(a)", "f")
-    with pytest.raises(ValueError, match="1–32"):
+    with pytest.raises(ValueError, match="at least one"):
         PythonTaskVerifier({"function": "f", "cases": []})
 
 

@@ -243,6 +243,7 @@ class GGUFReasoningBackend:
             validation_callback=validation_callback, learning_metadata=learning_metadata, anchor_texts=anchor_texts,
             reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
             objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_window_tokens=max_window_tokens,
+            context_text=context_text, max_context_tokens=max_context_tokens,
         )
 
     def _verify_training_parent(self, trainer):

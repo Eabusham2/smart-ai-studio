@@ -21,9 +21,9 @@ _NODES = (ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Return, ast.A
           ast.operator, ast.unaryop, ast.cmpop, ast.boolop)
 
 
-def pure_function(code, name):
+def pure_function(code, name, *, max_code_chars=12000, max_ast_nodes=512):
     """Accept one function over ordinary values, with a closed set of call targets."""
-    if len(code) > 12000:
+    if len(code) > max_code_chars:
         return False
     try:
         tree = ast.parse(code)
@@ -38,7 +38,7 @@ def pure_function(code, name):
     nodes = list(ast.walk(tree))
     local = {n.id for n in nodes if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
     local.update(n.arg for n in nodes if isinstance(n, ast.arg))
-    if len(nodes) > 512 or any(v.startswith("_") for v in local) or local & (_BUILTINS | {name}):
+    if len(nodes) > max_ast_nodes or any(v.startswith("_") for v in local) or local & (_BUILTINS | {name}):
         return False
     names = local | _BUILTINS | {name}
     for node in nodes:
@@ -63,23 +63,31 @@ class PythonTaskVerifier:
                 or self.function in _BUILTINS):
             raise ValueError("Provide a Python function name for the training task")
         cases = spec.get("cases")
-        if not isinstance(cases, list) or not 1 <= len(cases) <= 32:
-            raise ValueError("Provide 1–32 training-task input/output cases")
+        self.max_code_chars = spec.get("max_code_chars", 12000)
+        self.max_ast_nodes = spec.get("max_ast_nodes", 512)
+        case_budget = spec.get("max_case_chars")
+        for name, value in (("max_code_chars", self.max_code_chars), ("max_ast_nodes", self.max_ast_nodes)):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if case_budget is not None and (type(case_budget) is not int or case_budget < 1):
+            raise ValueError("max_case_chars must be a positive integer")
+        if not isinstance(cases, list) or not cases:
+            raise ValueError("Provide at least one training-task input/output case")
         if any(not isinstance(c, dict) or set(c) != {"args", "expected"}
                or not isinstance(c["args"], list) for c in cases):
             raise ValueError("Each case requires positional args and one expected JSON value")
         payload = json.dumps(cases, allow_nan=False)
-        if len(payload) > 8192:
-            raise ValueError("Python training cases exceed the 8192-character budget")
+        if case_budget is not None and len(payload) > case_budget:
+            raise ValueError("Python training cases exceed max_case_chars")
         timeout = spec.get("timeout_seconds", 2)
         memory = spec.get("memory_mb", 128)
-        if type(timeout) not in (int, float) or not 0.1 <= timeout <= 5:
-            raise ValueError("timeout_seconds must be 0.1–5")
-        if type(memory) is not int or not 48 <= memory <= 512:
-            raise ValueError("memory_mb must be 48–512")
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout_seconds must be positive and finite")
+        if type(memory) is not int or memory < 1:
+            raise ValueError("memory_mb must be a positive integer")
         self.baseline = spec.get("baseline_ms")
         if self.baseline is not None and (type(self.baseline) not in (int, float)
-                                          or not 0 < self.baseline <= 60000):
+                                          or not math.isfinite(self.baseline) or self.baseline <= 0):
             raise ValueError("baseline_ms must be a positive measured training-task baseline")
         try:
             import resource
@@ -108,7 +116,7 @@ print(sorted(_times)[len(_times) // 2])
 
     def __call__(self, answer):
         code = self.verifier.extract_code_block(answer, language="python") or answer.strip()
-        if not pure_function(code, self.function):
+        if not pure_function(code, self.function, max_code_chars=self.max_code_chars, max_ast_nodes=self.max_ast_nodes):
             self.results.append({"passed": False, "reason": "unsupported function or syntax"})
             return 0.0
         result = self.verifier.verify_in_sandbox(self.setup + code, self.harness)

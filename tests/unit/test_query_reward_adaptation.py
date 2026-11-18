@@ -70,7 +70,7 @@ def test_policy_moves_two_logits_in_opposite_directions(llama):
         assert all(torch.equal(old[k], p) for k, p in llama.named_parameters())
 
 
-@pytest.mark.parametrize("llama", ["Llama", "Mistral", "Qwen2", "Qwen3"], indirect=True)
+@pytest.mark.parametrize("llama", ["Llama", "Mistral", "Qwen2", "Qwen3", "Gemma", "BitNet"], indirect=True)
 def test_frozen_query_spans_match_original_logits_and_change_only_queries(llama):
     import torch
     from torch.nn.functional import cross_entropy
@@ -93,7 +93,8 @@ def test_frozen_query_spans_match_original_logits_and_change_only_queries(llama)
                                      context_text=context, max_context_tokens=32, objective="query_only")
     finally:
         hook.remove()
-    assert seen == [20, 4, 4, 4]
+    from core.query_adaptation import TORCH_QUERY_MODELS
+    assert seen == ([20, 4, 4, 4] if llama.config.model_type in TORCH_QUERY_MODELS else [20, 1, 4, 4, 4])
     assert drift > 0 and metrics["kv_prefills"] == 1
     changed = [k for k, p in llama.named_parameters() if not torch.equal(p, saved[k])]
     assert changed and all(".q_proj.lora_" in k for k in changed)
@@ -232,3 +233,32 @@ def test_entropic_validation_requires_a_relative_improvement():
     decimal = default_validation(Probe({"7": 1.2, "8": 1.}), rows,
                                  objective="reward_policy", reward_weighting="entropic")
     assert not decimal(Probe({"7": 1.1, "8": .9}))["accepted"]
+
+
+def test_query_budget_follows_selected_context_and_step_count():
+    from core.query_adaptation import query_schedule
+    context = " ".join(["1"] * 5021)
+    ids, spans = query_schedule(Tokens(), context, 5032, 600, 11)
+    assert len(ids) == 5021 and len(spans) == 11 and all(stop - start == 600 for start, stop in spans)
+    with pytest.raises(ValueError, match="fit"):
+        query_schedule(Tokens(), context, 5020, 600, 11)
+
+
+def test_generic_query_refuses_fused_gate_before_prefill(llama):
+    from core.query_adaptation import torch_query_loss
+    layer = llama.get_base_model().model.layers[0]
+    layer.self_attn.q_proj.base_layer.out_features *= 2
+    with pytest.raises(ValueError, match="full-attention"):
+        torch_query_loss(llama, Tokens(), "1 2 3 4", 4, 2, 1)
+
+
+def test_query_targets_follow_output_device_for_model_parallel_head(llama):
+    from core.query_adaptation import torch_query_loss
+    loss, spans, _ = torch_query_loss(llama, Tokens(), "1 2 3 4 5 6 7 8", 8, 3, 1)
+    # A second device without requiring a second physical accelerator in CPU CI.
+    # Torch's meta cross entropy enforces the shared-device contract for labels.
+    handle = llama.get_base_model().lm_head.register_forward_hook(lambda module, args, out: out.to("meta"))
+    try:
+        assert loss(*spans[0]).device.type == "meta"
+    finally:
+        handle.remove()

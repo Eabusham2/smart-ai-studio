@@ -399,3 +399,26 @@ def test_query_checkpoint_resumes_only_query_moments_and_rejects_cancel(tiny_con
     backend.unload_model()
     assert backend.load_model() and backend.adapter_path == checkpoint
     assert backend.score_learning_probe("vault color", "slate") == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("tiny_controller", ["split_queries"], indirect=True)
+def test_gguf_parent_query_updates_only_q_before_conversion(tiny_controller, tmp_path, monkeypatch):
+    from safetensors.torch import load_file
+    from core.gguf_lora_trainer import GGUFLoRATrainer
+
+    trainer = GGUFLoRATrainer(model_path="selected.gguf", base_model_id=tiny_controller.model_path,
+                              adapter_root=str(tmp_path / "bridge"), rank=2, alpha=2)
+    output = tmp_path / "parent-query"
+    output.mkdir()
+
+    def inspect_conversion(peft_path, target):
+        weights = load_file(Path(peft_path) / "adapter_model.safetensors")
+        moved = [k for k, tensor in weights.items() if "lora_B" in k and tensor.count_nonzero().item()]
+        assert moved and all("q_proj" in k for k in moved)
+        raise RuntimeError("stop before external converter")
+
+    monkeypatch.setattr(trainer, "_convert_to_gguf", inspect_conversion)
+    with pytest.raises(RuntimeError, match="stop before external converter"):
+        trainer.train([], objective="query_only", context_text="What is the vault color ? the vault color is slate",
+                      max_context_tokens=32, max_length=4, steps=2, output_directory=output)
+    assert not (output / "adapter.gguf").exists()

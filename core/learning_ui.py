@@ -20,7 +20,7 @@ TASKS = {
         "rounds": 3, "rollouts": 4, "max_tokens": 128, "archive_size": 16},
     "Consolidate candidate solutions": {"method": "consolidate_candidates", "prompt": "", "mode": "consensus", "rollouts": 4},
     "Save a document memory": {"method": "bank_ingest", "source": "", "key": "", "title": "", "strategy": "stream", "max_chunks": 8},
-    "Answer using saved memory": {"method": "bank_answer", "query": ""},
+    "Answer using saved memory": {"method": "bank_answer", "query": "", "routing": "model", "top_k": 3},
     "List saved memories": {"method": "bank_list", "limit": 100},
     "Check model support": {"method": "capabilities"},
 }
@@ -39,7 +39,7 @@ def show_online_learning(app):
     frame = ttk.Frame(modal, padding=14)
     frame.pack(fill="both", expand=True)
     ttk.Label(frame, text="Learn from documents, examples and feedback", font=("Arial", 16, "bold")).pack(anchor="w")
-    ttk.Label(frame, text=("Document learning persists in the selected memory. Task practice uses a temporary copy by default.\n"
+    ttk.Label(frame, text=("Learning persists in the selected memory. Temporary practice restores the previous weights afterward.\n"
                           "A paused document job resumes when you run the same request. Agreement is not a correctness check."),
               wraplength=810, justify="left").pack(anchor="w", pady=(6, 12))
 
@@ -58,6 +58,9 @@ def show_online_learning(app):
     task_var = tk.StringVar(value="Read a document")
     chooser = ttk.Combobox(method_bar, textvariable=task_var, values=list(TASKS), width=36, state="readonly")
     chooser.pack(side="left")
+    temporary_var = tk.BooleanVar(value=False)
+    temporary_button = ttk.Checkbutton(method_bar, text="Temporary practice", variable=temporary_var)
+    temporary_button.pack(side="left", padx=8)
     request_editor = tk.Text(frame, height=13, wrap="word", undo=True)
     request_editor.pack(fill="both", expand=True, pady=(0, 8))
     request_editor.insert("1.0", json.dumps(TASKS[task_var.get()], indent=2))
@@ -65,6 +68,11 @@ def show_online_learning(app):
     def choose(_event=None):
         request_editor.delete("1.0", "end")
         request_editor.insert("1.0", json.dumps(TASKS[task_var.get()], ensure_ascii=False, indent=2))
+        method = TASKS[task_var.get()]["method"]
+        can_practice = not method.startswith("bank_") and method != "capabilities"
+        temporary_button.configure(state="normal" if can_practice else "disabled")
+        if not can_practice:
+            temporary_var.set(False)
 
     chooser.bind("<<ComboboxSelected>>", choose)
 
@@ -170,6 +178,8 @@ def show_online_learning(app):
             request = json.loads(request_editor.get("1.0", "end"))
             if not isinstance(request, dict):
                 raise ValueError("The request must be a JSON object")
+            if temporary_var.get():
+                request["temporary"] = True
         except ValueError as error:
             messagebox.showerror("Learning request", str(error), parent=modal)
             return

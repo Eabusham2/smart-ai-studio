@@ -6,9 +6,10 @@ import inspect
 import json
 import sqlite3
 from contextlib import closing
+from itertools import zip_longest
 
 from core.context_memory import completed_groups
-from core.learning_data import format_training_row
+from core.learning_data import encode_text, format_training_row
 
 
 def check_cancel(event):
@@ -44,23 +45,26 @@ def generation_prefix(backend, prompt):
 
 def generation_room(backend, prefix, requested):
     tokenizer = backend.tokenizer
-    config = getattr(getattr(backend, "model", None), "config", None)
-    config = getattr(config, "text_config", None) or config
-    limits = [getattr(config, name, None) for name in ("max_position_embeddings", "n_positions")]
-    limits.extend((getattr(tokenizer, "model_max_length", None), getattr(backend, "n_ctx", None),
-                   getattr(backend, "context_budget_tokens", None)))
-    sizes = [value for value in limits if type(value) is int and 1 < value <= 10000000]
-    if not sizes:
+    model = getattr(backend, "model", None)
+    config = getattr(model, "config", None)
+    limits = []
+    for owner in (getattr(config, "text_config", None), config, getattr(model, "args", None),
+                  tokenizer, backend, model):
+        for name in ("max_position_embeddings", "n_positions", "max_seq_len", "context_length",
+                     "model_max_length", "n_ctx", "context_budget_tokens", "_learning_context_budget_tokens"):
+            value = getattr(owner, name, None)
+            value = value() if callable(value) else value
+            if type(value) is int and 1 < value <= 10000000:
+                limits.append(value)
+    if not limits:
         return requested
-    encode = getattr(tokenizer, "encode", None)
-    if callable(encode):
-        used = len(encode(prefix))
+    if callable(getattr(tokenizer, "encode", None)):
+        used = len(tokenizer.encode(prefix))
+    elif callable(getattr(tokenizer, "tokenize", None)):
+        used = len(tokenizer.tokenize(prefix.encode("utf-8")))
     else:
-        counter = getattr(backend, "count_tokens", None)
-        if not callable(counter):
-            return requested
-        used = counter([{"role": "user", "content": prefix}])
-    room = min(sizes) - used
+        used = backend.count_tokens([{"role": "user", "content": prefix}])
+    room = min(limits) - used
     if room < 1:
         raise PromptTooLong("The complete learning prompt exceeds the active model context")
     return min(requested, room)
@@ -107,13 +111,14 @@ def object_response(answer):
     return obj if isinstance(obj, dict) else {}
 
 
-def grounded_question(obj, source):
+def grounded_question(obj, source, *, max_question_chars=256, max_answer_chars=192, max_evidence_chars=1024):
     """Accept only short answer-blind questions with contiguous quoted evidence."""
     question, answer, evidence = (obj.get(k) for k in ("question", "answer", "evidence"))
     if not all(isinstance(x, str) and x.strip() for x in (question, answer, evidence)):
         return None
     question, answer = question.strip(), answer.strip()
-    if (len(question) > 256 or len(answer) > 192 or len(evidence) > 1024
+    if (any(limit is not None and len(text) > limit for text, limit in (
+                (question, max_question_chars), (answer, max_answer_chars), (evidence, max_evidence_chars)))
             or answer not in evidence or evidence not in source
             or answer.casefold() in question.casefold()):
         return None
@@ -124,47 +129,187 @@ def _digest(text):
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
-def retirement_probes(backend, turns, cancel_event):
-    """Require a grounded Q&A and complete reconstruction of *every* ordinary turn.
+_QUESTION_PREFIX = (
+    "Form one short recall question about this exchange. Reply with a JSON object "
+    "with question, answer, evidence. Copy answer and evidence exactly from a single turn. "
+    "Keep the answer out of the question.\nExchange:\n"
+)
 
-    Model-proposed questions alone omit details. Reconstructing all turn text
-    from that cue protects values/code that the question generator overlooked.
-    If the bounded generation budget cannot cover a group, it stays in context.
-    """
+
+def _required_tokens(backend, answer):
+    # Allow boundary tokenization differences and a terminal token.
+    encode = getattr(backend.tokenizer, "encode", None)
+    return (len(encode(answer)) if callable(encode) else len(encode_text(backend.tokenizer, answer))) + 4
+
+
+def _fits(backend, cue, requested):
+    try:
+        return generation_room(backend, generation_prefix(backend, cue), requested) >= requested
+    except PromptTooLong:
+        return False
+
+
+def _question(backend, source, texts, event):
+    response = generate_answer(backend, _QUESTION_PREFIX + source, max_tokens=144,
+                               temperature=0, cancel_event=event)
+    obj = object_response(response)
+    return next((qa for t in texts if (qa := grounded_question(obj, t))), None)
+
+
+def needs_segmented_recall(backend, turns):
+    for group in completed_groups(turns):
+        exchange = [turns[i] for i in group]
+        # This is a working batch size. Larger inputs go through resumable
+        # bounded updates, even when the model has a huge physical window.
+        if sum(len(t["content"]) for t in exchange) > 1024:
+            return True
+        source = json.dumps(exchange, ensure_ascii=False)
+        if not _fits(backend, _QUESTION_PREFIX + source, 32):
+            return True
+        for t in exchange:
+            if t["content"] != t["content"].strip():
+                return True
+            if not _fits(backend, _QUESTION_PREFIX, _required_tokens(backend, t["content"])):
+                return True
+    return False
+
+
+def retirement_probes(backend, turns, cancel_event):
+    """Compact exchanges keep their existing natural-language recall questions."""
     checks = []
     groups = completed_groups(turns)
     if not groups or sum(map(len, groups)) != len(turns):
         return []
     for group in groups:
         exchange = [turns[i] for i in group]
-        if sum(len(t["content"]) for t in exchange) > 1800:
-            return []
-        source = json.dumps([dict(t) for t in exchange], ensure_ascii=False)
-        prompt = ("Form one short recall question about this exchange. Reply with a JSON object "
-                  "with question, answer, evidence. Copy answer and evidence exactly from a single turn. "
-                  "Keep the answer out of the question.\nExchange:\n" + source)
-        response = generate_answer(backend, prompt, max_tokens=144, temperature=0, cancel_event=cancel_event)
-        obj = object_response(response)
-        verified = next((qa for t in exchange if (qa := grounded_question(obj, t["content"]))), None)
+        verified = _question(backend, json.dumps(exchange, ensure_ascii=False),
+                             [t["content"] for t in exchange], cancel_event)
         if not verified:
             return []
         cue, answer = verified
-        checks.append(("Reply with only the earlier answer. " + cue, _digest(answer), 64))
+        checks.append(("Reply with only the earlier answer. " + cue, _digest(answer),
+                       _required_tokens(backend, answer)))
         for sequence, turn in enumerate(exchange):
             if turn["content"].strip().casefold() in cue.casefold():
                 return []
             prompt = (f"Quote the entire original {turn['role']} message (turn {sequence + 1}) "
                       f"of the earlier exchange, exactly, with no commentary. Recall question: {cue}")
-            checks.append((prompt, _digest(turn["content"]), 256))
+            checks.append((prompt, hashlib.sha256(turn["content"].encode()).hexdigest(),
+                           _required_tokens(backend, turn["content"]), "exact_text"))
     return checks
 
 
+class SegmentedRecall:
+    """Reiterable, exactly covering passage addresses; each answer fits the live route."""
+
+    def __init__(self, backend, turns, event):
+        self.backend = backend
+        self.turns = turns
+        self.event = event
+        self.groups = ([(0,)] if len(turns) == 1 and turns[0].get("role") == "document"
+                       else completed_groups(turns))
+        if not self.groups or sum(map(len, self.groups)) != len(turns):
+            raise ValueError("Only complete ordinary exchanges or explicit document sources can be segmented")
+
+    def passages(self, start_turn=0, start_char=0):
+        for index in range(start_turn, len(self.turns)):
+            turn = self.turns[index]
+            text = turn["content"]
+            offset = start_char if index == start_turn else 0
+            while offset < len(text):
+                check_cancel(self.event)
+                cue = f"Recall {turn['role']} {turn.turn_id} at character {offset}. Return the exact passage as a JSON string."
+                room = generation_room(self.backend, generation_prefix(self.backend, cue), 256)
+                width = min(768, len(text) - offset)
+                while True:
+                    part = text[offset:offset + width]
+                    answer = json.dumps(part, ensure_ascii=False)
+                    needed = _required_tokens(self.backend, answer)
+                    if needed <= room:
+                        break
+                    if width == 1:
+                        raise PromptTooLong("The model context cannot fit one addressed recall passage")
+                    width = max(1, width // 2)
+                yield {"prompt": cue, "completion": answer}, (cue, hashlib.sha256(part.encode()).hexdigest(),
+                                                              needed, "json_string"), (index, offset + width)
+                offset += width
+
+    def semantic_checks(self):
+        """A separate grounded, answer-blind question must also work for each exchange."""
+        for group in self.groups:
+            verified = None
+            for i in group:
+                text = self.turns[i]["content"]
+                offset = 0
+                while offset < len(text):
+                    check_cancel(self.event)
+                    width = min(768, len(text) - offset)
+                    while width > 1 and not _fits(self.backend, _QUESTION_PREFIX + text[offset:offset + width], 24):
+                        width //= 2
+                    excerpt = text[offset:offset + width]
+                    if not _fits(self.backend, _QUESTION_PREFIX + excerpt, 24):
+                        raise PromptTooLong("The serving context cannot fit the grounded recall question")
+                    verified = _question(self.backend, excerpt, [excerpt], self.event)
+                    if verified:
+                        break
+                    offset += width
+                if verified:
+                    break
+            if not verified:
+                raise ValueError("No grounded recall question for this exchange")
+            question, answer = verified
+            yield ("Reply with only the earlier answer. " + question, _digest(answer),
+                   _required_tokens(self.backend, answer))
+
+    def checks(self):
+        yield from self.semantic_checks()
+        for _, probe, _ in self.passages():
+            yield probe
+
+
 def passes_recall(backend, checks, cancel_event):
-    for cue, digest, limit in checks:
+    for cue, digest, limit, *kind in checks:
         answer = generate_answer(backend, cue, max_tokens=limit, temperature=0, cancel_event=cancel_event)
-        if _digest(answer) != digest:
+        if kind == ["exact_text"]:
+            if hashlib.sha256(answer.encode()).hexdigest() != digest:
+                return False
+        elif kind:
+            if kind != ["json_string"]:
+                raise ValueError("Unknown recall witness format")
+            try:
+                part = json.loads(answer)
+            except ValueError:
+                return False
+            if not isinstance(part, str) or hashlib.sha256(part.encode()).hexdigest() != digest:
+                return False
+        elif _digest(answer) != digest:
             return False
     return True
+
+
+class _StoredChecks:
+    def __init__(self, path, heads):
+        self.path = path
+        self.heads = heads
+
+    def __iter__(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            for head in self.heads:
+                legacy, = db.execute("SELECT checks FROM probe_sets WHERE head=?", (head,)).fetchone()
+                yield from json.loads(legacy)
+                for row, in db.execute("SELECT probe FROM probes WHERE head=? ORDER BY ordinal", (head,)):
+                    yield json.loads(row)
+
+    def __eq__(self, other):
+        if not isinstance(other, (list, tuple, _StoredChecks)):
+            return NotImplemented
+        return all(a == b for a, b in zip_longest(self, other, fillvalue=object()))
+
+    def __len__(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            return sum(db.execute("""SELECT json_array_length(checks) +
+                       (SELECT count(*) FROM probes p WHERE p.head=s.head)
+                       FROM probe_sets s WHERE head=?""", (head,)).fetchone()[0] for head in self.heads)
 
 
 class RecallBank:
@@ -175,15 +320,21 @@ class RecallBank:
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("""CREATE TABLE IF NOT EXISTS probe_sets
                        (head TEXT PRIMARY KEY, parent TEXT, depth INTEGER, checks TEXT)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS probes
+                       (head TEXT, ordinal INTEGER, probe TEXT, PRIMARY KEY(head, ordinal))""")
 
     def stage(self, head, parent, checks):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("""INSERT INTO probe_sets VALUES (?, ?,
-                       COALESCE((SELECT depth FROM probe_sets WHERE head=?), 0) + 1, ?)""",
-                       (head, parent, parent, json.dumps(checks)))
+                       COALESCE((SELECT depth FROM probe_sets WHERE head=?), 0) + 1, '[]')""",
+                       (head, parent, parent))
+            db.executemany("INSERT INTO probes VALUES (?,?,?)",
+                           ((head, i, json.dumps(probe)) for i, probe in enumerate(checks)))
+        return _StoredChecks(self.path, [head])
 
     def discard(self, head):
         with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DELETE FROM probes WHERE head=?", (head,))
             db.execute("DELETE FROM probe_sets WHERE head=?", (head,))
 
     def sample(self, head, generation):
@@ -197,9 +348,8 @@ class RecallBank:
             rows = db.execute("""WITH RECURSIVE chain(head, parent, depth) AS (
                               SELECT head,parent,depth FROM probe_sets WHERE head=? UNION ALL
                               SELECT p.head,p.parent,p.depth FROM probe_sets p JOIN chain c ON p.head=c.parent)
-                              SELECT checks FROM probe_sets JOIN chain USING(head)
-                              WHERE chain.depth IN (1, ?, ?)""", (head, rotating, depth[0]))
-            return [probe for row in rows for probe in json.loads(row[0])]
+                              SELECT head FROM chain WHERE depth IN (1, ?, ?)""", (head, rotating, depth[0]))
+            return _StoredChecks(self.path, [row[0] for row in rows])
 
 
 class ReplayBank:

@@ -11,12 +11,12 @@ This implementation adds mechanisms from several research directions. It is not 
 | Stream a document or source directory | Read bounded chunks, train every selected chunk through the validated update transaction, and save a resumable cursor. No fixed first-16K-character learning cutoff. |
 | Select useful evidence | Ask the active model for exact source spans relevant to a question; reject invented quotations; adapt on the selected spans. |
 | Elicit knowledge | Generate source-grounded question/answer pairs, require verbatim supporting evidence, and study answers the source-free model did not already produce. |
-| Few-shot adaptation | Form leave-one-out training tasks from 2–12 independent demonstrations, vary their ordering, adapt, and vote among bounded answer generations. |
+| Few-shot adaptation | Form leave-one-out training tasks from independent demonstrations, vary their ordering, adapt, and vote. ARC grids additionally use reversible geometry/color transforms and inverse-transformed votes. |
 | Query-only adaptation | Prefill a fixed context once, keep each layer's K/V immutable during adaptation, and update only query-side adapters on short causal spans. |
 | Learn from rewards | Sample candidate answers, assign verifier or strict-majority rewards, and optimize a signed group-relative objective with a clipped importance ratio. |
 | Discover a better solution | Select reusable candidate states with PUCT, sample improvements, and train with adaptive entropic advantages that emphasize the best verified outcomes. |
-| Consolidate candidate solutions | Select verified or majority-supported sampled traces and train on those traces, then retain the resulting scoped adapter. This is supervised trace consolidation, separate from the reward objective. |
-| Retrieve a parameter memory | Train independent document adapters, index bounded descriptive metadata, pin a validated generation, select a matching entry, and answer with that adapter loaded. The source document is not inserted into the answer prompt. |
+| Consolidate candidate solutions | Select verified or majority-supported traces, including supplied agent trajectories; learn individual and peer-conditioned completions; generate a fresh answer after an accepted update. |
+| Retrieve a parameter memory | Train independent document adapters, index the complete source incrementally, pin validated generations, and ask each selected model whether its memory is useful. The ordinary solver synthesizes the accepted recalled answers. Original documents are not inserted into the answer prompt. |
 
 Online updates use the existing model's native chat formatting, finite-drift checks, candidate validation, checkpoint integrity checks, and rollback. EWC and bounded replay guard earlier behavior. A fixed amount of adaptive state does not guarantee indefinite retention of every fact.
 
@@ -30,9 +30,9 @@ Online updates use the existing model's native chat formatting, finite-drift che
 | `request` | A temporary copy of the currently loaded, verified checkpoint. It includes optimizer and retention state. Restore the previous model and delete only this request's state when the operation ends. |
 | `document` | An independent document's learned state. A catalog selection activates an immutable, read-only generation. |
 
-Few-shot, query adaptation, reward learning, discovery, and candidate consolidation default to a temporary request. Document ingestion defaults to the currently selected persistent scope. API callers can explicitly choose a persistent scope for task adaptation. Temporary scopes cannot nest. A failed restoration is reported, and the surviving request checkpoint is retained for recovery.
+All learning workflows default to the currently selected persistent scope. Select **Temporary practice**, or pass `"temporary": true`, to fork a verified request checkpoint and restore the previous state afterwards. API callers can also select a persistent `scope` explicitly. Temporary scopes cannot nest. A failed restoration is reported, and the surviving request checkpoint is retained for recovery.
 
-Changing scope reloads the same selected model through its ordinary loader. This preserves runtime metadata and validates model/tokenizer identity. Inference and scope transitions share a lifecycle lock, including the complete lifetime of streaming generators. Explicit legacy adapters remain confined to the model-wide migration path; they must first become a validated checkpoint before being copied into a request.
+Changing scope uses an authenticated same-model MLX adapter switch when supported, with a cold reload fallback. Both routes validate the model/tokenizer identity. Changing adapters invalidates generation caches; keys and values from another adapted model are never reused. Inference and scope transitions share a lifecycle lock, including the complete lifetime of streaming generators. Explicit legacy adapters remain confined to the model-wide migration path; they must first become a validated checkpoint before being copied into a request.
 
 In the GUI, choose **model**, **session**, or **project** in the learning panel. A named scope requires a key. **Apply memory** reloads the model and opens that scope's transcript. **Clear Chat** clears the selected transcript; it does not erase its learned adapter.
 
@@ -83,7 +83,7 @@ For an ordinary local Hugging Face causal model, select `--backend cpu`, `cuda`,
 }
 ```
 
-This implementation accepts at most **4,096 context tokens**, **512 tokens per adaptation span**, and **8 update steps**. It rejects an oversized context rather than silently truncating it. Supported families are the compatible full-attention, split-query Llama, Mistral, Qwen2 and Qwen3 implementations in Transformers or MLX-LM. Fused projections, unsupported caches, and packed Bonsai/JANG kernels do not qualify. The full context stays available during query adaptation and is included in the subsequent answer. This workflow improves use of context; it does not replace a growing context with constant-size memory.
+There are no fixed 4,096-context, 512-span or eight-step ceilings. `max_context_tokens`, when supplied, is an explicit caller budget; the model's actual context remains a bound and oversized input is rejected without truncation. Supported full-attention split-query families include compatible Llama, Mistral, Qwen2 and Qwen3 decoders. Packed Bonsai/JANG Qwen3.5 layouts can adapt the terminal full-attention query while retaining their frozen hybrid prefix; replay is checked against the native forward result. Native GGUF/BitNet routes use the verified parent model's full-KV objective and validate the converted serving model. The full context remains available for the subsequent answer, so query adaptation does not supply constant-memory context compression.
 
 ```json
 {
@@ -99,7 +99,7 @@ This implementation accepts at most **4,096 context tokens**, **512 tokens per a
 }
 ```
 
-The unanswered query must differ from each demonstration input. No query answer is supplied during training. The vote report includes ties. Ordering augmentation is semantics-preserving for independent examples; this implementation does not automatically invent geometry-specific transformations for ARC puzzles or perform the paper's prior fine-tuning.
+The unanswered query must differ from each demonstration input. No query answer is supplied during training. The vote report includes ties. `arc_augment: "auto"` recognizes rectangular grids of integers 0–9, including `input`/`output` demonstrations. It applies eight square symmetries with two reversible palettes and inverse-transforms predictions before voting. `arc_augment: false` disables those transforms. Invalid grid predictions are reported separately. This is online adaptation; the paper's prior fine-tuning remains excluded.
 
 ## Learn from checked or consensus rewards
 
@@ -127,7 +127,7 @@ Python verification accepts a restricted pure-function subset and JSON input/out
 
 Verifier targets/cases evaluate sampled answers; they are not inserted into the model's rollout prompt. They are training supervision, so a meaningful quality evaluation still needs separate held-out questions or tests.
 
-For consensus learning, set `mode` to `consensus` and omit the verifier. A strict majority is required. Ties, all-wrong/all-right reward groups, and empty usable rollouts produce no policy update. A consensus label is agreement, not proof of correctness. Limits are 2–12 rollouts per round, up to 8 rounds and 8 update steps, with bounded generated lengths.
+For consensus learning, set `mode` to `consensus` and omit the verifier. A strict majority is required. Ties, all-wrong/all-right reward groups, and empty usable rollouts produce no policy update. A consensus label is agreement, not proof of correctness. Rollouts, rounds, update steps and generated lengths have configurable positive budgets, without the earlier fixed maxima. The serving context and available memory still constrain each operation.
 
 The reward objective can improve the relative likelihood of rewarded actions while reducing that of rejected actions. Candidate acceptance measures that contrast separately from ordinary source NLL. Native GGUF/BitNet routes optimize the verified parent and check the converted serving model; they do not backpropagate through native serving kernels. Text-based rollout routes reconstruct and validate their training prefix; exact sampling-time token/logprob export is not available on every native server.
 
@@ -154,11 +154,13 @@ The reward objective can improve the relative likelihood of rewarded actions whi
 
 `discover` uses a separate adaptive entropic weighting rule. It adjusts the reward tilt by bisection under a KL concentration budget, then forms leave-one-out advantages. The default concentration target is `ln(2)`. Uniform rewards produce no gradient update; unreachable concentration targets, ties and finite bounds are handled explicitly. Each informative newly sampled group receives one update rather than repeated off-policy training on archived completions.
 
-The search archive stores candidate solutions, rewards and lineage. Its PUCT score combines the best observed direct-child reward with a rank-based exploration prior. Expanding a candidate increments visitation counts along its ancestry. The archive adds the best two children of each expansion and stays within the selected capacity while preserving initial seeds. Optional `seed` accepts an initial candidate or a small list. The output records parent selections, update metrics, the best result and the archive.
+The search archive stores candidate solutions, rewards and lineage. Its PUCT score combines the best observed direct-child reward with a rank-based exploration prior. Expanding a candidate increments visitation counts along its ancestry. `children_per_expansion` defaults to two and can be increased; archive storage stays within the configured capacity while preserving initial seeds. Optional `seed` accepts an initial candidate or a list. A `schedule` list can override rollouts, steps, generated tokens, temperature, learning rate, exploration and entropic concentration by round. The output records parent selections, schedules, update metrics, the best result and the archive.
 
 For Python discovery, an omitted `baseline_ms` uses **1 ms as a reward normalization unit**, not as a claim about an existing implementation's speed. Correct candidates receive `1 / (1 + median_cases_ms)`; invalid candidates receive zero. This supplies a continuous reward without asking the user to benchmark a seed first.
 
-The local workflow reports an initial-reference KL coefficient of zero. Its KL concentration budget controls entropic reward weights; it is distinct from a KL penalty against the initial model. Low-level trainers can require explicitly supplied reference log probabilities when that separate penalty is requested. This is a bounded local variant of TTT-Discover, without its large distributed rollout infrastructure or published benchmark configuration. [Method and equations](https://arxiv.org/html/2601.16175v1)
+Compatible Torch and MLX discovery routes capture the actual initial adapter policy and export exact sampled token IDs and log probabilities, including EOS. The default reference KL coefficient is 0.1 when that support is available; set `reference_kl_coef` explicitly to change it or zero to disable it. The frozen reference is restored after scoring, including errors and cancellation. Exact sampled actions also drive reward validation and have a digest-checked checkpoint audit record. Native text-only deployments report unavailable reference scoring; explicitly requesting it fails instead of manufacturing log probabilities. The entropic concentration budget and initial-policy KL penalty are separate controls. This remains a local TTT-Discover variant, without the paper's distributed rollout infrastructure or benchmark configuration. [Method and equations](https://arxiv.org/html/2601.16175v1)
+
+`consolidate_candidates` can take `trajectories` containing strings or `{ "agent": "name", "messages": [...] }` records. It learns accepted individual and peer-conditioned completions. After an accepted update, `synthesize: true` (the default) generates a new answer; the original `best_sample` remains available. This does not add TTT-Consolidate's offline meta-training.
 
 ## Save and retrieve document parameters
 
@@ -176,7 +178,9 @@ The local workflow reports an initial-reference KL coefficient of zero. Its KL c
 
 Run until `completed`. Only a completed study with at least one accepted update can be registered. The registration verifies the source digest, model identity and exact generation. A paused document retains its progress but is not yet selected as a completed memory.
 
-Use `{"method":"bank_list"}` to list entries and `{"method":"bank_select","query":"shader conventions","top_k":3}` to inspect lexical selection. `{"method":"bank_answer","query":"How should I name shader parameters?"}` loads the top matching pinned adapter for that answer and restores the prior model afterward. Selection uses a capped lexical index of metadata and source text; it can miss relevant memories. It selects one adapter rather than merging unrelated adapters. The answer result records which entry/generation was used.
+Use `{"method":"bank_list"}` to list entries and `{"method":"bank_select","query":"shader conventions","top_k":3}` to inspect lexical selection. The index covers the entire source, using incremental decoding and SQLite postings. `bank_answer` defaults to `routing: "model"`: it selects candidates, temporarily loads each pinned generation, asks for relevant recalled facts, restores the original model, and synthesizes an answer from up to `top_k` accepted memories. The candidate and generation budgets are configurable. Ordinary `solve` and `stream_solve` also use this path when the selected scope owns document memories; set `engine.memory_auto_recall = False` to disable it. Existing explicit `solve_with_memory(..., routing="lexical")` remains available.
+
+The result identifies accepted/rejected candidates and exact generations. Recalled-answer caching is bounded and keyed by model, scope, immutable generation and query. This cache avoids repeated recall work; it is not shared KV across different adapters. Model gating and lexical candidate ranking can both miss relevant information. No document source text is loaded into the answer prompt.
 
 `bank_export` accepts `key` and a new `destination` ZIP path. `bank_delete` removes the selected catalog entry and its pin; it does not delete the underlying document's current training checkpoint. Pinned generations survive normal checkpoint collection until their catalog entry is removed or replaced. Disk storage grows with the number of document memories.
 
@@ -185,15 +189,15 @@ Use `{"method":"bank_list"}` to list entries and `{"method":"bank_select","query
 | Serving path | Context/evidence/few-shot updates | Reward objective | Fixed-KV query objective |
 | --- | --- | --- | --- |
 | Compatible MLX-LM | Supported adapters | Supported adapters | Supported full-attention split-query families |
-| Bonsai 2 publisher MLX / CRACK JANG | Frozen packed base plus output-head adapter | Output-head adapter | Unavailable: no verified packed query-gradient path |
+| Bonsai 2 publisher MLX / CRACK JANG | Terminal query/down-projection adapters on supported hybrid layouts; existing head-only checkpoints stay compatible | Compatible packed adapters | Terminal full-attention replay with a frozen hybrid prefix |
 | Compatible Transformers on CPU/CUDA/MPS | PEFT, subject to actual device/model support | PEFT | Supported full-attention split-query families |
-| llama.cpp GGUF / Prism GGUF / verified Prism speculative API | Compatible local HF parent, converter, deployed candidate scoring | Same verified parent bridge | Unavailable through the native serving KV cache |
-| bitnet.cpp | Compatible parent, merge, rebuild I2_S, deployed candidate scoring | Same verified rebuild bridge | Unavailable through the native serving KV cache |
+| llama.cpp GGUF / Prism GGUF / verified Prism speculative API | Compatible local HF parent, converter, deployed candidate scoring | Same verified parent bridge | Compatible verified parent's KV cache, then deployed candidate scoring |
+| bitnet.cpp | Compatible parent, merge, rebuild I2_S, deployed candidate scoring | Same verified rebuild bridge | Compatible verified parent's KV cache, then rebuilt candidate scoring |
 | Pinned Strata / legacy unsupported native routes | Unavailable | Unavailable | Unavailable |
 | Other inference-only controllers and image/audio/video generators | These text-learning methods are unavailable | Unavailable | Unavailable |
 
 Use `--capabilities` or the learning panel's **Check model support** for the currently loaded selection. API methods are shared across backends, but actual gradient/deployment support is checked at runtime. Unsupported routes preserve their existing generation behavior and original context limits.
 
-Tests execute real small CPU model updates for query and reward objectives, reload checkpoints, exercise scoped/temporary state, and validate native bridge transactions. Packed MLX protocol fixtures execute on Linux; native MLX tests require Apple Silicon. The target Bonsai/CRACK fresh-process recall evaluator is `tools/evaluate_persistent_memory.py`. Full target-model recall, throughput and Metal memory usage require those hardware runs and are not inferred from small-model tests.
+Tests execute real small Torch and MLX CPU model updates, packed uint32 matmuls, hybrid decoder replay, query/down-projection gradients, frozen-policy scoring, reloads, scoped memory and native bridge transactions. Required CI lanes exercise MLX on CPU and Metal separately, alongside the existing six Python/platform lanes. The target Bonsai/CRACK fresh-process recall evaluator is `tools/evaluate_persistent_memory.py`. Full target-model recall, throughput and Metal memory usage require full checkpoint runs and are not inferred from small-model tests.
 
 Results report complete operation wall time, sampled process RSS, update metrics, and checkpoint/selection identifiers. Process RSS excludes separately owned server processes and is distinct from GPU or Metal peak allocation. Parameter updates can make an answer worse; rollback and finite retention tests reduce that risk but do not establish unlimited reliable memory.

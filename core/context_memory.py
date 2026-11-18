@@ -18,6 +18,10 @@ from pathlib import Path
 from uuid import uuid4
 
 
+class ContextOverflow(RuntimeError):
+    """Protected or unverified text still fills the available working window."""
+
+
 class TranscriptTurn(dict):
     """The tokenizer sees ordinary chat fields. The archive owns the receipt ID."""
 
@@ -143,17 +147,32 @@ class ChatArchive(Sequence):
             self._projection = (ledger.path, head, epoch, newest, result)
             return [turn.copy() for turn in result]
 
+    _active_filter = """FROM transcript.chat_archive AS a WHERE a.tab=? AND NOT EXISTS
+                     (SELECT 1 FROM retired_turns AS r WHERE r.turn_id=a.turn_id)"""
+
     @contextmanager
-    def _active_rows(self, ledger, head):
+    def _active_query(self, ledger, head):
         with closing(sqlite3.connect(ledger.path)) as db, db:
             db.execute("ATTACH DATABASE ? AS transcript", (str(self.path),))
             db.execute("BEGIN IMMEDIATE")
             ledger._index(db, head)
-            rows = db.execute("""SELECT a.turn_id,a.message FROM transcript.chat_archive AS a
-                                 WHERE a.tab=? AND NOT EXISTS
-                                 (SELECT 1 FROM retired_turns AS r WHERE r.turn_id=a.turn_id)
-                                 ORDER BY a.seq""", (self.tab,))
+            yield db
+
+    @contextmanager
+    def _active_rows(self, ledger, head):
+        with self._active_query(ledger, head) as db:
+            rows = db.execute("SELECT a.turn_id,a.message " + self._active_filter + " ORDER BY a.seq", (self.tab,))
             yield db, rows
+
+    def projected_history(self, ledger, head):
+        # Keep the small-chat append cache for interactive use. Determine its
+        # size in SQLite, before bringing message bodies into Python.
+        with self._active_query(ledger, head) as db:
+            rows, size = db.execute("SELECT count(*),coalesce(sum(n),0) FROM (SELECT length(a.message) AS n "
+                                    + self._active_filter + " LIMIT 129)", (self.tab,)).fetchone()
+        if rows <= 128 and size <= 65536:
+            return self.active_view(ledger, head)
+        return ActiveChatHistory(self, ledger, head)
 
     def iter_active_pages(self, ledger, head, page_size=128):
         """Stream unretired rows without allocating a complete active projection."""
@@ -170,6 +189,51 @@ class ChatArchive(Sequence):
         return db.execute(f"""SELECT epoch,(SELECT coalesce(max(seq),0) FROM {schema}chat_archive
                               WHERE tab=?) FROM {schema}chat_epochs WHERE tab=?""",
                           (self.tab, self.tab)).fetchone()
+
+
+class ActiveChatHistory(Sequence):
+    """Indexable, paged projection of a large transcript against a particular receipt."""
+
+    def __init__(self, archive, ledger, head):
+        self.archive = archive
+        self.ledger = ledger
+        self.head = head
+
+    def __iter__(self):
+        return chain.from_iterable(self.archive.iter_active_pages(self.ledger, self.head, page_size=16))
+
+    def __len__(self):
+        with self.archive._active_query(self.ledger, self.head) as db:
+            return db.execute("SELECT count(*) " + self.archive._active_filter, (self.archive.tab,)).fetchone()[0]
+
+    def __getitem__(self, key):
+        with self.archive._active_query(self.ledger, self.head) as db:
+            query = "SELECT a.turn_id,a.message " + self.archive._active_filter
+            if isinstance(key, slice):
+                size = db.execute("SELECT count(*) " + self.archive._active_filter, (self.archive.tab,)).fetchone()[0]
+                start, stop, step = key.indices(size)
+                count = len(range(start, stop, step))
+                if not count:
+                    return []
+                direction = "ASC" if step > 0 else "DESC"
+                offset = start if step > 0 else size - 1 - start
+                width = (count - 1) * abs(step) + 1
+                rows = db.execute(query + f" ORDER BY a.seq {direction} LIMIT ? OFFSET ?",
+                                  (self.archive.tab, width, offset))
+                return [self.archive._decode(row) for i, row in enumerate(rows) if i % abs(step) == 0]
+            index = integer_index(key)
+            direction, offset = ("ASC", index) if index >= 0 else ("DESC", -index - 1)
+            if offset < 2**63:
+                row = db.execute(query + f" ORDER BY a.seq {direction} LIMIT 1 OFFSET ?",
+                                 (self.archive.tab, offset)).fetchone()
+                if row is not None:
+                    return self.archive._decode(row)
+            raise IndexError("Transcript index out of range")
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence):
+            return NotImplemented
+        return all(a == b for a, b in zip_longest(self, other, fillvalue=object()))
 
 
 def working_history(history, session_id=""):
@@ -194,27 +258,43 @@ def working_history(history, session_id=""):
     return result
 
 
-def completed_groups(history):
-    """Identify contiguous ordinary dialogue. Keep control turns and tool exchanges in text."""
-    groups = []
+def ordinary_turn(turn):
+    text = turn.get("content")
+    return (isinstance(turn, TranscriptTurn) and isinstance(text, str) and bool(text.strip())
+            and not turn.get("tool_calls") and not turn.get("function_call")
+            and "<tool_call>" not in text and "<media_call>" not in text
+            and not text.startswith(("Actual tool result (", "Local media tool result (")))
+
+
+def _ordinary_exchanges(history):
+    """Recognize a completed assistant reply only after its following role is known."""
     pending = []
+    reply = None
     for index, turn in enumerate(history):
         role = turn.get("role")
-        text = turn.get("content")
-        plain = (isinstance(turn, TranscriptTurn) and isinstance(text, str) and bool(text.strip())
-                 and not turn.get("tool_calls") and not turn.get("function_call")
-                 and "<tool_call>" not in text and "<media_call>" not in text
-                 and not text.startswith(("Actual tool result (", "Local media tool result (")))
-        if plain and role == "user":
-            pending.append(index)
-        elif plain and role == "assistant" and pending:
-            next_role = history[index + 1].get("role") if index + 1 < len(history) else None
-            if next_role not in {"assistant", "tool", "function"}:
-                groups.append((*pending, index))
+        if reply is not None:
+            if role not in {"assistant", "tool", "function"}:
+                yield [*pending, reply]
             pending = []
+            reply = None
+        if role == "user" and ordinary_turn(turn):
+            pending.append((index, turn))
+        elif role == "assistant" and pending and ordinary_turn(turn):
+            reply = (index, turn)
         else:
             pending = []
-    return groups
+    if reply is not None:
+        yield [*pending, reply]
+
+
+def iter_completed_exchanges(history):
+    for group in _ordinary_exchanges(history):
+        yield [turn for _, turn in group]
+
+
+def completed_groups(history):
+    """Identify contiguous ordinary dialogue. Keep control turns and tool exchanges in text."""
+    return [tuple(i for i, _ in group) for group in _ordinary_exchanges(history)]
 
 
 def oldest_completed_chunk(history, ratio=0.4, *, keep_recent=True):

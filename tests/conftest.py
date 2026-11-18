@@ -28,6 +28,14 @@ def _local_host(host):
 
 
 def pytest_sessionstart(session):
+    requested_mlx = os.environ.get("MLX_TEST_DEVICE")
+    if requested_mlx:
+        import mlx.core as mx
+        if requested_mlx not in {"cpu", "metal"}:
+            raise ValueError("MLX_TEST_DEVICE must be cpu or metal")
+        if requested_mlx == "metal" and not mx.metal.is_available():
+            raise RuntimeError("The native MLX Metal test lane cannot fall back to CPU")
+        mx.set_default_device(mx.gpu if requested_mlx == "metal" else mx.cpu)
     if os.environ.get("SMARTAI_TEST_OFFLINE", "1") == "0":
         return
     original_resolve = socket.getaddrinfo

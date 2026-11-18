@@ -129,5 +129,5 @@ def test_native_release_packaging_follows_app_cleanup():
     assert source.index("- name: Download native-OS portable") < source.index("- name: Package native runtimes")
     publisher = source.split("  build-and-release:", 1)[1]
     assert "python build_app.py" not in publisher
-    assert "needs: [preflight, test, native-build, reuse-native, package]" in source
+    assert "needs: [preflight, test, mlx-learning, native-build, reuse-native, package]" in source
     assert "needs.native-build.result == 'success'" in source
