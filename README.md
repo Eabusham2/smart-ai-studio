@@ -140,6 +140,47 @@ At 80% of Context, eligible text backends start learning from old, complete exch
 
 **Online learning** adds resumable document ingestion, evidence selection, few-shot practice, fixed-KV query adaptation on supported models, verifier/consensus reward updates, entropic discovery with PUCT candidate reuse, and a searchable bank of document adapters. Learning persists in the selected model, session or project scope by default. Select **Temporary practice** to use a request copy and restore the prior learned state afterwards. Hardware and runtime capabilities are checked before updates. [Workflows and CLI](docs/test-time-learning.md) · [Research coverage and exclusions](docs/ttt-research-coverage.md)
 
+### New learning and Best Work controls
+
+Start with **[Persistent learning and Best Work: a practical guide](docs/persistent-learning-update.md)**
+for the features merged in [PR #17](https://github.com/Eabusham2/smart-ai-studio/pull/17).
+The guide connects the desktop controls, reusable learned memory and online tasks.
+
+| Goal | Where to start | Result |
+| --- | --- | --- |
+| Keep learning for one project | **Memory DB → Learning & saved memory…**; choose `project`, enter a key and select **Apply memory** | Opens a separate transcript and learned-state location for that project and model. Accepted updates create checkpoints; reuse the key to resume. |
+| Check the selected model's learning support | Choose **Check model support**, then **Run learning task** | Reports the actual loaded backend's capabilities and missing prerequisites. |
+| Study a long document or source directory | Use the panel's ingestion task, or the [online-learning CLI](docs/test-time-learning.md#read-a-complete-source) | Reads bounded segments, validates updates and saves resumable progress. |
+| Build reusable document memories | Use the [document adapter bank](docs/test-time-learning.md#save-and-retrieve-document-parameters) | Pins learned document generations and recalls relevant answers during solving. |
+| Practice without retaining that task's updates | Select **Temporary practice** | Uses a temporary request copy and restores the previous learned state afterwards. |
+| Refine an answer through multiple passes | Enable **Pro branches**; open **Branches → Best Work passes → Apply passes** | Best Work defaults to two sequential passes. Set **1** for the original single-pass behavior. |
+
+Each Best Work pass keeps the existing router and candidate selector. Only the final
+selected answer can dispatch an authorized tool; its real result starts a new stage.
+If a later refinement cannot fit before displaying output, the completed prior answer
+is retained in full. The progress card identifies the skipped refinement, and
+token/throughput figures reflect the actual generation.
+See [Best Work, tool handoffs and telemetry](docs/best-work-handoffs.md).
+
+The new workflows coexist with ordinary streaming, Learn, RSI and both **Sleep EWC**
+sources: **Verified episodes (original Sleep/EWC)** and **Current chat exchanges**.
+Older adapter formats have explicit restore/import paths, and evaluation runs keep
+their learned checkpoints separate from desktop memory. [Compatibility and storage](docs/PROJECT_DOCUMENTATION.md#23-persistent-learning-and-sequential-best-work-pr-17)
+
+**Memory beyond the working window:** accepted learning updates can remain in saved
+parameters after verified source text leaves the active prompt. The transcript stays
+archived. A rejected recall check, protected or unfinished content, an oversized
+request, or unavailable training can still reach the model's finite context limit.
+Strata remains inference-only; native GGUF/Prism/BitNet learning needs a compatible
+parent and deployment toolchain. [Backend and recall conditions](docs/parametric-memory.md)
+
+The merged revision passed all six platform/Python CI lanes and real MLX CPU and
+Metal learning tests. These include smaller packed Bonsai/CRACK layouts; full 27B
+recall, throughput and peak memory have not been measured in these runs.
+[Completed validation and release record](docs/validation/test-time-learning.md#merged-revision-and-published-release-pr-17)
+· [Downloads](https://github.com/Eabusham2/smart-ai-studio/releases/tag/latest)
+· [Research coverage and offline-training exclusions](docs/ttt-research-coverage.md)
+
 ## 🤖 Model Matrix & Architectures
 
 Smart AI Studio switches between its existing local model backends and the
