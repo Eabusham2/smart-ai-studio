@@ -1,29 +1,20 @@
-"""Real persistent learning bridge for GGUF inference models.
+"""Train a cumulative PEFT LoRA on the selected GGUF's verified HF parent.
 
-GGUF inference weights remain frozen/quantized. Learning updates a PEFT LoRA sidecar
-against the matching trainable Hugging Face architecture, converts that adapter with
-llama.cpp's official convert_lora_to_gguf.py, and the GGUF backend hot-loads the
-resulting adapter over the exact selected Bonsai GGUF.
-
-For Bonsai-2 this is mathematically compatible with Prism's Hadamard runtime: Prism
-applies LoRA to the original activation path and adds it after the rotated ternary
-base matmul. No fake parameter drift is reported.
+The export uses llama.cpp's LoRA converter. The serving backend evaluates the
+converted candidate over the original quantized base before publishing it.
 """
 from __future__ import annotations
 
-import gc
-import math
+from functools import lru_cache
 import os
 import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from core.training_memory import release_training_memory
-from typing import Any, Dict, List, Optional, Tuple
+from core.training_lineage import local_training_parent, run_conversion
 
 
-def _find_or_clone_llama_cpp(tool_root: str) -> Path:
+def _find_or_clone_llama_cpp(tool_root: str, cancel_event=None) -> Path:
     explicit = os.getenv("LLAMA_CPP_DIR", "").strip()
     candidates = [
         Path(explicit) if explicit else None,
@@ -45,12 +36,11 @@ def _find_or_clone_llama_cpp(tool_root: str) -> Path:
     target = Path(tool_root) / "llama.cpp"
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and not (target / "convert_lora_to_gguf.py").is_file():
-        shutil.rmtree(target, ignore_errors=True)
+        raise RuntimeError("Existing llama.cpp directory is missing its LoRA converter: " + str(target))
 
-    proc = subprocess.run(
+    proc = run_conversion(
         [git, "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", str(target)],
-        capture_output=True,
-        text=True,
+        cancel_event=cancel_event,
     )
     if proc.returncode != 0 or not (target / "convert_lora_to_gguf.py").is_file():
         raise RuntimeError(
@@ -58,6 +48,67 @@ def _find_or_clone_llama_cpp(tool_root: str) -> Path:
             + (proc.stderr or proc.stdout or "git clone failed").strip()
         )
     return target
+
+
+@lru_cache(maxsize=128)
+def _check_nf4_kernel(device, input_width, output_tile):
+    """Exercise eval prefill and the input gradient with the same NF4 settings as training."""
+    import bitsandbytes as bnb
+    import torch
+
+    # Meta construction avoids consuming the user's RNG. Preserve the real
+    # input width and output width modulo 32 for bnb's tiled CPU packing path.
+    layer = bnb.nn.Linear4bit(input_width, output_tile, bias=False, compute_dtype=torch.bfloat16,
+                              compress_statistics=True, quant_type="nf4", device="meta")
+    values = torch.arange(output_tile * input_width, dtype=torch.float32).remainder_(7).sub_(3)
+    layer.weight = bnb.nn.Params4bit(values.reshape(output_tile, input_width), requires_grad=False,
+                                     compress_statistics=True, quant_type="nf4")
+    layer = layer.to(device)
+    x = torch.ones((2, input_width), device=device, dtype=torch.bfloat16)
+    layer.eval()
+    with torch.no_grad():
+        output = layer(x)
+        if output.shape != (2, output_tile) or not torch.isfinite(output).all().item():
+            raise ValueError("NF4 prefill produced invalid output")
+    with torch.enable_grad():
+        x.requires_grad_()
+        gradient, = torch.autograd.grad(layer(x).float().sum(), x)
+        if gradient.shape != x.shape or not torch.isfinite(gradient).all().item():
+            raise ValueError("NF4 backward produced an invalid input gradient")
+
+
+def _check_parent_nf4(source, device):
+    import bitsandbytes as bnb
+    import torch
+    from accelerate import init_empty_weights
+    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers.pytorch_utils import Conv1D
+
+    target = torch.device("cuda", device) if type(device) is int else torch.device(device)
+    if target.type not in getattr(bnb, "supported_torch_devices", {"cuda"}):
+        raise ValueError(f"bitsandbytes does not support {target.type}")
+    config = AutoConfig.from_pretrained(source, local_files_only=True, trust_remote_code=True)
+    with init_empty_weights(include_buffers=True):
+        skeleton = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    head = skeleton.get_output_embeddings()
+    shapes = set()
+    for module in skeleton.modules():
+        if module is head:
+            continue
+        if type(module) is torch.nn.Linear:
+            inputs, outputs = module.in_features, module.out_features
+        elif isinstance(module, Conv1D):
+            inputs, outputs = module.weight.shape
+        else:
+            continue
+        # Exercise a representative pair of output tiles without allocating
+        # a dense copy of a 27B projection to decide whether it fits.
+        tile = min(outputs, 32 + (outputs - 1) % 32 + 1)
+        shapes.add((inputs, tile))
+    if not shapes:
+        raise ValueError("The training parent has no bitsandbytes linear projections")
+    for inputs, tile in sorted(shapes):
+        _check_nf4_kernel(target, inputs, tile)
 
 
 class GGUFLoRATrainer:
@@ -69,148 +120,92 @@ class GGUFLoRATrainer:
         adapter_root: str,
         rank: int = 32,
         alpha: int = 64,
+        memory_limit_gb=None,
     ):
         self.model_path = os.path.abspath(str(model_path))
         self.base_model_id = str(base_model_id or "").strip()
         if not self.base_model_id:
             raise ValueError("GGUF LoRA trainer requires a matching base_model_id")
         self.adapter_root = os.path.abspath(adapter_root)
+        self.training_source = None
         self.peft_dir = os.path.join(self.adapter_root, "peft")
         self.gguf_adapter_path = os.path.join(self.adapter_root, "adapter.gguf")
+        self.cancel_event = None
+        self.memory_limit_gb = memory_limit_gb
         self.rank = int(rank)
         self.alpha = int(alpha)
 
-    @staticmethod
-    def _training_backend_available() -> bool:
-        try:
-            import torch
-            import bitsandbytes  # noqa: F401
-        except Exception:
-            return False
+    def _training_placement(self, source):
+        import torch
+        from core.transformers_placement import transformers_memory_limits
 
-        if torch.cuda.is_available():
-            # CUDA and ROCm both surface through torch.cuda.
-            return True
-        xpu = getattr(torch, "xpu", None)
-        if xpu is not None:
-            try:
-                if xpu.is_available():
-                    return True
-            except Exception:
-                pass
-        mps = getattr(getattr(torch, "backends", None), "mps", None)
-        if mps is not None:
-            try:
-                if mps.is_available():
-                    return True
-            except Exception:
-                pass
-
-        # Current bitsandbytes also has a CPU backend. A 27B 4-bit training graph
-        # still needs substantial host RAM, so fail closed on small systems.
-        try:
-            import psutil
-            return (psutil.virtual_memory().total / (1024 ** 3)) >= 24.0
-        except Exception:
-            return False
+        weights = list(Path(source).glob("*.safetensors")) or list(Path(source).glob("pytorch_model*.bin"))
+        weight_bytes = sum(path.stat().st_size for path in weights)
+        if not weight_bytes:
+            raise RuntimeError("The selected training parent contains no weight data")
+        budgets = transformers_memory_limits(torch, self.memory_limit_gb)
+        # Prefer a resident CPU or Metal parent whenever it fits. A published
+        # device tag alone does not establish support for a GQA projection's
+        # width, double quantization, or the backward kernel on this machine.
+        rejected = []
+        for device in sorted(budgets, key=lambda d: d == "cpu"):
+            available = budgets[device]
+            resident = available > weight_bytes * 2 + 512 * 1024**2
+            if device in {"cpu", "mps"} and resident:
+                return device, "resident"
+            if available > weight_bytes * 0.6 + 512 * 1024**2:
+                try:
+                    _check_parent_nf4(source, device)
+                except (AssertionError, AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
+                    rejected.append(f"{device}: {error}")
+                else:
+                    return device, "nf4"
+            if resident:
+                return device, "resident"
+        reason = "The declared training parent does not fit available device memory"
+        if rejected:
+            reason += ". NF4 unavailable (" + ", ".join(rejected) + ")"
+        raise RuntimeError(reason)
 
     def can_prepare(self) -> bool:
-        """Report training readiness only when a real QLoRA backend is available."""
         if not os.path.isfile(self.model_path) or not self.base_model_id:
             return False
         try:
             import transformers  # noqa: F401
             import peft  # noqa: F401
-            import bitsandbytes  # noqa: F401
+            self._training_placement(local_training_parent(self.base_model_id))
         except Exception:
             return False
-        if not self._training_backend_available():
-            return False
-        if not shutil.which("git") and not os.getenv("LLAMA_CPP_DIR", "").strip():
-            return False
-        return True
+        return bool(shutil.which("git") or (Path(os.getenv("LLAMA_CPP_DIR", "")) / "convert_lora_to_gguf.py").is_file())
 
     def _load_trainable_model(self):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
-        if not self._training_backend_available():
-            raise RuntimeError(
-                "The GGUF model can infer on this device, but this machine does not "
-                "currently have enough supported 4-bit training capability for a real "
-                "27B QLoRA parameter update."
+        source = self.training_source or local_training_parent(self.base_model_id)
+        device, self.training_mode = self._training_placement(source)
+        options = {"device_map": {"": device}, "torch_dtype": "auto"}
+        if self.training_mode == "nf4":
+            options["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
             )
-
-        try:
-            import bitsandbytes  # noqa: F401
-        except Exception as exc:
-            raise RuntimeError(
-                "GGUF parameter learning requires bitsandbytes for 4-bit QLoRA."
-            ) from exc
-
-        quant = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            self.base_model_id,
-            trust_remote_code=True,
-        )
-        if tokenizer.pad_token_id is None:
-            if tokenizer.eos_token is not None:
-                tokenizer.pad_token = tokenizer.eos_token
-            else:
-                tokenizer.add_special_tokens({"pad_token": "<|endoftext|>"})
-
+        tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True, local_files_only=True)
         base = AutoModelForCausalLM.from_pretrained(
-            self.base_model_id,
-            quantization_config=quant,
-            device_map="auto",
-            low_cpu_mem_usage=True,
-            trust_remote_code=True,
+            source, low_cpu_mem_usage=True, trust_remote_code=True, local_files_only=True, **options,
         )
         base.config.use_cache = False
-        if hasattr(base, "gradient_checkpointing_enable"):
-            try:
-                base.gradient_checkpointing_enable()
-            except Exception:
-                pass
-        base = prepare_model_for_kbit_training(base)
+        if self.training_mode == "nf4":
+            base = prepare_model_for_kbit_training(base)
 
         if os.path.isfile(os.path.join(self.peft_dir, "adapter_config.json")):
             model = PeftModel.from_pretrained(base, self.peft_dir, is_trainable=True)
         else:
-            # Qwen3.8 is hybrid: most layers are GatedDeltaNet and the rest are
-            # full attention. Discover the exact language-layer projections so LoRA
-            # covers both families without accidentally adapting the vision tower.
-            candidate_suffixes = {
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
-                "in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b", "out_proj",
-            }
-            target_modules = []
-            for module_name, module in base.named_modules():
-                leaf = module_name.rsplit(".", 1)[-1]
-                if leaf not in candidate_suffixes:
-                    continue
-                lowered = module_name.lower()
-                if any(marker in lowered for marker in ("visual", "vision", "mtp")):
-                    continue
-                # Keep only decoder/language paths. Full conditional-generation
-                # checkpoints expose these under language_model/model.layers.
-                if ".layers." not in module_name and not module_name.startswith("model.layers."):
-                    continue
-                if isinstance(module, torch.nn.Linear):
-                    target_modules.append(module_name)
-
+            from core.controller_runtime import UniversalControllerBackend
+            target_modules = UniversalControllerBackend._transformers_lora_targets(base)
             if not target_modules:
-                raise RuntimeError(
-                    "Qwen3.8 GGUF QLoRA found no compatible language projection modules"
-                )
+                raise RuntimeError("GGUF training parent exposes no compatible language projections")
 
             cfg = LoraConfig(
                 r=self.rank,
@@ -225,71 +220,26 @@ class GGUFLoRATrainer:
         model.train()
         return model, tokenizer
 
-    @staticmethod
-    def _snapshot_trainable(model) -> Dict[str, Any]:
-        snap: Dict[str, Any] = {}
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                snap[name] = param.detach().float().cpu().clone()
-        return snap
-
-    @staticmethod
-    def _drift_l2(before: Dict[str, Any], model) -> Tuple[float, int]:
-        total = 0.0
-        touched = 0
-        for name, param in model.named_parameters():
-            if not param.requires_grad or name not in before:
-                continue
-            delta = param.detach().float().cpu() - before[name]
-            total += float((delta * delta).sum().item())
-            touched += int(param.numel())
-        return math.sqrt(max(total, 0.0)), touched
-
-    @staticmethod
-    def _format_training_example(tokenizer, prompt: str, completion: str) -> Tuple[str, str]:
-        messages = [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": completion},
-        ]
-        prefix_messages = [{"role": "user", "content": prompt}]
-        try:
-            full_text = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            prefix = tokenizer.apply_chat_template(
-                prefix_messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            return str(prefix), str(full_text)
-        except Exception:
-            prefix = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-            return prefix, prefix + completion + "<|im_end|>"
-
     def _convert_to_gguf(self, peft_dir: str, output_path: str) -> str:
-        llama_root = _find_or_clone_llama_cpp(os.path.dirname(self.adapter_root))
+        llama_root = _find_or_clone_llama_cpp(os.path.dirname(self.adapter_root), self.cancel_event)
         converter = llama_root / "convert_lora_to_gguf.py"
         os.makedirs(self.adapter_root, exist_ok=True)
         if os.path.exists(output_path):
             os.remove(output_path)
 
-        proc = subprocess.run(
+        proc = run_conversion(
             [
                 sys.executable,
                 str(converter),
-                "--base-model-id",
-                self.base_model_id,
+                "--base",
+                self.training_source or local_training_parent(self.base_model_id),
                 "--outtype",
                 "f16",
                 "--outfile",
                 output_path,
                 peft_dir,
             ],
-            cwd=str(llama_root),
-            capture_output=True,
-            text=True,
+            cwd=str(llama_root), cancel_event=self.cancel_event,
         )
         if proc.returncode != 0 or not os.path.isfile(output_path):
             raise RuntimeError(
@@ -299,154 +249,48 @@ class GGUFLoRATrainer:
         return output_path
 
     def train(
-        self,
-        data: List[Dict[str, str]],
-        *,
-        learning_rate: float = 1e-4,
-        steps: int = 3,
-        max_length: int = 512,
-    ) -> Tuple[Dict[str, Any], float, int, str]:
-        import torch
+        self, data, *, output_directory=None, previous_peft=None, learning_rate=1e-4,
+        steps=3, max_length=512, fisher_matrix=None, lambda_ewc=0.0, cancel_event=None, anchor_texts=None,
+        reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
+        objective='causal_lm', supervise_prompt=False, row_weights=None, context_text=None, max_context_tokens=None,
+    ):
+        """Build a staged deployment or publish the standalone cumulative checkpoint."""
+        from core.torch_context_learning import check_cancelled, update_lora, verify_saved_lora
+        from core.native_context_learning import native_training_output
 
-        rows = [
-            item for item in (data or [])
-            if str(item.get("prompt") or "").strip()
-            and str(item.get("completion") or "").strip()
-        ]
-        if not rows:
-            raise RuntimeError("GGUF LoRA trainer received no prompt/completion pairs")
-
-        os.makedirs(self.adapter_root, exist_ok=True)
-        model, tokenizer = self._load_trainable_model()
-        before = self._snapshot_trainable(model)
-        optimizer = torch.optim.AdamW(
-            (p for p in model.parameters() if p.requires_grad),
-            lr=float(learning_rate),
-        )
-
-        tmp_peft = tempfile.mkdtemp(prefix="peft-next-", dir=self.adapter_root)
-        tmp_gguf = self.gguf_adapter_path + ".tmp"
-        backup_peft = self.peft_dir + ".previous"
-
-        try:
-            for _ in range(max(1, int(steps))):
-                for item in rows:
-                    prompt = str(item["prompt"]).strip()
-                    completion = str(item["completion"]).strip()
-                    prefix, full_text = self._format_training_example(
-                        tokenizer, prompt, completion
-                    )
-                    encoded = tokenizer(
-                        full_text,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=max(32, int(max_length)),
-                    )
-                    prefix_ids = tokenizer(
-                        prefix,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=max(32, int(max_length)),
-                    )["input_ids"]
-
-                    try:
-                        device = next(
-                            p.device for p in model.parameters()
-                            if p.requires_grad
-                        )
-                    except StopIteration:
-                        raise RuntimeError("GGUF QLoRA model exposes no trainable LoRA parameters")
-
-                    encoded = {k: v.to(device) for k, v in encoded.items()}
-                    labels = encoded["input_ids"].clone()
-                    prompt_len = min(int(prefix_ids.shape[1]), int(labels.shape[1]))
-                    labels[:, :prompt_len] = -100
-
-                    optimizer.zero_grad(set_to_none=True)
-                    out = model(**encoded, labels=labels)
-                    loss = out.loss
-                    if loss is None or not torch.isfinite(loss):
-                        raise RuntimeError("GGUF QLoRA training produced a non-finite loss")
-                    loss.backward()
-                    optimizer.step()
-
-            drift, touched = self._drift_l2(before, model)
-            if drift <= 0.0 or touched <= 0:
-                raise RuntimeError("GGUF QLoRA completed but measured zero parameter change")
-
-            model.save_pretrained(tmp_peft, safe_serialization=True)
-            tokenizer.save_pretrained(tmp_peft)
-
-            # Conversion is file-based. Do not keep the 27B QLoRA graph resident
-            # while the converter allocates its own buffers.
+        destination = Path(self.gguf_adapter_path)
+        with native_training_output(self, output_directory, destination, previous_peft, cancel_event, data, objective) as stage:
+            output, previous_peft, published, data = stage
+            self.cancel_event = cancel_event
+            peft_path = output / "peft"
+            if previous_peft is not None and not (Path(previous_peft) / "adapter_config.json").is_file():
+                raise RuntimeError("The active deployment is missing its cumulative PEFT checkpoint")
+            self.peft_dir = previous_peft or peft_path
+            check_cancelled(cancel_event)
+            model, tokenizer = self._load_trainable_model()
             try:
-                optimizer.zero_grad(set_to_none=True)
-            except Exception:
-                pass
-            before.clear()
-            encoded = None
-            prefix_ids = None
-            labels = None
-            out = None
-            loss = None
-            del optimizer
-            del model
-            model = None
-            tokenizer = None
-            release_training_memory()
-
-            self._convert_to_gguf(tmp_peft, tmp_gguf)
-
-            # Do not make a new state live until both the PEFT checkpoint and converted
-            # GGUF adapter exist. The caller separately backs up the currently live
-            # adapter and reloads llama.cpp before accepting this update.
-            if os.path.isdir(backup_peft):
-                shutil.rmtree(backup_peft, ignore_errors=True)
-            if os.path.isdir(self.peft_dir):
-                os.replace(self.peft_dir, backup_peft)
-            os.replace(tmp_peft, self.peft_dir)
-            tmp_peft = ""
-
-            os.replace(tmp_gguf, self.gguf_adapter_path)
-            if os.path.isdir(backup_peft):
-                shutil.rmtree(backup_peft, ignore_errors=True)
-
-            return {
-                "trainable_parameters_touched": touched,
-                "base_model_id": self.base_model_id,
-                "adapter_format": "gguf-lora",
-            }, float(drift), touched, self.gguf_adapter_path
-        except BaseException:
-            if os.path.isdir(backup_peft) and not os.path.isdir(self.peft_dir):
-                os.replace(backup_peft, self.peft_dir)
-            raise
-        finally:
-            if tmp_peft and os.path.isdir(tmp_peft):
-                shutil.rmtree(tmp_peft, ignore_errors=True)
-            try:
-                if os.path.isfile(tmp_gguf):
-                    os.remove(tmp_gguf)
-            except OSError:
-                pass
-            try:
-                optimizer.zero_grad(set_to_none=True)
-            except Exception:
-                pass
-            try:
-                before.clear()
-            except Exception:
-                pass
-            try:
-                del optimizer
-            except Exception:
-                pass
-            try:
-                del tokenizer
-            except Exception:
-                pass
-            try:
-                if model is not None:
-                    del model
-            except Exception:
-                pass
-            release_training_memory()
+                metrics, drift = update_lora(
+                    model, tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_length,
+                    fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, anchor_texts=anchor_texts,
+                    previous_directory=Path(previous_peft).parent if previous_peft else None, output_directory=output,
+                    reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                    objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
+                    context_text=context_text, max_context_tokens=max_context_tokens,
+                )
+                check_cancelled(cancel_event)
+                model.save_pretrained(peft_path, safe_serialization=True, save_embedding_layers=False)
+                verify_saved_lora(model, peft_path)
+                tokenizer.save_pretrained(peft_path)
+                model = tokenizer = None
+                release_training_memory()
+                check_cancelled(cancel_event)
+                deployment = output / "adapter.gguf"
+                self._convert_to_gguf(str(peft_path), str(deployment))
+                adapter_format = "gguf-lora"
+                check_cancelled(cancel_event)
+                metrics.update({"base_model_id": self.base_model_id, "adapter_format": adapter_format,
+                                "parent_training_mode": self.training_mode})
+                return metrics, drift, metrics["trainable_parameters_touched"], str(published)
+            finally:
+                model = tokenizer = None
+                release_training_memory()

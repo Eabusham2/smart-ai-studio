@@ -69,14 +69,16 @@ def test_default_and_legacy_directory_adapter_paths_become_safetensors_files(tmp
     assert _normalize_adapter_path(str(legacy_dir)) == str(legacy_dir / "adapters.safetensors")
 
 
-def test_live_engine_initializes_a_persistent_adapter_file_path(tmp_path):
+def test_live_engine_uses_model_bound_state_unless_a_legacy_adapter_is_explicit(tmp_path):
     engine = DummyPro(use_mock=False, loaded=False)
-    assert engine.lora_adapter_path.endswith("adapters.safetensors")
+    assert engine.lora_adapter_path is None
+    assert engine._explicit_adapter_path is False
 
     legacy_dir = tmp_path / "legacy_adapter"
     legacy_dir.mkdir()
     engine2 = DummyPro(use_mock=False, loaded=False, lora_adapter_path=str(legacy_dir))
     assert engine2.lora_adapter_path == str(legacy_dir / "adapters.safetensors")
+    assert engine2._explicit_adapter_path is True
 
 
 def test_live_loaded_model_never_falls_back_to_synthetic_output():

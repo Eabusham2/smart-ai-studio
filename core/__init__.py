@@ -38,6 +38,9 @@ install_speed_control(ProReasoningEngine)
 from core.mlx_thread_owner import install_mlx_thread_ownership
 install_mlx_thread_ownership(MLXReasoningBackend)
 
+from core.memory_runtime import install_memory_runtime
+install_memory_runtime(ProReasoningEngine)
+
 __all__ = [
     "EntropyRouter",
     "GroundTruthVerifier",

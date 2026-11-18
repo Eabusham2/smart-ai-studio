@@ -8,6 +8,12 @@ on:
   pull_request:
     branches: [ master, main ]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish packages after green CI (default branch or version tag only)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -307,6 +313,82 @@ jobs:
             python -m pytest -v
           fi
 
+  mlx-learning:
+    name: Native MLX Learning (${{ matrix.device }})
+    needs: preflight
+    if: needs.preflight.outputs.reuse_green != 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            device: cpu
+          - os: macos-latest
+            device: metal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install real MLX and learning dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.device }}" = "cpu" ]; then
+            python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+            python -m pip install 'mlx[cpu]==0.32.4' 'mlx-lm==0.32.2'
+          else
+            python -m pip install 'mlx==0.32.4' 'mlx-lm==0.32.2'
+          fi
+          python -m pip install -r requirements.txt
+      - name: Verify actual compute device
+        env:
+          MLX_TEST_DEVICE: ${{ matrix.device }}
+        run: |
+          python - <<'PY'
+          import os
+          import mlx.core as mx
+          from mlx_lm.models import qwen3_5
+          wanted = os.environ['MLX_TEST_DEVICE']
+          if wanted == 'metal':
+              assert mx.metal.is_available(), 'Metal is required; CPU fallback cannot pass this lane'
+              mx.set_default_device(mx.gpu)
+          else:
+              mx.set_default_device(mx.cpu)
+          result = mx.sum(mx.square(mx.arange(8, dtype=mx.float32)))
+          mx.eval(result)
+          assert result.item() == 140
+          print('Verified MLX device:', mx.default_device())
+          PY
+      - name: Exercise packed Bonsai layouts and native learning
+        shell: bash
+        env:
+          SMARTAI_TEST_OFFLINE: "1"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          RUN_REAL_WEIGHTS_EVAL: "0"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MLX_TEST_DEVICE: ${{ matrix.device }}
+        run: |
+          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
+                   if 'test_mlx_packed_terminal' in c.get('classname', '')]
+          assert len(cases) >= 2, 'Both packed Bonsai layouts must be exercised'
+          assert all(c.find('skipped') is None for c in cases), 'Packed native MLX tests cannot be skipped'
+          PY
+      - name: Preserve native learning results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartAI-mlx-learning-${{ matrix.device }}
+          path: mlx-learning.xml
+          if-no-files-found: error
+
   native-build:
     name: Compile Native Verifier (${{ matrix.backend }}, no models)
     needs: preflight
@@ -427,7 +509,10 @@ jobs:
 
   package:
     name: Portable and Setup (${{ matrix.target }}, no models)
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_release &&
+       (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -471,14 +556,16 @@ jobs:
 
   build-and-release:
     name: Build & Auto-Publish Release Packages
-    needs: [preflight, test, native-build, reuse-native, package]
+    needs: [preflight, test, mlx-learning, native-build, reuse-native, package]
     if: >-
       always() &&
-      github.event_name != 'pull_request' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish_release &&
+        (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))) &&
       needs.preflight.result == 'success' &&
       needs.package.result == 'success' &&
       (needs.preflight.outputs.reuse_green == 'true' ||
-       (needs.test.result == 'success' &&
+       (needs.test.result == 'success' && needs.mlx-learning.result == 'success' &&
         (needs.native-build.result == 'success' || needs.reuse-native.result == 'success')))
     runs-on: macos-latest
     timeout-minutes: 180

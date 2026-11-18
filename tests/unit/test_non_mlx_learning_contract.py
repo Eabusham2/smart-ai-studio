@@ -31,11 +31,13 @@ def test_gguf_learning_is_real_and_reloaded_into_inference():
 
     assert "def train_mini_batch(" in engine
     assert "GGUFLoRATrainer" in engine
-    assert "lora_path=self.adapter_path if os.path.isfile(self.adapter_path) else None" in engine
-    assert "loss.backward()" in trainer
-    assert "optimizer.step()" in trainer
+    assert "lora_path=self.adapter_path or None" in engine
+    assert "update_lora(" in trainer
+    optimizer = _src("core/torch_context_learning.py")
+    assert "loss.backward()" in optimizer
+    assert "optimizer.step()" in optimizer
     assert "convert_lora_to_gguf.py" in trainer
-    assert "zero parameter change" in trainer
+    assert "zero parameter change" in optimizer
 
     assert "PrismGGUFReasoningBackend" in prism
     assert "PRISM_REPO" in prism
@@ -50,7 +52,7 @@ def test_ordinary_chat_consolidation_is_backend_capability_driven():
 
     assert 'callable(getattr(self.engine, "train_mini_batch", None))' in online
     assert "success = self.consolidate_chunk_sync(evicted_chunk)" in online
-    assert "(retained_history, True) if success else (conversation_history, False)" in online
+    assert "(retained_history, True) if success else (active, False)" in online
 
     assert "def _active_trainable_backend(engine)" in awake
     assert 'getattr(engine, "controller_backend", None)' in awake
@@ -68,10 +70,10 @@ def test_learn_and_rsi_use_active_real_trainable_backend():
     assert 'getattr(self.engine, "gguf_backend", None)' in learner
     assert 'getattr(self.engine, "bitnet_backend", None)' in learner
     assert 'getattr(self.engine, "controller_backend", None)' in learner
-    assert "backend.train_mini_batch(" in learner
+    assert "service.train_pairs(" in learner
     assert "def recursive_self_improve(" in learner
     assert "def consolidate_rsi_parameters(" in learner
-    assert "zero parameter change" in learner.lower()
+    assert "validation_callback=validate" in _src("core/online_consolidator.py")
 
 
 def test_bitnet_training_rebuilds_and_hot_reloads_real_weights():
@@ -83,8 +85,10 @@ def test_bitnet_training_rebuilds_and_hot_reloads_real_weights():
     assert "def train_mini_batch(" in backend
     assert "BitNetRebuildTrainer" in backend
     assert "learned-i2_s.gguf" in backend
-    assert "self.unload_model()" in backend
-    assert "self.load_model()" in backend
+    assert "update_deployment(" in backend
+    transaction = _src("core/native_context_learning.py")
+    assert "backend.unload_model()" in transaction
+    assert "backend.load_model()" in transaction
 
     assert "PeftModel.from_pretrained" in trainer
     assert "get_peft_model" in trainer
@@ -92,9 +96,11 @@ def test_bitnet_training_rebuilds_and_hot_reloads_real_weights():
     assert "preprocess-huggingface-bitnet.py" in trainer
     assert "convert-ms-to-gguf-bitnet.py" in trainer
     assert '"I2_S"' in trainer
-    assert "loss.backward()" in trainer
-    assert "optimizer.step()" in trainer
-    assert "zero parameter change" in trainer
+    assert "update_lora(" in trainer
+    optimizer = _src("core/torch_context_learning.py")
+    assert "loss.backward()" in optimizer
+    assert "optimizer.step()" in optimizer
+    assert "zero parameter change" in optimizer
 
     assert 'training_base_model_id=info.get("bitnet_training_base_model_id")' in pro
     assert '"trainable": bool(self.bitnet_backend.training_ready())' in pro

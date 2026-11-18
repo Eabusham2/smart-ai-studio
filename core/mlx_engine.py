@@ -464,6 +464,32 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_effective_max_tokens = int(effective)
         return int(effective)
 
+    def _resolve_mlx_source(self):
+        """Bind identity and load weights from the very same local snapshot."""
+        from pathlib import Path
+        from core.learning_state import cached_model_source, requested_revision
+
+        if platform.system() != "Darwin" or platform.machine() != "arm64":
+            return None
+        identifier = str(self.model_path)
+        path = Path(identifier).expanduser()
+        if path.exists():
+            return str(path.absolute())
+        revision = requested_revision(self.model_info)
+        cached = cached_model_source(identifier, self.model_info)
+        required = self.model_info.get("download_required_files") or []
+        if cached.is_dir():
+            if not revision and cached.parent.name == "snapshots":
+                revision = cached.name
+            if any(cached.rglob("*.safetensors")) and all((cached / f).is_file() for f in required):
+                return str(cached)
+        if os.getenv("OFFLINE", "0") == "1":
+            raise RuntimeError("The selected MLX snapshot is not available locally in offline mode")
+        from huggingface_hub import snapshot_download
+        patterns = required or ["*.safetensors", "*.json", "*.jsonl", "*.txt", "*.model", "*.tiktoken",
+                                "*.jinja", "*.py", "*.metal", "*.toml", "*.yaml", "*.yml", "runtime/*"]
+        return str(snapshot_download(repo_id=identifier, revision=revision, allow_patterns=patterns))
+
     def load_model(self) -> bool:
         """Load native model weights with the model's required Apple-Silicon runtime."""
         self.invalidate_prompt_reuse("model load")
@@ -473,11 +499,6 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.last_error = "This MLX checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."
             self.is_mlx_available = False
             return False
-        if not os.path.exists(self.model_path) and os.getenv("OFFLINE", "0") == "1":
-            self.last_error = "The selected MLX checkpoint is not available locally in offline mode."
-            self.is_mlx_available = False
-            return False
-
         runtime = resolve_controller_runtime(self.model_info, str(self.model_path or ""))
         specialized_vlm = runtime in {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
         load_stamps = (_local_artifact_stamp(self.model_path), _local_artifact_stamp(self.adapter_path))
@@ -486,9 +507,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             from core.memory_watchdog import SystemMemoryWatchdog
             SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
 
+            source = getattr(self, "_mlx_loaded_source", None) or self._resolve_mlx_source()
             if specialized_vlm:
                 loader = UniversalControllerBackend(
-                    model_path=self.model_path,
+                    model_path=source,
                     model_info={**self.model_info, "controller_runtime": runtime},
                 )
                 if not loader.load_model():
@@ -501,7 +523,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             else:
                 import mlx_lm
                 self.model, self.tokenizer = mlx_lm.load(
-                    self.model_path,
+                    source,
                     adapter_path=(
                         self.adapter_path
                         if self.adapter_path and os.path.exists(self.adapter_path)
@@ -563,6 +585,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.model = None
             self.processor = None
             self.tokenizer = None
+            self.adapters = {}
             self.is_mlx_available = False
             self._prompt_disk_model_id = None
             self._prompt_disk_tokenizer_id = None
@@ -590,6 +613,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             raise RuntimeError("MLX model owner is unavailable; load the model first")
         return owner.call(operation, *args, **kwargs)
 
+    def switch_learning_checkpoint(self, scope):
+        from core.mlx_adapter_persistence import switch_learning_checkpoint
+        return self.run_on_mlx_owner(switch_learning_checkpoint, self, scope)
+
     def get_training_model(self):
         """Return the real causal language module used for text Learn/RSI updates."""
         if self._vlm_runtime is not None:
@@ -600,25 +627,44 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
     def _run_training_method(self, method_name: str, *args, **kwargs):
         # Invalidate even on failed/partial updates: weights may already differ.
-        if method_name in {"inject_lora_adapters", "train_mini_batch"}:
+        if method_name in {"inject_lora_adapters", "compute_mlx_fisher", "train_mini_batch"}:
             self.invalidate_prompt_reuse("training or adapter mutation")
+        from core.policy_reference import private_text_positions
         target = self.get_training_model()
         if target is None or target is self.model:
-            return getattr(super(), method_name)(*args, **kwargs)
+            with private_text_positions(target):
+                return getattr(super(), method_name)(*args, **kwargs)
         wrapper = self.model
+        validation = kwargs.get("validation_callback")
+        if validation is not None:
+            def validate_wrapper(backend):
+                backend.model = wrapper
+                try:
+                    return validation(backend)
+                finally:
+                    backend.model = target
+            kwargs["validation_callback"] = validate_wrapper
         self.model = target
         try:
-            return getattr(super(), method_name)(*args, **kwargs)
+            with private_text_positions(target):
+                return getattr(super(), method_name)(*args, **kwargs)
         finally:
             self.model = wrapper
 
-    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0):
+    def inject_lora_adapters(self, r: int = 8, scale: float = 2.0, layout=None, target_paths=None):
         from core.native_speed import runtime_lock
         with runtime_lock(self):
-            return self._run_training_method("inject_lora_adapters", r=r, scale=scale)
+            return self._run_training_method("inject_lora_adapters", r=r, scale=scale, layout=layout, target_paths=target_paths)
 
-    def compute_mlx_fisher(self, anchor_texts):
-        return self._run_training_method("compute_mlx_fisher", anchor_texts)
+    def compute_mlx_fisher(self, anchor_texts, **kwargs):
+        return self._run_training_method("compute_mlx_fisher", anchor_texts, **kwargs)
+
+    def score_learning_probe(self, prompt, completion, **kwargs):
+        def score():
+            from core.native_speed import runtime_lock
+            with runtime_lock(self):
+                return self._run_training_method("score_learning_probe", prompt, completion, **kwargs)
+        return self.run_on_mlx_owner(score)
 
     def train_mini_batch(self, adapters, data, **kwargs):
         return self._run_training_method("train_mini_batch", adapters, data, **kwargs)

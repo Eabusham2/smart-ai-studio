@@ -103,9 +103,21 @@ def describe_transformers_placement(model: Any, budgets: Mapping | None = None) 
         device = getattr(model, "device", None)
         if device is not None:
             devices.add(_device_name(device))
-    offloaded = "disk" in devices or "meta" in devices or len(devices) > 1
-    hook = getattr(model, "_hf_hook", None)
-    offloaded = offloaded or bool(getattr(hook, "offload", False))
+    offloaded = bool(devices & {"disk", "meta"})
+    # Multiple resident CUDA devices support ordinary autograd across transfers.
+    # CPU/disk dispatch may evict a weight after forward, so inspect every hook
+    # and the real parameters before admitting a model-parallel training map.
+    modules = model.modules() if callable(getattr(model, "modules", None)) else (model,)
+    for module in modules:
+        hook = getattr(module, "_hf_hook", None)
+        if any(getattr(h, "offload", False) or getattr(h, "no_grad", False)
+               for h in (hook, *(getattr(hook, "hooks", ()) or ()))):
+            offloaded = True
+            break
+    if len(devices) > 1 and not offloaded:
+        resident = {_device_name(p.device) for p in model.parameters()} if callable(getattr(model, "parameters", None)) else set()
+        offloaded = resident != devices or not all(device.startswith("cuda:") for device in devices)
+
     message = "Automatic checkpoint placement: " + (", ".join(sorted(devices)) or "runtime did not report its devices") + "."
     if "disk" in devices:
         message += " Some layers stream from disk; throughput depends on storage and the selected model."

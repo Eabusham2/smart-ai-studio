@@ -67,7 +67,7 @@ class Root:
 
 
 @pytest.fixture
-def app():
+def app(tmp_path):
     """Compile real methods without importing the desktop's neural dependencies."""
     pending = []
 
@@ -88,10 +88,12 @@ def app():
         "_on_memory_pressure_emergency", "_on_send_message", "_run_queued_task",
         "_process_message_thread", "_update_telemetry",
     }
+    from core.context_memory import ChatArchive
+    methods.update({"_open_tab_history", "_render_tab_transcript"})
     nodes = [node for node in app_class.body if isinstance(node, ast.FunctionDef)
              and node.name in methods]
     namespace = {
-        "os": os, "math": math, "json": json, "time": time, "re": re,
+        "os": os, "math": math, "json": json, "time": time, "re": re, "ChatArchive": ChatArchive,
         "datetime": datetime,
         "threading": SimpleNamespace(Thread=Thread, Event=threading.Event),
         "format_parameter_count": str, "format_added_synapses": str,
@@ -103,6 +105,7 @@ def app():
     exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
     harness = type("GuiHarness", (), {name: namespace[name] for name in methods})
     obj = harness()
+    obj.settings = SimpleNamespace(database_path=str(tmp_path / "chat.sqlite3"))
     obj.pending = pending
     obj.root = Root()
     obj._event_queue = queue.Queue()

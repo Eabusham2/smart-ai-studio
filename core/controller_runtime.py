@@ -191,6 +191,9 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
 class UniversalControllerBackend:
     """Protocol adapter for specialized text/multimodal controller runtimes."""
 
+    direct_torch_generation = False
+    direct_cuda = False
+
     def __init__(self, model_path: str, model_info: Dict[str, Any]):
         self.model_path = str(model_path)
         self.model_info = dict(model_info or {})
@@ -215,6 +218,8 @@ class UniversalControllerBackend:
         self._offload_directory: Optional[str] = None
 
     def load_model(self) -> bool:
+        self.learning_migration_status = None
+        self._loaded_legacy_deployment = None
         if self.runtime in ("mlx_vlm", "mlx-vlm"):
             return self._load_mlx_vlm()
         if self.runtime in ("jang_vlm", "jang-vlm"):
@@ -351,7 +356,11 @@ class UniversalControllerBackend:
         from config.paths import get_portable_data_dir
         import hashlib
 
-        source = resolve_local_snapshot(self.model_path)
+        from core.learning_state import cached_model_source
+        source = str(cached_model_source(self.model_path, self.model_info))
+        revision = (self.model_info.get("resolved_revision") or self.model_info.get("repo_revision")
+                    or self.model_info.get("source_revision") or self.model_info.get("revision"))
+        source_options = {"revision": revision} if revision and not os.path.exists(source) else {}
         context_tokens = int(getattr(self, "context_tokens", 0) or self.model_info.get("default_context") or 32768)
         kv_bytes = estimate_transformers_kv_bytes(source, context_tokens)
         budgets = transformers_memory_limits(torch, getattr(self, "speed_memory_limit_gb", None), kv_bytes=kv_bytes)
@@ -359,16 +368,21 @@ class UniversalControllerBackend:
         offload_root.mkdir(parents=True, exist_ok=True)
         source_key = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:16]
         self._offload_directory = tempfile.mkdtemp(prefix=f"{source_key}-", dir=offload_root)
+        self.direct_cuda_loaded = self.direct_cuda and torch.cuda.is_available()
         processor = None
-        try:
-            processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True)
-        except Exception:
-            processor = None
+        if not self.direct_cuda_loaded:
+            try:
+                processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True, **source_options)
+            except Exception:
+                processor = None
         if processor is None:
-            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options)
 
+        # The original direct CUDA loader selected BF16 even for checkpoints
+        # stored in FP32. Imported controllers use the checkpoint's native dtype.
+        dtype = torch.bfloat16 if self.direct_cuda_loaded else "auto"
         requested = str(self.model_info.get("transformers_auto_class") or "").strip()
-        candidates = [requested] if requested else []
+        candidates = [requested] if requested else (["AutoModelForCausalLM"] if self.direct_torch_generation else [])
         candidates += [
             "AutoModelForImageTextToText",
             "AutoModelForVision2Seq",
@@ -389,13 +403,13 @@ class UniversalControllerBackend:
             try:
                 model = cls.from_pretrained(
                     source,
-                    torch_dtype="auto",
+                    torch_dtype=dtype,
                     device_map="auto",
                     max_memory=budgets,
                     offload_folder=self._offload_directory,
                     offload_state_dict=True,
                     low_cpu_mem_usage=True,
-                    trust_remote_code=True,
+                    trust_remote_code=True, **source_options,
                 )
                 break
             except Exception as exc:
@@ -413,13 +427,18 @@ class UniversalControllerBackend:
         # transactionally on every model load so learned chat state survives restarts.
         key = hashlib.sha256(str(self.model_path).encode("utf-8")).hexdigest()[:16]
         eval_root = str(os.getenv("SMARTAI_CONTROLLER_ADAPTER_ROOT", "") or "").strip()
-        self.adapter_path = (
-            os.path.join(os.path.abspath(eval_root), key)
-            if eval_root
-            else os.path.join(get_portable_data_dir(), "controller_lora", key)
-        )
-        adapter_cfg = os.path.join(self.adapter_path, "adapter_config.json")
-        if os.path.isfile(adapter_cfg):
+        from core.learning_state import bind_learning_state, select_legacy_checkpoint
+        legacy_root = os.path.abspath(eval_root) if eval_root else os.path.join(get_portable_data_dir(), "controller_lora")
+        legacy_path = os.path.join(legacy_root, key)
+        state_root = os.path.join(legacy_root, "learned_memory")
+        store = bind_learning_state(self, model_path=source, model_info=self.model_info,
+                                    state_root=state_root, adapter_format="peft")
+        self._loaded_learning_checkpoint = self.adapter_path = store.current_checkpoint()
+        legacy = select_legacy_checkpoint(self, store, self.adapter_path, legacy_path,
+                                          self.model_info.get("legacy_adapter_path"), "peft")
+        if legacy:
+            self.adapter_path = legacy
+        if self.adapter_path:
             try:
                 from peft import PeftModel
                 model = PeftModel.from_pretrained(
@@ -440,6 +459,7 @@ class UniversalControllerBackend:
         self.is_loaded = True
         self.is_mlx_available = False
         self.can_train = self.training_ready()
+        self._loaded_legacy_deployment = legacy
         return True
 
     def training_ready(self) -> bool:
@@ -450,10 +470,11 @@ class UniversalControllerBackend:
             return False
         if self.runtime not in ("transformers_auto", "transformers", "hf_transformers"):
             return bool(self.can_train)
+        if getattr(self.config, "is_encoder_decoder", False):
+            return False
         try:
-            import torch  # noqa: F401
-            import peft  # noqa: F401
-            return True
+            from peft import PeftModel
+            return isinstance(self.model, PeftModel) or bool(self._transformers_lora_targets(self.model))
         except Exception:
             return False
 
@@ -475,6 +496,7 @@ class UniversalControllerBackend:
     @staticmethod
     def _transformers_lora_targets(model) -> List[str]:
         import torch
+        from transformers.pytorch_utils import Conv1D
         suffixes = {
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -484,12 +506,12 @@ class UniversalControllerBackend:
         }
         blocked = (
             "vision", "visual", "image", "audio", "speech",
-            "projector", "mm_projector", "vision_tower",
+            "projector", "mm_projector", "vision_tower", "mtp",
         )
         targets: List[str] = []
         for name, module in model.named_modules():
             leaf = name.rsplit(".", 1)[-1]
-            if leaf not in suffixes or not isinstance(module, torch.nn.Linear):
+            if leaf not in suffixes or not isinstance(module, (torch.nn.Linear, Conv1D)):
                 continue
             low = name.lower()
             if any(marker in low for marker in blocked):
@@ -533,198 +555,84 @@ class UniversalControllerBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
-        **_kwargs,
+        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
+        reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
+        objective='causal_lm', supervise_prompt=False, max_window_tokens=512, row_weights=None,
+        context_text=None, max_context_tokens=2048, **_kwargs,
     ):
-        """Real transactional completion-only PEFT update for Transformers controllers."""
-        del adapters, fisher_matrix, lambda_ewc, save_path
-        import math
-        import shutil
+        """Validate the live PEFT candidate before publishing its checkpoint generation."""
         import torch
+        from core.torch_context_learning import check_cancelled, default_validation, lora_parameters, update_lora, validate_candidate, verify_saved_lora
 
-        model = self._ensure_transformers_lora()
-        tok = self.tokenizer
-        rows = [
-            item for item in (data or [])
-            if str(item.get("prompt") or "").strip()
-            and str(item.get("completion") or "").strip()
-        ]
-        if not rows:
-            raise RuntimeError("Controller trainer received no prompt/completion pairs")
-
-        before = {
-            name: param.detach().float().cpu().clone()
-            for name, param in model.named_parameters()
-            if param.requires_grad
-        }
-        params = [param for param in model.parameters() if param.requires_grad]
-        if not params:
-            raise RuntimeError("Controller LoRA exposes no trainable parameters")
-
-        optimizer = torch.optim.AdamW(params, lr=float(learning_rate))
-        model.train()
-        tmp = ""
-        backup = ""
-        success = False
-        had_adapter = bool(self.adapter_path and os.path.isdir(self.adapter_path))
-
+        if objective == "reward_policy":
+            from core.reward_adaptation import reward_advantages
+            reward_advantages(data, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
+        store = self.learning_state
+        txn = store.begin(metadata=learning_metadata)
+        before = {}
+        base_trainability = []
+        original_model = self.model
+        model = None
+        original_path = self.adapter_path
         try:
-            trained_rows = 0
-            for _ in range(max(1, int(steps))):
-                for item in rows:
-                    prompt = str(item["prompt"]).strip()
-                    completion = str(item["completion"]).strip()
-                    messages = [{"role": "user", "content": prompt}]
-                    prefix = None
-                    apply_template = getattr(tok, "apply_chat_template", None)
-                    if callable(apply_template):
-                        try:
-                            prefix = apply_template(
-                                messages,
-                                tokenize=False,
-                                add_generation_prompt=True,
-                            )
-                        except Exception:
-                            prefix = None
-                    if not prefix:
-                        prefix = (
-                            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-                            f"<|im_start|>assistant\n"
-                        )
-                    full = prefix + completion
-                    if "<|im_start|>" in prefix:
-                        full += "<|im_end|>"
-
-                    encoded = tok(
-                        full,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=512,
-                    )
-                    prefix_ids = tok(
-                        prefix,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=512,
-                    )["input_ids"]
-                    try:
-                        device = next(param.device for param in params)
-                    except StopIteration:
-                        raise RuntimeError("Controller LoRA lost its trainable parameters")
-
-                    encoded = {key: value.to(device) for key, value in encoded.items()}
-                    labels = encoded["input_ids"].clone()
-                    prompt_len = min(int(prefix_ids.shape[1]), int(labels.shape[1]))
-                    labels[:, :prompt_len] = -100
-
-                    optimizer.zero_grad(set_to_none=True)
-                    output = model(**encoded, labels=labels)
-                    loss = getattr(output, "loss", None)
-                    if loss is None or not torch.isfinite(loss):
-                        raise RuntimeError("Controller LoRA training produced a non-finite loss")
-                    loss.backward()
-                    optimizer.step()
-                    trained_rows += 1
-
-            if trained_rows <= 0:
-                raise RuntimeError("Controller LoRA found no trainable prompt/completion rows")
-
-            total = 0.0
-            touched = 0
-            for name, param in model.named_parameters():
-                if not param.requires_grad or name not in before:
-                    continue
-                delta = param.detach().float().cpu() - before[name]
-                total += float((delta * delta).sum().item())
-                touched += int(param.numel())
-            drift = math.sqrt(max(total, 0.0))
-            if drift <= 0.0 or touched <= 0:
-                raise RuntimeError("Controller LoRA completed but measured zero parameter change")
-
-            if not self.adapter_path:
-                raise RuntimeError("Controller adapter persistence path is unavailable")
-            os.makedirs(os.path.dirname(self.adapter_path), exist_ok=True)
-            tmp = self.adapter_path + ".next"
-            backup = self.adapter_path + ".previous"
-            shutil.rmtree(tmp, ignore_errors=True)
-            shutil.rmtree(backup, ignore_errors=True)
-
-            model.save_pretrained(tmp, safe_serialization=True)
-            if had_adapter:
-                os.replace(self.adapter_path, backup)
-            os.replace(tmp, self.adapter_path)
-            tmp = ""
-
-            self.adapters = {
-                "trainable_parameters_touched": touched,
-                "adapter_format": "peft-lora",
-            }
-            result = (dict(self.adapters), float(drift))
-            success = True
-            return result
-
+            if store.current_checkpoint() != self._loaded_learning_checkpoint:
+                raise RuntimeError("Reload the latest committed controller checkpoint before learning")
+            check_cancelled(cancel_event)
+            if validation_callback is None:
+                validation_callback = default_validation(self, data, objective=objective, reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target)
+            if not getattr(original_model, "peft_config", None):
+                base_trainability = [(p, p.requires_grad) for p in original_model.parameters()]
+            model = self._ensure_transformers_lora()
+            named = lora_parameters(model)
+            before = {name: param.detach().cpu().clone() for name, param in named.items()}
+            metrics, drift = update_lora(
+                model, self.tokenizer, data, learning_rate=learning_rate, steps=steps, max_tokens=max_window_tokens,
+                reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+                objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights,
+                context_text=context_text, max_context_tokens=max_context_tokens,
+                fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event, before=before,
+                anchor_texts=anchor_texts, output_directory=txn.directory,
+                previous_directory=Path(self._loaded_learning_checkpoint).parent if self._loaded_learning_checkpoint else None,
+            )
+            evidence = validate_candidate(self, validation_callback, cancel_event)
+            tmp = txn.directory / "peft"
+            model.save_pretrained(tmp, safe_serialization=True, save_embedding_layers=False)
+            verify_saved_lora(model, tmp)
+            check_cancelled(cancel_event)
+            metrics["adapter_format"] = "peft-lora"
+            txn.commit("peft", metadata={"metrics": metrics, "validation": evidence, "drift_l2": drift}, cancel_event=cancel_event)
+            return dict(metrics), drift
         except BaseException:
-            success = False
-            # Restore live trainable tensors first, then restore the persisted
-            # adapter directory if the filesystem transaction had started.
-            try:
+            if before and not txn.committed:
                 with torch.no_grad():
-                    for name, param in model.named_parameters():
-                        snapshot = before.get(name)
-                        if snapshot is None or not param.requires_grad:
-                            continue
-                        param.copy_(
-                            snapshot.to(device=param.device, dtype=param.dtype)
-                        )
-            except Exception:
-                pass
-
-            if tmp and os.path.isdir(tmp):
-                shutil.rmtree(tmp, ignore_errors=True)
-
-            if backup and os.path.isdir(backup):
-                if os.path.isdir(self.adapter_path):
-                    shutil.rmtree(self.adapter_path, ignore_errors=True)
-                os.replace(backup, self.adapter_path)
-                backup = ""
-            elif not had_adapter and self.adapter_path and os.path.isdir(self.adapter_path):
-                # A brand-new failed transaction must not leave an unaccepted
-                # persisted adapter behind.
-                shutil.rmtree(self.adapter_path, ignore_errors=True)
+                    for name, param in named.items():
+                        param.copy_(before[name].to(device=param.device, dtype=param.dtype))
+                self.adapter_path = original_path
+            if not txn.committed and model is not None and model is not original_model:
+                # PEFT injects layers into the original module in-place. Undo
+                # that first injection as well as its factors on a rejected trial.
+                self.model = model.unload()
+                for p, was_trainable in base_trainability:
+                    p.requires_grad_(was_trainable)
             raise
-
         finally:
-            if tmp and os.path.isdir(tmp):
-                shutil.rmtree(tmp, ignore_errors=True)
-            if success and backup and os.path.isdir(backup):
-                shutil.rmtree(backup, ignore_errors=True)
-                backup = ""
-            elif backup and os.path.isdir(backup):
-                # Failure/cancellation keeps the previous adapter authoritative.
-                if os.path.isdir(self.adapter_path):
-                    shutil.rmtree(self.adapter_path, ignore_errors=True)
-                try:
-                    os.replace(backup, self.adapter_path)
-                    backup = ""
-                except Exception:
-                    pass
-
-            try:
-                optimizer.zero_grad(set_to_none=True)
-            except Exception:
-                pass
+            if txn.committed:
+                # Publication is authoritative even if interrupted during
+                # post-commit cleanup. The live tensors are already validated.
+                self._loaded_learning_checkpoint = self.adapter_path = str(tmp)
+                self.adapters = metrics
+                self.last_learning_metrics = dict(metrics)
+            txn.abort()
             before.clear()
-            params.clear()
-            encoded = None
-            prefix_ids = None
-            labels = None
-            output = None
-            loss = None
-            try:
-                del optimizer
-            except Exception:
-                pass
-            model.eval()
+            if model is not None:
+                model.eval()
             release_training_memory(self)
+
+    def score_learning_probe(self, prompt, completion):
+        from core.native_speed import runtime_lock
+        from core.torch_context_learning import score_torch_probe
+        with runtime_lock(self):
+            return score_torch_probe(self.model, self.tokenizer, prompt, completion)
 
     @staticmethod
     def _text_from_generation(value: Any) -> str:
@@ -825,12 +733,25 @@ class UniversalControllerBackend:
             frames.append(out)
         return frames
 
+    def _torch_sampling(self, max_tokens, temperature, top_p):
+        sample = float(temperature) > 0
+        options = {"max_new_tokens": int(max_tokens), "do_sample": sample,
+                   "temperature": max(float(temperature), 1e-5) if sample else None}
+        if self.direct_torch_generation:
+            # The original direct CUDA solver explicitly controlled nucleus
+            # sampling and requested one completion for each ladder temperature.
+            options.update(num_return_sequences=1, pad_token_id=self.tokenizer.eos_token_id)
+            if sample:
+                options["top_p"] = float(top_p)
+        return options
+
     def _generate_transformers(
         self,
         prompt: str,
         max_tokens: int,
         temperature: float,
         media: Optional[Dict[str, Any]] = None,
+        *, top_p: float = 0.92,
     ) -> str:
         import torch
         kwargs: Dict[str, Any] = {"text": prompt, "return_tensors": "pt"}
@@ -865,15 +786,9 @@ class UniversalControllerBackend:
         device = transformers_input_device(self.model)
         if device is not None and hasattr(inputs, "to"):
             inputs = inputs.to(device)
-        do_sample = float(temperature) > 0.0
         started = time.perf_counter()
         with torch.no_grad():
-            ids = self.model.generate(
-                **inputs,
-                max_new_tokens=int(max_tokens),
-                do_sample=do_sample,
-                temperature=max(float(temperature), 1e-5) if do_sample else None,
-            )
+            ids = self.model.generate(**inputs, **self._torch_sampling(max_tokens, temperature, top_p))
         elapsed = max(1e-9, time.perf_counter() - started)
         self.last_generation_seconds = elapsed
         try:
@@ -885,6 +800,11 @@ class UniversalControllerBackend:
         except (AttributeError, TypeError, ValueError):
             self.last_generation_tokens = None
             self.last_tok_per_sec = None
+        if self.direct_torch_generation and not getattr(self.model.config, "is_encoder_decoder", False):
+            # Causal generate() includes its packed prompt in the returned IDs.
+            # Pro scores the generated branch and may dispatch its selected tool.
+            prefix = inputs["input_ids"].shape[-1]
+            return self.tokenizer.decode(ids[0, prefix:], skip_special_tokens=True)
         decoder = getattr(self.processor, "batch_decode", None) or getattr(self.tokenizer, "batch_decode", None)
         if callable(decoder):
             return str(decoder(ids, skip_special_tokens=True)[0]).strip()
@@ -939,11 +859,7 @@ class UniversalControllerBackend:
             device = transformers_input_device(self.model)
             if device is not None and hasattr(inputs, "to"):
                 inputs = inputs.to(device)
-            do_sample = float(temperature) > 0
-            options = {"max_new_tokens": int(max_tokens), "do_sample": do_sample,
-                       "temperature": max(float(temperature), 1e-5) if do_sample else None}
-            # Preserve this controller's original sampling policy: its prior
-            # generate() did not override top_p with the Pro value.
+            options = self._torch_sampling(max_tokens, temperature, top_p)
             yield from stream_transformers(self.model, self.tokenizer, inputs, options,
                                           owner=self, stop_at_tool_boundary=stop_at_tool_boundary,
                                           cancelled=cancelled)
@@ -962,7 +878,9 @@ class UniversalControllerBackend:
                 return out
             t = float(temperature[idx % len(temperature)]) if isinstance(temperature, (list, tuple)) else float(temperature)
             started = time.perf_counter()
-            if stop_at_tool_boundary or cancelled is not None:
+            # The direct Torch path historically meters each actual generated
+            # token. The shared streamer carries that observer and omits prompt IDs.
+            if self.direct_torch_generation or stop_at_tool_boundary or cancelled is not None:
                 pieces = []
                 iterator = self.stream_generate_tokens(prompt, max_tokens, t, top_p,
                                                        stop_at_tool_boundary=stop_at_tool_boundary, cancelled=cancelled)
@@ -989,7 +907,19 @@ class UniversalControllerBackend:
         return out
 
     def calculate_token_entropy(self, prompt: str) -> float:
-        del prompt
+        if self.direct_torch_generation:
+            import torch
+            from core.entropy_router import EntropyRouter
+            from core.transformers_placement import transformers_input_device
+
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            device = transformers_input_device(self.model)
+            if device is not None and hasattr(inputs, "to"):
+                inputs = inputs.to(device)
+            with torch.no_grad():
+                logits = self.model(**inputs).logits[:, -1, :]
+                return EntropyRouter.compute_entropy_from_logits(logits)
+
         # Specialized runtimes often do not expose stable logits APIs.  Returning a
         # neutral normalized entropy keeps routing functional without a second forward.
         return 0.35
@@ -1102,3 +1032,8 @@ class UniversalControllerBackend:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+# PEFT optimization, teacher-forced probes, serving and unload share one reentrant lock.
+from core.native_speed import install_native_runtime_lock
+install_native_runtime_lock(UniversalControllerBackend)

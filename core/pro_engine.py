@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from config.settings import Settings, get_settings, MODEL_PRESETS
+from core.adaptation_capabilities import adaptation_capabilities
 from core.downloader import ensure_model_available, is_model_available_locally
 from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
@@ -79,7 +80,28 @@ def parse_reasoning_and_response(raw_text: str) -> Tuple[Optional[str], str]:
     return None, raw_text
 
 
+def _direct_torch_handle(name):
+    """Expose the serving model/tokenizer even after the controller wraps or reloads PEFT."""
+    def get(engine):
+        backend = getattr(engine, "controller_backend", None)
+        if getattr(backend, "direct_torch_generation", False) is True:
+            return getattr(backend, name, None)
+        return vars(engine).get(name)
+
+    def set_value(engine, value):
+        backend = getattr(engine, "controller_backend", None)
+        if getattr(backend, "direct_torch_generation", False) is True:
+            setattr(backend, name, value)
+        else:
+            vars(engine)[name] = value
+
+    return property(get, set_value, lambda engine: set_value(engine, None))
+
+
 class ProReasoningEngine:
+    model = _direct_torch_handle("model")
+    tokenizer = _direct_torch_handle("tokenizer")
+
     def __init__(
         self,
         base_model_path: Optional[str] = None,
@@ -262,6 +284,17 @@ class ProReasoningEngine:
                 resolved_backend, resolved_device = resolve_optimal_backend(model_type)
                 target_backend = backend or (self.backend if self.backend != "auto" else resolved_backend)
 
+            # All Transformers execution uses the same persistent, capability-
+            # checked backend. The old direct CUDA branch had no trainer or
+            # checkpoint reload path and left CPU/MPS selections without one.
+            direct_torch = target_backend in ("torch", "cuda", "cpu", "mps")
+            requested_backend = target_backend
+            direct_cuda = target_backend in ("torch", "cuda") and getattr(self, "device", None) == "cuda"
+            if direct_torch:
+                target_backend = "controller"
+                controller_runtime = "transformers_auto"
+                info["controller_runtime"] = controller_runtime
+
             self.active_backend = target_backend
             self.active_model_path = target_path
 
@@ -282,6 +315,24 @@ class ProReasoningEngine:
                 external = getattr(self, "_model_load_cancelled", None)
                 return bool((event and event.is_set()) or (external and external()))
 
+            loading_backend = None
+
+            def migration_details(*, loaded=False):
+                # A native backend can select a file and still fail to start its
+                # runtime. A successful result is required to acknowledge a seed.
+                if loaded:
+                    path = getattr(loading_backend, "_loaded_legacy_deployment", None)
+                    if isinstance(path, str) and path == getattr(loading_backend, "adapter_path", None):
+                        kind = "peft" if target_backend == "controller" else target_backend
+                        status = {"status": "legacy_adapter_loaded", "path": path, "format": kind}
+                        loading_backend.learning_migration_status = status
+                        return {"learning_migration": status.copy()}
+                else:
+                    status = getattr(loading_backend, "learning_migration_status", None)
+                    if isinstance(status, dict) and status.get("status") == "legacy_adapter_required":
+                        return {"learning_migration": status.copy()}
+                return {}
+
             try:
                 # 0. Architecture-specific controller adapter (VLM/audio-language/etc.)
                 if target_backend == "controller":
@@ -290,6 +341,12 @@ class ProReasoningEngine:
                         model_path=target_path,
                         model_info=info,
                     )
+                    loading_backend = self.controller_backend
+                    if direct_torch:
+                        self.controller_backend.direct_torch_generation = True
+                        self.controller_backend.direct_cuda = direct_cuda
+                        self.controller_backend.direct_backend_name = requested_backend
+                    self.controller_backend.learning_scope = getattr(self, "learning_scope", None)
                     self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
                     self.controller_backend.context_tokens = int(
                         getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768
@@ -316,11 +373,13 @@ class ProReasoningEngine:
                         return {
                             "status": "loaded",
                             "model": model_name,
-                            "backend": controller_runtime,
+                            "backend": "cuda" if getattr(self.controller_backend, "direct_cuda_loaded", False) is True else controller_runtime,
+                            **({"runtime": controller_runtime, "requested_backend": requested_backend} if direct_torch else {}),
                             "path": target_path,
                             "input_modalities": sorted(self.active_input_modalities),
                             "trainable": bool(getattr(self.controller_backend, "can_train", False)),
                             "memory_placement": dict(getattr(self.controller_backend, "memory_placement", {}) or {}),
+                            **migration_details(loaded=True),
                         }
                     if controller_runtime == "strata":
                         return {
@@ -329,15 +388,20 @@ class ProReasoningEngine:
                             "error": self.controller_backend.last_error or "Strata could not prepare the selected model.",
                         }
                     return {"status": "error", "model": model_name, "backend": controller_runtime,
-                            "path": target_path, "error": "The selected runtime did not load a usable model."}
+                            "path": target_path, "error": "The selected runtime did not load a usable model.",
+                            **migration_details()}
 
                 # 1. Native Apple Silicon MLX
                 if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
                     self.mlx_backend = MLXReasoningBackend(
                         model_path=target_path,
-                        adapter_path=self.lora_adapter_path,
+                        adapter_path=(info.get("legacy_adapter_path") or self.lora_adapter_path)
+                        if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                         model_info=info,
                     )
+                    self.mlx_backend.learning_scope = getattr(self, "learning_scope", None)
+                    if getattr(self, "mlx_learning_state_root", None) is not None:
+                        self.mlx_backend.learning_state_root = self.mlx_learning_state_root
                     if self.mlx_backend.load_model():
                         self.mlx_engine = self.mlx_backend
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -349,7 +413,8 @@ class ProReasoningEngine:
                             "runtime": controller_runtime or "mlx_lm",
                             "path": target_path,
                             "input_modalities": sorted(self.active_input_modalities),
-                            "trainable": callable(getattr(self.mlx_backend, "train_mini_batch", None)),
+                            "trainable": adaptation_capabilities(self.mlx_backend)["causal_lm"],
+                            "learning_migration": getattr(self.mlx_backend, "learning_migration_status", None),
                         }
                     else:
                         return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
@@ -387,11 +452,15 @@ class ProReasoningEngine:
                         model_path=target_path,
                         mmproj_path=mmproj_path,
                         training_base_model_id=info.get("gguf_training_base_model_id"),
+                        legacy_adapter_path=info.get("legacy_adapter_path")
+                        if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                         n_ctx=int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
                         auto_memory_placement=bool(info.get("auto_memory_placement", True)),
                         memory_limit_gb=getattr(self, "speed_memory_limit_gb", None),
                         **native_options,
                     )
+                    self.gguf_backend.learning_scope = getattr(self, "learning_scope", None)
+                    loading_backend = self.gguf_backend
                     load_options = {"cancelled": load_cancelled} if server_path else {}
                     if self.gguf_backend.load_model(**load_options):
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
@@ -403,11 +472,13 @@ class ProReasoningEngine:
                             "path": target_path,
                             "trainable": bool(self.gguf_backend.training_ready()),
                             "memory_placement": dict(getattr(self.gguf_backend, "memory_placement", {}) or {}),
+                            **migration_details(loaded=True),
                         }
                     return {
                         "status": "cancelled" if server_path and load_cancelled() and getattr(self.gguf_backend, "_process", None) is None else "error",
                         "model": model_name, "backend": "gguf", "path": target_path,
                         "error": getattr(self.gguf_backend, "last_error", "") or "The native runtime could not load this GGUF model.",
+                        **migration_details(),
                     }
 
                 # 3. Microsoft bitnet.cpp — real 1.58-bit inference runtime.
@@ -419,7 +490,11 @@ class ProReasoningEngine:
                         hf_repo_id=str(info.get("repo_id") or target_path),
                         n_ctx=int(info.get("max_context") or 32768),
                         training_base_model_id=info.get("bitnet_training_base_model_id"),
+                        legacy_adapter_path=info.get("legacy_adapter_path")
+                        if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
                     )
+                    self.bitnet_backend.learning_scope = getattr(self, "learning_scope", None)
+                    loading_backend = self.bitnet_backend
                     if self.bitnet_backend.load_model():
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
                             self.awake_consolidator.engine = self.bitnet_backend
@@ -429,6 +504,7 @@ class ProReasoningEngine:
                             "backend": "bitnet",
                             "path": self.bitnet_backend.model_path,
                             "trainable": bool(self.bitnet_backend.training_ready()),
+                            **migration_details(loaded=True),
                         }
                     return {
                         "status": "error",
@@ -436,22 +512,8 @@ class ProReasoningEngine:
                         "backend": "bitnet",
                         "path": target_path,
                         "error": "Official bitnet.cpp runtime/model could not be prepared for this BitNet checkpoint.",
+                        **migration_details(),
                     }
-
-                # 4. PyTorch CUDA / MPS / CPU
-                if target_backend in ("torch", "cuda") and self.device == "cuda":
-                    import torch
-                    if torch.cuda.is_available():
-                        from transformers import AutoModelForCausalLM, AutoTokenizer
-                        self.tokenizer = AutoTokenizer.from_pretrained(target_path, trust_remote_code=True)
-                        self.model = AutoModelForCausalLM.from_pretrained(
-                            target_path,
-                            torch_dtype=torch.bfloat16,
-                            device_map="auto",
-                            trust_remote_code=True
-                        )
-                        self.model.eval()
-                        return {"status": "loaded", "model": model_name, "backend": "cuda", "path": target_path}
 
                 return {"status": "not_downloaded", "model": model_name, "backend": target_backend, "path": target_path}
 
@@ -462,7 +524,8 @@ class ProReasoningEngine:
                         "model": model_name, "backend": "strata", "path": target_path,
                         "error": getattr(self.controller_backend, "last_error", "") or str(e),
                     }
-                return {"status": "error", "model": model_name, "error": str(e), "path": target_path}
+                return {"status": "error", "model": model_name, "error": str(e), "path": target_path,
+                        **migration_details()}
 
     def unload_model(self) -> Dict[str, Any]:
         """Release the current model before replacement and report stop failures.

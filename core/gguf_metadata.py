@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import hashlib
+import json
 import re
 import struct
 
@@ -87,9 +89,10 @@ def _minimum_positive(value):
     return min((item for item in values if type(item) is int and item > 0), default=0)
 
 
-def _single(path: Path, header_budget: int):
+def _single(path: Path, header_budget: int, verify_layout=False):
     size = path.stat().st_size
     metadata, tensors = {}, []
+    tokenizer_fields = {}
     with path.open("rb") as handle:
         reader = _Reader(handle, size, header_budget)
         if reader.read(4) != b"GGUF":
@@ -107,7 +110,17 @@ def _single(path: Path, header_budget: int):
                 raise ValueError("GGUF metadata contains duplicate keys.")
             seen.add(key)
             keep = key.startswith("split.") or key in {"general.architecture", "general.alignment"} or key.endswith(_SUFFIXES)
+            start = handle.tell()
             value = reader.value(kind, keep)
+            if verify_layout and key.startswith("tokenizer."):
+                # Token tables/merges can differ even when vocabulary sizes
+                # agree. Hash their bounded header bytes without decoding text.
+                end = handle.tell()
+                handle.seek(start)
+                field = hashlib.sha256(struct.pack("<I", kind))
+                while handle.tell() < end:
+                    field.update(reader.read(min(1024 * 1024, end - handle.tell())))
+                tokenizer_fields[key] = field.hexdigest()
             if keep:
                 metadata[key] = value
             elif key == "tokenizer.ggml.tokens" and isinstance(value, dict):
@@ -134,11 +147,11 @@ def _single(path: Path, header_budget: int):
         if tensor["offset"] % alignment or end <= tensor["offset"] or data_start + end > size:
             raise ValueError("GGUF tensor offsets are overlapping, misaligned, or outside the file.")
         tensor["bytes"] = end - tensor["offset"]
-    return {"version": version, "metadata": metadata, "tensors": tensors,
+    return {"version": version, "metadata": metadata, "tensors": tensors, "tokenizer_fields": tokenizer_fields,
             "file_bytes": size, "header_bytes": header_bytes}
 
 
-def inspect_gguf(path: str) -> dict:
+def inspect_gguf(path: str, *, verify_layout=False) -> dict:
     """Inspect an exact local GGUF and all required shards without reading weights.
 
     An explicit later shard resolves to the first member of the same complete
@@ -149,7 +162,7 @@ def inspect_gguf(path: str) -> dict:
     selected = Path(os.path.abspath(os.path.expanduser(path)))
     if not selected.is_file():
         raise ValueError("Select a GGUF file, not an ambiguous model directory.")
-    first = _single(selected, MAX_HEADER_BYTES)
+    first = _single(selected, MAX_HEADER_BYTES, verify_layout)
     count = first["metadata"].get("split.count", 1)
     if type(count) is not int or not 1 <= count <= MAX_SHARDS:
         raise ValueError("GGUF split count is invalid or unsupported.")
@@ -168,7 +181,7 @@ def inspect_gguf(path: str) -> dict:
     budget = MAX_HEADER_BYTES - first["header_bytes"]
     records = []
     for number, member in enumerate(files):
-        record = first if member == selected else _single(member, budget)
+        record = first if member == selected else _single(member, budget, verify_layout)
         if member != selected:
             budget -= record["header_bytes"]
         if budget < 0:
@@ -220,11 +233,22 @@ def inspect_gguf(path: str) -> dict:
             output += size
         if name == "token_embd.weight" and len(tensor["shape"]) == 2:
             embedding, vocab = tensor["shape"][0], vocab or tensor["shape"][1]
+    signatures = {}
+    if verify_layout:
+        layout = hashlib.sha256()
+        for tensor in sorted(tensors, key=lambda item: item["name"]):
+            layout.update(json.dumps([tensor["name"], tensor["shape"], tensor["type"]], separators=(",", ":")).encode())
+            layout.update(b"\n")
+        signatures["tensor_layout_sha256"] = layout.hexdigest()
+        signatures["tokenizer_layout_sha256"] = hashlib.sha256(
+            json.dumps(records[0]["tokenizer_fields"], sort_keys=True).encode()
+        ).hexdigest()
     expert_count = _positive(metadata.get(architecture + ".expert_count"))
     return {
         "model_path": str(files[0]), "files": [str(member) for member in files],
         "gguf_version": records[0]["version"],
         "architecture": architecture, "context_length": _positive(metadata.get(architecture + ".context_length")),
+        **signatures,
         "layer_count": layer_count, "embedding_length": _positive(metadata.get(architecture + ".embedding_length"), embedding),
         "head_count": _positive(metadata.get(architecture + ".attention.head_count")),
         "head_count_min": _minimum_positive(metadata.get(architecture + ".attention.head_count")),

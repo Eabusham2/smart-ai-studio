@@ -253,3 +253,12 @@ def test_prism_worker_preserves_last_token_entropy_without_context_wide_logits(t
     assert records[0]["memory_placement"]["context_tokens"] == 4096
     assert records[1]["entropy"] == 1.0
     get_logits.assert_called_once_with(-1)
+
+
+def test_prism_token_count_uses_worker_ids_for_whole_message_sequence(tmp_path):
+    backend = PrismGGUFReasoningBackend("selected.gguf", adapter_root=str(tmp_path))
+    requests = io.StringIO()
+    backend._worker = SimpleNamespace(poll=lambda: None, stdin=requests,
+                                      stdout=io.StringIO('{"status":"ok","tokens":[1,24,36,87,91]}\n'))
+    assert backend.count_tokens([{"content": "中"}, {"content": "📦"}]) == 5
+    assert json.loads(requests.getvalue()) == {"op": "tokenize", "text": "中\n📦"}

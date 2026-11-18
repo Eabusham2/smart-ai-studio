@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from core.context_memory import ContextOverflow
+
 
 def _model_context_limit(model, tokenizer) -> Optional[int]:
     values = []
@@ -69,7 +71,7 @@ def install(cls) -> None:
                 f"Context full: packed prompt uses {prompt_tokens:,} tokens but active Context is "
                 f"{context_budget:,}. Old completed dialogue must consolidate before generation."
             )
-            raise RuntimeError(self.last_generation_cap_reason)
+            raise ContextOverflow(self.last_generation_cap_reason)
 
         if physical and selected > physical:
             self.last_generation_cap_reason = (

@@ -11,11 +11,8 @@ import json
 import mimetypes
 import re
 import os
-import platform
-import shutil
-import sys
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional
 
 
 class GGUFReasoningBackend:
@@ -32,6 +29,7 @@ class GGUFReasoningBackend:
         n_threads_batch: Optional[int] = None,
         auto_memory_placement: bool = True,
         memory_limit_gb: Optional[float] = None,
+        legacy_adapter_path: Optional[str] = None,
     ):
         self.model_path = model_path
         self.mmproj_path = mmproj_path
@@ -56,7 +54,9 @@ class GGUFReasoningBackend:
             from config.paths import get_portable_data_dir
             stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.basename(self.model_path) or "gguf")
             self.adapter_root = os.path.join(get_portable_data_dir(), "gguf_lora", stem)
-        self.adapter_path = os.path.join(self.adapter_root, "adapter.gguf")
+        self.legacy_adapter_path = legacy_adapter_path
+        self.adapter_path = ""
+        self._candidate_deployment = None
         self.adapters: Dict[str, Any] = {}
 
         self.model = None
@@ -71,6 +71,12 @@ class GGUFReasoningBackend:
             self.is_gguf_available = True
         except ImportError:
             self.is_gguf_available = False
+
+    def _select_adapter(self):
+        from core.native_context_learning import select_deployment
+        self.adapter_path = select_deployment(
+            self, self.model_path, self.adapter_root, "gguf", os.path.join(self.adapter_root, "adapter.gguf")
+        ) or ""
 
     def load_model(self) -> bool:
         """Initializes Llama.cpp GGUF instance with GPU layer offloading and optional vision clip handler."""
@@ -89,6 +95,8 @@ class GGUFReasoningBackend:
             from core.gguf_placement import load_gguf_with_placement
 
             metadata = inspect_gguf(self.model_path)
+            self.model_path = metadata["model_path"]
+            self._select_adapter()
 
             # Vision / multimodal projector initialization. Prefer MTMD because
             # Bonsai-2 carries an embedded Qwen-family multimodal chat template.
@@ -128,7 +136,7 @@ class GGUFReasoningBackend:
                 gpu_offload_supported=bool(getattr(llama_cpp, "llama_supports_gpu_offload", lambda: False)()),
                 placement_projector_bytes=(os.path.getsize(self.mmproj_path) if self.chat_handler is not None else 0),
                 chat_handler=self.chat_handler,
-                lora_path=self.adapter_path if os.path.isfile(self.adapter_path) else None,
+                lora_path=self.adapter_path or None,
                 **{name: value for name, value in (
                     ("n_threads", self.n_threads), ("n_threads_batch", self.n_threads_batch)
                 ) if value is not None},
@@ -180,14 +188,14 @@ class GGUFReasoningBackend:
 
     def training_ready(self) -> bool:
         """Return True only when the exact-GGUF LoRA trainer can be prepared."""
-        if not self.is_gguf_available or not os.path.isfile(self.model_path):
+        if not self.is_gguf_available or self.model is None or not os.path.isfile(self.model_path):
             return False
         try:
             from core.gguf_lora_trainer import GGUFLoRATrainer
             trainer = GGUFLoRATrainer(
                 model_path=self.model_path,
                 base_model_id=self.training_base_model_id,
-                adapter_root=self.adapter_root,
+                adapter_root=self.adapter_root, memory_limit_gb=self.memory_limit_gb,
             )
             return bool(trainer.can_prepare())
         except Exception:
@@ -216,76 +224,39 @@ class GGUFReasoningBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
-        **_kwargs,
+        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
+        reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
+        objective='causal_lm', supervise_prompt=False, max_window_tokens=512, row_weights=None,
+        context_text=None, max_context_tokens=2048, **_kwargs,
     ):
-        """Train a real LoRA directly on this exact GGUF, then hot-reload llama.cpp."""
-        del adapters, fisher_matrix, lambda_ewc, save_path
+        """Train a LoRA on the declared HF lineage and validate it on the selected GGUF."""
         from core.gguf_lora_trainer import GGUFLoRATrainer
+        from core.native_context_learning import update_deployment
 
-        # Preserve the currently working learned state until the new update has
-        # both trained and reloaded successfully.
-        backup_path = self.adapter_path + ".previous"
-        peft_dir = os.path.join(self.adapter_root, "peft")
-        peft_backup = peft_dir + ".previous-runtime"
-        had_adapter = os.path.isfile(self.adapter_path)
-        had_peft = os.path.isdir(peft_dir)
-        if had_adapter:
-            shutil.copy2(self.adapter_path, backup_path)
-        if os.path.isdir(peft_backup):
-            shutil.rmtree(peft_backup, ignore_errors=True)
-        if had_peft:
-            shutil.copytree(peft_dir, peft_backup)
-
-        success = False
-        self.unload_model()
-        trainer = GGUFLoRATrainer(
-            model_path=self.model_path,
-            base_model_id=self.training_base_model_id,
-            adapter_root=self.adapter_root,
+        if not self.training_ready():
+            raise RuntimeError("The loaded GGUF requires a matching local training parent, sufficient memory and a LoRA converter")
+        trainer = GGUFLoRATrainer(model_path=self.model_path, base_model_id=self.training_base_model_id,
+                                  adapter_root=self.adapter_root, memory_limit_gb=self.memory_limit_gb)
+        return update_deployment(
+            self, trainer, data, learning_rate=learning_rate, steps=steps,
+            fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event,
+            validation_callback=validation_callback, learning_metadata=learning_metadata, anchor_texts=anchor_texts,
+            reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+            objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_window_tokens=max_window_tokens,
+            context_text=context_text, max_context_tokens=max_context_tokens,
         )
-        try:
-            meta, drift, _touched, adapter_path = trainer.train(
-                data,
-                learning_rate=float(learning_rate),
-                steps=max(1, int(steps)),
-            )
-            self.adapter_path = adapter_path
-            self.adapters = dict(meta or {})
-            if not self.load_model():
-                raise RuntimeError("GGUF LoRA trained successfully but llama.cpp failed to reload it")
-            result = (dict(self.adapters), float(drift))
-            success = True
-            return result
-        except BaseException:
-            success = False
-            # Roll back the adapter atomically and restore inference. Cancellation
-            # (KeyboardInterrupt) is a transaction failure too.
-            # failed consolidation as the live parameter state.
-            if os.path.isfile(backup_path):
-                os.replace(backup_path, self.adapter_path)
-            elif not had_adapter:
-                try:
-                    os.remove(self.adapter_path)
-                except OSError:
-                    pass
 
-            if os.path.isdir(peft_dir):
-                shutil.rmtree(peft_dir, ignore_errors=True)
-            if os.path.isdir(peft_backup):
-                os.replace(peft_backup, peft_dir)
-            elif not had_peft:
-                shutil.rmtree(peft_dir, ignore_errors=True)
+    def _verify_training_parent(self, trainer):
+        from core.training_lineage import verify_parent
+        return verify_parent(self, trainer, self.model_path,
+                             lambda text: self.model.tokenize(text.encode(), add_bos=False, special=False),
+                             os.path.join(self.adapter_root, "learned_memory"))
 
-            self.load_model()
-            raise
-        finally:
-            if success:
-                try:
-                    os.remove(backup_path)
-                except OSError:
-                    pass
-                if os.path.isdir(peft_backup):
-                    shutil.rmtree(peft_backup, ignore_errors=True)
+    def score_learning_probe(self, prompt, completion):
+        from core.native_context_learning import score_llama_probe
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            return score_llama_probe(self.model, prompt, completion)
 
     def supports_media_input(self, kind: str) -> bool:
         """Bonsai GGUF accepts images and sampled-video frames when its projector is loaded."""

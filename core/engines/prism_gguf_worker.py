@@ -66,8 +66,11 @@ def _video_urls(path: str, max_frames: int = 8) -> List[str]:
 def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit("worker requires one config path")
-    with open(sys.argv[1], "r", encoding="utf-8") as handle:
-        cfg = json.load(handle)
+    if sys.argv[1] == "--stdin-config":
+        cfg = json.loads(sys.stdin.readline())
+    else:
+        with open(sys.argv[1], "r", encoding="utf-8") as handle:
+            cfg = json.load(handle)
 
     # These imports happen only after the parent has injected Prism native-library paths.
     import llama_cpp
@@ -100,13 +103,15 @@ def main() -> int:
                     verbose=bool(cfg.get("verbose", False)),
                 )
 
+    if cfg.get("adapter_path") and not os.path.isfile(cfg["adapter_path"]):
+        raise RuntimeError("The selected GGUF adapter disappeared before loading")
     model, memory_placement = load_gguf_with_placement(
         Llama,
         model_path=str(cfg["model_path"]),
         n_gpu_layers=int(cfg.get("n_gpu_layers", -1)),
         n_ctx=int(cfg.get("n_ctx", 32768)),
         chat_handler=chat_handler,
-        lora_path=cfg.get("adapter_path") if cfg.get("adapter_path") and os.path.isfile(cfg["adapter_path"]) else None,
+        lora_path=cfg.get("adapter_path"),
         **{name: cfg[name] for name in ("n_threads", "n_threads_batch") if cfg.get(name) is not None},
         metadata=metadata,
         auto_memory_placement=bool(cfg.get("auto_memory_placement", True)),
@@ -145,6 +150,11 @@ def main() -> int:
             if op == "ping":
                 _emit({"status": "ok", "memory_placement": memory_placement})
                 continue
+            if op == "learning_probe":
+                from core.native_context_learning import score_llama_probe
+                score = score_llama_probe(model, request["prompt"], request["completion"])
+                _emit({"status": "ok", "mean_nll": score})
+                continue
             if op == "tune_speed":
                 if speed_tuner is None:
                     _emit({"status": "ok", "result": {"status": "unsupported", "settings": {},
@@ -167,7 +177,8 @@ def main() -> int:
                 _emit({"status": "ok", "n_ctx": int(model.n_ctx())})
                 continue
             if op == "tokenize":
-                tokens = model.tokenize(str(request.get("text") or "").encode("utf-8"))
+                tokens = model.tokenize(str(request.get("text") or "").encode("utf-8"),
+                                        add_bos=bool(request.get("add_bos", True)), special=bool(request.get("special")))
                 _emit({"status": "ok", "tokens": [int(x) for x in tokens]})
                 continue
             if op == "generate":

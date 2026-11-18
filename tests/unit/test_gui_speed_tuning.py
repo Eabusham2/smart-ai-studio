@@ -435,7 +435,7 @@ def test_text_tab_switch_uses_async_loader_without_implicit_download(cached, loc
         C={"accent_cyan": "cyan", "accent_yellow": "yellow"},
     )
     for name in (
-        "_send_welcome_messages", "_scroll_chat_to_bottom", "_sync_memory_watchdog",
+        "_render_tab_transcript", "_scroll_chat_to_bottom", "_sync_memory_watchdog",
         "_update_memory_hud_badge", "_update_model_action_buttons",
         "_update_resource_view_metrics", "_update_input_lock_state", "_on_toggle_load_unload",
     ):

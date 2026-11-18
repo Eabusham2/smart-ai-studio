@@ -46,11 +46,14 @@ def test_gguf_learning_is_real_sidecar_and_persistent():
     assert "PeftModel.from_pretrained" in trainer
     assert "BitsAndBytesConfig" in trainer
     assert "convert_lora_to_gguf.py" in trainer
-    assert '"in_proj_qkv"' in trainer
-    assert '"in_proj_z"' in trainer
-    assert "loss.backward()" in trainer
-    assert "optimizer.step()" in trainer
-    assert "lora_path=self.adapter_path if os.path.isfile(self.adapter_path) else None" in engine
+    assert "UniversalControllerBackend._transformers_lora_targets" in trainer
+    targets = _src("core/controller_runtime.py")
+    assert '"in_proj_qkv"' in targets and '"in_proj_z"' in targets
+    assert "update_lora(" in trainer
+    optimizer = _src("core/torch_context_learning.py")
+    assert "loss.backward()" in optimizer
+    assert "optimizer.step()" in optimizer
+    assert "lora_path=self.adapter_path or None" in engine
 
 
 def test_bitnet_backend_is_real_and_training_rebuilds_deployment_weights():
@@ -71,6 +74,8 @@ def test_bitnet_backend_is_real_and_training_rebuilds_deployment_weights():
     assert "merge_and_unload" in trainer
     assert "convert-hf-to-gguf-bitnet.py" in trainer
     assert '"I2_S"' in trainer
-    assert "loss.backward()" in trainer
-    assert "optimizer.step()" in trainer
-    assert "zero parameter change" in trainer
+    assert "update_lora(" in trainer
+    optimizer = _src("core/torch_context_learning.py")
+    assert "loss.backward()" in optimizer
+    assert "optimizer.step()" in optimizer
+    assert "zero parameter change" in optimizer

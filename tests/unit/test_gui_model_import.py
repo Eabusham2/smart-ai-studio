@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from core.context_memory import ChatArchive
 
 
 class Widgets:
@@ -117,12 +118,13 @@ def gui(tmp_path):
         "_on_download_hf_model", "_remove_hf_fetched_model",
         "_on_reset_and_reinstall_single_confirm", "_model_is_cached",
         "_update_model_action_buttons", "_on_download_hf_completed", "_on_download_hf_failed",
+        "_open_tab_history",
     }
     nodes = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
     tk = SimpleNamespace(**{kind: lambda *a, _kind=kind, **k: widgets.create(_kind, *a, **k)
                             for kind in ("Toplevel", "Frame", "Label", "Entry", "Button", "Radiobutton", "StringVar")})
     env = {
-        "os": os, "time": time, "tk": tk,
+        "os": os, "time": time, "tk": tk, "ChatArchive": ChatArchive,
         "ttk": SimpleNamespace(Combobox=lambda *a, **k: widgets.create("Combobox", *a, **k)),
         "threading": SimpleNamespace(Thread=Thread, Event=threading.Event),
         "messagebox": SimpleNamespace(askyesno=Mock(return_value=True), showerror=Mock(), showinfo=Mock()),
@@ -146,6 +148,7 @@ def gui(tmp_path):
     app = type("ImportGuiHarness", (), {name: env[name] for name in names})()
     app.env, app.widgets, app.workers = env, widgets, workers
     app.root = widgets.create("Root")
+    app.settings = SimpleNamespace(database_path=str(tmp_path / "chat.db"))
     app._event_queue = queue.Queue()
     app.cancel_event = threading.Event()
     app.C = defaultdict(lambda: "color")

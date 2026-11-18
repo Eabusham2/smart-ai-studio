@@ -276,18 +276,15 @@ Current runtime chain:
 
 If the packed prompt already exceeds Context, generation fails closed rather than dropping conversation history.
 
-### 10.4 Awake consolidation
+Best Work adds sequential refinement around this same routing and selection path. It defaults to two passes per stage: the next pass receives the original request and the previous selected draft as untrusted data. Only the final selection is displayed and may dispatch a tool. If another refinement cannot fit before displaying any new response, the complete last successful draft becomes that selection. The UI identifies the pass actually used and the skipped refinement; it does not claim that every requested pass ran. Actual tool results start another stage through the same router. The Branches dialog's **Best Work passes** control, `BEST_WORK_PASSES` environment setting, or `stream_best_work(..., passes=...)` selects the count; **1** retains the original single-pass lifecycle. All actual candidate/pass token counters contribute to total inference work. An oversized original request still reports its capacity error. [Sequential Best Work and preserved handoffs](best-work-handoffs.md)
 
-At the 80% Context watermark:
+### 10.4 Persistent context learning
 
-`_apply_awake_learning`
-→ choose oldest complete user/assistant chunk
-→ `AwakeOnlineConsolidator.consolidate_chunk_sync`
-→ real active backend `train_mini_batch`
-→ nonzero measured parameter drift + persisted artifact
-→ only then remove that old dialogue chunk from active textual history.
+At 80% of Context, eligible text backends train on old, complete exchanges using bounded causal windows. The active backend measures source continuation and retention losses before and after training. Retirement also requires generated, source-free reconstruction and grounded question checks for the selected exchanges. A valid parameter update can persist with its source turns still active when recall is unproven. A checkpoint publishing a verified retirement receipt permits reduced active history and continued consolidation toward 60% of Context. System instructions, tool exchanges and incomplete turns stay in text.
 
-If training fails, the dialogue remains in history. Every backend uses transaction/rollback semantics and shared training-memory cleanup.
+The SQLite archive retains the full transcript across restarts, and the GUI displays bounded pages. Both ordinary and Best Work chat project that archive through the loaded checkpoint before packing the prompt. Sleep keeps the original verified-episode/EWC queue and adds a separate current-chat source. Both target the selected backend and memory scope. Verified queue rows are acknowledged only after durable validation, with crash recovery that avoids repeating a committed update. Current-chat Sleep starts one batch and requires recall validation before retiring text. A failed or cancelled candidate leaves its turns active and the preceding generation available. Strata retains its full text history. Existing standalone trainers, explicit MLX exports, completion-only defaults and public direct-loader model handles coexist with managed learning. [Backend capabilities, memory limits, migration and evaluation](parametric-memory.md)
+
+Explicit online workflows add resumable ingestion, grounded evidence/elicitation, few-shot adaptation, fixed-KV query-only updates on supported projections, signed verifier/consensus policy learning, and candidate-trace consolidation. Model/session/project scopes persist independently. Temporary requests fork verified state and restore their parent; indexed document memories activate pinned read-only generations. The GUI and CLI share the production lifecycle. [Workflows and requests](test-time-learning.md) · [Per-paper coverage](ttt-research-coverage.md)
 
 ### 10.5 Explicit Learn → real update → RSI
 
@@ -713,7 +710,7 @@ Awake consolidation and explicit Learn select the active real trainable backend 
 - **MLX:** LoRA-only trainables, real gradients/AdamW, EWC/Fisher, nonzero drift, transactional adapter save/rollback.
 - **GGUF/Prism:** frozen quantized base + real PEFT/QLoRA sidecar on a declared compatible parent, nonzero drift, official LoRA→GGUF conversion, hot reload, rollback.
 - **BitNet:** official bitnet.cpp deployment runtime; when a verified BF16 training lineage exists, BF16 parent → PEFT update → merge → I2_S rebuild → hot reload, with rollback. If that lineage/toolchain cannot be proven, training fails closed rather than reporting fake learning.
-- **Transformers/controller:** language-projection LoRA, completion-only labels, real backward/AdamW, nonzero drift, transactional persistence.
+- **Transformers/controller:** language-projection LoRA, bounded causal-token windows covering the full dialogue, AdamW, finite candidate checks and model-bound PEFT persistence.
 
 RSI persistent self-memory remains question/reward/PASS-free: successful self-generated traces are stored separately and only hidden verification gates eligibility.
 

@@ -75,8 +75,11 @@ reload the model repeatedly to sweep GPU layers. See
 
 Transformers dispatch reserves OS/runtime headroom and an estimated KV budget.
 It does not enable a smaller quantization to fit the checkpoint. Weight updates
-are disabled when CPU/disk dispatch is active; a saved adapter is not silently
-omitted if it cannot be restored. These are planning budgets rather than hard
+require supported resident parameters and differentiable execution. Disk/meta
+weights, inference-only hooks and unsupported mixed-device placement disable
+updates; a saved adapter is not silently omitted if it cannot be restored.
+Supported resident CPU, MPS and CUDA placements retain learning, including
+compatible resident CUDA model parallelism. These are planning budgets rather than hard
 allocation ceilings. See
 [`core/transformers_placement.py`](../core/transformers_placement.py),
 [`core/controller_runtime.py`](../core/controller_runtime.py), and

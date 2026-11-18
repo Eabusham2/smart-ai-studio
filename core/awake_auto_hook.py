@@ -13,8 +13,12 @@ token remaining in Context until natural EOS.
 """
 from __future__ import annotations
 
+import re
+import sqlite3
 from typing import Any, Dict, List, Optional
 
+from core.context_memory import (ActiveChatHistory, ChatArchive, ContextOverflow, completed_groups,
+                                 oldest_completed_chunk, working_history)
 from core.platform import get_auto_context_window_size
 from core.temperature_policy import CHAT_N1_TEMPERATURE
 
@@ -72,11 +76,13 @@ def _model_context_limit(engine) -> Optional[int]:
             if 1 <= value <= 10_000_000:
                 values.append(value)
 
-    for obj in (getattr(model, "args", None), getattr(model, "config", None), tokenizer):
+    config = getattr(model, "config", None)
+    for obj in (getattr(model, "args", None), getattr(config, "text_config", None), config, tokenizer):
         if obj is None:
             continue
         for name in (
             "max_position_embeddings",
+            "n_positions",
             "max_seq_len",
             "max_sequence_length",
             "context_length",
@@ -111,7 +117,7 @@ def _selected_context_budget(engine) -> int:
     return effective
 
 
-def _formatted_token_count(engine, formatted_prompt: str) -> int:
+def _formatted_token_count(engine, formatted_prompt: str, *, budget: Optional[int] = None) -> int:
     backend = _active_trainable_backend(engine)
     tokenizer = getattr(backend, "tokenizer", None) if backend is not None else None
 
@@ -119,6 +125,8 @@ def _formatted_token_count(engine, formatted_prompt: str) -> int:
     if callable(encode):
         try:
             return max(0, len(encode(formatted_prompt)))
+        except MemoryError:
+            raise
         except Exception:
             pass
 
@@ -126,6 +134,8 @@ def _formatted_token_count(engine, formatted_prompt: str) -> int:
     if callable(tokenize):
         try:
             return max(0, len(tokenize(formatted_prompt.encode("utf-8"))))
+        except MemoryError:
+            raise
         except Exception:
             pass
 
@@ -136,11 +146,19 @@ def _formatted_token_count(engine, formatted_prompt: str) -> int:
                 0,
                 int(counter([{"role": "user", "content": formatted_prompt}])),
             )
+        except MemoryError:
+            raise
         except Exception:
             pass
 
     # Conservative final estimate only when a real tokenizer facade is unavailable.
-    return max(1, len(str(formatted_prompt)) // 4)
+    estimate = max(1, len(str(formatted_prompt)) // 4)
+    if budget is not None and estimate >= budget:
+        # Preserve the refusal when only an estimate is available, but never
+        # advertise it as a tokenizer-confirmed overflow to a recovery caller.
+        raise RuntimeError(f"Packed prompt is estimated at {estimate:,} tokens with active Context "
+                           f"{budget:,}; the exact token count is unavailable. Refusing truncation.")
+    return estimate
 
 
 def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
@@ -160,10 +178,10 @@ def _remaining_generation_tokens(engine, formatted_prompt: str) -> int:
         backend.context_budget_tokens = context_budget
         return context_budget
     context_budget = _selected_context_budget(engine)
-    prompt_tokens = _formatted_token_count(engine, formatted_prompt)
+    prompt_tokens = _formatted_token_count(engine, formatted_prompt, budget=context_budget)
     remaining = int(context_budget) - int(prompt_tokens)
     if remaining <= 0:
-        raise RuntimeError(
+        raise ContextOverflow(
             f"Packed prompt requires {prompt_tokens:,} tokens but active Context is "
             f"{context_budget:,}; refusing truncation."
         )
@@ -191,31 +209,95 @@ def _strata_generation_context(engine, backend) -> int:
 
 
 def _oldest_completed_chunk(history: List[Dict[str, str]], ratio: float) -> tuple[list, list]:
-    """Take an oldest prefix ending on assistant, while always retaining recent turns."""
-    if len(history) <= 2:
-        return [], history
-    target = max(2, int(len(history) * max(0.05, min(float(ratio), 0.80))))
-    target = min(target, len(history) - 1)
+    """Return complete old exchanges, retaining system/tool turns and recent dialogue."""
+    return oldest_completed_chunk(working_history(history), ratio)
 
-    last_assistant = -1
-    saw_user = False
-    for idx, message in enumerate(history[:target]):
-        role = str(message.get("role", "")).strip().lower()
-        if role == "user":
-            saw_user = True
-        elif role == "assistant" and saw_user:
-            last_assistant = idx
-    if last_assistant < 0:
-        for idx, message in enumerate(history[target:-1], start=target):
-            role = str(message.get("role", "")).strip().lower()
-            if role == "user":
-                saw_user = True
-            elif role == "assistant" and saw_user:
-                last_assistant = idx
-                break
-    if last_assistant < 0:
-        return [], history
-    return history[: last_assistant + 1], history[last_assistant + 1 :]
+
+def _explicit_document(prompt):
+    """Exactly one top-level source block, with the user's instructions outside it."""
+    tags = [tag for tag in ("document", "context") if f"<{tag}>" in prompt or f"</{tag}>" in prompt]
+    if len(tags) == 1:
+        tag = tags[0]
+        opening, closing = f"<{tag}>", f"</{tag}>"
+        if prompt.count(opening) == prompt.count(closing) == 1:
+            before, _, tail = prompt.partition(opening)
+            source, end, after = tail.partition(closing)
+            # A tag shown inside a Markdown code sample is part of the user's
+            # literal instruction, even when the sample exceeds the window.
+            fence = None
+            for match in re.finditer(r"(?m)^ {0,3}(`{3,}|~{3,})", before):
+                mark = match[1]
+                if fence is None:
+                    fence = mark
+                elif mark.startswith(fence):
+                    fence = None
+            inline = before.rsplit("\n", 1)[-1].count("`") % 2
+            if end and source.strip() and (before.strip() or after.strip()) and not fence and not inline:
+                return before, opening, source, closing, after
+    return None
+
+
+def prepare_awake_request(engine, prompt, history, cancel_event=None):
+    """Prepare the bounded text before a caller copies or routes the visible archive."""
+    if isinstance(history, ActiveChatHistory):
+        history = history.archive
+    service = getattr(engine, "awake_consolidator", None)
+    backend = _active_trainable_backend(engine)
+    if (not prompt or service is None or getattr(service, "engine", None) is not backend
+            or backend is None or getattr(backend, "runtime", None) == "strata"):
+        return prompt, history
+    if getattr(backend, "runtime", None) == "prism_speculative" and not service._real_training_ready():
+        return prompt, history
+    budget = _selected_context_budget(engine)
+    backend._learning_context_budget_tokens = budget
+    def count(text, rows):
+        return _formatted_token_count(engine, engine._format_prompt_with_history(text, rows), budget=budget)
+
+    archive = isinstance(history, ChatArchive)
+    if archive and not callable(getattr(service, "prepare_archive", None)):
+        return prompt, history
+    possible_source = ("<document>" in prompt or "<context>" in prompt)
+    oversized = possible_source and count(prompt, []) >= budget
+    if archive and not oversized:
+        try:
+            return prompt, service.prepare_archive(history, lambda rows: count(prompt, rows), budget, cancel_event)
+        except ContextOverflow:
+            if not possible_source:
+                raise
+            oversized = True
+    elif possible_source and not oversized and history:
+        # Check protected messages before adapting the live prompt. The normal
+        # awake path still handles evictable historical exchanges first.
+        identified = working_history(history, getattr(service, "session_id", ""))
+        eligible = {i for group in completed_groups(identified) for i in group}
+        protected = [turn for i, turn in enumerate(identified) if i not in eligible]
+        oversized = count(prompt, protected) >= budget
+
+    original = prompt
+    duplicate = None
+    if oversized and callable(getattr(service, "learn_current_document", None)) and service._real_training_ready():
+        document = _explicit_document(prompt)
+        if document:
+            before, opening, source, closing, after = document
+            def instruction(key):
+                return before + opening + f"Learned document {key}" + closing + after
+            if count(instruction("0" * 64), []) < budget:
+                key = service.learn_current_document(source, cancel_event)
+                prompt = instruction(key)
+                if history:
+                    last = history[-1]
+                    if last.get("role") == "user" and last.get("content") == original and set(last) == {"role", "content"}:
+                        duplicate = getattr(last, "turn_id", None)
+                        if not archive:
+                            history = history[:-1]
+    if archive:
+        def packed(rows):
+            messages = [t for t in rows if t.turn_id != duplicate] if duplicate else rows
+            return count(prompt, messages)
+        history = service.prepare_archive(history, packed, budget, cancel_event)
+        if duplicate:
+            history = [t for t in history if t.turn_id != duplicate]
+    return prompt, history
 
 
 def install_awake_auto_learning(cls) -> None:
@@ -225,7 +307,7 @@ def install_awake_auto_learning(cls) -> None:
     original_stream_solve = cls.stream_solve
     original_solve = cls.solve
 
-    def _apply_awake_learning(self, history, prompt: Optional[str] = None):
+    def _apply_awake_learning(self, history, prompt: Optional[str] = None, cancel_event=None):
         if not prompt:
             return history
 
@@ -238,7 +320,15 @@ def install_awake_auto_learning(cls) -> None:
             )
             return history
 
-        if getattr(backend, "runtime", None) == "prism_speculative":
+        native_trainable = False
+        is_native = getattr(backend, "runtime", None) == "prism_speculative"
+        if is_native:
+            capability = getattr(backend, "training_ready", None)
+            try:
+                native_trainable = callable(capability) and bool(capability())
+            except Exception:
+                native_trainable = False
+        if is_native and not native_trainable:
             context_budget = _selected_context_budget(self)
             self._last_context_consolidation_note = (
                 f"Native inference only · Context {context_budget:,} includes prompt/history + output. "
@@ -251,6 +341,20 @@ def install_awake_auto_learning(cls) -> None:
         tokenizer = getattr(backend, "tokenizer", None)
         if consolidator is None or backend is None or tokenizer is None:
             return history
+
+        # Resolve the authoritative checkpoint before measuring even a short request.
+        # The visible transcript can arrive as a fresh copy on each GUI/tool round.
+        original_history = history
+        active_history = getattr(consolidator, "active_history", None)
+        if callable(active_history):
+            if getattr(consolidator, "engine", backend) is not backend:
+                self._last_context_consolidation_note = "The active model changed; keeping the transcript."
+                return original_history
+            try:
+                history = active_history(history)
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+                self._last_context_consolidation_note = str(error)
+                return original_history
 
         # Gemini's rolling-memory design: start learning old turns before the hard
         # boundary, at 80% of total Context. After triggering, reduce the active
@@ -285,7 +389,18 @@ def install_awake_auto_learning(cls) -> None:
         except Exception:
             return history
 
-        if current_tokens < trigger_tokens:
+        if (isinstance(original_history, list) and not isinstance(original_history, ChatArchive)
+                and len(original_history) != len(history)):
+            original_history[:] = history
+        # Copies used by the GUI and Best Work share a single-use marker.
+        # A later request reusing either working list gets normal watermarks.
+        recovered = False
+        for turn in history or ():
+            marker = getattr(turn, "_capacity_recovery", None)
+            if marker is not None:
+                recovered = marker.pop("prepared", False) or recovered
+                del turn._capacity_recovery
+        if current_tokens < trigger_tokens or (recovered and current_tokens < context_budget):
             self._last_context_consolidation_note = (
                 f"Context {context_budget:,}: prompt/history {current_tokens:,}; "
                 f"generation may use the remaining {max(0, context_budget-current_tokens):,} tokens until EOS."
@@ -297,6 +412,9 @@ def install_awake_auto_learning(cls) -> None:
                 f"Context {context_budget:,}: current prompt alone uses {current_tokens:,}; "
                 "there is no older completed dialogue to consolidate."
             )
+            if current_tokens >= context_budget:
+                raise ContextOverflow(f"Packed prompt requires {current_tokens} tokens with an active Context of "
+                                      f"{context_budget}; refusing truncation.")
             return history
 
         retained = list(history)
@@ -307,14 +425,41 @@ def install_awake_auto_learning(cls) -> None:
                 retained,
                 getattr(consolidator, "evict_ratio", 0.40),
             )
+            if not chunk and current_tokens >= context_budget:
+                chunk, candidate_retained = oldest_completed_chunk(
+                    working_history(retained), getattr(consolidator, "evict_ratio", 0.40), keep_recent=False)
             if not chunk:
                 break
+            strict_attempt = getattr(consolidator, "consolidate_for_capacity", None) if current_tokens >= context_budget else None
             try:
-                learned = bool(consolidator.consolidate_chunk_sync(chunk))
+                if callable(strict_attempt):
+                    learned = strict_attempt(chunk, cancel_event=cancel_event)
+                elif cancel_event is None:
+                    learned = bool(consolidator.consolidate_chunk_sync(chunk))
+                else:
+                    learned = bool(consolidator.consolidate_chunk_sync(chunk, cancel_event=cancel_event))
             except Exception:
+                if cancel_event is not None and cancel_event.is_set():
+                    return retained
+                if callable(strict_attempt):
+                    raise
                 learned = False
             if not learned:
                 # Never remove dialogue that was not successfully consolidated.
+                # Recovery may learn later exchanges while keeping this source.
+                recover = getattr(consolidator, "recover_after_rejected_chunk", None)
+                if current_tokens >= context_budget and callable(recover):
+                    def measure():
+                        projected = consolidator.active_history(retained)
+                        return projected, packed_token_count(projected)
+                    try:
+                        retained, current_tokens, additional = recover(
+                            retained, chunk, retained, current_tokens, context_budget, measure, cancel_event)
+                    except InterruptedError:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return retained
+                        raise
+                    consolidated_turns += additional
                 break
             consolidated_turns += len(chunk)
             retained = candidate_retained
@@ -323,8 +468,18 @@ def install_awake_auto_learning(cls) -> None:
             except Exception:
                 break
 
-        if consolidated_turns and isinstance(history, list):
-            history[:] = retained
+        if cancel_event is not None and cancel_event.is_set():
+            return retained
+        if current_tokens >= context_budget:
+            detail = str(getattr(consolidator, "last_error", "") or "No eligible completed exchange remains.")
+            raise ContextOverflow(f"Packed prompt requires {current_tokens} tokens with an active Context of "
+                                  f"{context_budget}; refusing truncation. Original transcript retained. {detail}")
+        if consolidated_turns:
+            # Direct chat() callers receive the reduced working list. GUI archives
+            # retain all messages for display and export, including after restart.
+            if isinstance(original_history, list) and not isinstance(original_history, ChatArchive):
+                original_history[:] = retained
+            history = retained
             self._last_context_consolidation_note = (
                 f"Context {context_budget:,}: consolidated {consolidated_turns} old dialogue turns into "
                 f"trainable weights ({original_tokens:,} → {current_tokens:,} active prompt tokens); "
@@ -332,9 +487,11 @@ def install_awake_auto_learning(cls) -> None:
             )
             return history
 
+        detail = getattr(consolidator, "last_error", "")
         self._last_context_consolidation_note = (
             f"Context {context_budget:,}: active prompt uses {original_tokens:,} tokens; no completed old dialogue "
             "pair could be safely consolidated, so the physical Context boundary remains authoritative."
+            + (f" {detail}" if detail else "")
         )
         return history
 
@@ -352,8 +509,22 @@ def install_awake_auto_learning(cls) -> None:
         if cancel_before_request(self, cancel_event):
             self._last_stream_pro_meta = None
             return
-        history = _apply_awake_learning(self, history, prompt)
+        try:
+            prompt, history = prepare_awake_request(self, prompt, history, cancel_event)
+        except InterruptedError:
+            if cancel_event is None or not cancel_event.is_set():
+                raise
+            self._last_stream_pro_meta = None
+            return
+        history = _apply_awake_learning(self, history, prompt, cancel_event)
         self._last_stream_pro_meta = None
+        if cancel_event is not None and cancel_event.is_set():
+            return
+
+        # An entropy probe can itself run a model forward. Check the complete
+        # active request first, even on runtimes with no awake trainer.
+        formatted = self._format_prompt_with_history(prompt, history)
+        remaining = _remaining_generation_tokens(self, formatted)
 
         # Preserve the historical chat decision point: entropy chooses N=1/8/16.
         native = getattr(self, "gguf_backend", None)
@@ -371,8 +542,7 @@ def install_awake_auto_learning(cls) -> None:
             entropy = None
             mode = f"Native (N={branch_count})"
         else:
-            routing_prompt = (self._format_prompt_with_history(prompt, history)
-                              if getattr(self, "_best_work_route_with_history", False) else prompt)
+            routing_prompt = formatted if getattr(self, "_best_work_route_with_history", False) else prompt
             entropy = float(self.calculate_token_entropy(routing_prompt))
             mode, branch_count = self.router.route(entropy, has_test_cases=False)
 
@@ -381,8 +551,6 @@ def install_awake_auto_learning(cls) -> None:
                                "total": int(branch_count) + (1 if int(branch_count) > 1 else 0)})
 
         if int(branch_count) <= 1:
-            formatted = self._format_prompt_with_history(prompt, history)
-            remaining = _remaining_generation_tokens(self, formatted)
             previous_max = getattr(self.settings, "max_new_tokens", None)
             self.settings.max_new_tokens = int(remaining)
             try:
@@ -451,10 +619,18 @@ def install_awake_auto_learning(cls) -> None:
         progress_callback=None,
     ):
         if not getattr(self, "_awake_stream_history_prepared", False):
-            history = _apply_awake_learning(self, history, prompt)
+            try:
+                prompt, history = prepare_awake_request(self, prompt, history, cancel_event)
+            except InterruptedError:
+                if cancel_event is None or not cancel_event.is_set():
+                    raise
+                return "", {"cancelled": True, "verified": False, "branch_count": 0, "raw_branches": []}
+            history = _apply_awake_learning(self, history, prompt, cancel_event)
         else:
             _selected_context_budget(self)
 
+        if cancel_event is not None and cancel_event.is_set():
+            return "", {"cancelled": True, "verified": False, "branch_count": 0, "raw_branches": []}
         formatted = self._format_prompt_with_history(prompt, history)
         remaining = _remaining_generation_tokens(self, formatted)
         previous_max = getattr(self.settings, "max_new_tokens", None)

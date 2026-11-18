@@ -1,0 +1,244 @@
+"""Real Tk paging and learning-panel worker handoff, using synthetic replies."""
+import threading
+import tkinter as tk
+from tkinter import ttk
+from types import SimpleNamespace
+
+import pytest
+
+from app_gui import SmartAIChatbotApp
+from config.settings import Settings
+from core.learning_ui import show_online_learning
+
+
+@pytest.fixture
+def app(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMARTAI_DATA_DIR", str(tmp_path))
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("A desktop display is required")
+    root.withdraw()
+    app = SmartAIChatbotApp(root, settings=Settings(use_mock=True, auto_download=False,
+                                                  database_path=str(tmp_path / "chat.sqlite3")))
+    app._check_and_run_next_queue = lambda: None
+    try:
+        yield app
+    finally:
+        app.cancel_event.set()
+        worker = getattr(app, "_generation_worker", None)
+        if worker is not None:
+            worker.join(timeout=2)
+            assert not worker.is_alive()
+        if app.watchdog:
+            app.watchdog.stop_monitoring()
+        app.engine.unload_model()
+        root.destroy()
+        import gc
+        gc.collect()
+
+
+def descendants(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from descendants(child)
+
+
+def test_visible_chat_is_paged_without_deleting_archived_turns(app):
+    archive = app.chat_history[app.active_tab_id]
+    archive.clear()
+    for number in range(140):
+        archive.append({"role": "user", "content": f"Saved message {number}."})
+    app._show_transcript_page()
+    visible = app.chat_stream.get("1.0", "end")
+    assert "Saved message 0." not in visible and "Saved message 139." in visible
+    assert app._transcript_page_start == 40 and len(archive) == 140
+    app._show_transcript_page(40)
+    assert "Saved message 0." in app.chat_stream.get("1.0", "end")
+    app._append_user_message("Newest message")
+    assert len(archive) == 141
+    assert app.chat_stream.get("1.0", "end").count("Newest message") == 1
+    assert app._transcript_page_end == 141
+
+
+@pytest.mark.parametrize("task,method", [("Read a document", "ingest"), ("Discover a better solution", "discover")])
+def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app, task, method):
+    main_thread = threading.get_ident()
+    observed = []
+
+    def run(request, **kwargs):
+        observed.append((threading.get_ident(), request))
+        kwargs["progress"]({"status": "running", "next": 1})
+        return {"status": "completed", "trained_chunks": 1}
+
+    app.engine.run_online_learning = run
+    show_online_learning(app)
+    modal = next(child for child in app.root.winfo_children() if isinstance(child, tk.Toplevel))
+    chooser = next(widget for widget in descendants(modal)
+                   if isinstance(widget, ttk.Combobox) and task in widget.cget("values"))
+    chooser.set(task)
+    chooser.event_generate("<<ComboboxSelected>>")
+    run_button = next(widget for widget in descendants(modal)
+                      if isinstance(widget, ttk.Button) and widget.cget("text") == "Run learning task")
+    run_button.invoke()
+
+    def poll():
+        if observed and not app.is_generating:
+            app.root.quit()
+        else:
+            app.root.after(10, poll)
+
+    app.root.after(10, poll)
+    app.root.after(3000, app.root.quit)
+    app.root.mainloop()
+    assert observed and observed[0][0] != main_thread
+    assert observed[0][1]["method"] == method
+    assert not app.is_generating and not app._sleep_consolidating
+    output = [widget.get("1.0", "end") for widget in descendants(modal) if isinstance(widget, tk.Text)]
+    assert any('"trained_chunks": 1' in text and '"completed"' in text for text in output)
+
+
+def test_sleep_keeps_verified_episode_queue_and_chat_modes_separate(app, monkeypatch):
+    service = app.engine.awake_consolidator
+    observed = []
+    ui_thread = threading.get_ident()
+    monkeypatch.setattr(service, '_real_training_ready', lambda: True)
+    monkeypatch.setattr(service, 'pending_verified_episodes', lambda db: 1)
+    monkeypatch.setattr(service, 'pending_exchanges', lambda history: 2)
+
+    def verified(database, **kwargs):
+        observed.append(('verified', database, threading.get_ident()))
+        return {'status': 'success', 'memories_consolidated': 1, 'parameter_drift_l2': .01,
+                'execution_time_seconds': .1, 'adapter_saved_to': 'verified-checkpoint'}
+
+    def chat(history, **kwargs):
+        observed.append(('chat', history, threading.get_ident()))
+        return {'status': 'retained', 'adapter_saved_to': 'chat-checkpoint'}
+
+    monkeypatch.setattr(service, 'sleep_verified_episodes', verified)
+    monkeypatch.setattr(service, 'sleep', chat)
+    app.chat_history[app.active_tab_id].clear()
+    app._on_open_sleep_consolidation_panel()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    chooser = next(w for w in descendants(modal) if isinstance(w, ttk.Combobox))
+    trigger = next(w for w in descendants(modal) if isinstance(w, tk.Button)
+                   and 'Trigger Sleep' in w.cget('text'))
+    assert chooser.get() == 'Verified episodes (original Sleep/EWC)'
+
+    for mode in ('Verified episodes (original Sleep/EWC)', 'Current chat exchanges'):
+        chooser.set(mode)
+        chooser.event_generate('<<ComboboxSelected>>')
+        expected = len(observed) + 1
+        trigger.invoke()
+        def poll():
+            if len(observed) == expected and not app.is_generating:
+                app.root.quit()
+            else:
+                app.root.after(10, poll)
+        app.root.after(10, poll)
+        app.root.after(4000, app.root.quit)
+        app.root.mainloop()
+        assert len(observed) == expected and not app.is_generating
+        assert str(chooser.cget('state')) == 'readonly'
+
+    assert observed[0][0] == 'verified' and observed[0][1] is app.learner.db
+    assert observed[1][0] == 'chat' and observed[1][1] is app.chat_history[app.active_tab_id]
+    assert all(item[2] != ui_thread for item in observed)
+    text = ''.join(w.get('1.0', 'end') for w in descendants(modal) if isinstance(w, tk.Text))
+    assert 'verified-checkpoint' in text and 'chat-checkpoint' in text
+    assert 'shared queue' in text and 'remain in active context' in text
+
+    from core.memory_scopes import LearningScope
+    app.engine.learning_scope = LearningScope('project', 'different-project')
+    trigger.invoke()
+    assert len(observed) == 2
+    text = ''.join(w.get('1.0', 'end') for w in descendants(modal) if isinstance(w, tk.Text))
+    assert 'reopen this panel' in text
+
+
+@pytest.mark.parametrize('adapter_format', ['gguf', 'bitnet', 'peft'])
+@pytest.mark.parametrize('incompatible', [False, True])
+def test_gui_restores_previous_native_and_controller_learning(app, tmp_path, monkeypatch, adapter_format, incompatible):
+    from core.memory_scopes import LearningScope
+
+    selected = tmp_path / ('peft' if adapter_format == 'peft' else 'previous.gguf')
+    if adapter_format == 'peft':
+        selected.mkdir()
+        artifact = selected / 'adapter_config.json'
+    else:
+        artifact = selected
+    artifact.write_bytes(b'original learned state')
+    tab = app.active_tab_id
+    app.models_config[tab] = dict(app.models_config[tab], name='Original base', short_name='Original',
+                                 model_type='text', model_path=str(tmp_path / 'base'), repo_id='')
+    info = dict(app.models_config[tab])
+    app.is_model_loaded = False
+    app.engine.learning_scope = LearningScope('model')
+    calls = []
+    backend = SimpleNamespace(model=None, is_loaded=False, adapter_path=None)
+    backend.unload_model = lambda: None
+    attr = {'gguf': 'gguf_backend', 'bitnet': 'bitnet_backend', 'peft': 'controller_backend'}[adapter_format]
+    monkeypatch.setattr(app.engine, attr, backend)
+    monkeypatch.setattr(app, '_model_is_cached', lambda _info: True)
+    monkeypatch.setattr(app, '_show_model_loading_popup', lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(app, '_sync_memory_watchdog', lambda *args, **kwargs: None)
+
+    def load(name, **kwargs):
+        calls.append((name, kwargs))
+        path = kwargs['model_info'].get('legacy_adapter_path')
+        if path and not incompatible:
+            backend.model, backend.is_loaded, backend.adapter_path = object(), True, path
+            return {'status': 'loaded', 'trainable': True,
+                    'learning_migration': {'status': 'legacy_adapter_loaded', 'format': adapter_format, 'path': path}}
+        return {'status': 'error', 'error': 'shape mismatch' if path else 'Legacy state requires selection',
+                'learning_migration': {'status': 'legacy_adapter_required', 'format': adapter_format, 'path': str(selected)}}
+
+    monkeypatch.setattr(app.engine, 'load_model', load)
+    monkeypatch.setattr(app.engine, 'unload_model', lambda: {'status': 'unloaded'})
+    app._on_toggle_load_unload(_skip_download=True)
+    assert not app.is_model_loaded
+    assert app._pending_legacy_learning()['path'] == str(selected)
+    app._on_open_memory_explorer()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    button = next(w for w in descendants(modal) if isinstance(w, tk.Button)
+                  and w.cget('text') == 'Restore learned state…')
+    button.invoke()
+    assert len(calls) == 2
+    assert all(name == 'Original base' and 'backend' not in kwargs
+               and kwargs['model_path'] == info['model_path'] for name, kwargs in calls)
+    assert calls[1][1]['model_info'] == dict(info, legacy_adapter_path=str(selected))
+    assert app.models_config[tab] == info and artifact.read_bytes() == b'original learned state'
+    text = app.chat_stream.get('1.0', 'end')
+    if incompatible:
+        assert not app.is_model_loaded and app._pending_legacy_learning()
+        assert 'shape mismatch' in text and 'Loaded the previous learned state' not in text
+    else:
+        assert app.is_model_loaded and app._pending_legacy_learning() is None
+        assert 'Loaded the previous learned state' in text
+
+
+def test_legacy_recovery_cannot_follow_a_changed_model_or_scope(app, tmp_path, monkeypatch):
+    from core.memory_scopes import LearningScope
+
+    tab = app.active_tab_id
+    info = app.models_config[tab]
+    pending = {'status': 'legacy_adapter_required', 'format': 'gguf', 'path': str(tmp_path / 'old.gguf'),
+               'model_name': info['name'], 'model_path': str(info.get('model_path') or info.get('repo_id'))}
+    app._legacy_learning_migrations = {tab: pending}
+    app.engine.learning_scope = LearningScope('model')
+    app.is_model_loaded = False
+    app._on_open_memory_explorer()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    button = next(w for w in descendants(modal) if isinstance(w, tk.Button)
+                  and w.cget('text') == 'Restore learned state…')
+    notices, loads = [], []
+    monkeypatch.setattr('app_gui.messagebox.showinfo', lambda *args, **kwargs: notices.append(args))
+    monkeypatch.setattr(app, '_on_toggle_load_unload', lambda **kwargs: loads.append(kwargs))
+    app.engine.learning_scope = LearningScope('project', 'another')
+    button.invoke()
+    assert notices and not loads and app._pending_legacy_learning() is None
+    app.engine.learning_scope = LearningScope('model')
+    assert app._pending_legacy_learning() == pending
+    app.models_config[tab] = dict(info, model_path=str(tmp_path / 'different-model'))
+    button.invoke()
+    assert len(notices) == 2 and not loads and app._pending_legacy_learning() is None

@@ -63,11 +63,12 @@ def test_eval_memory_limit_uses_mac_physical_footprint_when_available():
 
 def test_mlx_lora_is_adapter_only_and_transactional():
     src = _src("core/_mlx_engine_base.py")
-    assert src.count('unfreeze(keys=["lora_a", "lora_b"], recurse=False)') >= 4
-    assert "MLX training completed but measured zero parameter change" in src
-    assert "rollback_params" in src
-    assert ".next.safetensors" in src
-    assert ".previous" in src
+    learning = _src("core/mlx_learning.py")
+    persistence = _src("core/mlx_adapter_persistence.py")
+    assert 'unfreeze(keys=["lora_a", "lora_b"], recurse=False)' in learning
+    assert "check_finite" in src and "rollback_params" in src
+    assert ".next.safetensors" in persistence
+    assert "txn.commit(" in persistence
     assert "self.model.update(" in src
 
 
@@ -79,10 +80,11 @@ def test_non_mlx_training_and_cancel_paths_roll_back():
     bitnet_trainer = _src("core/bitnet_rebuild_trainer.py")
     bridge = _src("eval/app_cross_platform_bridge.py")
 
-    assert "except BaseException:" in gguf
-    assert "except BaseException:" in bitnet
-    assert "except BaseException:" in gguf_trainer
-    assert "except BaseException:" in bitnet_trainer
+    staged = _src("core/native_context_learning.py")
+    assert "update_deployment(" in gguf and "update_deployment(" in bitnet
+    assert "except BaseException:" in staged
+    assert "txn.abort()" in staged
+    assert "output_directory" in gguf_trainer and "output_directory" in bitnet_trainer
     assert "before = {" in controller
     assert "model.save_pretrained(tmp" in controller
     assert "with torch.no_grad():" in controller
@@ -131,15 +133,13 @@ def test_non_mlx_phase3_marks_learn_and_rsi_atomically():
     assert persisted < transaction < learn_update < rsi_update
 
 
-def test_rollback_backups_survive_until_successful_return():
+def test_rollback_keeps_previous_generation_authoritative_until_validation():
     controller = _src("core/controller_runtime.py")
-    gguf = _src("core/engines/gguf_engine.py")
-    bitnet = _src("core/engines/bitnet_cpp_engine.py")
-    for source in (controller, gguf, bitnet):
-        assert "success = False" in source
-        assert "success = True" in source
+    deployment = _src("core/native_context_learning.py")
+    for source in (controller, deployment):
         assert "except BaseException:" in source
-        assert "finally:" in source
+        assert source.index("validate_candidate(") < source.index("txn.commit(")
+        assert "txn.abort()" in source
 
 
 def test_eval_memory_guard_interrupts_main_thread_portably():

@@ -1,5 +1,11 @@
 """Source contracts for the additive desktop Eval integration."""
+import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tests.unit.test_mlx_adapter_persistence import DummyMLX, FakeModel, restore_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -61,6 +67,99 @@ def test_eval_state_is_isolated_but_native_runtime_cache_remains_shared():
     assert "SMARTAI_GGUF_ADAPTER_ROOT" in gguf
     assert "SMARTAI_BITNET_TRAINING_ROOT" in bitnet
     assert "SMARTAI_CONTROLLER_ADAPTER_ROOT" in controller
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, request, resume):
+    from config.settings import Settings
+    from core import pro_engine
+    from core.learning_state import LearningStateStore, model_identity
+    from eval import app_cross_platform_bridge as bridge, phase4_pro_rsi as phase4
+    # Let the real eval modules finish importing before substituting the codec.
+    request.getfixturevalue("restore_fixture")
+    import mlx.core as mx
+
+    monkeypatch.chdir(tmp_path)
+    desktop_data = tmp_path / "desktop"
+    monkeypatch.setenv("SMARTAI_DATA_DIR", str(desktop_data))
+    source = tmp_path / "local-mlx"
+    source.mkdir()
+    (source / "model.safetensors").write_bytes(b"fixed base")
+    info = {"name": "Local MLX", "model_path": str(source), "controller_runtime": "mlx_lm"}
+    identity = model_identity(str(source), info)
+
+    def commit(store, value):
+        with store.begin() as candidate:
+            (candidate.directory / "adapter.safetensors").write_bytes(value)
+            candidate.commit("adapter.safetensors")
+
+    desktop = LearningStateStore(identity, state_root=desktop_data / "learned_memory")
+    commit(desktop, b"desktop-weights")
+    desktop_manifest = desktop.current_manifest()
+    info["legacy_adapter_path"] = desktop.current_checkpoint()
+    run = tmp_path / "eval"
+    export = run / "backend_state" / "mlx" / "adapters.safetensors"
+    run_store = LearningStateStore(identity, state_root=export.parent / "learned_memory")
+    if resume:
+        commit(run_store, b"eval-resume-weights")
+    run_manifest = run_store.current_manifest()
+    config_path = tmp_path / "run.json"
+    config_path.write_text(json.dumps({"model_info": info, "run_dir": str(run)}))
+    monkeypatch.setenv(bridge.APP_EVAL_CONFIG_ENV, str(config_path))
+
+    # Use the production Pro loader, MLX restore wrapper and eval export routine.
+    # CPU fixtures stand in for the Metal model and its safetensors codec.
+    class EvalMLX(DummyMLX):
+        def __init__(self, model_path, adapter_path=None, model_info=None):
+            super().__init__(tmp_path, adapter_path or "")
+            del self.learning_state_root
+            self.model_path = model_path
+            self.model_info = model_info or {}
+            self.model = None
+            self.tokenizer = SimpleNamespace()
+            self.is_mlx_available = False
+
+        def unload_model(self):
+            self.model = None
+            self.is_mlx_available = False
+
+    monkeypatch.setattr(pro_engine, "MLXReasoningBackend", EvalMLX)
+    monkeypatch.setattr(pro_engine, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
+    monkeypatch.setattr(bridge, "get_settings", lambda: Settings(use_mock=False, auto_download=False))
+    read = []
+    decode = mx.load
+
+    def load_weights(path, **kwargs):
+        read.append(path)
+        return decode(path, **kwargs)
+
+    monkeypatch.setattr(mx, "load", load_weights)
+    monkeypatch.setattr(FakeModel, "trainable_parameters", lambda self: {"eval.weight": 1}, raising=False)
+    monkeypatch.setattr(phase4, "MLX_AVAILABLE", True)
+    monkeypatch.setattr(phase4, "mlx", SimpleNamespace(utils=SimpleNamespace(tree_flatten=dict.items)), raising=False)
+    monkeypatch.setattr(phase4, "mx", SimpleNamespace(
+        save_safetensors=lambda path, weights: Path(path).write_bytes(b"updated-eval-export")), raising=False)
+    # Undo the benchmark bridge's module hooks when this isolated run finishes.
+    for name in ("_generate_branches_same_model", "_normalized_entropy", "_pro_backend", "_assert_same_model",
+                 "_restore_rsi_adapter", "_run_phase3_consolidation", "RSI_ADAPTER_PATH"):
+        monkeypatch.setattr(phase4, name, getattr(phase4, name))
+
+    class Suite:
+        _fast_generate = None
+
+    bridge.install(SimpleNamespace(_model_context_limit=lambda engine: None), phase4, Suite)
+    suite = Suite()
+    try:
+        assert suite.engine.backend.learning_state.root == run_store.root
+        assert suite.engine.backend.adapter_path == run_store.current_checkpoint()
+        assert read == ([run_store.current_checkpoint()] if resume else [])
+        assert phase4.RSI_ADAPTER_PATH == str(export)
+        assert phase4._save_rsi_adapter(suite)
+        assert export.read_bytes() == b"updated-eval-export"
+        assert desktop.current_manifest() == desktop_manifest
+        assert run_store.current_manifest() == run_manifest
+    finally:
+        suite.engine.unload_model()
 
 
 def test_canonical_suite_order_and_standalone_packaging_are_preserved():

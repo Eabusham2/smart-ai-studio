@@ -126,9 +126,9 @@ class _PrismModelProxy:
     def __init__(self, backend: "PrismGGUFReasoningBackend"):
         self.backend = backend
 
-    def tokenize(self, raw: bytes):
+    def tokenize(self, raw: bytes, add_bos=True, special=False):
         text = raw.decode("utf-8", errors="replace")
-        result = self.backend._call({"op": "tokenize", "text": text})
+        result = self.backend._call({"op": "tokenize", "text": text, "add_bos": add_bos, "special": special})
         return list(result.get("tokens") or [])
 
     def n_ctx(self) -> int:
@@ -239,6 +239,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             from core.gguf_metadata import inspect_gguf
             metadata = inspect_gguf(self.model_path)
             self.model_path = metadata["model_path"]
+            self._select_adapter()
         except (OSError, ValueError) as exc:
             self.last_error = str(exc)
             return False
@@ -246,7 +247,7 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         config = {
             "model_path": self.model_path,
             "mmproj_path": self.mmproj_path,
-            "adapter_path": self.adapter_path if os.path.isfile(self.adapter_path) else None,
+            "adapter_path": self.adapter_path or None,
             "n_gpu_layers": self.n_gpu_layers,
             "n_ctx": self.n_ctx,
             "verbose": self.verbose,
@@ -256,15 +257,12 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             "memory_limit_gb": self.memory_limit_gb,
             "memory_owner_pid": os.getpid(),
         }
-        config_path = os.path.join(self.adapter_root, "prism-worker-config.json")
-        with open(config_path, "w", encoding="utf-8") as handle:
-            json.dump(config, handle)
-
+        config_error = None
         err = open(self._worker_error_log, "a", encoding="utf-8")
         error_start = err.tell()
         try:
             self._worker = subprocess.Popen(
-                [sys.executable, "-m", "core.engines.prism_gguf_worker", config_path],
+                [sys.executable, "-m", "core.engines.prism_gguf_worker", "--stdin-config"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=err,
@@ -272,12 +270,21 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
                 bufsize=1,
                 env=self._worker_env(),
             )
+            if self._worker.poll() is None:
+                try:
+                    self._worker.stdin.write(json.dumps(config) + "\n")
+                    self._worker.stdin.flush()
+                except OSError as exc:
+                    config_error = exc
+        except BaseException:
+            self.unload_model()
+            raise
         finally:
             err.close()
 
         deadline = time.time() + 90.0
-        last_error = None
-        while time.time() < deadline:
+        last_error = config_error
+        while config_error is None and time.time() < deadline:
             if self._worker.poll() is not None:
                 break
             try:
@@ -425,6 +432,12 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             return float(result.get("entropy"))
         except Exception:
             return 0.35
+
+    def score_learning_probe(self, prompt, completion):
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            response = self._call({"op": "learning_probe", "prompt": prompt, "completion": completion})
+        return float(response["mean_nll"])
 
     def count_tokens(self, messages: List[Dict[str, str]]) -> int:
         text = "\n".join(str(m.get("content", "")) for m in messages or [])

@@ -23,6 +23,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Generator, List, Optional
 
+from core.context_memory import ContextOverflow
 from core.speculative_runtime import (
     EXACTNESS_CONTRACT,
     SpeculativePlan,
@@ -32,6 +33,10 @@ from core.speculative_runtime import (
     speculative_arguments,
     validate_runtime_receipt,
 )
+
+
+class NativeContextOverflow(ContextOverflow, ValueError):
+    """The native tokenizer rejected the request before completion."""
 
 
 class _CancellableSocketReader(io.RawIOBase):
@@ -128,7 +133,7 @@ class PrismSpeculativeReasoningBackend:
         n_gpu_layers: int = -1, n_threads: Optional[int] = None,
         n_threads_batch: Optional[int] = None, max_draft_tokens: Optional[int] = None,
         mmproj_path: Optional[str] = None, adapter_root: Optional[str] = None,
-        sampling_defaults: Optional[Dict[str, Any]] = None, **_kwargs,
+        sampling_defaults: Optional[Dict[str, Any]] = None, training_base_model_id=None, legacy_adapter_path=None, **_kwargs,
     ):
         self.model_path = str(Path(model_path).expanduser().absolute())
         self.server_path = str(Path(server_path).expanduser().absolute())
@@ -148,7 +153,15 @@ class PrismSpeculativeReasoningBackend:
         self.n_threads = n_threads
         self.n_threads_batch = n_threads_batch
         self.mmproj_path = mmproj_path
-        self.adapter_root = str(adapter_root or Path(self.server_path).parent)
+        from config.paths import get_portable_data_dir
+        self.training_base_model_id = str(training_base_model_id or "").strip()
+        self.memory_limit_gb = _kwargs.get("memory_limit_gb")
+        self.adapter_root = str(adapter_root or os.getenv("SMARTAI_GGUF_ADAPTER_ROOT") or
+                                Path(get_portable_data_dir()) / "gguf_lora" / Path(self.model_path).name)
+        self._learning_lock = threading.RLock()
+        self._candidate_deployment = None
+        self._lora_api_verified = False
+        self.legacy_adapter_path = legacy_adapter_path
         self.adapter_path = ""
         self.adapters: Dict[str, Any] = {}
         self.model = None
@@ -217,6 +230,8 @@ class PrismSpeculativeReasoningBackend:
                 if int(value) < 1:
                     raise ValueError("Native thread counts must be positive")
                 command += [flag, str(int(value))]
+        if self.adapter_path:
+            command += ["--lora", self.adapter_path]
         command += speculative_arguments(self._plan, self.draft_model_path)
         return command
 
@@ -265,6 +280,10 @@ class PrismSpeculativeReasoningBackend:
                 watcher.join(timeout=1.0)
 
     def load_model(self, cancelled: Optional[Callable[[], bool]] = None) -> bool:
+        with self._learning_lock:
+            return self._load_locked(cancelled)
+
+    def _load_locked(self, cancelled):
         self.unload_model()
         self.last_error = ""
         if self._external_cancelled(cancelled):
@@ -279,6 +298,11 @@ class PrismSpeculativeReasoningBackend:
             def cancelled_now():
                 return self._cancelled.is_set() or self._external_cancelled(cancelled)
             self.preflight(cancelled=cancelled_now)
+            if self.training_base_model_id:
+                from core.native_context_learning import select_deployment
+                self.adapter_path = select_deployment(
+                    self, self.model_path, self.adapter_root, "gguf", Path(self.adapter_root) / "adapter.gguf",
+                ) or ""
             if cancelled_now():
                 raise RuntimeError("Native model loading cancelled")
             port = self._free_port()
@@ -300,6 +324,8 @@ class PrismSpeculativeReasoningBackend:
                         raise RuntimeError("The native server is still loading")
                     if cancelled_now():
                         raise RuntimeError("Native model loading cancelled")
+                    if self.training_base_model_id:
+                        self._lora_api_verified = self._verify_served_adapter()
                     self.model = self.tokenizer = _NativeModelProxy(self)
                     self.is_loaded = True
                     return True
@@ -357,6 +383,8 @@ class PrismSpeculativeReasoningBackend:
                 if response.status != 200:
                     raise RuntimeError(f"Native server HTTP {response.status}: {body[:1024].decode('utf-8', errors='replace')}")
                 data = json.loads(body)
+                if path == "/lora-adapters" and isinstance(data, list):
+                    return {"adapters": data}
                 if not isinstance(data, dict) or "error" in data:
                     raise RuntimeError("Invalid native JSON response: " + str(data)[:1024])
                 return data
@@ -427,11 +455,11 @@ class PrismSpeculativeReasoningBackend:
             budget = self.context_budget_tokens
             effective_context = min(self.n_ctx, budget) if type(budget) is int and budget > 0 else self.n_ctx
             if prompt_tokens >= effective_context:
-                raise ValueError("Prompt exhausts the selected context; no prompt was truncated")
+                raise NativeContextOverflow("Prompt exhausts the selected context; no prompt was truncated")
             if type(budget) is int and budget > 0:
                 payload["n_predict"] = min(int(max_tokens), effective_context - prompt_tokens)
             elif prompt_tokens + int(max_tokens) > effective_context:
-                raise ValueError("Prompt plus requested output exceeds the selected context; no prompt or output budget was truncated")
+                raise NativeContextOverflow("Prompt plus requested output exceeds the selected context; no prompt or output budget was truncated")
             try:
                 connection = self._connect(1800.0)
             except RuntimeError:
@@ -626,7 +654,12 @@ class PrismSpeculativeReasoningBackend:
             # polling reader instead observes the event and closes in finally.
 
     def unload_model(self) -> None:
+        with self._learning_lock:
+            self._unload_locked()
+
+    def _unload_locked(self) -> None:
         self.cancel_generation()
+        self._lora_api_verified = False
         process = self._process
         if process is not None and process.poll() is None:
             process.terminate()
@@ -686,12 +719,48 @@ class PrismSpeculativeReasoningBackend:
         del kind
         return False
 
+    def _verify_served_adapter(self):
+        """Bind learning support to this server's real registered adapter API."""
+        try:
+            rows = self._request("/lora-adapters", timeout=5).get("adapters")
+        except (OSError, RuntimeError, http.client.HTTPException):
+            if self.adapter_path:
+                raise ValueError("The native target cannot confirm that its candidate LoRA is active")
+            return False
+        if not self.adapter_path:
+            return rows == []
+        if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+                or str(Path(rows[0].get("path") or "").resolve()) != str(Path(self.adapter_path).resolve())
+                or type(rows[0].get("scale")) not in (int, float) or rows[0]["scale"] != 1.0):
+            raise ValueError("The native target did not confirm the exact selected adapter at unit scale")
+        return True
+
     def training_ready(self) -> bool:
-        return False
+        if not (self.is_loaded and self.training_base_model_id and self._plan and self._lora_api_verified):
+            return False
+        from core.gguf_lora_trainer import GGUFLoRATrainer
+        trainer = GGUFLoRATrainer(model_path=self.model_path, base_model_id=self.training_base_model_id,
+                                  adapter_root=self.adapter_root, memory_limit_gb=self.memory_limit_gb)
+        return trainer.can_prepare()
 
     def can_train(self) -> bool:
-        return False
+        return self.training_ready()
 
-    def train_mini_batch(self, *args, **kwargs):
-        del args, kwargs
-        raise RuntimeError("The pinned native speculative target is immutable; select a learning-capable backend for training")
+    def train_mini_batch(self, adapters=None, data=None, **kwargs):
+        from core.engines.gguf_engine import GGUFReasoningBackend
+        with self._learning_lock, self._io_lock:
+            if not self.training_ready():
+                raise RuntimeError("The pinned native base is immutable. A declared training lineage, "
+                                   "working LoRA trainer and verified native adapter API are required.")
+            return GGUFReasoningBackend.train_mini_batch(self, adapters, data, **kwargs)
+
+    def _verify_training_parent(self, trainer):
+        from core.training_lineage import verify_parent
+        def tokens(text):
+            return self._request("/tokenize", {"content": text, "add_special": False, "parse_special": False})["tokens"]
+        return verify_parent(self, trainer, self.model_path, tokens, Path(self.adapter_root) / "learned_memory")
+
+    def score_learning_probe(self, prompt, completion):
+        from core.native_context_learning import score_server_probe
+        with self._io_lock:
+            return score_server_probe(self, prompt, completion)

@@ -3,7 +3,7 @@
 This replaces the old synthetic BitNet placeholder in ProReasoningEngine routing.
 It talks to bitnet.cpp's llama-server and never fabricates output. Learning is
 fail-closed unless metadata provides a compatible BF16 training lineage; when it
-does, the backend performs a real PEFT update, rebuilds I2_S deployment weights,
+does, the backend performs a real PEFT update, rebuilds the selected ternary deployment weights,
 hot-reloads them, and rolls back atomically on failure or cancellation.
 """
 from __future__ import annotations
@@ -59,6 +59,7 @@ class BitNetCppReasoningBackend:
         n_ctx: int = 32768,
         threads: Optional[int] = None,
         training_base_model_id: Optional[str] = None,
+        legacy_adapter_path: Optional[str] = None,
     ):
         self.original_model_path = str(model_path)
         self.model_path = str(model_path)
@@ -75,7 +76,11 @@ class BitNetCppReasoningBackend:
             else Path(get_portable_data_dir()) / "bitnet_learning" / key
         )
         self.learned_model_path = self.training_root / "learned-i2_s.gguf"
-        self.adapter_path = str(self.learned_model_path)
+        self.legacy_adapter_path = legacy_adapter_path
+        self.adapter_path = ""
+        self._candidate_deployment = None
+        self._selected_model_file = None
+        self._selected_tensor_types = None
         self.adapters: Dict[str, Any] = {}
         self.model: Optional[_BitNetServerProxy] = None
         self.tokenizer: Optional[_BitNetServerProxy] = None
@@ -109,9 +114,6 @@ class BitNetCppReasoningBackend:
         return None
 
     def _resolve_model_file(self) -> Optional[str]:
-        # Learned deployment state is persistent and takes precedence on reload.
-        if self.learned_model_path.is_file():
-            return str(self.learned_model_path)
         value = os.path.abspath(os.path.expanduser(self.original_model_path))
         if os.path.isfile(value):
             return value
@@ -121,7 +123,7 @@ class BitNetCppReasoningBackend:
             files = []
             try:
                 from huggingface_hub import snapshot_download
-                root = snapshot_download(repo_id=self.model_path, local_files_only=True)
+                root = snapshot_download(repo_id=self.original_model_path, local_files_only=True)
                 files = list(Path(root).rglob("*.gguf"))
             except Exception:
                 pass
@@ -205,11 +207,14 @@ class BitNetCppReasoningBackend:
         return parsed if isinstance(parsed, dict) else {"value": parsed}
 
     def load_model(self) -> bool:
-        model_file = self._resolve_model_file()
+        from core.native_context_learning import select_deployment
+        selected = self._selected_model_file or self._resolve_model_file()
         server = self._prepare_official_runtime()
-        if not model_file or server is None:
+        if not selected or server is None:
             return False
-        self.model_path = model_file
+        self._selected_model_file = selected
+        self.adapter_path = select_deployment(self, selected, self.training_root, "bitnet", self.learned_model_path) or ""
+        self.model_path = self.adapter_path or selected
         self.unload_model()
         port = self._free_port()
         command = [
@@ -380,7 +385,7 @@ class BitNetCppReasoningBackend:
 
     def training_ready(self) -> bool:
         """True only when the declared BF16 lineage can be really rebuilt for bitnet.cpp."""
-        if not self.training_base_model_id:
+        if not self.training_base_model_id or not self.is_loaded:
             return False
         try:
             from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
@@ -389,7 +394,12 @@ class BitNetCppReasoningBackend:
                 runtime_root=str(self._root()),
                 deploy_root=str(self.training_root),
             )
-            return bool(trainer.can_prepare())
+            if not trainer.can_prepare():
+                return False
+            if self._selected_tensor_types is None:
+                from core.gguf_metadata import inspect_gguf
+                self._selected_tensor_types = inspect_gguf(self._selected_model_file)["quantization_types"]
+            return bool(trainer.selected_quantization(self._selected_tensor_types))
         except Exception:
             return False
 
@@ -402,70 +412,48 @@ class BitNetCppReasoningBackend:
         learning_rate: float = 1e-4,
         steps: int = 3,
         save_path: Optional[str] = None,
-        **_kwargs,
+        cancel_event=None, validation_callback=None, learning_metadata=None, anchor_texts=None,
+        reward_weighting="group_relative", entropic_kl_target=None, reference_kl_coef=0.0,
+        objective='causal_lm', supervise_prompt=False, max_window_tokens=512, row_weights=None,
+        context_text=None, max_context_tokens=2048, **_kwargs,
     ):
-        """Fine-tune the BF16 sibling, rebuild I2_S weights, then hot-reload bitnet.cpp."""
-        del adapters, fisher_matrix, lambda_ewc, save_path
-        if not self.training_base_model_id:
-            raise RuntimeError("BitNet learning requires metadata with a BF16 training-base model id")
-
+        """Train the BF16 lineage and validate the rebuilt deployment in bitnet.cpp."""
         from core.bitnet_rebuild_trainer import BitNetRebuildTrainer
-        trainer = BitNetRebuildTrainer(
-            base_model_id=self.training_base_model_id,
-            runtime_root=str(self._root()),
-            deploy_root=str(self.training_root),
+        from core.native_context_learning import update_deployment
+        if not self.training_ready():
+            raise RuntimeError("The selected deployment requires a matching local BF16 training parent and compatible BitNet converter")
+        trainer = BitNetRebuildTrainer(base_model_id=self.training_base_model_id, runtime_root=str(self._root()),
+                                       deploy_root=str(self.training_root))
+        return update_deployment(
+            self, trainer, data, learning_rate=learning_rate, steps=steps,
+            fisher_matrix=fisher_matrix, lambda_ewc=lambda_ewc, cancel_event=cancel_event,
+            validation_callback=validation_callback, learning_metadata=learning_metadata, anchor_texts=anchor_texts,
+            reward_weighting=reward_weighting, entropic_kl_target=entropic_kl_target, reference_kl_coef=reference_kl_coef,
+            objective=objective, supervise_prompt=supervise_prompt, row_weights=row_weights, max_window_tokens=max_window_tokens,
+            context_text=context_text, max_context_tokens=max_context_tokens,
         )
-        if not trainer.can_prepare():
-            raise RuntimeError(
-                "BitNet inference is available, but this model/device does not expose a "
-                "verified BF16→PEFT→BitNet rebuild training path."
-            )
 
-        self.training_root.mkdir(parents=True, exist_ok=True)
-        backup = str(self.learned_model_path) + ".previous"
-        had_learned = self.learned_model_path.is_file()
-        if os.path.isfile(backup):
-            os.remove(backup)
-        if had_learned:
-            shutil.copy2(str(self.learned_model_path), backup)
+    def _check_deployment_format(self, deployment):
+        from core.gguf_metadata import inspect_gguf
+        original = inspect_gguf(self._selected_model_file, verify_layout=True)
+        trial = inspect_gguf(deployment, verify_layout=True)
+        for key in ("architecture", "vocab_size", "embedding_length", "layer_count", "tensor_layout_sha256", "tokenizer_layout_sha256"):
+            if original[key] != trial[key]:
+                raise RuntimeError("BitNet rebuild differs from the selected model's " + key)
 
-        success = False
-        self.unload_model()
-        try:
-            meta, drift, _touched, learned_path = trainer.train(
-                data,
-                learning_rate=float(learning_rate),
-                steps=max(1, int(steps)),
-            )
-            self.model_path = learned_path
-            self.adapters = dict(meta or {})
-            if not self.load_model():
-                raise RuntimeError("BitNet training succeeded but bitnet.cpp failed to reload learned weights")
-            result = (dict(self.adapters), float(drift))
-            success = True
-            return result
-        except BaseException:
-            success = False
-            if os.path.isfile(backup):
-                os.replace(backup, str(self.learned_model_path))
-            elif not had_learned:
-                try:
-                    os.remove(str(self.learned_model_path))
-                except OSError:
-                    pass
-            self.model_path = str(
-                self.learned_model_path
-                if self.learned_model_path.is_file()
-                else self.original_model_path
-            )
-            self.load_model()
-            raise
-        finally:
-            if success:
-                try:
-                    os.remove(backup)
-                except OSError:
-                    pass
+    def _verify_training_parent(self, trainer):
+        from core.gguf_metadata import inspect_gguf
+        from core.training_lineage import verify_parent
+        trainer.quantization = trainer.selected_quantization(inspect_gguf(self._selected_model_file)["quantization_types"])
+        def tokens(text):
+            return self._request("/tokenize", {"content": text, "add_special": False, "parse_special": False})["tokens"]
+        return verify_parent(self, trainer, self._selected_model_file, tokens, self.training_root / "learned_memory")
+
+    def score_learning_probe(self, prompt, completion):
+        from core.native_context_learning import score_server_probe
+        from core.native_speed import runtime_lock
+        with runtime_lock(self):
+            return score_server_probe(self, prompt, completion)
 
     def supports_media_input(self, kind: str) -> bool:
         del kind

@@ -13,16 +13,15 @@ or second model load is accepted as learning evidence.
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config.settings import Settings, get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
-from core.learning_sources import extract_learning_text
-from core.training_memory import backend_label, process_rss_mb, release_training_memory
-from memory.anchor_dataset import get_anchor_texts
+from core.learning_sources import iter_attachment_positions, iter_learning_files, learning_media_kinds, source_snapshot
+from core.test_time_learning import OnlineLearning
+from core.online_consolidator import AwakeOnlineConsolidator
 from memory.db import EpisodicMemoryDB
 
 
@@ -40,11 +39,14 @@ class AutonomousLearner:
         self.tools = tools or AgentToolRegistry(db_path=self.settings.database_path)
         self._last_research: Optional[Dict[str, Any]] = None
         self._last_synthesis: str = ""
+        self._verified_lesson = None
 
     @staticmethod
     def _source_blob(research: Optional[Dict[str, Any]]) -> str:
         if not research:
             return ""
+        if research.get("selected_source_text"):
+            return str(research["selected_source_text"])
         parts = []
         for key in ("source_text", "crawl_report", "search_report"):
             value = research.get(key)
@@ -135,25 +137,86 @@ class AutonomousLearner:
                 pass
         return None
 
-    def research_from_source(self, source_path: str, topic: str) -> Dict[str, Any]:
-        """Extract deterministic text from an attached file/folder for the existing Learn pipeline."""
-        extracted = extract_learning_text(source_path)
-        source_text = str(extracted.get("text") or "").strip()
-        if not source_text:
-            raise RuntimeError(
-                "/learn attachment contained no extractable text. "
-                "Media files can still be routed to a media generator Learn target."
-            )
-        result = {
-            "topic": str(topic or "").strip(),
-            "source_path": str(extracted.get("path") or source_path),
-            "source_text": source_text,
-            "sources_found": len(extracted.get("text_files") or []),
-            "media_kinds": list(extracted.get("media_kinds") or []),
-            "extraction_errors": list(extracted.get("extraction_errors") or []),
-        }
+    def research_from_source(self, source_path, topic, *, cancel_event=None, progress_callback=None):
+        """Continue the complete attachment stream before bounded Learn/RSI synthesis."""
+        _, file_count = source_snapshot(source_path, cancel_event)
+        preview = []
+        extraction_errors = []
+        size = 0
+        scanned = 0
+        has_more = False
+        for path in iter_learning_files(source_path):
+            first_chunk = True
+            for chunk, _ in iter_attachment_positions(path, 2048, extraction_errors):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise InterruptedError("Learning source reading cancelled")
+                scanned += len(chunk)
+                if not preview:
+                    chunk = chunk.lstrip()
+                    if not chunk:
+                        continue
+                if first_chunk and file_count > 1:
+                    chunk = f"\n\n===== SOURCE FILE: {path.name} =====\n" + chunk
+                first_chunk = False
+                room = 16000 - size
+                piece = chunk[:room]
+                preview.append(piece)
+                size += len(piece)
+                if len(chunk) > room:
+                    has_more = True
+                    break
+            if has_more:
+                break
+        source_text = "".join(preview)
+        if not source_text.strip():
+            detail = " " + "\n".join(extraction_errors) if extraction_errors else ""
+            raise RuntimeError("/learn attachment contained no usable text in its synthesis excerpt." + detail)
+        result = {"topic": topic, "source_path": str(source_path), "source_text": source_text,
+                  "sources_found": file_count, "media_kinds": learning_media_kinds(source_path), "extraction_errors": extraction_errors}
+        if has_more or scanned > 4096:
+            def progress(update):
+                if progress_callback:
+                    progress_callback("ingesting", f"Read {update['next']} source chunks and "
+                                      f"trained {update['trained_chunks']}.", 0.0)
+
+            job = OnlineLearning(self._consolidation_service(), attachment_errors=extraction_errors).run_request(
+                {"method": "ingest", "source": str(source_path), "strategy": "stream",
+                 "learning_rate": self.settings.consolidation_lr},
+                cancel_event=cancel_event, progress=progress)
+            result["stream"] = job
+            if progress_callback:
+                progress_callback("ingested", f"The adapter processed all {job['source_chars']} source characters. "
+                                  f"Learn/RSI will synthesize from a {size}-character excerpt.", 0.0)
+        if extraction_errors and progress_callback:
+            progress_callback("source_warnings", "Source extraction warnings: " + "\n".join(extraction_errors), 0.0)
         self._last_research = result
         return result
+
+    def _lesson_source(self, research, topic):
+        source = self._source_blob(research)
+        if research.get("source_path") or len(source) <= 4096:
+            return source
+        # Retrieved web reports are already strings from the research tools.
+        # Visit all bounded passages and keep a bounded sample of validated
+        # relevant quotes from across the report, including its suffix.
+        import hashlib
+        selected = []
+        for index in range(0, len(source), 2048):
+            passage = source[index:index + 2048]
+            request = ("Return ONLY one JSON object with an evidence string. Copy the most relevant "
+                       f"short verbatim quote about {topic} from this passage, or an empty string.\n{passage}")
+            output, _ = self.engine.solve(request, force_branch_count=1, temperature=0.20)
+            quote = (self._extract_json_object(str(output)) or {}).get("evidence")
+            if (isinstance(quote, str) and 12 <= len(quote) <= 512 and quote in passage
+                    and not any(text == quote for _, text in selected)):
+                selected.append((hashlib.sha256(quote.encode()).digest(), quote))
+                selected.sort()
+                del selected[8:]
+        if not selected:
+            raise RuntimeError("The model selected no valid verbatim evidence across the retrieved report")
+        research["selected_source_text"] = "\n".join(quote for _, quote in selected)
+        research["source_selection"] = {"scanned_characters": len(source), "quotes": len(selected)}
+        return research["selected_source_text"]
 
     def crawl_and_research(self, topic: str) -> Dict[str, Any]:
         """Gather only actually retrieved source material through the existing tools."""
@@ -200,7 +263,7 @@ class AutonomousLearner:
         if not source:
             raise RuntimeError("/learn research returned no usable source material; refusing to fabricate a lesson.")
 
-        source = source[:16000]
+        source = self._lesson_source(research, topic)
         prompt = (
             f"Study the following source material about {topic}. Produce a concise technical learning note "
             "containing only claims supported by the supplied source. Do not invent facts, citations, or code. "
@@ -227,14 +290,15 @@ class AutonomousLearner:
         synthesis: Optional[str] = None,
     ) -> Tuple[bool, str, float]:
         """Verify a self-generated claim against a verbatim evidence span from the sources."""
-        self._require_live_mlx()
+        self._require_live_trainable_backend()
+        self._verified_lesson = None
         research = research or self._last_research
         synthesis = synthesis or self._last_synthesis
         source = self._source_blob(research)
         if not source or not synthesis:
             return False, "✗ Source-grounded verification unavailable.", 0.0
 
-        source = source[:16000]
+        source = self._lesson_source(research, topic)
         verify_prompt = (
             f"You are verifying what you just learned about {topic}. From the SOURCE below, return ONLY one JSON object "
             "with keys `claim` and `evidence`. `claim` must be a concise factual statement from the learned note. "
@@ -252,111 +316,48 @@ class AutonomousLearner:
 
         claim = str(obj.get("claim", "")).strip()
         evidence = str(obj.get("evidence", "")).strip()
-        passed = bool(claim and len(evidence) >= 12 and evidence.casefold() in source.casefold())
+        passed = bool(claim and len(evidence) >= 12 and evidence in source)
         if not passed:
             return False, "✗ Source verification failed: evidence was not a verbatim source span.", 0.0
 
+        self._verified_lesson = (topic, synthesis, evidence)
         return (
             True,
             f"✓ Source-grounded verification passed ({len(evidence)} evidence characters matched verbatim).",
             1.0,
         )
 
-    def consolidate_parameters(
-        self,
-        topic: str,
-        completion_text: str,
-        reward: float = 1.0,
-    ) -> Dict[str, Any]:
-        """Update the active model adapter parameters and persist the measured change."""
-        if reward < 1.0:
-            return {"status": "skipped", "reason": "Learning trace was not source-verified.", "parameter_drift_l2": 0.0}
+    def _consolidation_service(self):
+        backend = self._require_live_trainable_backend()
+        service = getattr(self.engine, "awake_consolidator", None)
+        if service is None:
+            service = AwakeOnlineConsolidator(backend, lambda_ewc=float(self.settings.ewc_lambda))
+            self.engine.awake_consolidator = service
+        if service.engine is not backend:
+            raise RuntimeError("The loaded model changed before learning could begin")
+        return service
 
-        backend = self._require_live_mlx()
-        adapter_path = getattr(backend, "adapter_path", None) or getattr(self.engine, "lora_adapter_path", None)
-        if not adapter_path and bool(getattr(backend, "is_mlx_available", False)):
-            adapter_path = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
-            backend.adapter_path = adapter_path
-            self.engine.lora_adapter_path = adapter_path
-
+    def consolidate_parameters(self, topic, completion_text, reward=1.0, *, cancel_event=None):
+        """Commit a verified lesson through the same transaction as chat and sleep."""
+        if reward != 1.0:
+            return {"status": "skipped", "reason": "Learning trace was not source-verified.",
+                    "parameter_drift_l2": 0.0}
+        prompt = f"What should be remembered about {topic}?"
+        service = self._consolidation_service()
+        witness = self._verified_lesson
+        evidence = witness[2] if witness and witness[:2] == (topic, completion_text) else completion_text
+        result = service.train_pairs([{"prompt": prompt, "completion": completion_text}],
+                                     evidence=[evidence], mode="learn", cancel_event=cancel_event,
+                                     learning_rate=self.settings.consolidation_lr)
+        self._verified_lesson = None
         memory_id = self.db.log_interaction(
             prompt=f"Source-grounded autonomous learning task: {topic}",
-            completion=completion_text,
-            raw_branches=[completion_text],
-            verified_reward=1.0,
-            surprise_score=0.35,
-            mode="Autonomous Learn: Source-Grounded",
-            entropy=0.0,
-            winning_branch=0,
-            test_cases="verbatim source evidence required",
+            completion=completion_text, raw_branches=[completion_text],
+            verified_reward=1.0, surprise_score=0.35, mode="Autonomous Learn: Source-Grounded",
+            entropy=0.0, winning_branch=0, test_cases="verbatim source evidence required",
         )
-
-        fisher = None
-        updated_adapters = None
-        param_drift = 0.0
-        backend_name = backend_label(backend)
-        ram_before_mb = process_rss_mb()
-        cleanup_stats = {"after_mb": ram_before_mb, "released_mb": 0.0}
-        ewc_used = False
-        try:
-            # Fisher exists only on the real MLX path. Other backends intentionally
-            # skip it rather than allocating a fake/duplicate model for EWC.
-            fisher_fn = getattr(backend, "compute_mlx_fisher", None)
-            try:
-                fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
-            except Exception:
-                fisher = None
-
-            ewc_used = bool(fisher)
-            updated_adapters, param_drift = backend.train_mini_batch(
-                adapters=getattr(backend, "adapters", {}) or {},
-                data=[
-                    {
-                        "prompt": f"What should be remembered about {topic}?",
-                        "completion": completion_text,
-                    }
-                ],
-                fisher_matrix=fisher,
-                lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if fisher else 0.0,
-                learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
-                steps=3,
-                save_path=adapter_path,
-            )
-        finally:
-            fisher = None
-            cleanup_stats = release_training_memory(backend)
-
-        drift = float(param_drift)
-        if drift <= 0.0:
-            raise RuntimeError("/learn completed a training call but measured zero parameter change.")
-
         self.db.mark_consolidated([memory_id])
-        touched = 0
-        if isinstance(updated_adapters, dict):
-            try:
-                touched = int(updated_adapters.get("trainable_parameters_touched", 0) or 0)
-            except Exception:
-                touched = 0
-            if touched <= 0:
-                for value in updated_adapters.values():
-                    try:
-                        touched += int(value.size)
-                    except Exception:
-                        pass
-
-        return {
-            "status": "success",
-            "memories_consolidated": 1,
-            "parameter_drift_l2": drift,
-            "trainable_parameters_touched": touched,
-            "trainable_parameters_m": touched / 1_000_000.0,
-            "ewc_active": bool(ewc_used),
-            "adapter_saved_to": adapter_path,
-            "backend": backend_name,
-            "ram_before_mb": round(float(ram_before_mb), 1),
-            "ram_after_cleanup_mb": round(float(cleanup_stats["after_mb"]), 1),
-            "ram_released_mb": round(float(cleanup_stats["released_mb"]), 1),
-        }
+        return result
 
     def recursive_self_improve(
         self,
@@ -366,7 +367,7 @@ class AutonomousLearner:
     ) -> str:
         """Generate one answer-blind RSI revision using the already-updated active model."""
         self._require_live_trainable_backend()
-        source = self._source_blob(research)
+        source = self._lesson_source(research, topic)
         if not source or not str(learned_note or "").strip():
             raise RuntimeError("RSI requires the completed Learn note and its source material.")
 
@@ -377,7 +378,7 @@ class AutonomousLearner:
             "Return only the improved technical note. Do not include a score, pass/fail verdict, "
             "verification result, or commentary about this instruction.\n\n"
             f"PREVIOUS NOTE:\n{str(learned_note)[:8000]}\n\n"
-            f"SOURCE MATERIAL:\n{source[:16000]}"
+            f"SOURCE MATERIAL:\n{source}"
         )
         improved, _meta = self.engine.solve(prompt)
         improved = str(improved or "").strip()
@@ -385,75 +386,13 @@ class AutonomousLearner:
             raise RuntimeError("RSI produced no improved self-generated trace.")
         return improved
 
-    def consolidate_rsi_parameters(self, trace: str) -> Dict[str, Any]:
-        """Train a self-generated RSI trace without persisting its source question/reward."""
-        backend = self._require_live_trainable_backend()
-        adapter_path = getattr(backend, "adapter_path", None) or getattr(self.engine, "lora_adapter_path", None)
-        if not adapter_path and bool(getattr(backend, "is_mlx_available", False)):
-            adapter_path = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
-            backend.adapter_path = adapter_path
-            self.engine.lora_adapter_path = adapter_path
-
-        fisher = None
-        updated_adapters = None
-        param_drift = 0.0
-        backend_name = backend_label(backend)
-        ram_before_mb = process_rss_mb()
-        cleanup_stats = {"after_mb": ram_before_mb, "released_mb": 0.0}
-        ewc_used = False
-        try:
-            fisher_fn = getattr(backend, "compute_mlx_fisher", None)
-            try:
-                fisher = fisher_fn(get_anchor_texts()[:4]) if callable(fisher_fn) else None
-            except Exception:
-                fisher = None
-
-            ewc_used = bool(fisher)
-            updated_adapters, param_drift = backend.train_mini_batch(
-                adapters=getattr(backend, "adapters", {}) or {},
-                data=[{
-                    "prompt": "Internalize this self-generated reasoning pattern and improve future problem solving.",
-                    "completion": str(trace).strip(),
-                }],
-                fisher_matrix=fisher,
-                lambda_ewc=float(getattr(self.settings, "ewc_lambda", 400.0)) if fisher else 0.0,
-                learning_rate=float(getattr(self.settings, "consolidation_lr", 1e-4)),
-                steps=3,
-                save_path=adapter_path,
-            )
-        finally:
-            fisher = None
-            cleanup_stats = release_training_memory(backend)
-
-        drift = float(param_drift)
-        if drift <= 0.0:
-            raise RuntimeError("RSI training completed a call but measured zero parameter change.")
-
-        touched = 0
-        if isinstance(updated_adapters, dict):
-            try:
-                touched = int(updated_adapters.get("trainable_parameters_touched", 0) or 0)
-            except Exception:
-                touched = 0
-            if touched <= 0:
-                for value in updated_adapters.values():
-                    try:
-                        touched += int(value.size)
-                    except Exception:
-                        pass
-
-        return {
-            "status": "success",
-            "parameter_drift_l2": drift,
-            "trainable_parameters_touched": touched,
-            "trainable_parameters_m": touched / 1_000_000.0,
-            "ewc_active": bool(ewc_used),
-            "adapter_saved_to": adapter_path,
-            "backend": backend_name,
-            "ram_before_mb": round(float(ram_before_mb), 1),
-            "ram_after_cleanup_mb": round(float(cleanup_stats["after_mb"]), 1),
-            "ram_released_mb": round(float(cleanup_stats["released_mb"]), 1),
-        }
+    def consolidate_rsi_parameters(self, trace, *, cancel_event=None):
+        """Train only the self-generated trace; no source question, answer key or reward."""
+        service = self._consolidation_service()
+        return service.train_pairs([{
+            "prompt": "Internalize this self-generated reasoning pattern and improve future problem solving.",
+            "completion": str(trace).strip(),
+        }], mode="rsi", cancel_event=cancel_event, learning_rate=self.settings.consolidation_lr)
 
     def run_learning_session(
         self,
@@ -497,7 +436,7 @@ class AutonomousLearner:
                     0.0,
                 )
             research = (
-                self.research_from_source(source_path, clean_topic)
+                self.research_from_source(source_path, clean_topic, cancel_event=cancel_event, progress_callback=progress_callback)
                 if source_path
                 else self.crawl_and_research(clean_topic)
             )
@@ -523,7 +462,12 @@ class AutonomousLearner:
 
             # Learn and RSI stay distinct. Learn first writes the independently
             # researched fact/note into the active adapter.
-            learn_result = self.consolidate_parameters(clean_topic, synthesis, reward)
+            try:
+                learn_result = self.consolidate_parameters(clean_topic, synthesis, reward, cancel_event=cancel_event)
+            except InterruptedError:
+                if cancel_event is None or not cancel_event.is_set():
+                    raise
+                break
             if learn_result.get("status") != "success":
                 raise RuntimeError(str(learn_result.get("reason") or "parameter consolidation failed"))
 
@@ -553,7 +497,12 @@ class AutonomousLearner:
 
             if cancel_event and cancel_event.is_set():
                 break
-            rsi_result = self.consolidate_rsi_parameters(rsi_trace)
+            try:
+                rsi_result = self.consolidate_rsi_parameters(rsi_trace, cancel_event=cancel_event)
+            except InterruptedError:
+                if cancel_event is None or not cancel_event.is_set():
+                    raise
+                break
             if rsi_result.get("status") != "success":
                 raise RuntimeError(str(rsi_result.get("reason") or "RSI parameter consolidation failed"))
 

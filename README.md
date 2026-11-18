@@ -11,7 +11,7 @@
 [![Context Window: Auto-Scaled up to 256K](https://img.shields.io/badge/Context%20Window-Dynamic%20up%20to%20256K-cyan.svg)](#-hardware-adaptive-context-scaling)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-yellow.svg)](https://www.python.org/)
 
-**Smart AI Studio** is a high-performance, low-memory local AI reasoning and coding studio designed for Apple Silicon (native MLX) and multi-platform environments (CUDA / CPU). Featuring real-time token streaming, a ChatGPT-style side-by-side AI Canvas, conversation history sidebar, reinforcement learning with ground-truth verification (RLVR), interactive thinking dropdowns, and biological synaptic sleep consolidation.
+**Smart AI Studio** is a high-performance, low-memory local AI reasoning and coding studio designed for Apple Silicon (native MLX) and multi-platform environments (CUDA / CPU). Featuring real-time token streaming, a ChatGPT-style side-by-side AI Canvas, conversation history sidebar, reinforcement learning with ground-truth verification (RLVR), interactive thinking dropdowns, and checkpoint-backed learning from chat.
 
 ---
 
@@ -92,8 +92,9 @@ plus runtime/app data. Custom models have their own preparation requirements.
 on supported loaded MLX and llama.cpp models, accepting repeatable gains only
 with the same calibration tokens. Strata's **Check placement** reports its
 configuration; it does not run the upstream quick/thorough tuner or claim a
-measured gain. Strata and CPU/disk-dispatched Transformers are inference only;
-other training-capable backends retain their existing learning behavior.
+measured gain. Strata and unsupported offloaded Transformers placements remain
+inference only. Supported resident CPU, MPS and CUDA placements can use the
+validated online learning workflows.
 
 See **[Chosen-model placement, Strata, and native auto speed](docs/STRATA_AUTO_SPEED.md)**
 for import behavior, exact sources, quality defaults, storage, cancellation,
@@ -126,14 +127,18 @@ ai • llm • local-ai • mlx • apple-silicon • 1-58bit • bitlinear • 
   Collapsible reasoning pill cards (`[▶ 💭 Reasoning Process (153 tokens)]`) keeping chat clean while preserving complete chain-of-thought traces.
 * **🧪 RLVR & Sandbox Verification**:
   Supports deterministic AST validation, unit-test execution, and resource-limited sandbox checks before eligible results are used by learning and memory workflows.
-* **💤 Biological Synaptic Sleep Consolidation (EWC-LoRA)**:
-  Consolidates high-reward interaction traces during offline sleep cycles using Elastic Weight Consolidation (EWC) to prevent catastrophic forgetting.
 * **🛡️ System RAM & VRAM Memory Watchdog**:
   Continuous background telemetry monitoring host memory pressure and auto-unloading models when thresholds exceed 90% RAM to prevent system freezing.
 * **📈 Dynamic Metric Scaling**:
   Human-readable dynamic units for learned synapses ($100 \rightarrow \text{K} \rightarrow \text{M} \rightarrow \text{B}$) and model parameters ($\text{M} \rightarrow \text{B} \rightarrow \text{T}$).
 
 ---
+
+## Persistent chat memory
+
+At 80% of Context, eligible text backends start learning from old, complete exchanges. Sleep offers the original verified-episode/EWC queue and a separate current-chat update on the loaded model. Parameter validation and generated recall checks gate retirement from model input; the complete transcript stays in a paged archive. Memory Explorer shows checkpoints, scoped memory, and online learning controls. [Backend support, storage and recall evaluation](docs/parametric-memory.md)
+
+**Online learning** adds resumable document ingestion, evidence selection, few-shot practice, fixed-KV query adaptation on supported models, verifier/consensus reward updates, entropic discovery with PUCT candidate reuse, and a searchable bank of document adapters. Learning persists in the selected model, session or project scope by default. Select **Temporary practice** to use a request copy and restore the prior learned state afterwards. Hardware and runtime capabilities are checked before updates. [Workflows and CLI](docs/test-time-learning.md) · [Research coverage and exclusions](docs/ttt-research-coverage.md)
 
 ## 🤖 Model Matrix & Architectures
 
@@ -259,6 +264,8 @@ Test coverage and platform-specific verification may vary by branch and environm
 ---
 
 ## 📦 Multi-Platform Packaging
+
+**Best Work** runs two sequential inference passes by default, refining the selected draft through the existing router and verifier. Only the final selection displays an answer or executes its selected tool. If refinement cannot fit, the completed prior draft is returned with a clear status. Set **Best Work passes** in **Branches…** to change the count; **1** keeps the original single-pass behavior.
 
 Release packages and Best Work behavior are documented in
 [Best Work handoffs and packaging](docs/best-work-handoffs.md). Portable packages

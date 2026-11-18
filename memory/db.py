@@ -4,9 +4,12 @@ Captures interactive traces, surprise scores, sandbox assertions,
 and tracks consolidated parameter updates across sleep cycles.
 """
 
+import hashlib
 import json
 import os
 import sqlite3
+from pathlib import Path
+from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -65,6 +68,9 @@ class EpisodicMemoryDB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            cursor.execute("""CREATE TABLE IF NOT EXISTS verified_sleep_batch (
+                slot INTEGER PRIMARY KEY CHECK (slot = 1), token TEXT NOT NULL,
+                target TEXT NOT NULL, episode_ids TEXT NOT NULL)""")
             try:
                 cursor.execute("ALTER TABLE interactions ADD COLUMN winning_temp REAL DEFAULT 0.20")
             except sqlite3.OperationalError:
@@ -156,7 +162,8 @@ class EpisodicMemoryDB:
             WHERE verified_reward = 1.0
         """
         if unconsolidated_only:
-            query += " AND consolidated = 0"
+            query += """ AND consolidated = 0 AND id NOT IN
+                (SELECT value FROM verified_sleep_batch, json_each(episode_ids))"""
         query += " ORDER BY surprise_score DESC LIMIT ?"
 
         with self._get_connection() as conn:
@@ -164,6 +171,72 @@ class EpisodicMemoryDB:
             cursor.execute(query, (limit,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+
+    def sleep_queue_lock(self):
+        """Serialize queue consumers across processes, without blocking chat/database writers."""
+        from core.learning_state import _process_commit_lock
+
+        path = Path(self.db_path).resolve()
+        lock_dir = path.with_name(path.name + ".sleep")
+        lock_dir.mkdir(exist_ok=True)
+        return _process_commit_lock(lock_dir)
+
+    @staticmethod
+    def _reserved_sleep_rows(conn, ids):
+        return [dict(row) for row in conn.execute("""SELECT interactions.id,prompt,completion
+                FROM interactions JOIN json_each(?) AS episode ON interactions.id=episode.value
+                WHERE verified_reward=1 AND consolidated=0 ORDER BY CAST(episode.key AS INTEGER)""", (ids,))]
+
+    @staticmethod
+    def episode_digest(rows):
+        digest = hashlib.sha256()
+        for row in rows:
+            record = [row["id"], row["prompt"], row["completion"]]
+            digest.update(json.dumps(record, separators=(",", ":"), ensure_ascii=False).encode() + b"\n")
+        return digest.hexdigest()
+
+    def prepare_verified_sleep(self, target, limit):
+        """Reserve a stable batch before training. Caller holds the queue's consumer lock."""
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            pending = conn.execute("SELECT * FROM verified_sleep_batch WHERE slot=1").fetchone()
+            if pending:
+                if pending["target"] != target:
+                    raise RuntimeError("Resume the unfinished verified Sleep batch on its original "
+                                       + "model and memory scope: " + pending["target"])
+                rows = self._reserved_sleep_rows(conn, pending["episode_ids"])
+                if len(rows) != len(json.loads(pending["episode_ids"])):
+                    raise RuntimeError("Reserved verified Sleep episodes changed before acknowledgement")
+                return pending["token"], rows
+            rows = conn.execute("""SELECT id,prompt,completion FROM interactions
+                 WHERE verified_reward=1 AND consolidated=0 ORDER BY surprise_score DESC,id ASC LIMIT ?""",
+                                (limit,)).fetchall()
+            if not rows:
+                return None, []
+            token = uuid4().hex
+            conn.execute("INSERT INTO verified_sleep_batch VALUES (1,?,?,?)",
+                         (token, target, json.dumps([row["id"] for row in rows])))
+            return token, [dict(row) for row in rows]
+
+    def release_verified_sleep(self, token):
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM verified_sleep_batch WHERE token=?", (token,))
+
+    def finish_verified_sleep(self, token, checkpoint, receipt):
+        """Atomically acknowledge the checkpoint's exact batch and write the legacy Sleep log."""
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT episode_ids FROM verified_sleep_batch WHERE token=?", (token,)).fetchone()
+            if not row:
+                raise RuntimeError("Verified Sleep reservation is missing")
+            rows = self._reserved_sleep_rows(conn, row[0])
+            if self.episode_digest(rows) != receipt["episode_digest"]:
+                raise RuntimeError("Verified episode content changed before checkpoint acknowledgement")
+            conn.execute("UPDATE interactions SET consolidated=1 WHERE id IN (SELECT value FROM json_each(?))",
+                         (row[0],))
+            conn.execute("""INSERT INTO consolidation_logs (memories_count,anchors_count,ewc_lambda,adapter_path)
+                         VALUES (?,?,?,?)""", (len(rows), receipt["anchors"], receipt["ewc_lambda"], checkpoint))
+            conn.execute("DELETE FROM verified_sleep_batch WHERE token=?", (token,))
 
     def mark_consolidated(self, interaction_ids: List[int]) -> None:
         """Flags episodic memories as consolidated into model parameters."""
@@ -238,6 +311,7 @@ class EpisodicMemoryDB:
         """Purges all interactions and consolidation logs for clean-slate resets."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            cursor.execute("DELETE FROM verified_sleep_batch")
             cursor.execute("DELETE FROM interactions")
             cursor.execute("DELETE FROM consolidation_logs")
             try:

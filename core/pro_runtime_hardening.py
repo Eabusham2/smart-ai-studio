@@ -14,6 +14,8 @@ import time
 from core.hf_downloader import register_loaded_model, unregister_loaded_model
 
 
+# Kept only as the legacy migration location. New learned state is selected by
+# exact model identity in core.learning_state, never by one global adapter file.
 DEFAULT_MLX_ADAPTER_PATH = os.path.abspath("./consolidated_slow_lora/adapters.safetensors")
 
 
@@ -29,6 +31,9 @@ def _normalize_adapter_path(path) -> str:
 
 def _active_backend_name(engine) -> str:
     active = getattr(engine, "active_backend", None)
+    controller = getattr(engine, "controller_backend", None)
+    if active == "controller" and getattr(controller, "direct_cuda_loaded", False) is True:
+        return controller.direct_backend_name
     if active == "controller" and getattr(getattr(engine, "controller_backend", None), "runtime", None) == "strata":
         return "strata"
     if active == "gguf" and getattr(getattr(engine, "gguf_backend", None), "runtime", None) == "prism_speculative":
@@ -70,11 +75,14 @@ def install_pro_runtime_hardening(cls) -> None:
     def hardened_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         if not getattr(self.settings, "use_mock", False):
-            normalized = _normalize_adapter_path(getattr(self, "lora_adapter_path", None))
+            selected = getattr(self, "lora_adapter_path", None)
+            normalized = _normalize_adapter_path(selected) if selected else None
             self.lora_adapter_path = normalized
+            self._explicit_adapter_path = bool(selected)
             mlx = getattr(self, "mlx_backend", None)
             if mlx is not None:
                 mlx.adapter_path = normalized
+                mlx._explicit_adapter_path = bool(selected)
 
     def hardened_load(self, *args, **kwargs):
         result = original_load(self, *args, **kwargs)

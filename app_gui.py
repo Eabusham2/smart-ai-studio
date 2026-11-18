@@ -13,6 +13,7 @@ import queue
 import re
 import subprocess
 import sys
+import sqlite3
 import threading
 import time
 import tkinter as tk
@@ -24,7 +25,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from config.paths import get_bundled_model_path, get_custom_models_file, get_portable_data_dir, inspect_mlx_model_folder, terminate_existing_app_instances
 from config.settings import Settings, get_settings
 from config.strata_models import STRATA_PRESETS, get_strata_preset
-from consolidation.daemon import SleepConsolidationDaemon
+from core.context_memory import ChatArchive, completed_groups
+from core.training_memory import backend_label
 from core.autonomous_learner import AutonomousLearner
 from core.audio_engine import AudioGenerationEngine
 from core.media_engine import MediaGenerationEngine
@@ -584,6 +586,13 @@ class SmartAIChatbotApp:
         self.db = EpisodicMemoryDB(db_path=self.settings.database_path)
         self.tools = AgentToolRegistry(db_path=self.settings.database_path)
         self.engine = ProReasoningEngine(settings=self.settings)
+        from core.memory_preferences import load_memory_preference
+        # No model is resident yet. The ordinary loader will bind this saved
+        # namespace before looking up any learned generation.
+        try:
+            self.engine.learning_scope = load_memory_preference(self.settings.database_path)
+        except (ValueError, OSError, sqlite3.Error) as error:
+            print(f"Saved memory selection could not be read: {error}")
         self.audio_engine = AudioGenerationEngine()
         self.media_engine = MediaGenerationEngine()
         self.multimodal = MediaController(self)
@@ -606,7 +615,9 @@ class SmartAIChatbotApp:
         self.canvas_preview_mode = False
         self.attached_file_path: Optional[str] = None
         self.cancel_event = threading.Event()
-        self.chat_history: Dict[str, List[Dict[str, str]]] = {tid: [] for tid in self.models_config.keys()}
+        self.chat_history: Dict[str, List[Dict[str, str]]] = {
+            tid: self._open_tab_history(tid) for tid in self.models_config
+        }
 
         # Prompt Task Queue
         self.prompt_queue: List[Tuple[str, str, Optional[str], Optional[str]]] = []
@@ -640,7 +651,7 @@ class SmartAIChatbotApp:
 
         self._init_window()
         self._build_ui()
-        self._send_welcome_messages()
+        self._render_tab_transcript()
         self._update_model_action_buttons()
         self._update_input_lock_state()
         self._start_event_queue_polling()
@@ -1239,6 +1250,11 @@ class SmartAIChatbotApp:
                 self.watchdog.stop_monitoring()
             if hasattr(self, "cancel_event"):
                 self.cancel_event.set()
+            service = getattr(getattr(self, "engine", None), "awake_consolidator", None)
+            if getattr(service, "is_consolidating", False) or getattr(self, "_sleep_consolidating", False):
+                self._closing_during_learning = True
+                self.root.after(100, self._on_close_app)
+                return
             for event in getattr(self, "_hf_download_events", {}).values():
                 event.set()
             if hasattr(self, "engine") and self.engine:
@@ -1616,6 +1632,9 @@ class SmartAIChatbotApp:
 
     def _remove_hf_fetched_model(self, model_id: str):
         """Delete one model added via the Hugging Face Fetch flow, including its local cache."""
+        learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
+        if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
+            return
         if getattr(getattr(self, "multimodal", None), "busy", False):
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
@@ -1657,7 +1676,9 @@ class SmartAIChatbotApp:
                     except Exception as error:
                         cache_note = f" The cache could not be removed: {error}"
             self.models_config.pop(model_id, None)
-            self.chat_history.pop(model_id, None)
+            archive = self.chat_history.pop(model_id, None)
+            if archive is not None:
+                archive.clear()
             self.tab_buttons.pop(model_id, None)
             self.thinking_cache.pop(model_id, None)
             self.thinking_expanded.pop(model_id, None)
@@ -1782,7 +1803,7 @@ class SmartAIChatbotApp:
                 return
             entry["accent"] = self.C["accent_cyan"]
             self.models_config[custom_id] = entry
-            self.chat_history[custom_id] = []
+            self.chat_history[custom_id] = self._open_tab_history(custom_id)
             self.tab_buttons[custom_id] = self.btn_model_menu
             self._save_custom_models()
             self._refresh_model_menu()
@@ -2026,7 +2047,7 @@ class SmartAIChatbotApp:
             custom_id = f"custom_{time.time_ns()}"
             new_model["accent"] = self.C["accent_purple"]
             self.models_config[custom_id] = new_model
-            self.chat_history[custom_id] = []
+            self.chat_history[custom_id] = self._open_tab_history(custom_id)
             self.tab_buttons[custom_id] = self.btn_model_menu
             self._save_custom_models()
             self._refresh_model_menu()
@@ -2128,7 +2149,7 @@ class SmartAIChatbotApp:
         self.lbl_res_vram = tk.Label(col1, text="• VRAM Usage: 0.0 GB (Unloaded)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_orange"], anchor="w")
         self.lbl_res_vram.pack(fill="x", pady=2)
 
-        self.lbl_res_synapses = tk.Label(col1, text="• Learned Weights: +0 Synapses (EWC Replay Active)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_purple"], anchor="w")
+        self.lbl_res_synapses = tk.Label(col1, text="• Adapter updates: none this session", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_purple"], anchor="w")
         self.lbl_res_synapses.pack(fill="x", pady=2)
 
         col2 = tk.Frame(body, bg=self.C["bg_resources"])
@@ -2229,6 +2250,21 @@ class SmartAIChatbotApp:
 
         cf = tk.Frame(self.chat_container_frame, bg=self.C["bg_chat"])
         cf.pack(fill="both", expand=True)
+
+        self.history_pager = tk.Frame(cf, bg=self.C["bg_chat"])
+        self.history_pager.pack(fill="x")
+        self.history_page_label = tk.Label(self.history_pager, text="", bg=self.C["bg_chat"],
+                                          fg=self.C["text_muted"], font=_FONT_TINY)
+        self.history_page_label.pack(side="left", padx=12)
+        self.history_older_button = tk.Button(self.history_pager, text="Earlier", relief="flat",
+            command=lambda: self._show_transcript_page(getattr(self, "_transcript_page_start", 0)))
+        self.history_older_button.pack(side="right", padx=3)
+        self.history_latest_button = tk.Button(self.history_pager, text="Latest", relief="flat",
+                                              command=self._show_transcript_page)
+        self.history_latest_button.pack(side="right", padx=3)
+        self.history_newer_button = tk.Button(self.history_pager, text="Later", relief="flat",
+            command=lambda: self._show_transcript_page(start=getattr(self, "_transcript_page_end", 0)))
+        self.history_newer_button.pack(side="right", padx=3)
 
         scroll = tk.Scrollbar(
             cf, orient="vertical", bg=self.C["bg_card"],
@@ -3506,13 +3542,91 @@ class SmartAIChatbotApp:
             except Exception:
                 pass
 
-    def _on_toggle_load_unload(self, *, _skip_download: bool = False):
+    def _reload_legacy_mlx(self, info, model_path, selected, load_cancel):
+        """Scope an explicit legacy seed to this reload of its original base."""
+        if not os.path.isfile(selected):
+            raise ValueError("Select an existing MLX adapter file.")
+        options = dict(info, legacy_adapter_path=os.path.abspath(selected))
+        try:
+            result = self.engine.load_model(info["name"], model_path=model_path, backend="mlx", model_info=options)
+            if result.get("status") == "loaded":
+                restored = getattr(self.engine.mlx_backend, "last_restored_adapter_path", None)
+                if not restored or os.path.realpath(restored) != os.path.realpath(selected):
+                    raise RuntimeError("The loaded model could not verify the selected adapter.")
+                return {**result, "legacy_import_note": f"Loaded the selected adapter from {selected}. "
+                        "The next validated learning update saves a model-specific checkpoint."}
+            reason = str(result.get("error") or "Adapter validation failed.")
+        except Exception as error:
+            reason = str(error)
+        if load_cancel.is_set():
+            stopped = self.engine.unload_model()
+            return {"status": "cancelled"} if stopped.get("status") == "unloaded" else stopped
+        restored = self.engine.load_model(info["name"], model_path=model_path, backend="mlx", model_info=info)
+        if restored.get("status") == "loaded":
+            return {**restored, "legacy_import_note": f"Adapter import failed: {reason}. Restored the original model."}
+        return {"status": "error", "error": f"Adapter import failed: {reason}. Base reload failed: {restored.get('error')}"}
+
+    def _pending_legacy_learning(self):
+        """Return a loader-discovered legacy state only on the same model and scope."""
+        pending = getattr(self, "_legacy_learning_migrations", {}).get(self.active_tab_id)
+        info = self.models_config.get(self.active_tab_id, {})
+        scope = getattr(self.engine, "learning_scope", None)
+        if (not pending or pending.get("model_name") != info.get("name")
+                or pending.get("model_path") != str(info.get("model_path") or info.get("repo_id"))
+                or getattr(scope, "kind", "model") != "model"
+                or pending.get("format") not in {"gguf", "bitnet", "peft"}
+                or not pending.get("path")):
+            return None
+        return pending
+
+    def _reload_legacy_learning(self, info, model_path, selected, adapter_format, load_cancel):
+        """Retry the original loader with an explicitly selected existing learned state."""
+        if load_cancel.is_set():
+            return {"status": "cancelled"}
+        if adapter_format not in {"gguf", "bitnet", "peft"}:
+            raise ValueError("Unsupported legacy learned-state format.")
+        if getattr(getattr(self.engine, "learning_scope", None), "kind", "model") != "model":
+            raise ValueError("Restore the previous learned state in its model-wide scope first.")
+        selected = os.path.abspath(selected)
+        exists = (os.path.isdir(selected) and os.path.isfile(os.path.join(selected, "adapter_config.json"))
+                  if adapter_format == "peft" else os.path.isfile(selected))
+        if not exists:
+            raise ValueError("The previous learned state is no longer available at the selected path.")
+        options = dict(info, legacy_adapter_path=selected)
+        try:
+            result = self.engine.load_model(info["name"], model_path=model_path, model_info=options)
+            if load_cancel.is_set():
+                stopped = self.engine.unload_model()
+                return {"status": "cancelled"} if stopped.get("status") == "unloaded" else stopped
+            backend_name = {"gguf": "gguf_backend", "bitnet": "bitnet_backend", "peft": "controller_backend"}[adapter_format]
+            backend = getattr(self.engine, backend_name, None)
+            restored = getattr(backend, "adapter_path", None)
+            if (result.get("status") == "loaded" and restored
+                    and os.path.realpath(restored) == os.path.realpath(selected)
+                    and (getattr(backend, "model", None) is not None or getattr(backend, "is_loaded", False))):
+                return {**result, "legacy_import_note": f"Loaded the previous learned state from {selected}. "
+                        "The source remains unchanged. The next validated learning update saves a model-specific checkpoint."}
+            reason = str(result.get("error") or "The loader did not restore the selected learned state.")
+        except Exception as error:
+            reason = str(error)
+        stopped = self.engine.unload_model()
+        if stopped.get("status") != "unloaded":
+            reason += " Runtime cleanup is incomplete; use Retry unload."
+        return {"status": "error", "error": reason,
+                "learning_migration": {"status": "legacy_adapter_required", "format": adapter_format, "path": selected}}
+
+    def _on_toggle_load_unload(self, *, _skip_download: bool = False, _legacy_adapter_path=None,
+                               _legacy_adapter_format=None):
+        learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
+        if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
+            return
         if getattr(self, "_model_load_in_progress", False) or self.active_tab_id in getattr(self, "_hf_download_in_progress", set()):
             return
         if getattr(getattr(self, "multimodal", None), "busy", False):
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
         target_info = self.models_config[self.active_tab_id]
+        load_tab_id = self.active_tab_id
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
         repo_id = str(target_info.get("repo_id") or "")
@@ -3525,7 +3639,7 @@ class SmartAIChatbotApp:
             self._unload_strata_async()
             return
 
-        if self.is_model_loaded:
+        if self.is_model_loaded and not _legacy_adapter_path:
             if model_type == "text":
                 self.engine.unload_model()
             elif model_type == "audio":
@@ -3570,7 +3684,14 @@ class SmartAIChatbotApp:
                 if model_type == "text":
                     # Import-time policy already decided whether custom text models may enter
                     # the catalog; runtime loading itself does not re-apply that restriction.
-                    load_res = self.engine.load_model(target_info["name"], model_path=m_path, model_info=target_info)
+                    if _legacy_adapter_path:
+                        if _legacy_adapter_format:
+                            load_res = self._reload_legacy_learning(target_info, m_path, _legacy_adapter_path,
+                                                                    _legacy_adapter_format, load_cancel)
+                        else:
+                            load_res = self._reload_legacy_mlx(target_info, m_path, _legacy_adapter_path, load_cancel)
+                    else:
+                        load_res = self.engine.load_model(target_info["name"], model_path=m_path, model_info=target_info)
                     if load_cancel.is_set() and load_res.get("status") == "loaded":
                         stopped = self.engine.unload_model()
                         load_res = ({"status": "cancelled"} if stopped.get("status") == "unloaded"
@@ -3587,6 +3708,14 @@ class SmartAIChatbotApp:
                 self._model_load_in_progress = False
                 self._model_loading_update = None
                 self.engine._model_load_cancelled = None
+                migrations = getattr(self, "_legacy_learning_migrations", None)
+                if migrations is None:
+                    migrations = self._legacy_learning_migrations = {}
+                migration = load_res.get("learning_migration") or {}
+                if migration.get("status") == "legacy_adapter_required":
+                    migrations[load_tab_id] = {**migration, "model_name": target_info["name"], "model_path": str(m_path)}
+                elif load_res.get("status") == "loaded":
+                    migrations.pop(load_tab_id, None)
                 if popup:
                     try:
                         popup.destroy()
@@ -3595,6 +3724,7 @@ class SmartAIChatbotApp:
 
                 if load_res.get("status") == "loaded":
                     self.is_model_loaded = True
+                    self._loaded_text_can_train = model_type == "text" and load_res.get("trainable") is True
                     self._active_memory_placement = dict(load_res.get("memory_placement") or {})
                     if model_type == "text":
                         self.engine.active_input_modalities = set(
@@ -3605,8 +3735,14 @@ class SmartAIChatbotApp:
                     self.lbl_model_status.configure(
                         text=f"● {label}: {target_info['short_name']}", fg=self.C["accent_green"]
                     )
+                    migration = load_res.get("learning_migration") or {}
+                    migration_note = load_res.get("legacy_import_note") or (
+                        "An existing shared MLX adapter is available. Open Memory Explorer to select its original base and import it."
+                        if migration.get("status") == "legacy_adapter_available" else ""
+                    )
                     self._append_ai_message(
                         f"⚡ **{label}**: `{target_info['name']}` is ready."
+                        + (f"\n\n{migration_note}" if migration_note else "")
                         + (f"\n\n{self._active_memory_placement['message']}" if self._active_memory_placement.get("message") else "")
                     )
                 elif load_res.get("status") == "cancelled":
@@ -3622,6 +3758,9 @@ class SmartAIChatbotApp:
                         text=f"⚠ Load Failed ({target_info['short_name']})", fg=self.C["accent_red"]
                     )
                     self._append_ai_message(f"⚠️ **Load failed**: {error}")
+                    if migration.get("status") == "legacy_adapter_required":
+                        self._append_ai_message("Your previous learned state is still saved. Open **Memory Explorer** "
+                                                "and choose **Restore learned state…** on its original base model.")
 
                 backend = getattr(self.engine, "controller_backend", None)
                 self._strata_unload_pending = bool(
@@ -3747,7 +3886,70 @@ class SmartAIChatbotApp:
                 self.chat_stream.insert("end", code_content.rstrip(), "code_block")
                 self.chat_stream.insert("end", "\n\n")
 
+    def _open_tab_history(self, tab):
+        if self.models_config[tab].get("model_type", "text") == "text":
+            scope = getattr(self.engine, "learning_scope", None)
+            key = tab if scope is None or scope.kind == "model" else f"{tab}:scope:{scope.scope_id}"
+            return ChatArchive(self.settings.database_path, key)
+        return []
+
+    def _show_transcript_page(self, end=None, *, start=None):
+        if getattr(self, "is_generating", False):
+            return
+        self.chat_stream.configure(state="normal")
+        self.chat_stream.delete("1.0", "end")
+        for name in ("thinking_cache", "thinking_expanded", "thinking_meta", "code_snippets"):
+            getattr(self, name, {}).clear()
+        for tag in self.chat_stream.tag_names():
+            if tag.startswith(("tag_btn_", "tag_cp_", "tag_cv_", "think_body_")):
+                self.chat_stream.tag_delete(tag)
+        self._render_tab_transcript(end=end, start=start)
+
+    def _limit_rendered_transcript(self):
+        if getattr(self, "is_generating", False) or not hasattr(self, "chat_history"):
+            return
+        history = self.chat_history.get(self.active_tab_id, [])
+        if getattr(self, "_transcript_browsing", False):
+            return
+        visible = len(history) - getattr(self, "_transcript_page_start", 0)
+        count = self.chat_stream.count("1.0", "end", "chars")
+        if visible > 100 or (count and count[0] > 240_000):
+            self._show_transcript_page()
+        elif hasattr(self, "history_page_label"):
+            self._transcript_page_end = len(history)
+            self.history_page_label.configure(text=(f"Messages {getattr(self, '_transcript_page_start', 0) + 1}–{len(history)} of {len(history)}"
+                                                   if history else ""))
+            self.history_newer_button.configure(state="disabled")
+
+    def _render_tab_transcript(self, end=None, *, start=None):
+        from core.chat_paging import transcript_page
+        history = self.chat_history[self.active_tab_id]
+        page = transcript_page(history, end=end, start=start)
+        self._transcript_page_start, self._transcript_page_end = page.start, page.end
+        self._transcript_browsing = page.end < page.total
+        if hasattr(self, "history_page_label"):
+            self.history_page_label.configure(text=(f"Messages {page.start + 1}–{page.end} of {page.total}"
+                + (" · Long messages previewed" if page.previewed else "")) if page.total else "")
+            self.history_older_button.configure(state="normal" if page.start else "disabled")
+            self.history_newer_button.configure(state="normal" if page.end < page.total else "disabled")
+        if not history:
+            self._send_welcome_messages()
+        else:
+            self.chat_stream.configure(state="normal")
+            for item in page.turns:
+                role = item.get("role")
+                content = item.get("content", "")
+                if role == "user":
+                    self._append_rendered_user_turn(content)
+                elif role == "assistant":
+                    self._append_rendered_ai_turn(content)
+            self.chat_stream.configure(state="disabled")
+            self._scroll_chat_to_bottom()
+
     def _on_switch_model_tab(self, target_tab_id: str):
+        learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
+        if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
+            return
         if getattr(getattr(self, "multimodal", None), "busy", False):
             self._append_ai_message("A media tool is using this model session. Finish or cancel it before switching or unloading.")
             return
@@ -3774,19 +3976,9 @@ class SmartAIChatbotApp:
         self.chat_stream.delete("1.0", "end")
 
         if self.active_tab_id not in self.chat_history:
-            self.chat_history[self.active_tab_id] = []
+            self.chat_history[self.active_tab_id] = self._open_tab_history(self.active_tab_id)
 
-        history = self.chat_history[self.active_tab_id]
-        if not history:
-            self._send_welcome_messages()
-        else:
-            for item in history:
-                role = item.get("role")
-                content = item.get("content", "")
-                if role == "user":
-                    self._append_rendered_user_turn(content)
-                elif role == "assistant":
-                    self._append_rendered_ai_turn(content)
+        self._render_tab_transcript()
 
         self.chat_stream.configure(state="disabled")
         self._scroll_chat_to_bottom()
@@ -3887,12 +4079,15 @@ class SmartAIChatbotApp:
             self._on_clear_chat()
 
     def _on_export_chat_button(self):
-        ok, res = self.tools.execute_tool("export_chat_history", {"filename": "chat_history_export.md"})
-        if ok:
-            self._append_ai_message(f"💾 **Chat History Exported**: Saved to `{os.path.abspath('chat_history_export.md')}`.")
-            messagebox.showinfo("Chat Exported", f"Chat history saved to:\n{os.path.abspath('chat_history_export.md')}")
-        else:
-            self._append_ai_message("⚠️ Could not export chat history.")
+        from core.chat_paging import export_transcript
+        path = filedialog.asksaveasfilename(title="Export complete conversation", defaultextension=".md",
+                                           initialfile="chat_history_export.md", filetypes=[("Markdown", "*.md")])
+        if path:
+            try:
+                export_transcript(self.chat_history.get(self.active_tab_id, []), path)
+                messagebox.showinfo("Chat Exported", f"Complete conversation saved to:\n{path}")
+            except OSError as error:
+                messagebox.showerror("Chat Export", str(error))
 
     def _on_memory_pressure_emergency(self, status: Dict[str, Any]):
         if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
@@ -4088,6 +4283,8 @@ class SmartAIChatbotApp:
         self._scroll_chat_to_bottom()
 
     def _append_user_message(self, text: str):
+        if getattr(self, "_transcript_browsing", False):
+            self._show_transcript_page()
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
             self.chat_history[self.active_tab_id].append({"role": "user", "content": text})
         self.chat_stream.configure(state="normal")
@@ -4098,6 +4295,8 @@ class SmartAIChatbotApp:
         self.chat_stream.insert("end", "\n\n")
         self.chat_stream.configure(state="disabled")
         self._scroll_chat_to_bottom()
+
+        self._limit_rendered_transcript()
 
     def _append_steer_directive(self, steer_text: str):
         self.chat_stream.configure(state="normal")
@@ -4953,7 +5152,8 @@ class SmartAIChatbotApp:
                 self._best_work_mode = pro_active
                 self._best_work_final_rate = None
                 pro_summary = None
-                best_work_ui = {"label": None, "panel": None, "done": 0, "total": 0}
+                best_work_ui = {"label": None, "panel": None, "done": 0, "total": 0,
+                                "pass_index": 1, "passes": 1, "refinement_skipped": False}
                 self._live_generation_snapshot = None
                 self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
@@ -5020,11 +5220,33 @@ class SmartAIChatbotApp:
                         label.configure(text=value)
                     self._scroll_chat_to_bottom()
 
+                def _pass_label(value):
+                    if best_work_ui["passes"] > 1:
+                        return f"{value} · pass {best_work_ui['pass_index']}/{best_work_ui['passes']}"
+                    return value
+
                 def _decision(event):
                     nonlocal pro_active
                     kind = event.get("kind")
                     total = event.get("total", 0)
-                    if kind == "route":
+                    if kind == "pass":
+                        best_work_ui["pass_index"] = int(event["pass_index"])
+                        best_work_ui["passes"] = int(event["passes"])
+                        best_work_ui["refinement_skipped"] = False
+                        best_work_ui["done"] = best_work_ui["total"] = 0
+                        if best_work_ui["passes"] > 1:
+                            pro_active = True
+                            self._best_work_mode = True
+                            value = "🌿 Best Work · " + ("final response" if event.get("final") else "refining draft")
+                        else:
+                            value = None
+                    elif kind == "refinement_skipped":
+                        best_work_ui["pass_index"] = int(event["selected_pass"])
+                        best_work_ui["passes"] = int(event["passes"])
+                        best_work_ui["refinement_skipped"] = True
+                        pro_active = self._best_work_mode = True
+                        value = "🌿 Best Work · keeping completed draft; refinement reached Context"
+                    elif kind == "route":
                         if total > 1:
                             best_work_ui["done"] = 0
                             best_work_ui["total"] = total
@@ -5032,6 +5254,9 @@ class SmartAIChatbotApp:
                             self._best_work_mode = True
                             value = f"🌿 Best Work 0/{total} · generating candidates"
                         else:
+                            if best_work_ui["passes"] > 1:
+                                best_work_ui["done"] = 0
+                                best_work_ui["total"] = total
                             value = "🌿 Continuing in single stream" if pro_active else None
                     elif kind == "selected":
                         best_work_ui["done"] = total
@@ -5043,6 +5268,7 @@ class SmartAIChatbotApp:
                     else:
                         value = "🌿 Rechecking original Pro routing after tool result" if pro_active else None
                     if value is not None:
+                        value = _pass_label(value)
                         if kind == "executing":
                             painted = threading.Event()
                             def _paint_before_execution(text=value):
@@ -5065,7 +5291,7 @@ class SmartAIChatbotApp:
                     best_work_ui["total"] = int(total)
                     action = "comparing candidates" if finished and done == total else (
                         f"branch #{done} done" if finished else f"generating branch #{done+1}")
-                    self.root.after(0, lambda text=f"🌿 Best Work {done}/{total} · {action}":
+                    self.root.after(0, lambda text=_pass_label(f"🌿 Best Work {done}/{total} · {action}"):
                                     _paint_best_work(text))
 
                 def _observed(sample):
@@ -5095,7 +5321,8 @@ class SmartAIChatbotApp:
                 options = {}
                 if use_pro_branches:
                     options.update(best_work_enabled=True, progress_callback=_branch_progress,
-                                   status_callback=_decision, route_with_history=route_with_history)
+                                   status_callback=_decision, route_with_history=route_with_history,
+                                   best_work_passes=getattr(self.settings, "best_work_passes", 2))
                 iterator = self.multimodal.stream_solve(full_msg,
                     history=curr_history, cancel_event=self.cancel_event, **options
                 )
@@ -5129,8 +5356,13 @@ class SmartAIChatbotApp:
                     self._live_generation_snapshot = snapshot
                     self._best_work_final_rate = snapshot.get("wall_tps") if pro_active else None
                 if pro_active and not self.cancel_event.is_set():
-                    self.root.after(0, lambda: _paint_best_work(
-                        f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · complete"))
+                    if best_work_ui["refinement_skipped"]:
+                        complete_label = (f"🌿 Best Work · complete · used pass {best_work_ui['pass_index']}/"
+                                          f"{best_work_ui['passes']} (refinement reached Context)")
+                    else:
+                        complete_label = _pass_label(
+                            f"🌿 Best Work {best_work_ui['total']}/{best_work_ui['total']} · complete")
+                    self.root.after(0, lambda text=complete_label: _paint_best_work(text))
 
                 if ui_pending:
                     _schedule_stream_insert("".join(ui_pending))
@@ -5326,10 +5558,11 @@ class SmartAIChatbotApp:
                 text="  ▶ Send  ", bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"],
                 activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"]
             )
+            self._limit_rendered_transcript()
         self._update_queue_ui()
 
     def _check_and_run_next_queue(self):
-        if getattr(self, "_pending_steer", None) is not None:
+        if getattr(self, "_pending_steer", None) is not None or getattr(self, "_closing_during_learning", False):
             return
         if self.prompt_queue:
             item = self.prompt_queue.pop(0)
@@ -5440,7 +5673,8 @@ class SmartAIChatbotApp:
             )
             self.lbl_context.configure(text=context_label(
                 prompt_count, limit, completion_tokens=selected_count))
-        inference_only = bool(curr_info.get("inference_only") or is_native)
+        inference_only = bool(curr_info.get("inference_only")
+                              or (is_native and not getattr(self, "_loaded_text_can_train", False)))
         total_p = curr_info.get("raw_params", 27_400_000_000) + (0 if inference_only else self.synapses_learned_count)
         param_str = format_parameter_count(total_p)
         if hasattr(self, "lbl_params"):
@@ -5498,11 +5732,23 @@ class SmartAIChatbotApp:
             elif tps > 0 and not is_native:
                 self.lbl_tps.configure(text=f"⚡ {tps:.1f} tok/s")
         if hasattr(self, "lbl_res_synapses"):
-            syn_str = format_added_synapses(self.synapses_learned_count)
-            self.lbl_res_synapses.configure(text="• Weight training: unavailable for this inference model" if inference_only
-                                           else f"• +Params Learned: {syn_str} (EWC Replay Active)")
+            service = getattr(self.engine, "awake_consolidator", None)
+            result = getattr(service, "last_result", {}) or {}
+            state = getattr(getattr(service, "engine", None), "learning_state", None)
+            scope_matches = (state is not None and result.get("scope", {"kind": "model"})
+                             == (state.scope.record if hasattr(state, "scope") else {"kind": "model"}))
+            if result and state is not None and result.get("identity_digest") == state.identity_digest and scope_matches:
+                label = f"Last adapter update: weight drift {result['parameter_drift_l2']:.4g}"
+            elif inference_only:
+                label = "Weight training: unavailable for this inference model"
+            else:
+                label = "Adapter updates: none this session"
+            self.lbl_res_synapses.configure(text="• " + label)
 
     def _on_clear_chat(self):
+        learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
+        if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
+            return
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
         self.chat_stream.configure(state="disabled")
@@ -5575,6 +5821,32 @@ assert glyph_res["invariants_passed"] == True
         hdr.pack(fill="x", padx=16, pady=12)
 
         tk.Label(hdr, text="🌿 Multi-Branch Search & RLVR Verification", font=_FONT_H2, bg=self.C["bg_hud"], fg=self.C["accent_green"]).pack(anchor="w")
+
+        pass_controls = tk.Frame(modal, bg=self.C["bg_hud"])
+        pass_controls.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Label(pass_controls, text="Best Work passes:", font=_FONT_SMALL,
+                 bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
+        pass_count = tk.StringVar(master=modal, value=str(getattr(self.settings, "best_work_passes", 2)))
+        pass_entry = ttk.Spinbox(pass_controls, from_=1, to=999, width=5, textvariable=pass_count)
+        pass_entry.pack(side="left", padx=8)
+        pass_status = tk.Label(pass_controls, text="1 keeps the original pass; 2+ refines the prior result.",
+                               font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_muted"])
+
+        def _apply_passes():
+            try:
+                value = int(pass_count.get())
+                if value < 1:
+                    raise ValueError
+            except (ValueError, tk.TclError):
+                pass_status.configure(text="Enter a positive whole number of passes.")
+                return
+            self.settings.best_work_passes = value
+            self.engine.settings.best_work_passes = value
+            pass_status.configure(text=f"Next Best Work request: {value} pass(es).")
+
+        ttk.Button(pass_controls, text="Apply passes", command=_apply_passes).pack(side="left", padx=(0, 8))
+        pass_status.pack(side="left")
+        pass_entry.bind("<Return>", lambda _event: _apply_passes())
 
         # Telemetry HUD Row
         hud_row = tk.Frame(modal, bg=self.C["bg_hud"])
@@ -5688,8 +5960,85 @@ assert glyph_res["invariants_passed"] == True
         btn_refresh = tk.Button(hdr, text="🔄 Refresh", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, pady=3, cursor="hand2", highlightthickness=0)
         btn_refresh.pack(side="right", padx=3)
 
+        def open_learning():
+            from core.learning_ui import show_online_learning
+            modal.destroy()
+            show_online_learning(self)
+        tk.Button(hdr, text="Learning & saved memory…", command=open_learning,
+                  bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat", padx=8, pady=3).pack(side="right", padx=3)
+
         btn_export = tk.Button(hdr, text="📥 Export Markdown", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, pady=3, cursor="hand2", highlightthickness=0, command=lambda: self.tools.execute_tool("export_chat_history", {}))
         btn_export.pack(side="right", padx=3)
+
+        tab_id = self.active_tab_id
+        service = getattr(self.engine, "awake_consolidator", None)
+        backend = getattr(service, "engine", None)
+        state = getattr(backend, "learning_state", None)
+        migration = getattr(backend, "learning_migration_status", None) or {}
+        note = "Clear Chat and New Chat clear the transcript. Learned adapter weights persist across chats."
+        manifest = None
+        state_readable = True
+        if state is not None:
+            try:
+                manifest = state.current_manifest(verify=False)
+                if manifest:
+                    note += f"  Active checkpoint: {manifest['generation']}."
+            except (OSError, ValueError, RuntimeError) as error:
+                state_readable = False
+                note += f"  Checkpoint unavailable: {error}."
+        if migration.get("status") == "legacy_adapter_available":
+            note += f"\nShared adapter with an unrecorded base: {migration['path']}. Select it only on its original model."
+        imported = getattr(backend, "last_restored_adapter_provenance", "")
+        if imported == "explicit-unverified-legacy":
+            note += f"\nLoaded legacy seed: {backend.last_restored_adapter_path}. Its original base is user-identified."
+        memory_bar = tk.Frame(modal, bg=self.C["bg_hud"])
+        memory_bar.pack(fill="x", padx=16, pady=(0, 4))
+        tk.Label(memory_bar, text=note, justify="left", wraplength=660, font=_FONT_SMALL,
+                 bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(side="left", fill="x", expand=True)
+
+        if (getattr(self.engine, "active_backend", None) == "mlx" and state is not None
+                and state_readable and manifest is None and not imported and self.is_model_loaded):
+            def _import_legacy():
+                if (self.active_tab_id != tab_id or self.engine.mlx_backend is not backend
+                        or self.is_generating or self.multimodal.busy or service.is_consolidating
+                        or getattr(self, "_model_load_in_progress", False)
+                        or getattr(self, "_speed_ui_running", False)):
+                    messagebox.showinfo("Adapter import", "Finish active work and reopen Memory Explorer on the original model.", parent=modal)
+                    return
+                found = migration.get("path", "")
+                selected = filedialog.askopenfilename(parent=modal, title="Select the adapter for this loaded MLX model",
+                    initialdir=os.path.dirname(found) or None, initialfile=os.path.basename(found) or None,
+                    filetypes=[("MLX adapter", "*.safetensors")])
+                if selected:
+                    modal.destroy()
+                    self._on_toggle_load_unload(_skip_download=True, _legacy_adapter_path=selected)
+            tk.Button(memory_bar, text="Import MLX adapter…", command=_import_legacy,
+                      bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat").pack(side="right", padx=3)
+
+        pending_legacy = self._pending_legacy_learning()
+        if pending_legacy and not self.is_model_loaded:
+            restore_bar = tk.Frame(modal, bg=self.C["bg_hud"])
+            restore_bar.pack(fill="x", padx=16, pady=(0, 8))
+            tk.Label(restore_bar,
+                     text=f"Previous learned state: {pending_legacy['path']}\n"
+                          f"Restore it only with its original base model: {pending_legacy['model_name']}.",
+                     justify="left", wraplength=520, font=_FONT_SMALL,
+                     bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(side="left", fill="x", expand=True)
+
+            def _restore_legacy_learning():
+                if (self.active_tab_id != tab_id or self._pending_legacy_learning() != pending_legacy
+                        or self.is_model_loaded or self.is_generating or self.multimodal.busy
+                        or getattr(service, "is_consolidating", False)
+                        or getattr(self, "_model_load_in_progress", False)
+                        or getattr(self, "_speed_ui_running", False)):
+                    messagebox.showinfo("Restore learned state", "Finish active work and reopen Memory Explorer on the original model.", parent=modal)
+                    return
+                modal.destroy()
+                self._on_toggle_load_unload(_skip_download=True, _legacy_adapter_path=pending_legacy["path"],
+                                            _legacy_adapter_format=pending_legacy["format"])
+
+            tk.Button(restore_bar, text="Restore learned state…", command=_restore_legacy_learning,
+                      bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat").pack(side="right", padx=3)
 
         # Search and Filter Toolbar
         filter_bar = tk.Frame(modal, bg=self.C["bg_card"], highlightbackground=self.C["border"], highlightthickness=1)
@@ -5819,7 +6168,7 @@ assert glyph_res["invariants_passed"] == True
             return
         modal = tk.Toplevel(self.root)
         modal.title("Sleep Consolidation Control Panel (EWC-LoRA)")
-        modal.geometry("720x520")
+        modal.geometry("780x580")
         modal.minsize(640, 440)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
@@ -5836,27 +6185,62 @@ assert glyph_res["invariants_passed"] == True
         cards_row = tk.Frame(body, bg=self.C["bg_hud"])
         cards_row.pack(fill="x", pady=(0, 10))
 
-        # Check unconsolidated count
-        uncons_count = 0
-        try:
-            import sqlite3
-            conn = sqlite3.connect(self.settings.database_path)
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM interactions WHERE consolidated = 0 AND verified_reward >= 1.0 AND surprise_score >= 0.35")
-            uncons_count = cur.fetchone()[0]
-            conn.close()
-        except Exception:
-            uncons_count = 3
+        tab_id = self.active_tab_id
+        service = self.engine.awake_consolidator
+        backend = service.engine
+        scope = getattr(self.engine, "learning_scope", None)
+        database = getattr(getattr(self, "learner", None), "db", None)
+        source_mode = tk.StringVar(master=modal, value="Verified episodes (original Sleep/EWC)"
+                                   if database is not None else "Current chat exchanges")
 
-        lbl_uncons = self._make_badge(cards_row, f"📬 High-Surprise Memories: {uncons_count}")
-        self._make_badge(cards_row, f"🧬 Active Adapter: Slow-LoRA (Rank=32, Alpha=64)")
-        self._make_badge(cards_row, f"🔒 EWC Lambda: λ = 400.0")
+        def pending_items():
+            if source_mode.get() == "Verified episodes (original Sleep/EWC)":
+                return service.pending_verified_episodes(database)
+            return service.pending_exchanges(self.chat_history.get(tab_id, []))
+
+        try:
+            pending = str(pending_items())
+        except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+            pending = f"Unavailable ({error})"
+        source_label = "verified episodes" if database is not None else "complete exchanges"
+        lbl_uncons = self._make_badge(cards_row, f"Pending {source_label}: {pending}")
+        self._make_badge(cards_row, f"Active backend: {backend_label(backend)}")
+
+        source_row = tk.Frame(body, bg=self.C["bg_hud"])
+        source_row.pack(fill="x", pady=(0, 6))
+        tk.Label(source_row, text="Learn from:", bg=self.C["bg_hud"], fg=self.C["text_main"],
+                 font=_FONT_SMALL).pack(side="left", padx=(0, 8))
+        choices = (("Verified episodes (original Sleep/EWC)", "Current chat exchanges")
+                   if database is not None else ("Current chat exchanges",))
+        source_choice = ttk.Combobox(source_row, textvariable=source_mode, width=36, state="readonly",
+                                    values=choices)
+        source_choice.pack(side="left")
+        target_name = self.models_config.get(tab_id, {}).get("short_name", tab_id)
+        scope_name = getattr(scope, "kind", "model")
+        if getattr(scope, "key", ""):
+            scope_name += ": " + scope.key
+        tk.Label(body, text=f"Target: {target_name} · {scope_name}", bg=self.C["bg_hud"],
+                 fg=self.C["text_muted"], font=_FONT_TINY, anchor="w", wraplength=700).pack(fill="x")
 
         # Progress / Output Log Area
         tk.Label(body, text="📈 Live Sleep Consolidation Progress & Parameter Shift:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w", pady=(8, 2))
         txt_cons_log = tk.Text(body, height=12, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=12, pady=10)
         txt_cons_log.pack(fill="both", expand=True, pady=(0, 10))
-        txt_cons_log.insert("1.0", f"✦ EWC Consolidation Daemon Ready.\n• Target Weights: eval_results/adapters.safetensors\n• Fisher Diagonal Matrix: Preserving foundation attention matrices\n• Pending Traces: {uncons_count} verified episodes ready for synaptic integration.\n")
+        txt_cons_log.insert("1.0", "Verified episodes replays the original shared queue of verified solutions into the selected model and memory scope. "
+                            "Legacy episodes do not identify their originating model; accepted updates acknowledge the trained rows. "
+                            "Current chat exchanges separately consolidates completed dialogue, retiring text only after recall validation. "
+                            "The transcript remains available in chat.\n")
+
+        def _refresh_pending(_event=None):
+            try:
+                pending = str(pending_items())
+            except (RuntimeError, ValueError, OSError, sqlite3.Error):
+                pending = "Unavailable"
+            label = "verified episodes" if source_mode.get().startswith("Verified") else "complete exchanges"
+            lbl_uncons.configure(text=f"Pending {label}: {pending}")
+
+        source_choice.bind("<<ComboboxSelected>>", _refresh_pending)
+
 
         btn_bar = tk.Frame(body, bg=self.C["bg_hud"])
         btn_bar.pack(fill="x", pady=(0, 10))
@@ -5869,51 +6253,66 @@ assert glyph_res["invariants_passed"] == True
         )
         btn_trigger.pack(side="left")
 
-        def _run_daemon():
-            if (
-                getattr(self, "_speed_ui_running", False)
-                or getattr(self.engine, "speed_tuning_active", False)
-                or getattr(self, "_sleep_consolidating", False)
-            ):
-                txt_cons_log.insert("end", "\nWait for the active speed test or consolidation to finish.\n")
+        def _run_sleep():
+            if (self.active_tab_id != tab_id or service.engine is not backend
+                    or getattr(self.engine, "learning_scope", None) != scope
+                    or not service._real_training_ready()):
+                txt_cons_log.insert("end", "\nSelect and load a trainable backend, then reopen this panel.\n")
+                return
+            if (self.is_generating or self.multimodal.busy or getattr(self, "_model_load_in_progress", False)
+                    or getattr(self, "_speed_ui_running", False) or getattr(self.engine, "speed_tuning_active", False)
+                    or getattr(self, "_sleep_consolidating", False)):
+                txt_cons_log.insert("end", "\nFinish the current model operation before starting sleep.\n")
                 return
             self._sleep_consolidating = True
-            btn_trigger.configure(state="disabled", text="⏳ Consolidating Weights...")
-            txt_cons_log.insert("end", "\n[*] Initiating EWC Consolidation Cycle...\n")
-            txt_cons_log.see("end")
+            self.cancel_event.clear()
+            self._set_generating_state(True)
+            verified_episodes = source_mode.get() == "Verified episodes (original Sleep/EWC)"
+            transcript = self.chat_history.get(tab_id, [])
+            source_choice.configure(state="disabled")
+            btn_trigger.configure(state="disabled", text="Consolidating…")
+
+            def _finish(message):
+                self._sleep_consolidating = False
+                self._set_generating_state(False)
+                if modal.winfo_exists():
+                    txt_cons_log.insert("end", message + "\n")
+                    txt_cons_log.see("end")
+                    btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now")
+                    source_choice.configure(state="readonly")
+                    _refresh_pending()
+                self._update_telemetry()
+                self._check_and_run_next_queue()
 
             def _worker():
                 try:
-                    daemon = SleepConsolidationDaemon(settings=self.settings, use_mock=self.settings.use_mock)
-                    res = daemon.run_consolidation_cycle()
-                    mem_count = res.get("memories_consolidated", 0)
-                    task_loss = res.get("avg_task_loss", 0.0)
-                    ewc_loss = res.get("avg_ewc_loss", 0.0)
-                    saved_to = res.get("adapter_saved_to", self.settings.lora_adapter_path or "LoRA adapter")
-                    exec_time = res.get("execution_time_seconds", 0.0)
+                    if verified_episodes:
+                        res = service.sleep_verified_episodes(database, settings=self.settings,
+                                                              cancel_event=self.cancel_event)
+                    else:
+                        res = service.sleep(transcript, cancel_event=self.cancel_event)
+                    if res["status"] == "idle":
+                        message = "No pending verified episodes." if verified_episodes else "No pending complete exchanges."
+                    elif res.get("recovered"):
+                        message = (f"Recovered the committed checkpoint and acknowledged {res['memories_consolidated']} episode(s); "
+                                   f"no additional training ran.\nCheckpoint: {res['adapter_saved_to']}")
+                    elif res["status"] == "retained":
+                        message = (f"Weights updated; the exchanges remain in active context. "
+                                   f"{res.get('retirement_reason', 'Recall is not yet verified.')}\n"
+                                   f"Checkpoint: {res['adapter_saved_to']}")
+                    else:
+                        unit = "episode(s)" if verified_episodes else "exchange(s)"
+                        message = (f"Consolidated {res['memories_consolidated']} {unit} in "
+                                   f"{res['execution_time_seconds']:.2f}s. Weight drift {res['parameter_drift_l2']:.6g}.\n"
+                                   f"Checkpoint: {res['adapter_saved_to']}")
+                except Exception as error:
+                    message = f"Consolidation stopped: {error}"
+                self.root.after(0, lambda: _finish(message))
 
-                    self.root.after(0, lambda: [
-                        self._update_telemetry(),
-                        txt_cons_log.insert("end", f"[✓] Cycle Complete! Memories Consolidated: {mem_count} ({exec_time:.2f}s)\n"),
-                        txt_cons_log.insert("end", f"• Average Task Loss: {task_loss:.4f}\n"),
-                        txt_cons_log.insert("end", f"• Average EWC Penalty: {ewc_loss:.4f}\n"),
-                        txt_cons_log.insert("end", f"• Adapter Checkpoint: Saved to {saved_to}\n"),
-                        txt_cons_log.see("end"),
-                        btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now"),
-                        lbl_uncons.configure(text="📬 High-Surprise Memories: 0")
-                    ])
-                except Exception as exc:
-                    error = f"{type(exc).__name__}: {exc}"
-                    self.root.after(0, lambda text=error: [
-                        txt_cons_log.insert("end", f"[!] Consolidation failed: {text}\n"),
-                        btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now"),
-                    ])
-                finally:
-                    self._sleep_consolidating = False
+            self._generation_worker = threading.Thread(target=_worker, name="active-model-sleep", daemon=True)
+            self._generation_worker.start()
 
-            threading.Thread(target=_worker, daemon=True).start()
-
-        btn_trigger.configure(command=_run_daemon)
+        btn_trigger.configure(command=_run_sleep)
 
     def _on_open_dsl_playground(self):
         """Opens interactive DSL & RLVR Sandbox testing playground."""
