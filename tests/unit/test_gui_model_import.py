@@ -125,6 +125,7 @@ def gui(tmp_path):
                             for kind in ("Toplevel", "Frame", "Label", "Entry", "Button", "Radiobutton", "StringVar")})
     env = {
         "os": os, "time": time, "tk": tk, "ChatArchive": ChatArchive,
+        "fit_window_to_screen": Mock(),
         "ttk": SimpleNamespace(Combobox=lambda *a, **k: widgets.create("Combobox", *a, **k)),
         "threading": SimpleNamespace(Thread=Thread, Event=threading.Event),
         "messagebox": SimpleNamespace(askyesno=Mock(return_value=True), showerror=Mock(), showinfo=Mock()),
