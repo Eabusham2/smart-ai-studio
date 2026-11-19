@@ -245,6 +245,7 @@ def test_sleep_panel_dispatches_to_selected_backend_and_reports_only_committed_r
 
     for name in ("Toplevel", "Label", "Frame", "Text", "Button"):
         monkeypatch.setattr(app_gui.tk, name, Widget)
+    monkeypatch.setattr(app_gui, "fit_window_to_screen", lambda *_args, **_kwargs: None)
     class Variable:
         def __init__(self, **kwargs):
             self.value = kwargs.get("value", "")
