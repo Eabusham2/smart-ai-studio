@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import re
 import sys
 from types import SimpleNamespace
 
@@ -168,7 +169,10 @@ def test_button_is_visible_with_existing_hud_and_dialog_is_singleton(monkeypatch
     assert set(app._speedups_variables) == set(gui.DEFAULT_OPTIONS)
     assert app._speedups_variables["persistent_cache"].get() is False
     assert app._speedups_variables["metal_warmup"].get() is False
-    assert int(dialog.geometry_value.split("x")[1]) <= 668
+    width, height, left, top = map(int, re.fullmatch(r"(\d+)x(\d+)\+(\d+)\+(\d+)", dialog.geometry_value).groups())
+    assert height <= 668
+    assert left + width <= dialog.winfo_screenwidth()
+    assert top + height <= dialog.winfo_screenheight()
     assert not app.engine.configure_calls
 
 

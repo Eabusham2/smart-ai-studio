@@ -444,7 +444,7 @@ class GGUFReasoningBackend:
                         )
                     branches.append(output["choices"][0]["text"].strip())
                     usage = output.get("usage") or {}
-                    meter.observe(count=usage.get("completion_tokens"))
+                    meter.observe(count=usage.get("completion_tokens"), prompt_tokens=usage.get("prompt_tokens"))
                 except Exception as exc:
                     branches.append(f"⚠️ GGUF generation error: {exc}")
                 finally:
@@ -478,7 +478,7 @@ class GGUFReasoningBackend:
                 try:
                     for event in iterator:
                         usage = event.get("usage") or {}
-                        meter.observe(count=usage.get("completion_tokens"))
+                        meter.observe(count=usage.get("completion_tokens"), prompt_tokens=usage.get("prompt_tokens"))
                         text = str((event.get("choices") or [{}])[0].get("text") or "")
                         meter.observe(text=bool(text))
                         stopped = False

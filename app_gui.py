@@ -39,6 +39,7 @@ from core.model_import_download import download_imported_model
 from core.memory_watchdog import SystemMemoryWatchdog
 from core.learning_sources import inspect_learning_source
 from core.platform import get_auto_context_window_size
+from core.gui_geometry import fit_window_to_screen
 from core.pro_engine import ProReasoningEngine, parse_reasoning_and_response
 from core.tools import AgentToolRegistry
 from memory.db import EpisodicMemoryDB
@@ -625,6 +626,7 @@ class SmartAIChatbotApp:
         self.tools.set_workspace_dir(None)
         self.total_tokens_used = 0
         self._last_context_snapshot = None  # actual request input/output counts
+        self._live_context_snapshot = None
         self._telemetry_request_pending = False
         self.max_context_window = get_auto_context_window_size()
         self.synapses_learned_count = 0.0
@@ -1876,8 +1878,7 @@ class SmartAIChatbotApp:
         """Fetch an arbitrary Hugging Face model, register it as a custom model, and select it."""
         modal = tk.Toplevel(self.root)
         modal.title("Fetch Hugging Face Custom Model")
-        modal.geometry("640x430")
-        modal.minsize(640, 375)
+        fit_window_to_screen(modal, 640, 430, min_width=640, min_height=375)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
         modal.grab_set()
@@ -2053,8 +2054,7 @@ class SmartAIChatbotApp:
         """Opens an interactive dialog to import custom local MLX model folders or HuggingFace repositories."""
         modal = tk.Toplevel(self.root)
         modal.title("Import Custom AI Model")
-        modal.geometry("680x625")
-        modal.minsize(620, 585)
+        fit_window_to_screen(modal, 680, 625, min_width=620, min_height=585)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
         modal.grab_set()
@@ -2861,7 +2861,7 @@ class SmartAIChatbotApp:
         self.input_card = self.text_wrapper  # Compatibility alias
 
         self.txt_input = tk.Text(
-            self.text_wrapper, height=1, bg=self.C["bg_input_inner"], fg=self.C["text_main"],
+            self.text_wrapper, width=1, height=1, bg=self.C["bg_input_inner"], fg=self.C["text_main"],
             insertbackground=self.C["text_main"], font=_FONT_INPUT, bd=0,
             padx=0, pady=0, spacing1=3, spacing3=3, highlightthickness=0, wrap="word"
         )
@@ -2910,7 +2910,8 @@ class SmartAIChatbotApp:
 
         # Right Send Column (Shifted down to align horizontally with the text box)
         send_col = tk.Frame(self.input_top_row, bg=self.C["bg_input"])
-        send_col.pack(side="right", padx=(10, 0), anchor="center", pady=(4, 0))
+        # Reserve the action column before the flexible editor consumes space.
+        send_col.pack(side="right", before=self.text_wrapper, padx=(10, 0), anchor="center", pady=(4, 0))
 
         # Dynamic Action Button (▶ Send / 📋 Queue / 🎯 Steer / ⏹ Stop)
         self.btn_send = tk.Button(
@@ -4236,6 +4237,8 @@ class SmartAIChatbotApp:
             update_queue()
         self._last_context_snapshot = None
         target_info = self.models_config[target_tab_id]
+        self._live_context_snapshot = None
+        self._live_generation_snapshot = None
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
 
@@ -5042,14 +5045,17 @@ class SmartAIChatbotApp:
         request_epoch = getattr(self, "_generation_epoch", 0)
         origin_history = self.chat_history.get(origin_tab, [])
         origin_stream = self.chat_stream
+        origin_engine = self.engine
         origin_db = getattr(self, "db", None)
         origin_tools = getattr(self, "tools", None)
         origin_learner = getattr(self, "learner", None)
+        thought_stream = None
 
         def _owns_request():
             return (self.active_tab_id == origin_tab
                     and getattr(self, "_generation_epoch", 0) == request_epoch
-                    and self.chat_stream is origin_stream)
+                    and self.chat_stream is origin_stream
+                    and self.engine is origin_engine)
 
         def _post(delay, callback):
             from core.gui_dispatch import post_ui
@@ -5407,14 +5413,14 @@ class SmartAIChatbotApp:
                 pro_summary = None
                 best_work_ui = {"label": None, "panel": None, "done": 0, "total": 0,
                                 "pass_index": 1, "passes": 1, "refinement_skipped": False}
-                self._live_generation_snapshot = None
-                self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
                 from core.gui_thinking import ThinkingStream, starts_in_thinking
                 initial_thinking = starts_in_thinking(self.engine, info)
                 thought_stream = ThinkingStream(self, starts_in_thought=initial_thinking)
 
                 def _init_ai_stream():
+                    self._live_generation_snapshot = None
+                    self._live_tps = 0.0
                     self.chat_stream.configure(state="normal")
                     self.chat_stream.insert("end", f"\n✦ {info['short_name']}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
                     if use_pro_branches and hasattr(self.chat_stream, "window_create"):
@@ -5455,6 +5461,14 @@ class SmartAIChatbotApp:
                 from core.generation_metrics import RequestMetrics, observe_generations, valid_rate
                 measurements = RequestMetrics()
                 last_metrics_paint = 0.0
+                last_metrics_invocation = None
+
+                def _context_snapshot(snapshot):
+                    context = snapshot.get("context")
+                    if not isinstance(context, dict) or not context.get("id"):
+                        return None
+                    return dict(context, invocations=snapshot.get("invocations", 0),
+                                owner=(origin_tab, request_epoch, id(origin_stream), id(origin_engine)))
 
                 def _paint_best_work(value):
                     panel = best_work_ui.get("panel")
@@ -5549,17 +5563,18 @@ class SmartAIChatbotApp:
                                     _paint_best_work(text))
 
                 def _observed(sample):
-                    nonlocal last_metrics_paint
+                    nonlocal last_metrics_paint, last_metrics_invocation
                     if not _owns_request():
                         return
                     snap = measurements.update(sample)
-                    self._live_generation_snapshot = snap
                     rate = snap.get("decode_tps")
-                    self._live_tps = float(rate) if valid_rate(rate) else 0.0
                     now = time.perf_counter()
-                    if now - last_metrics_paint < 0.1 and not sample.get("finished") and sample.get("tokens") != 1:
+                    current_invocation = (snap.get("context") or {}).get("id")
+                    if (current_invocation == last_metrics_invocation and now - last_metrics_paint < 0.1
+                            and not sample.get("finished") and sample.get("tokens") != 1):
                         return
                     last_metrics_paint = now
+                    last_metrics_invocation = current_invocation
                     count = snap.get("tokens")
                     prefix = "Best Work · " if pro_active else ""
                     if valid_rate(rate):
@@ -5570,10 +5585,19 @@ class SmartAIChatbotApp:
                         value = f"⚡ {prefix}First token {snap['ttft_s']:.2f}s · measuring decode"
                     else:
                         value = "⚡ Preparing first token…"
-                    _post(0, lambda text=value: self.lbl_tps.configure(text=text))
+                    def _paint_observed(text=value, context=_context_snapshot(snap), snapshot=snap):
+                        self._live_generation_snapshot = snapshot
+                        current_rate = snapshot.get("decode_tps")
+                        self._live_tps = float(current_rate) if valid_rate(current_rate) else 0.0
+                        self._live_context_snapshot = context
+                        # Context advances on real native token events, alongside
+                        # decode speed. No periodic word/chunk estimate is used.
+                        self._update_telemetry()
+                        self.lbl_tps.configure(text=text)
+                    _post(0, _paint_observed)
 
-                previous_force_single = getattr(self.engine, "_gui_force_single_stream", False)
-                self.engine._gui_force_single_stream = not bool(use_pro_branches)
+                previous_force_single = getattr(origin_engine, "_gui_force_single_stream", False)
+                origin_engine._gui_force_single_stream = not bool(use_pro_branches)
                 options = {}
                 if use_pro_branches:
                     options.update(best_work_enabled=True, progress_callback=_branch_progress,
@@ -5603,14 +5627,21 @@ class SmartAIChatbotApp:
                         if callable(close):
                             close()
                     finally:
-                        self.engine._gui_force_single_stream = previous_force_single
+                        origin_engine._gui_force_single_stream = previous_force_single
+                        # Preserve the final buffered text even if the next
+                        # decoder step raises before the normal UI flush.
+                        if ui_pending:
+                            _schedule_stream_insert("".join(ui_pending))
+                            ui_pending.clear()
                 latest_meta = getattr(self.multimodal, "last_best_work_metadata", None) if use_pro_branches else None
-                if isinstance(latest_meta, dict):
-                    self.last_metadata = latest_meta
                 snapshot = measurements.snapshot()
-                if measurements.samples:
-                    self._live_generation_snapshot = snapshot
-                    self._best_work_final_rate = snapshot.get("wall_tps") if pro_active else None
+                def _publish_completed_metrics():
+                    if isinstance(latest_meta, dict):
+                        self.last_metadata = latest_meta
+                    if measurements.samples:
+                        self._live_generation_snapshot = snapshot
+                        self._best_work_final_rate = snapshot.get("wall_tps") if pro_active else None
+                _post(0, _publish_completed_metrics)
                 if pro_active and not self.cancel_event.is_set():
                     if best_work_ui["refinement_skipped"]:
                         complete_label = (f"🌿 Best Work · complete · used pass {best_work_ui['pass_index']}/"
@@ -5619,10 +5650,6 @@ class SmartAIChatbotApp:
                         complete_label = _pass_label(
                             f"🌿 Best Work {best_work_ui['total']}/{best_work_ui['total']} · complete")
                     _post(0, lambda text=complete_label: _paint_best_work(text))
-
-                if ui_pending:
-                    _schedule_stream_insert("".join(ui_pending))
-                    ui_pending.clear()
 
                 def _finish_thinking():
                     self.chat_stream.configure(state="normal")
@@ -5649,7 +5676,8 @@ class SmartAIChatbotApp:
 
                 duration_s = max(0.01, time.perf_counter() - start_time)
                 # No word-count TPS; use the observed live token rate when known.
-                tok_per_sec = self._live_tps
+                measured_decode = snapshot.get("decode_tps")
+                tok_per_sec = float(measured_decode) if valid_rate(measured_decode) else 0.0
                 if not pro_active and not (is_strata_stream or is_native_stream):
                     owner_name = {"mlx": "mlx_backend", "gguf": "gguf_backend",
                                   "controller": "controller_backend", "bitnet": "bitnet_backend"}.get(
@@ -5674,17 +5702,12 @@ class SmartAIChatbotApp:
                     return
 
                 # Per-response totals are from observed model tokens, not words.
-                from core.gui_response_telemetry import response_footer, observed_prompt_tokens
+                from core.gui_response_telemetry import response_footer
                 stat_snapshot = measurements.snapshot()
                 stats_footer = response_footer(stat_snapshot, pro=pro_active)
-                prompt_count = observed_prompt_tokens(self.engine)
-                # A single measured invocation consumed prompt + sampled output.
-                # Pro search and tool handoffs must not add losing candidates to
-                # the actual context occupancy: show prompt-only in those cases.
-                chosen_completion = (stat_snapshot.get("tokens")
-                                     if stat_snapshot.get("invocations") == 1
-                                     and stat_snapshot.get("all_counts_available")
-                                     and not pro_active else None)
+                # Preserve the final actual invocation separately from the
+                # response's aggregate cost across Pro branches/tool stages.
+                final_context = _context_snapshot(stat_snapshot)
 
                 # Persist against the captured model, independent of when Tk
                 # drains this request's callbacks. Display reasoning never enters
@@ -5703,7 +5726,7 @@ class SmartAIChatbotApp:
                     try:
                         if mark_name in stream.mark_names():
                             stream.delete(mark_name, "end-1c")
-                        self._last_context_snapshot = (prompt_count, chosen_completion)
+                        self._last_context_snapshot = final_context
                         self._telemetry_request_pending = False
                         if pro_summary:
                             stream.insert("end", pro_summary + "\n\n", "ai_msg")
@@ -5746,6 +5769,17 @@ class SmartAIChatbotApp:
 
         except Exception as e:
             err_msg = str(e)
+            if thought_stream is not None:
+                # A backend error also ends reasoning. Keep the text/toggle,
+                # but never leave a completed request labeled as still thinking.
+                def _finish_failed_thought(renderer=thought_stream):
+                    self.chat_stream.configure(state="normal")
+                    try:
+                        renderer.feed("", time.perf_counter() - start_time, final=True)
+                    finally:
+                        self.chat_stream.configure(state="disabled")
+                    self._scroll_chat_to_bottom()
+                _post(0, _finish_failed_thought)
             _post(0, lambda em=err_msg: self._append_ai_message(f"⚠️ Error executing query: {em}"))
 
         finally:
@@ -5757,6 +5791,8 @@ class SmartAIChatbotApp:
         if generating:
             self._generation_epoch = getattr(self, "_generation_epoch", 0) + 1
             self._last_context_snapshot = None
+            self._live_context_snapshot = None
+            self._live_generation_snapshot = None
             owner = getattr(self.engine, {
                 "mlx": "mlx_backend", "controller": "controller_backend",
                 "gguf": "gguf_backend", "bitnet": "bitnet_backend",
@@ -5777,6 +5813,7 @@ class SmartAIChatbotApp:
             )
             self._limit_rendered_transcript()
         self._update_queue_ui()
+        self._update_telemetry()
 
     def _check_and_run_next_queue(self):
         if getattr(self, "_pending_steer", None) is not None or getattr(self, "_closing_during_learning", False):
@@ -5853,11 +5890,25 @@ class SmartAIChatbotApp:
             available = type(total) is int and total >= 0
 
         from core.gui_response_telemetry import (
-            context_label, context_limit, measured_int, observed_prompt_tokens,
+            context_label, context_limit, measured_int,
         )
         limit = context_limit(curr_info, self.engine, self.max_context_window)
         summary = getattr(self, "_last_context_snapshot", None)
-        if is_strata or is_native:
+        live = bool(getattr(self, "is_generating", False))
+        current = getattr(self, "_live_context_snapshot", None) if live else summary
+        context_owner = (self.active_tab_id, getattr(self, "_generation_epoch", 0),
+                         id(self.chat_stream), id(self.engine))
+        if (self.is_model_loaded and not self.cancel_event.is_set()
+                and isinstance(current, dict) and current.get("owner") == context_owner):
+            prompt_count, selected_count = current.get("prompt_tokens"), current.get("completion_tokens")
+            self.total_tokens_used = (
+                prompt_count + (selected_count if measured_int(selected_count) else 0)
+                if measured_int(prompt_count) else 0
+            )
+            self.lbl_context.configure(text=context_label(
+                prompt_count, limit, completion_tokens=selected_count, live=live,
+                multiple_invocations=current.get("invocations", 0) > 1))
+        elif is_strata or is_native:
             # Strata/native servers are authoritative for the *last completed
             # request*. This is not the sum of all speculative Pro branches.
             # Never substitute a previous request's counters after a stop or
@@ -5877,23 +5928,17 @@ class SmartAIChatbotApp:
                 prompt_count, selected_count = None, None
             elif isinstance(summary, tuple) and len(summary) == 2:
                 prompt_count, selected_count = summary
-            elif getattr(self, "is_generating", False):
-                # Do not treat stale counters from a previous request as live.
-                owner = backend or getattr(self.engine, {
-                    "mlx": "mlx_backend", "controller": "controller_backend",
-                    "gguf": "gguf_backend", "bitnet": "bitnet_backend",
-                }.get(getattr(self.engine, "active_backend", None), "mlx_backend"), None)
-                live_count = getattr(owner, "last_prompt_token_count", None)
-                prompt_count = live_count if measured_int(live_count) else None
-                selected_count = None
             else:
-                prompt_count, selected_count = observed_prompt_tokens(self.engine), None
+                # Backend-wide fields can belong to an earlier request, an
+                # evaluation, or a different model. Only owned request events
+                # above may populate a live or completed Context reading.
+                prompt_count, selected_count = None, None
             self.total_tokens_used = (
                 prompt_count + (selected_count if measured_int(selected_count) else 0)
                 if measured_int(prompt_count) else 0
             )
             self.lbl_context.configure(text=context_label(
-                prompt_count, limit, completion_tokens=selected_count))
+                prompt_count, limit, completion_tokens=selected_count, live=live))
         inference_only = bool(curr_info.get("inference_only")
                               or (is_native and not getattr(self, "_loaded_text_can_train", False)))
         total_p = curr_info.get("raw_params", 27_400_000_000) + (0 if inference_only else self.synapses_learned_count)
@@ -5986,6 +6031,8 @@ class SmartAIChatbotApp:
         self.chat_stream.configure(state="disabled")
         self.total_tokens_used = 0
         self._last_context_snapshot = None
+        self._live_context_snapshot = None
+        self._live_generation_snapshot = None
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
             self.chat_history[self.active_tab_id].clear()
         self._update_telemetry()
@@ -6024,8 +6071,7 @@ assert glyph_res["invariants_passed"] == True
         """Opens interactive multi-branch candidate rollout visualizer."""
         modal = tk.Toplevel(self.root)
         modal.title("Parallel Multi-Branch Visualizer & Telemetry")
-        modal.geometry("780x560")
-        modal.minsize(680, 480)
+        fit_window_to_screen(modal, 780, 560, min_width=680, min_height=480)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
 
@@ -6098,7 +6144,7 @@ assert glyph_res["invariants_passed"] == True
 
         # Branches list
         tree_frame = tk.Frame(paned, bg=self.C["bg_app"])
-        paned.add(tree_frame, height=180)
+        paned.add(tree_frame, height=180, minsize=70, stretch="always")
 
         cols = ("idx", "temp", "status", "reward", "code_preview")
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=6)
@@ -6118,7 +6164,7 @@ assert glyph_res["invariants_passed"] == True
 
         # Code Inspector
         insp_frame = tk.Frame(paned, bg=self.C["bg_card"])
-        paned.add(insp_frame, height=220)
+        paned.add(insp_frame, height=220, minsize=85, stretch="always")
 
         tk.Label(insp_frame, text="🔍 Selected Branch Rollout & Verification Log:", font=_FONT_SMALL, bg=self.C["bg_card"], fg=self.C["text_muted"]).pack(anchor="w", padx=10, pady=(6, 2))
         txt_trace = tk.Text(insp_frame, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=10, pady=8)
@@ -6176,8 +6222,7 @@ assert glyph_res["invariants_passed"] == True
                  f"{model_name} · {getattr(self.settings, 'learning_implementation', 'legacy')}")
         modal = tk.Toplevel(self.root)
         modal.title("Episodic Memory — " + owner)
-        modal.geometry("920x620")
-        modal.minsize(780, 520)
+        fit_window_to_screen(modal, 920, 620, min_width=780, min_height=520)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
 
@@ -6327,7 +6372,7 @@ assert glyph_res["invariants_passed"] == True
         paned.pack(fill="both", expand=True, padx=16, pady=(0, 12))
 
         table_frame = tk.Frame(paned, bg=self.C["bg_app"])
-        paned.add(table_frame, height=220)
+        paned.add(table_frame, height=220, minsize=70, stretch="always")
 
         cols = ("id", "date", "mode", "reward", "surprise", "temp", "cons", "prompt")
         tree = ttk.Treeview(table_frame, columns=cols, show="headings")
@@ -6352,7 +6397,7 @@ assert glyph_res["invariants_passed"] == True
         tree.pack(fill="both", expand=True)
 
         detail_frame = tk.Frame(paned, bg=self.C["bg_card"])
-        paned.add(detail_frame, height=200)
+        paned.add(detail_frame, height=200, minsize=85, stretch="always")
 
         tk.Label(detail_frame, text="📋 Selected Interaction Record & Verified Code:", font=_FONT_SMALL, bg=self.C["bg_card"], fg=self.C["text_muted"]).pack(anchor="w", padx=10, pady=(6, 2))
         txt_detail = tk.Text(detail_frame, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=10, pady=8)
@@ -6450,8 +6495,7 @@ assert glyph_res["invariants_passed"] == True
         sleep_settings.lora_adapter_path = os.path.join(os.path.dirname(database_path), "standalone-slow-lora")
         modal = tk.Toplevel(self.root)
         modal.title("Sleep Consolidation Control Panel (EWC-LoRA)")
-        modal.geometry("720x520")
-        modal.minsize(640, 440)
+        fit_window_to_screen(modal, 720, 520, min_width=640, min_height=440)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
 
@@ -6607,8 +6651,7 @@ assert glyph_res["invariants_passed"] == True
             return
         modal = tk.Toplevel(self.root)
         modal.title("Sleep Consolidation Control Panel (EWC-LoRA)")
-        modal.geometry("780x580")
-        modal.minsize(640, 440)
+        fit_window_to_screen(modal, 780, 580, min_width=640, min_height=440)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
 
@@ -6766,8 +6809,7 @@ assert glyph_res["invariants_passed"] == True
         """Opens interactive DSL & RLVR Sandbox testing playground."""
         modal = tk.Toplevel(self.root)
         modal.title("Interactive DSL & RLVR Sandbox Playground")
-        modal.geometry("820x580")
-        modal.minsize(700, 460)
+        fit_window_to_screen(modal, 820, 580, min_width=700, min_height=460)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
 
@@ -6797,7 +6839,7 @@ assert glyph_res["invariants_passed"] == True
 
         # Editor
         edit_frame = tk.Frame(paned, bg=self.C["bg_card"])
-        paned.add(edit_frame, height=220)
+        paned.add(edit_frame, height=220, minsize=85, stretch="always")
         tk.Label(edit_frame, text="✏️ DSL Expression / Python Code Block:", font=_FONT_SMALL, bg=self.C["bg_card"], fg=self.C["text_muted"]).pack(anchor="w", padx=10, pady=(6, 2))
         txt_code = tk.Text(edit_frame, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=10, pady=8)
         txt_code.pack(fill="both", expand=True, padx=10, pady=(0, 8))
@@ -6805,13 +6847,13 @@ assert glyph_res["invariants_passed"] == True
 
         # Result pane
         res_frame = tk.Frame(paned, bg=self.C["bg_card"])
-        paned.add(res_frame, height=180)
+        paned.add(res_frame, height=180, minsize=85, stretch="always")
         tk.Label(res_frame, text="📊 Sandbox Execution Output & Status:", font=_FONT_SMALL, bg=self.C["bg_card"], fg=self.C["text_muted"]).pack(anchor="w", padx=10, pady=(6, 2))
         txt_out = tk.Text(res_frame, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=10, pady=8)
         txt_out.pack(fill="both", expand=True, padx=10, pady=(0, 8))
 
         btn_run = tk.Button(modal, text="▶ Run in Sandbox", font=_FONT_BOLD, bg=self.C["btn_primary_bg"], fg=self.C["btn_primary_fg"], activebackground=self.C["btn_primary_hover"], activeforeground=self.C["btn_primary_fg"], relief="flat", bd=0, padx=18, pady=8, cursor="hand2", highlightthickness=0)
-        btn_run.pack(padx=16, pady=(0, 12), anchor="w")
+        btn_run.pack(side="bottom", before=paned, padx=16, pady=(0, 12), anchor="w")
 
         def _on_mode_change(event):
             m = dsl_var.get()
@@ -6850,7 +6892,7 @@ assert glyph_res["invariants_passed"] == True
         """Displays interactive granular memory telemetry modal (App vs Model vs System RAM)."""
         modal = tk.Toplevel(self.root)
         modal.title("💾 System & AI Model Memory Telemetry")
-        modal.geometry("680x480")
+        fit_window_to_screen(modal, 680, 520, min_width=640, min_height=440)
         modal.configure(bg=self.C["bg_app"])
         modal.transient(self.root)
         modal.grab_set()
@@ -6898,7 +6940,7 @@ assert glyph_res["invariants_passed"] == True
         _refresh_telemetry()
 
         footer = tk.Frame(modal, bg=self.C["bg_hud"], padx=16, pady=10)
-        footer.pack(fill="x")
+        footer.pack(side="bottom", before=body, fill="x")
 
         def _trim_cache():
             SystemMemoryWatchdog.reclaim_process_memory()

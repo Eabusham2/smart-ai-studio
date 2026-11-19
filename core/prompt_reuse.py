@@ -201,12 +201,14 @@ class PromptSnapshot:
 
 
 class ExactPrefixStore:
-    def __init__(self, max_entries=2, max_tokens=8192, max_bytes=256 * 1024 ** 2):
+    def __init__(self, max_entries=2, max_tokens=8192, max_bytes=256 * 1024 ** 2,
+                 memory_admission=None):
         self.max_entries = max(0, int(max_entries))
         self.max_tokens = max(0, int(max_tokens))
         self.max_bytes = max(0, int(max_bytes))
         self.entries = OrderedDict()
         self.nbytes = self.hits = self.misses = 0
+        self.memory_admission = memory_admission
 
     def clear(self):
         self.entries.clear()
@@ -224,6 +226,10 @@ class ExactPrefixStore:
                     or tokens[:n] != snapshot.tokens
                     or (n != len(tokens) - 1 and n % prefill_step_size)):
                 continue
+            if self.memory_admission is not None and not self.memory_admission(snapshot.nbytes):
+                self.clear()
+                self.misses += 1
+                return None
             try:
                 cloned = clone_cache(snapshot.cache, n)
             except Exception:
@@ -246,16 +252,26 @@ class ExactPrefixStore:
             size = cache_nbytes(cache, len(tokens)) + len(tokens) * 36
             if size > self.max_bytes:
                 return False
-            cloned = clone_cache(cache, len(tokens))
         except Exception:
             return False
         key = (tokens, int(prefill_step_size))
         old = self.entries.pop(key, None)
         if old:
             self.nbytes -= old.nbytes
+        old = None
         while self.entries and (len(self.entries) >= self.max_entries or self.nbytes + size > self.max_bytes):
             _, old = self.entries.popitem(last=False)
             self.nbytes -= old.nbytes
+            old = None
+        # Retire replaced snapshots before allocating the next copy. Retention
+        # limits alone do not bound peak memory while both copies are alive.
+        if self.memory_admission is not None and not self.memory_admission(size):
+            self.clear()
+            return False
+        try:
+            cloned = clone_cache(cache, len(tokens))
+        except Exception:
+            return False
         self.entries[key] = PromptSnapshot(tokens, cloned, size, int(prefill_step_size))
         self.nbytes += size
         return True

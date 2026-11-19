@@ -373,7 +373,7 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
           MLX_TEST_DEVICE: ${{ matrix.device }}
         run: |
-          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py tests/unit/test_consolidation_memory_lifecycle.py
+          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py tests/unit/test_consolidation_memory_lifecycle.py tests/unit/test_mlx_memory_guard.py tests/unit/test_exact_context_usage.py
           python - <<'PY'
           import xml.etree.ElementTree as ET
           cases = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
@@ -395,6 +395,10 @@ jobs:
                        if 'test_consolidation_memory_lifecycle' in c.get('classname', '')]
           assert len(lifecycle) >= 4, 'Repeated consolidation lifecycle tests must execute'
           assert all(c.find('skipped') is None for c in lifecycle), 'Native consolidation lifecycle tests cannot be skipped'
+          retry_cleanup = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
+                           if c.get('name') == 'test_real_mlx_failed_prefill_tensor_is_freed_before_retry']
+          assert len(retry_cleanup) == 1, 'Native inference retry cleanup must execute'
+          assert retry_cleanup[0].find('skipped') is None, 'Native inference retry cleanup cannot be skipped'
           PY
       - name: Preserve native learning results
         if: always()
@@ -776,6 +780,12 @@ jobs:
             reader's position when scrolling during generation.
           - Correct AI RAM accounting and explicitly release standalone Sleep
             training state; add repeated native consolidation lifecycle tests.
+          - Count live context from the actual submitted input and generated
+            tokens, including templates and system/tool text; keep speculative
+            candidate costs separate and show unknown when no exact count exists.
+          - Check MLX memory before each turn, bound prefill and optional cache
+            copies, and release failed request state before one pre-output retry
+            without changing the selected model or discarding conversation text.
 
           **Mac (Apple Silicon): automatic full installation to Applications**
           Download `Install-SmartAI-macOS-Full.command` and its `.sha256` receipt.

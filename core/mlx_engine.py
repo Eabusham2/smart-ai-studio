@@ -53,12 +53,8 @@ def _model_context_limit(model, tokenizer):
 
 
 def _memory_pressure() -> bool:
-    try:
-        proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
-        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-        return proc_gb >= 12.5 or avail_gb <= 0.75
-    except Exception:
-        return False
+    from core.mlx_memory_guard import memory_headroom
+    return memory_headroom().pressure
 
 
 def _adaptive_prefill_step_size(*, aggressive: bool = False) -> int:
@@ -69,18 +65,8 @@ def _adaptive_prefill_step_size(*, aggressive: bool = False) -> int:
     """
     if aggressive:
         return 128
-    try:
-        proc_gb = psutil.Process().memory_info().rss / (1024 ** 3)
-        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-        if proc_gb < 9.5 and avail_gb >= 4.0:
-            return 2048
-        if proc_gb < 11.0 and avail_gb >= 2.0:
-            return 1024
-        if avail_gb >= 1.0:
-            return 512
-    except Exception:
-        pass
-    return 256
+    from core.mlx_memory_guard import memory_headroom
+    return memory_headroom().prefill_tokens
 
 
 def _reclaim_if_needed(mx, *, force: bool = False) -> None:
@@ -147,7 +133,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self._speed_profile_context = None
         self.last_error = ""
         self._tokenizer_memo = TokenizerMemo()
-        self._prompt_prefixes = ExactPrefixStore(max_tokens=self.max_stateful_kv_tokens)
+        self._prompt_prefixes = ExactPrefixStore(max_tokens=self.max_stateful_kv_tokens,
+                                                memory_admission=self._prefix_copy_allowed)
         self._prompt_reuse_identity = None
         self._prompt_weight_revision = 0
         self._lossless_speedups = {"prompt_reuse": True, "branch_prefill": True,
@@ -166,6 +153,92 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self._metal_warmup = SafeMLXWarmup()
         from core.vlm_prompt_reuse import NativeVLMCacheReuse
         self._vlm_prefixes = NativeVLMCacheReuse()
+        self._oom_prefill_step_size = None
+        self.last_memory_recovery = ""
+
+    def _prefix_copy_allowed(self, size):
+        from core.mlx_memory_guard import memory_headroom
+        return (not getattr(self, "_oom_prefill_step_size", None)
+                and memory_headroom(max_process_gb=getattr(self, "speed_memory_limit_gb", None)).can_snapshot(size))
+
+    def _prepare_generation_memory(self, mx):
+        """Admit optional state before every turn, even when the watchdog is off."""
+        from core.mlx_memory_guard import trim_allocator
+        headroom = trim_allocator(mx, max_process_gb=getattr(self, "speed_memory_limit_gb", None))
+        if headroom.pressure or getattr(self, "_oom_prefill_step_size", None):
+            self._prompt_prefixes.clear()
+            self._vlm_prefixes.clear()
+            self._metal_warmup.close()
+            _reclaim_if_needed(mx, force=True)
+        self._request_prefill_step_size = headroom.prefill_tokens
+        return headroom
+
+    def _recover_generation_memory(self, mx):
+        """Run after the failed iterator and exception scope have been released."""
+        from core.mlx_memory_guard import trim_allocator
+        self._oom_prefill_step_size = _adaptive_prefill_step_size(aggressive=True)
+        self._prompt_prefixes.clear()
+        self._vlm_prefixes.clear()
+        if self.kv_cache_manager is not None:
+            self.kv_cache_manager.release()
+        self._metal_warmup.close()
+        self.last_prompt_reused_tokens = 0
+        self.last_prompt_reuse_reason = "OOM recovery: optional snapshots released"
+        self.last_memory_recovery = (
+            "Temporary inference state released after Metal ran out of memory. "
+            "Subsequent requests use conservative prefill and no optional cache copies; "
+            "the selected model and full conversation are unchanged."
+        )
+        gc.collect(2)
+        trim_allocator(mx, force=True, max_process_gb=getattr(self, "speed_memory_limit_gb", None))
+
+    def _stream_with_memory_retry(self, mx, create_iterator):
+        """Release a failed native request before one pre-output retry.
+
+        Keeping the caught exception alive also keeps its model-forward frames
+        (and tensors) alive. Recovery therefore runs after that exception scope,
+        with the native generator closed and its traceback frames cleared.
+        A response already delivered to a caller is never generated again.
+        """
+        import traceback
+
+        emitted = False
+        for attempt in range(2):
+            iterator = response = None
+            failure = None
+            try:
+                self._prepare_generation_memory(mx)
+                iterator = create_iterator()
+                for response in iterator:
+                    emitted = True
+                    yield response
+                    response = None
+            except RuntimeError as exc:
+                if not _is_metal_oom(exc):
+                    raise
+                failure = str(exc)
+                traceback.clear_frames(exc.__traceback__)
+                exc.__traceback__ = None
+            finally:
+                try:
+                    close = getattr(iterator, "close", None)
+                    if callable(close):
+                        close()
+                except RuntimeError as exc:
+                    if not _is_metal_oom(exc):
+                        raise
+                    failure = failure or str(exc)
+                    traceback.clear_frames(exc.__traceback__)
+                    exc.__traceback__ = None
+                finally:
+                    iterator = response = close = None
+            if failure is None:
+                return
+            self._recover_generation_memory(mx)
+            if attempt or emitted:
+                # No context truncation, weight conversion, or silent restart
+                # after output. A later user request can use the cleaned state.
+                raise RuntimeError(failure) from None
 
     def configure_auto_speed(self, enabled=True, force=False, progress=None, cancelled=None):
         from core.mlx_speed_tuning import configure_mlx_speed
@@ -230,7 +303,6 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         if _memory_pressure():
             self._prompt_prefixes.clear()
             self._vlm_prefixes.clear()
-            self._tokenizer_memo.clear()
         return self._tokenizer_memo.encode(
             self.tokenizer, prompt, enabled=self._lossless_speedups["tokenizer_memo"])
 
@@ -254,7 +326,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             revision=[self._prompt_weight_revision, tokenizer_signature(self.tokenizer)],
             enabled=enabled and not any(getattr(owner, "training", False) for owner in
                                        (self.model, getattr(self.model, "language_model", None))),
-            memory_ok=not _memory_pressure())
+            memory_ok=not _memory_pressure() and self._prefix_copy_allowed(self._vlm_prefixes.max_bytes))
         self.last_prompt_reused_tokens = 0
         self.last_prompt_reuse_reason = self._vlm_prefixes.last_reason
         return kwargs
@@ -271,7 +343,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             from core.mlx_warmup import SafeMLXWarmup
             self._metal_warmup = SafeMLXWarmup(enabled=True)
         self._metal_warmup.prepare(mx=mx, runtime_lock=runtime_lock(self),
-                                   memory_ok=lambda: not _memory_pressure())
+                                   memory_ok=lambda: not _memory_pressure() and not getattr(self, "_oom_prefill_step_size", None))
 
     def _disk_prompt_identity(self, prefill_step_size):
         """Opt-in disk state is allowed only for exact local, unmodified weights."""
@@ -334,8 +406,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_prompt_reuse_reason = "full prefill"
         reuse = self._lossless_speedups["prompt_reuse"] or (
             branches and self._lossless_speedups["branch_prefill"])
-        if not reuse or len(prompt_ids) < 2 or _memory_pressure() or getattr(self.model, "training", False):
-            if _memory_pressure() or getattr(self.model, "training", False):
+        if (not reuse or len(prompt_ids) < 2 or _memory_pressure()
+                or getattr(self, "_oom_prefill_step_size", None) or getattr(self.model, "training", False)):
+            if (_memory_pressure() or getattr(self, "_oom_prefill_step_size", None)
+                    or getattr(self.model, "training", False)):
                 self._prompt_prefixes.clear()
             if getattr(self.model, "training", False):
                 self._prompt_disk_pristine = False
@@ -399,6 +473,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
     def _speed_prefill_size(self) -> int:
         safe = _adaptive_prefill_step_size()
+        if getattr(self, "_request_prefill_step_size", None):
+            safe = min(safe, self._request_prefill_step_size)
+        if getattr(self, "_oom_prefill_step_size", None):
+            safe = min(safe, self._oom_prefill_step_size)
         preferred = getattr(self, "_speed_prefill_step_size", None)
         current_context = int(getattr(self, "context_budget_tokens", 0) or 32768)
         if getattr(self, "_speed_profile_context", None) != current_context:
@@ -406,12 +484,26 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return min(safe, int(preferred)) if preferred else safe
 
     def _speed_vlm_prefill_kwargs(self) -> Dict[str, int]:
-        """Preserve the VLM library's own default until a profile is measured."""
+        """Bound a supported native prefill control even without calibration."""
+        from core.mlx_memory_guard import native_vlm_prefill_default
+
+        if any(getattr(owner, "no_chunked_prefill", False) for owner in
+               (self.model, getattr(self.model, "language_model", None))):
+            return {}
+        default = native_vlm_prefill_default()
+        if default is None:
+            return {}
         current_context = int(getattr(self, "context_budget_tokens", 0) or 32768)
         preferred = getattr(self, "_speed_prefill_step_size", None)
         if not preferred or getattr(self, "_speed_profile_context", None) != current_context:
-            return {}
-        return {"prefill_step_size": min(int(preferred), _adaptive_prefill_step_size())}
+            preferred = default
+        safe = _adaptive_prefill_step_size()
+        if getattr(self, "_request_prefill_step_size", None):
+            safe = min(safe, self._request_prefill_step_size)
+        if getattr(self, "_oom_prefill_step_size", None):
+            safe = min(safe, self._oom_prefill_step_size)
+        selected = min(int(preferred), safe)
+        return {} if selected == default else {"prefill_step_size": selected}
 
     def _effective_generation_cap(
         self,
@@ -487,6 +579,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.invalidate_prompt_reuse("model load")
         self.kv_cache_manager = None
         self.last_error = ""
+        self._oom_prefill_step_size = None
+        self.last_memory_recovery = ""
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             self.last_error = "This MLX checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."
             self.is_mlx_available = False
@@ -686,9 +780,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
     def calculate_token_entropy(self, prompt: str) -> float:
         if not self.is_mlx_available or self.model is None:
             return 0.45
+        mx = logits = last_logits = probs = None
         try:
             import math
             import mlx.core as mx
+            self._prepare_generation_memory(mx)
             tokens = self._encode_prompt(prompt)
             if not tokens:
                 return 0.45
@@ -703,6 +799,12 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return float(entropy_val)
         except Exception:
             return 0.45
+        finally:
+            # The route still uses the same full-prompt entropy calculation.
+            # Its temporary logits must not stay live into the real response.
+            logits = last_logits = probs = None
+            if mx is not None:
+                _reclaim_if_needed(mx)
 
     def generate_branches(
         self,
@@ -720,41 +822,41 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return []
 
         import mlx.core as mx
+        self._prepare_generation_memory(mx)
         self._prepare_optional_warmup(mx)
         from core.tool_boundary_stop import ToolBoundaryStopper
         from core.generation_metrics import TokenMeter, observe_mlx_response
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
+            from core.vlm_prompt_tokens import prepare_vlm_inputs
             count = max(1, min(int(branch_count), 16))
             temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
-            try:
-                prompt_ids = self._encode_prompt(prompt)
-            except Exception:
-                prompt_ids = []
-            self.last_prompt_token_count = len(prompt_ids) if prompt_ids else None
+            prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
+            prepared_inputs, prompt_count = prepare_vlm_inputs(self.model, self.processor, prepared_prompt)
+            self.last_prompt_token_count = prompt_count
             effective_max = self._effective_generation_cap(
-                prompt,
+                prepared_prompt,
                 max_tokens,
-                prompt_token_count=len(prompt_ids),
+                prompt_token_count=prompt_count,
             )
             branches = []
-            prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
             for idx in range(count):
                 if callable(cancelled) and cancelled():
                     return branches
                 temp_value = float(temps[idx % len(temps)])
                 pieces = []
-                meter = TokenMeter(self, "mlx-vlm")
+                meter = TokenMeter(self, "mlx-vlm", prompt_tokens=prompt_count)
                 started = time.perf_counter()
                 generated = 0
-                last = None
                 iterator = None
+                response = None
                 completed = False
                 boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
-                prefill_kwargs = self._speed_vlm_prefill_kwargs()
-                try:
-                    iterator = vlm_stream_generate(
+
+                def create_vlm_branch():
+                    prefill_kwargs = self._speed_vlm_prefill_kwargs()
+                    return vlm_stream_generate(
                         self.model,
                         self.processor,
                         prompt=prepared_prompt,
@@ -763,10 +865,13 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                         temperature=temp_value,
                         top_p=top_p,
                         **prefill_kwargs,
+                        **prepared_inputs,
                         **self._vlm_reuse_kwargs(prepared_prompt, prefill_kwargs, branches=True),
                     )
+
+                try:
+                    iterator = self._stream_with_memory_retry(mx, create_vlm_branch)
                     for response in iterator:
-                        last = response
                         generated += 1
                         observe_mlx_response(meter, response)
                         if progress_callback is not None:
@@ -775,6 +880,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                             return branches
                         self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
                         piece = str(getattr(response, "text", response))
+                        response = None
                         pieces.append(piece)
                         if boundary is not None and boundary.feed(piece):
                             pieces = [boundary.text]
@@ -783,6 +889,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 finally:
                     if iterator is not None and callable(getattr(iterator, "close", None)):
                         iterator.close()
+                    iterator = response = None
                     self._finish_vlm_request(completed=completed, branches=idx < count - 1)
                     meter.finish()
                 elapsed = max(0.001, time.perf_counter() - started)
@@ -809,25 +916,26 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             prompt_token_count=len(prompt_ids),
         )
 
-        def _one(temp_value: float, prefill_step_size: int) -> str:
+        def _one(temp_value: float) -> str:
             sampler = make_sampler(temp=float(temp_value), top_p=top_p)
-            branch_prompt = self._prepare_text_cache(prompt_ids, prefill_step_size, branches=True)
-            kwargs = {
-                "prompt": branch_prompt,
-                "max_tokens": effective_max,
-                "sampler": sampler,
-                "prefill_step_size": int(prefill_step_size),
-                "prompt_cache": self.kv_cache_manager.get_cache(),
-            }
+
+            def create_branch():
+                prefill_step_size = self._speed_prefill_size()
+                branch_prompt = self._prepare_text_cache(prompt_ids, prefill_step_size, branches=True)
+                return mlx_lm.stream_generate(
+                    self.model, self.tokenizer, prompt=branch_prompt,
+                    max_tokens=effective_max, sampler=sampler,
+                    prefill_step_size=int(prefill_step_size),
+                    prompt_cache=self.kv_cache_manager.get_cache())
             pieces = []
             boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
             response = None
             generated = 0
-            meter = TokenMeter(self, "mlx-lm")
+            meter = TokenMeter(self, "mlx-lm", prompt_tokens=len(prompt_ids))
             started = time.perf_counter()
             iterator = None
             try:
-                iterator = mlx_lm.stream_generate(self.model, self.tokenizer, **kwargs)
+                iterator = self._stream_with_memory_retry(mx, create_branch)
                 for response in iterator:
                     generated += 1
                     observe_mlx_response(meter, response)
@@ -845,6 +953,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     if chunk is None:
                         chunk = str(response)
                     piece = str(chunk)
+                    response = None
                     pieces.append(piece)
                     if boundary is not None and boundary.feed(piece):
                         pieces = [boundary.text]
@@ -852,6 +961,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             finally:
                 if iterator is not None and callable(getattr(iterator, "close", None)):
                     iterator.close()
+                iterator = response = None
                 self._release_text_cache(branches=True)
                 meter.finish()
 
@@ -864,16 +974,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             _reclaim_if_needed(mx)
             temp_value = float(temps[idx % len(temps)])
             try:
-                branches.append(_one(temp_value, self._speed_prefill_size()))
-            except RuntimeError as exc:
-                if not _is_metal_oom(exc):
-                    raise
-                # Lossless OOM retry: same prompt, same sampler policy, same token
-                # budget and the same TurboQuant cache policy. Only prefill chunking changes.
-                self._prompt_prefixes.clear()
-                self._release_text_cache(branches=True)
-                _reclaim_if_needed(mx, force=True)
-                branches.append(_one(temp_value, 64))
+                branches.append(_one(temp_value))
             finally:
                 self._release_text_cache(branches=idx < count - 1)
                 _reclaim_if_needed(mx)
@@ -891,34 +992,27 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         from core.generation_metrics import TokenMeter, observe_mlx_response
         import mlx.core as mx
+        self._prepare_generation_memory(mx)
         self._prepare_optional_warmup(mx)
-
-        try:
-            prompt_ids = self._encode_prompt(prompt)
-        except Exception:
-            prompt_ids = []
-        prompt_len = len(prompt_ids)
-        self.last_prompt_token_count = prompt_len if prompt_ids else None
-
-        effective_max = self._effective_generation_cap(
-            prompt,
-            max_tokens,
-            prompt_token_count=prompt_len,
-        )
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
-            meter = TokenMeter(self, "mlx-vlm")
+            from core.vlm_prompt_tokens import prepare_vlm_inputs
+            prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
+            prepared_inputs, prompt_count = prepare_vlm_inputs(self.model, self.processor, prepared_prompt)
+            effective_max = self._effective_generation_cap(
+                prepared_prompt, max_tokens, prompt_token_count=prompt_count)
+            meter = TokenMeter(self, "mlx-vlm", prompt_tokens=prompt_count)
             generated = 0
             started = time.perf_counter()
-            last = None
             self.last_tok_per_sec = 0.0
-            prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
-            prefill_kwargs = self._speed_vlm_prefill_kwargs()
             iterator = None
+            response = None
             completed = False
-            try:
-                iterator = vlm_stream_generate(
+
+            def create_vlm_stream():
+                prefill_kwargs = self._speed_vlm_prefill_kwargs()
+                return vlm_stream_generate(
                     self.model,
                     self.processor,
                     prompt=prepared_prompt,
@@ -927,19 +1021,25 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     temperature=temperature,
                     top_p=top_p,
                     **prefill_kwargs,
+                    **prepared_inputs,
                     **self._vlm_reuse_kwargs(prepared_prompt, prefill_kwargs),
                 )
+
+            try:
+                iterator = self._stream_with_memory_retry(mx, create_vlm_stream)
                 for response in iterator:
-                    last = response
                     generated += 1
                     observe_mlx_response(meter, response)
                     self.last_prompt_reused_tokens = int(getattr(response, "cached_tokens", 0) or 0)
                     chunk = getattr(response, "text", None)
-                    yield str(chunk if chunk is not None else response)
+                    piece = str(chunk if chunk is not None else response)
+                    response = None
+                    yield piece
                 completed = True
             finally:
                 if iterator is not None and callable(getattr(iterator, "close", None)):
                     iterator.close()
+                iterator = response = None
                 self._finish_vlm_request(completed=completed)
                 elapsed = max(0.001, time.perf_counter() - started)
                 meter.finish()
@@ -947,8 +1047,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return
 
         import mlx_lm
+        prompt_ids = self._encode_prompt(prompt)
         if not prompt_ids:
             raise RuntimeError("Text prompt tokenization produced no tokens; refusing an uncounted context")
+        effective_max = self._effective_generation_cap(
+            prompt, max_tokens, prompt_token_count=len(prompt_ids))
 
         try:
             from mlx_lm.sample_utils import make_sampler
@@ -956,7 +1059,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         except Exception as exc:
             raise RuntimeError("MLX sampler unavailable; refusing to change sampling semantics") from exc
 
-        meter = TokenMeter(self, "mlx-lm")
+        meter = TokenMeter(self, "mlx-lm", prompt_tokens=len(prompt_ids))
         generated = 0
         response = None
         started = time.perf_counter()
@@ -996,33 +1099,19 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             return str(resp)
 
         try:
-            iterator = None
-            try:
-                iterator = _run_stream(self._speed_prefill_size())
-                for response in iterator:
-                    generated += 1
-                    yield _yield_response(response)
-            except RuntimeError as exc:
-                if not _is_metal_oom(exc) or generated:
-                    raise
-                # Retry only before any token has been emitted. Rebuild a fresh cache
-                # and reduce transient prefill memory without changing cache policy,
-                # context, sampler or requested generation length.
-                if iterator is not None and callable(getattr(iterator, "close", None)):
-                    iterator.close()
-                self._release_text_cache()
-                self._prompt_prefixes.clear()
-                _reclaim_if_needed(mx, force=True)
-                iterator = _run_stream(_adaptive_prefill_step_size(aggressive=True))
-                for response in iterator:
-                    generated += 1
-                    yield _yield_response(response)
+            iterator = self._stream_with_memory_retry(mx, lambda: _run_stream(self._speed_prefill_size()))
+            for response in iterator:
+                generated += 1
+                piece = _yield_response(response)
+                response = None
+                yield piece
         except Exception as exc:
             _base.logger.error("MLX stream_generate error: %s", exc)
             raise
         finally:
             if iterator is not None and callable(getattr(iterator, "close", None)):
                 iterator.close()
+            iterator = response = None
             elapsed = max(0.001, time.perf_counter() - started)
             meter.finish()
             self._release_text_cache()

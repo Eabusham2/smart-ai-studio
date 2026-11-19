@@ -394,10 +394,11 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
             self._worker.stdin.flush()
             def measure(event):
                 if event.get("event") == "metrics":
-                    meter.observe(count=event.get("tokens"), rate=event.get("decode_tps"))
+                    meter.observe(count=event.get("tokens"), rate=event.get("decode_tps"),
+                                  prompt_tokens=event.get("prompt_tokens"))
                 if event.get("event") == "done":
                     usage = event.get("usage") or {}
-                    meter.observe(count=usage.get("completion_tokens"))
+                    meter.observe(count=usage.get("completion_tokens"), prompt_tokens=usage.get("prompt_tokens"))
             try:
                 while True:
                     line = self._worker.stdout.readline()

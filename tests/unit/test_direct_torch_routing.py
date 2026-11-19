@@ -51,6 +51,7 @@ def test_migrated_direct_solver_uses_logits_and_preserves_nucleus_sampling(tiny_
         with observe_generations(metrics.update):
             branches = engine.generate_parallel_branches(prompt, branch_count=2)
         assert metrics.snapshot()["invocations"] == 3 and metrics.snapshot()["tokens"] >= 3
+        assert metrics.snapshot()["context"]["prompt_tokens"] == int(calls[-1][0]["input_ids"].shape[-1])
         assert branches == [answer for _, answer in calls]
         assert [kwargs["temperature"] for kwargs, _ in calls] == pro_ladder(2)
         assert all(kwargs["top_p"] == .73 and kwargs["num_return_sequences"] == 1 and

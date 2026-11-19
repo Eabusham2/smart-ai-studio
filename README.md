@@ -85,6 +85,20 @@ well as the main window. **AI RAM** reports the app and its owned workers in GiB
 MLX active tensors, peak and cache are shown separately because they overlap the
 process footprint.
 
+The **Context** meter uses the active invocation's actual input IDs or native
+usage record, including system text, chat-template markers, tool messages and
+processor-expanded input. It advances with observed generated tokens. Best Work
+candidate costs remain separate from that invocation's context occupancy. A
+backend that has not reported an exact count displays **unknown** until it can
+measure one; old model/request counters are never reused as a live reading.
+
+MLX checks memory headroom before every request, including when optional tuning
+or the user-selected RAM watchdog is off. It limits prefill batches and optional
+cache copies, releases failed inference state, and retries a memory failure once
+only if no response has been delivered. Recovery preserves the selected model
+and full conversation. A model and context still need to fit available memory;
+repeated small native CPU/Metal regressions do not certify every 27B workload.
+
 ### Your chosen model: automatic placement and speed configuration
 
 Import a local model or fetch an exact Hugging Face artifact. Studio preserves

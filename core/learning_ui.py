@@ -33,8 +33,8 @@ def show_online_learning(app):
 
     modal = tk.Toplevel(app.root)
     modal.title("Learning and saved memory")
-    modal.geometry("860x720")
-    modal.minsize(640, 560)
+    from core.gui_geometry import fit_window_to_screen
+    fit_window_to_screen(modal, 860, 720, min_width=640, min_height=560)
     modal.transient(app.root)
     colors = app.C
     modal.configure(bg=colors["bg_hud"])

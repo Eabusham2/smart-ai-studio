@@ -18,7 +18,7 @@ def test_response_footer_uses_measured_counts_and_rates():
 
 
 def test_context_never_fabricates_word_based_token_counts():
-    assert context_label(None, 32768) == "📊 Context: measuring / 32,768"
+    assert context_label(None, 32768) == "📊 Context: unknown / 32,768"
     assert context_label(100, 32768) == "📊 Prompt: 100 / 32,768 tokens (0.3%)"
     assert context_label(100, 32768, completion_tokens=51) == (
         "📊 Last request: 151 / 32,768 tokens (0.5%)"

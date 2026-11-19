@@ -70,6 +70,7 @@ class Tokenizer:
 def runtime(monkeypatch):
     import core.kv_cache_manager as kv
     import core.mlx_engine as engine
+    import core.mlx_memory_guard as memory_guard
     mx = types.ModuleType("mlx.core")
     mx.array = Array
     mx.eval = lambda *args: None
@@ -97,6 +98,9 @@ def runtime(monkeypatch):
     monkeypatch.setattr(kv, "MLX_AVAILABLE", True)
     monkeypatch.setattr(kv, "make_prompt_cache", lambda model: [KVCache()])
     monkeypatch.setattr(engine, "_memory_pressure", lambda: False)
+    monkeypatch.setattr(memory_guard, "memory_headroom", lambda **kwargs: memory_guard.MemoryHeadroom(
+        8 * memory_guard.GIB, 2 * memory_guard.GIB, 2 * memory_guard.GIB, 0,
+        12 * memory_guard.GIB, memory_guard.GIB, 8 * memory_guard.GIB))
     monkeypatch.setattr(engine, "_adaptive_prefill_step_size", lambda **kwargs: 1 if kwargs.get("aggressive") else 2)
 
     class Model:
@@ -383,6 +387,7 @@ def test_vlm_production_keeps_processor_prompt_and_sampling_and_clears_on_cancel
             self.requests = []
             self.cleared = 0
             self.last_reason = "fixture native checkpoint"
+            self.max_bytes = 256 * 1024 ** 2
             self.manager = object()
         def request_kwargs(self, *args, **kwargs):
             self.requests.append((args, kwargs))

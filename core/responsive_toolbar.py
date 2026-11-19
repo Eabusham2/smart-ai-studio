@@ -13,6 +13,8 @@ def install_wrapping_controls(frame):
     import tkinter as tk
 
     controls = tuple(frame.pack_slaves())
+    original_wrap = {widget: widget.cget("wraplength") for widget in controls
+                     if "wraplength" in widget.keys()}
     for widget in controls:
         widget.pack_forget()
     frame.pack_propagate(False)
@@ -25,14 +27,23 @@ def install_wrapping_controls(frame):
         pending = None
         if not frame.winfo_exists():
             return
-        available = max(80, frame.winfo_width() - 8)
+        # Before Tk allocates the parent's width this is 1px. Reflowing then
+        # permanently wrapped every label at 60px and could fill a whole dialog
+        # vertically. Its first real Configure event will schedule layout.
+        if frame.winfo_width() <= 1:
+            return
+        available = max(1, frame.winfo_width() - 8)
         sizes = tuple((widget.winfo_reqwidth(), widget.winfo_reqheight()) for widget in controls)
         if previous == (available, sizes):
             return
         x, y, row_height = 4, 4, 0
         for widget in controls:
-            if widget.winfo_reqwidth() > available and "wraplength" in widget.keys():
-                widget.configure(wraplength=max(60, available - 20))
+            if widget in original_wrap:
+                # Reconsider natural width on every resize/text change. A
+                # narrow window must not leave tall labels behind when widened.
+                widget.configure(wraplength=original_wrap[widget])
+                if widget.winfo_reqwidth() > available:
+                    widget.configure(wraplength=max(1, available - 20))
             width = min(widget.winfo_reqwidth(), available)
             height = widget.winfo_reqheight()
             if x > 4 and x + width > available + 4:
@@ -68,7 +79,7 @@ def install_wrapping_controls(frame):
         nonlocal timer_id
         if not frame.winfo_exists():
             return
-        state = (max(80, frame.winfo_width() - 8),
+        state = (max(1, frame.winfo_width() - 8),
                  tuple((widget.winfo_reqwidth(), widget.winfo_reqheight()) for widget in controls))
         if state != previous:
             schedule()

@@ -877,11 +877,15 @@ class UniversalControllerBackend:
             from mlx_vlm.generate import stream_generate
             from core.generation_metrics import TokenMeter, observe_mlx_response
             from core.tool_boundary_stop import ToolBoundaryStopper
-            meter = TokenMeter(self, "controller-mlx")
+            from core.vlm_prompt_tokens import prepare_vlm_inputs
+            prepared_prompt = self._mlx_prompt(prompt, 0)
+            prepared_inputs, prompt_count = prepare_vlm_inputs(self.model, self.processor, prepared_prompt)
+            meter = TokenMeter(self, "controller-mlx", prompt_tokens=prompt_count)
             detector = ToolBoundaryStopper() if stop_at_tool_boundary else None
             iterator = stream_generate(self.model, self.processor,
-                                       prompt=self._mlx_prompt(prompt, 0), image=[],
-                                       max_tokens=int(max_tokens), temperature=float(temperature), top_p=float(top_p))
+                                       prompt=prepared_prompt, image=[],
+                                       max_tokens=int(max_tokens), temperature=float(temperature), top_p=float(top_p),
+                                       **prepared_inputs)
             try:
                 for response in iterator:
                     if callable(cancelled) and cancelled():

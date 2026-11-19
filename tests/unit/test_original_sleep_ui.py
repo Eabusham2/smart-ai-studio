@@ -22,6 +22,7 @@ def test_original_sleep_action_uses_daemon_and_stale_dialog_cannot_start_it(tmp_
     root.after.side_effect = lambda delay, callback: callback()
     log, button = Mock(), Mock()
     # Use the public desktop command, replacing only its display, executor and trainer.
+    monkeypatch.setattr(app_gui, "fit_window_to_screen", Mock())
     for widget in ("Toplevel", "Label", "Frame"):
         monkeypatch.setattr(app_gui.tk, widget, MagicMock())
     monkeypatch.setattr(app_gui.tk, "Text", Mock(return_value=log))

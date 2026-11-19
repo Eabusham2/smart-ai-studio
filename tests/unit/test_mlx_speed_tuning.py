@@ -407,6 +407,9 @@ class TestVLMNativeSpeedAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, fake_vlm_runtime(folder) as env:
             env.backend._effective_generation_cap = lambda *args, **kwargs: 24
             env.backend._prepare_optional_warmup = lambda mx: None
+            env.backend._prepare_generation_memory = lambda mx: None
+            env.backend._stream_with_memory_retry = types.MethodType(
+                engine_method("_stream_with_memory_retry", env.state), env.backend)
             env.backend._encode_prompt = env.backend.tokenizer.encode
             env.backend._vlm_reuse_kwargs = lambda *args, **kwargs: {}
             env.backend._finish_vlm_request = lambda **kwargs: None

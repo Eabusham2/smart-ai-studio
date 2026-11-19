@@ -12,7 +12,7 @@ import tkinter as tk
 import pytest
 
 from core import gui_extensions
-from tests.unit.test_topbar_click_targets import _assert_click_target
+from tests.unit.test_topbar_click_targets import _assert_click_target, _resize_on_screen
 
 
 @pytest.fixture
@@ -28,8 +28,7 @@ def app(monkeypatch, tmp_path):
     settings.database_path = str(tmp_path / "memory.sqlite")
     root = tk.Tk()
     instance = app_gui.SmartAIChatbotApp(root, settings=settings)
-    root.geometry("1120x900")
-    root.update()
+    _resize_on_screen(root, 1120, 900)
     try:
         yield instance
     finally:
@@ -143,8 +142,7 @@ def test_all_persistent_controls_visible_clickable_and_inside_window(app, width,
     root = app.root
     app.current_theme = theme
     app._apply_theme_colors()
-    root.geometry(f"{min(width, root.winfo_screenwidth() - 20)}x900")
-    root.update()
+    _resize_on_screen(root, width, 900)
     names = (
         "btn_model_menu", "lbl_workspace", "chk_pro_branches", "chk_memory_limit",
         "entry_memory_limit", "btn_eval", "btn_load_unload", "btn_reset_reinstall",
@@ -152,6 +150,7 @@ def test_all_persistent_controls_visible_clickable_and_inside_window(app, width,
         "btn_dsl_play", "btn_toggle_canvas", "btn_toggle_resources", "btn_zoom",
         "btn_theme_toggle", "ent_generation_cap", "btn_apply_generation_cap",
         "chk_auto_speed", "btn_speed_tune", "btn_speed_cancel", "btn_lossless_speedups",
+        "lbl_generation_cap_reason", "lbl_speed_status",
         "history_older_button", "history_latest_button", "history_newer_button",
         "btn_attach", "txt_input", "btn_send", "chat_stream",
     )
@@ -195,9 +194,7 @@ def test_eval_controls_wrap_at_minimum_dialog_width(app):
     app._open_eval_window()
     window = app._eval_modal
     for width in (1000, 760, 1000):
-        window.geometry(f"{width}x720")
-        window.lift()
-        window.update()
+        _resize_on_screen(window, width, 720)
         for name in ("_eval_mem_check", "_eval_mem_entry", "_eval_deepswe_check",
                      "_eval_start_button", "_eval_pause_button", "_eval_cancel_button"):
             _assert_click_target(window, getattr(app, name))
@@ -206,14 +203,35 @@ def test_eval_controls_wrap_at_minimum_dialog_width(app):
 def test_canvas_actions_wrap_and_remain_accessible_during_resize(app):
     app._on_toggle_canvas_viewer()
     for width in (1280, 760, 1050):
-        app.root.geometry(f"{min(width, app.root.winfo_screenwidth() - 20)}x900")
-        app.root.update()
+        _resize_on_screen(app.root, width, 900)
         assert app.canvas_panel.winfo_rootx() + app.canvas_panel.winfo_width() <= app.root.winfo_rootx() + app.root.winfo_width()
         controls = app.canvas_toolbar.winfo_children()
         assert len(controls) == 9  # Title plus all eight original actions.
         for widget in controls:
             _assert_click_target(app.root, widget)
         _assert_click_target(app.root, app.txt_canvas)
+
+
+def test_wrapping_controls_wait_for_real_width_and_restore_labels_when_widened(app):
+    from core.responsive_toolbar import install_wrapping_controls
+    frame = tk.Frame(app.root)
+    label = tk.Label(frame, text="A long status label should return to one line when the window grows.")
+    label.pack(side="left")
+    app.root.update_idletasks()
+    natural_width, natural_height = label.winfo_reqwidth(), label.winfo_reqheight()
+    schedule = install_wrapping_controls(frame)
+    app.root.update()
+    assert int(label.cget("wraplength")) == 0  # The unmapped 1px frame is not a real viewport.
+    frame.place(x=10, y=10, width=150, height=140)
+    app.root.update()
+    assert label.winfo_reqheight() > natural_height
+    frame.place_configure(width=natural_width + 40)
+    schedule()
+    app.root.update()
+    assert int(label.cget("wraplength")) == 0
+    assert label.winfo_reqwidth() == natural_width
+    assert label.winfo_reqheight() == natural_height
+    frame.destroy()
 
 
 def _actions(window):
@@ -246,11 +264,15 @@ def test_all_dialog_actions_are_visible_at_minimum_and_regular_sizes(app, kind, 
     controls = _actions(window)
     labels = {str(widget.cget("text")) for widget in controls if "text" in widget.keys()}
     assert expected <= labels
+    window.update()
+    # Opening a dialog must already place it on screen; a later test resize
+    # must not conceal a production startup-position or initial-layout bug.
+    assert window.winfo_rootx() >= 0 and window.winfo_rooty() >= 0
+    assert window.winfo_rootx() + window.winfo_width() <= window.winfo_screenwidth()
+    assert window.winfo_rooty() + window.winfo_height() <= window.winfo_screenheight()
     minimum = window.minsize()
     for width, height in ((max(minimum[0], 640), max(minimum[1], 560)), (1000, 800)):
-        window.geometry(f"{width}x{height}")
-        window.lift()
-        window.update()
+        _resize_on_screen(window, width, height)
         for widget in controls:
             _assert_click_target(window, widget)
             assert widget.winfo_rooty() + widget.winfo_height() <= window.winfo_rooty() + window.winfo_height(), (kind, widget)
@@ -270,8 +292,7 @@ def test_speedups_scroll_exposes_every_option_and_keeps_save_visible(app):
     assert len([w for w in controls if isinstance(w, tk.Checkbutton)]) == len(_BOOLEAN_FIELDS)
     assert len([w for w in controls if isinstance(w, tk.Entry)]) == len(_PATH_FIELDS) + 2
     for width in (780, 420):
-        window.geometry(f"{width}x620")
-        window.update()
+        _resize_on_screen(window, width, 620)
         for widget in controls:
             if str(widget).startswith(str(body) + "."):
                 y = widget.winfo_rooty() - body.winfo_rooty()
@@ -403,7 +424,7 @@ def test_eval_confirmed_unload_reaches_launch_only_after_releasing_the_model(app
 
 
 def test_resource_attachment_and_queue_controls_are_reachable(app, tmp_path):
-    app.root.geometry("760x900")
+    _resize_on_screen(app.root, 760, 900)
     app._on_toggle_resource_viewer()
     app.root.update()
     controls = _actions(app.res_drawer)

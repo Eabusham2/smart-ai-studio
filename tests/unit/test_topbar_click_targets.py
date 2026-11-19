@@ -5,6 +5,15 @@ import tkinter as tk
 import pytest
 
 
+def _resize_on_screen(window, width, height):
+    """Exercise the requested size inside the CI desktop's real viewport."""
+    width = min(width, window.winfo_screenwidth() - 40)
+    height = min(height, window.winfo_screenheight() - 90)
+    window.geometry(f"{width}x{height}+10+35")
+    window.lift()
+    window.update()
+
+
 def _assert_click_target(root, widget):
     """Check visible geometry and native hit-tests where desktop hit-tests exist."""
     assert widget.winfo_ismapped(), widget
@@ -14,6 +23,9 @@ def _assert_click_target(root, widget):
     assert 0 <= x < root.winfo_screenwidth() and 0 <= y < root.winfo_screenheight()
     assert widget.winfo_x() >= 0
     assert widget.winfo_x() + widget.winfo_width() <= widget.master.winfo_width() + 2
+    if widget.winfo_class() in {"Label", "Button", "TButton", "Checkbutton", "TCheckbutton",
+                               "Menubutton", "TMenubutton", "TCombobox", "TSpinbox"}:
+        assert widget.winfo_height() >= widget.winfo_reqheight(), (widget, "clipped vertically")
     hit = root.winfo_containing(x, y)
     if sys.platform == "win32" and hit is None:
         # Unattended Windows CI may have Tk windows but no accessible system
@@ -32,9 +44,7 @@ def test_all_header_buttons_are_topmost_and_click_events_invoke_commands(width):
         app = SmartAIChatbotApp(root, settings=get_settings(backend="mock"))
         # The virtual CI display can be 1280px wide. Never assert physical
         # clickability outside the OS screen while testing larger presets.
-        actual_width = min(width, root.winfo_screenwidth() - 20)
-        root.geometry(f"{actual_width}x900")
-        root.update()
+        _resize_on_screen(root, width, 900)
         calls = []
         names = (
             "btn_eval", "btn_load_unload", "btn_reset_reinstall", "btn_export_chat",
@@ -78,8 +88,7 @@ def test_eval_is_unmapped_when_nontext_model_selected():
     root = tk.Tk()
     try:
         app = SmartAIChatbotApp(root, settings=get_settings(backend="mock"))
-        root.geometry("760x850")
-        root.update()
+        _resize_on_screen(root, 760, 850)
         assert app.btn_eval.winfo_manager() == "place"
         # Honor the Eval extension's text-only visibility rule.
         app.models_config[app.active_tab_id]["model_type"] = "audio"

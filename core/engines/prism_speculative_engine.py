@@ -471,7 +471,7 @@ class PrismSpeculativeReasoningBackend:
                 return
             from core.generation_metrics import TokenMeter, observe_server_event
             from core.tool_boundary_stop import ToolBoundaryStopper
-            meter = TokenMeter(self, "native-speculative")
+            meter = TokenMeter(self, "native-speculative", prompt_tokens=prompt_tokens)
             boundary = ToolBoundaryStopper() if stop_at_tool_boundary else None
             completed = False
             response = None

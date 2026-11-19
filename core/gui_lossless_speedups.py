@@ -147,10 +147,8 @@ def install_gui_lossless_speedups(module=None) -> None:
         dialog.title("Speedups")
         dialog.transient(self.root)
         dialog.configure(bg=self.C["bg_hud"])
-        screen_height = dialog.winfo_screenheight()
-        screen_width = dialog.winfo_screenwidth()
-        dialog.geometry(f"{min(780, max(420, screen_width - 80))}x{min(780, max(420, screen_height - 100))}")
-        dialog.minsize(420, 420)
+        from core.gui_geometry import fit_window_to_screen
+        fit_window_to_screen(dialog, 780, 780, min_width=420, min_height=420)
         dialog.protocol("WM_DELETE_WINDOW", lambda: close_dialog(self))
         dialog.bind("<Escape>", lambda event: close_dialog(self))
 

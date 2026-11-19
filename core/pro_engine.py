@@ -1227,8 +1227,8 @@ class ProReasoningEngine:
                     from core.generation_metrics import TokenMeter
                     from core.tool_boundary_stop import TokenBoundaryCriteria
                     from transformers import StoppingCriteriaList
-                    meter = TokenMeter(self, "transformers")
                     prefix = int(inputs["input_ids"].shape[1])
+                    meter = TokenMeter(self, "transformers", prompt_tokens=prefix)
                     stop = TokenBoundaryCriteria(self.tokenizer, prefix, meter,
                                                 enabled=bool(getattr(self, "_best_work_stop_at_tools", False)),
                                                 cancelled=cancel_event.is_set if cancel_event is not None else None)

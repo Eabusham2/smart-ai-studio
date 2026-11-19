@@ -278,3 +278,33 @@ def test_actual_gui_generation_pipeline_uses_incremental_renderer_and_keeps_reop
         assert "first thought" in visible(app.chat_stream)
     finally:
         root.destroy()
+
+
+def test_failed_generation_finishes_reasoning_and_keeps_its_reopenable_toggle(tmp_path):
+    import tkinter as tk
+    from app_gui import SmartAIChatbotApp
+    from config.settings import get_settings
+    root = tk.Tk()
+    try:
+        app = SmartAIChatbotApp(root, settings=get_settings(backend="mock", database_path=str(tmp_path / "state.db")))
+        def failing_stream(*_args, **_kwargs):
+            yield "<thi"
+            yield "nk>reasoning before failure"
+            raise RuntimeError("fixture decoder failure")
+        app.multimodal = SimpleNamespace(busy=False, handle_command=lambda _msg: None,
+                                        stream_solve=failing_stream)
+        app._set_generating_state(True)
+        app._process_message_thread("Example prompt", "Example prompt")
+        root.update()
+        assert not app.is_generating
+        assert "fixture decoder failure" in visible(app.chat_stream)
+        tid = next(tid for tid, text in app.thinking_cache.items() if text == "reasoning before failure")
+        assert not app.thinking_meta[tid]["live"]
+        assert not app.thinking_expanded[tid]
+        assert "Thinking…" not in visible(app.chat_stream)
+        app._on_toggle_thinking_dropdown(tid)
+        assert "reasoning before failure" in visible(app.chat_stream)
+        app._on_toggle_thinking_dropdown(tid)
+        assert "reasoning before failure" not in visible(app.chat_stream)
+    finally:
+        root.destroy()

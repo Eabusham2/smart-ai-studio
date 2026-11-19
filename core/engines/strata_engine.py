@@ -509,7 +509,8 @@ class StrataReasoningBackend:
                         if chunk.get("usage") is not None:
                             self.last_usage = self._usage(chunk["usage"])
                             self.last_generation["usage"] = copy.deepcopy(self.last_usage)
-                            meter.observe(count=self.last_usage["completion_tokens"])
+                            meter.observe(count=self.last_usage["completion_tokens"],
+                                          prompt_tokens=self.last_usage["prompt_tokens"])
                         if isinstance(chunk.get("timings"), dict):
                             self.last_generation["timings"] = copy.deepcopy(chunk["timings"])
                             meter.observe(rate=chunk["timings"].get("predicted_per_second"))

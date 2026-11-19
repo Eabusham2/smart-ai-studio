@@ -617,8 +617,8 @@ def install_gui_eval_panel(module=None) -> None:
         modal = tk.Toplevel(self.root)
         self._eval_modal = modal
         modal.title("Smart AI • 4,014 Evaluation")
-        modal.geometry("1000x720")
-        modal.minsize(760, 560)
+        from core.gui_geometry import fit_window_to_screen
+        fit_window_to_screen(modal, 1000, 720, min_width=760, min_height=560)
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
 

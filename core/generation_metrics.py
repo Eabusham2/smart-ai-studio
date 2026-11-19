@@ -42,7 +42,7 @@ def observe_generations(callback):
 
 class TokenMeter:
     """One real backend invocation; its decode clock starts on the first token."""
-    def __init__(self, owner=None, source="model", clock=None):
+    def __init__(self, owner=None, source="model", clock=None, *, prompt_tokens=None):
         self.owner = owner
         self.source = source
         self.clock = clock or time.perf_counter
@@ -51,19 +51,29 @@ class TokenMeter:
         self.last = None
         self.first_count = 0
         self.tokens = None
+        # This is the complete logical input, including cached prefix tokens.
+        # When the adapter already has the exact submitted token IDs, keep that
+        # count: some runtimes report only the uncached suffix in responses.
+        self.prompt_tokens = prompt_tokens if valid_count(prompt_tokens) else None
+        self._prompt_from_inputs = valid_count(prompt_tokens)
         self.reported_rate = None
         self.id = uuid.uuid4().hex
         self.closed = False
         self.callback = _observer.get()
         if owner is not None:
+            owner.last_prompt_token_count = self.prompt_tokens
             owner.last_generation_tokens = None
             owner.last_tok_per_sec = None
             owner.last_generation_seconds = None
         self._publish()
 
-    def observe(self, *, count=None, delta=None, rate=None, text=False):
+    def observe(self, *, count=None, delta=None, rate=None, text=False,
+                prompt_tokens=None, prompt_from_inputs=False):
         now = self.clock()
         old = self.tokens
+        if valid_count(prompt_tokens) and (prompt_from_inputs or not self._prompt_from_inputs):
+            self.prompt_tokens = prompt_tokens
+            self._prompt_from_inputs = self._prompt_from_inputs or bool(prompt_from_inputs)
         if valid_count(count):
             # A final backend usage record may exclude EOS although the raw
             # sampler observed it. Reconcile to that authoritative count.
@@ -87,6 +97,7 @@ class TokenMeter:
             decode = (self.tokens - self.first_count) / seconds
         return {
             "id": self.id, "source": self.source, "tokens": self.tokens,
+            "prompt_tokens": self.prompt_tokens,
             "first_token_at": self.first, "last_token_at": self.last,
             "ttft_s": None if self.first is None else self.first - self.started,
             "decode_tps": decode, "decode_seconds": seconds,
@@ -97,6 +108,7 @@ class TokenMeter:
     def _publish(self):
         snap = self.snapshot()
         if self.owner is not None:
+            self.owner.last_prompt_token_count = self.prompt_tokens
             self.owner.last_generation_tokens = self.tokens
             self.owner.last_tok_per_sec = snap["decode_tps"]
             self.owner.last_generation_seconds = snap["wall_s"]
@@ -128,7 +140,10 @@ class RequestMetrics:
         tokens = sum(s["tokens"] for s in measured) if complete else None
         decode_s = sum(s.get("decode_seconds", 0) for s in measured)
         intervals = sum(s.get("decode_intervals") or 0 for s in measured)
-        live = next((s for s in reversed(samples) if not s.get("finished")), samples[-1] if samples else {})
+        # A failed older invocation must not replace the most recently started
+        # request when that newer request finishes. Each sample is scoped to its
+        # own real invocation; aggregate branch cost is kept separately below.
+        live = samples[-1] if samples else {}
         first = [s["first_token_at"] for s in samples if s.get("first_token_at") is not None]
         return {
             "tokens": tokens,
@@ -136,6 +151,15 @@ class RequestMetrics:
             "wall_tps": tokens / max(1e-9, self.clock() - self.started) if tokens is not None else None,
             "ttft_s": min(first) - self.started if first else None,
             "invocations": len(samples), "all_counts_available": complete,
+            # Context is occupied by the current native invocation. It is not
+            # the sum of sampled tokens from losing Pro branches, a prior tool
+            # stage, or a display replay of the selected answer.
+            "context": {
+                "id": live.get("id"), "source": live.get("source"),
+                "prompt_tokens": live.get("prompt_tokens"),
+                "completion_tokens": live.get("tokens"),
+                "finished": bool(live.get("finished")),
+            } if live else None,
         }
 
 
@@ -156,6 +180,12 @@ def observe_llama_tokens(model, meter):
 
     @functools.wraps(original)
     def observed(*args, **kwargs):
+        # llama-cpp constructs its full prompt (BOS/template/special IDs) before
+        # calling generate(). Count that exact submitted sequence, not a second
+        # encode with potentially different special-token defaults.
+        prompt_ids = kwargs.get("tokens", args[0] if args else None)
+        if isinstance(prompt_ids, (list, tuple)) and all(type(token) is int for token in prompt_ids):
+            meter.observe(prompt_tokens=len(prompt_ids), prompt_from_inputs=True)
         iterator = original(*args, **kwargs)
         try:
             for token_id in iterator:
@@ -187,7 +217,8 @@ def observe_mlx_response(meter, response):
     rate = getattr(response, "generation_tps", None)
     meter.observe(count=count if valid_count(count) else None,
                   delta=1 if not valid_count(count) and type(token) is int else None,
-                  rate=rate, text=bool(getattr(response, "text", "")))
+                  rate=rate, text=bool(getattr(response, "text", "")),
+                  prompt_tokens=getattr(response, "prompt_tokens", None))
 
 
 def observe_server_event(meter, event):
@@ -200,4 +231,5 @@ def observe_server_event(meter, event):
     meter.observe(count=count if valid_count(count) else None,
                   delta=delta if not valid_count(count) else None,
                   rate=timing.get("predicted_per_second"),
-                  text=bool(event.get("content") or event.get("text")))
+                  text=bool(event.get("content") or event.get("text")),
+                  prompt_tokens=usage.get("prompt_tokens", event.get("tokens_evaluated", timing.get("prompt_n"))))

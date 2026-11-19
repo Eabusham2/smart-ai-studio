@@ -19,6 +19,12 @@ GB = 1024 ** 3
 
 class TestOwnedWorkerMemory(unittest.TestCase):
     def setUp(self):
+        # These cases deliberately supply synthetic RSS values. Keep their
+        # accounting source deterministic on macOS too; the explicit Darwin
+        # case below verifies physical-footprint accounting separately.
+        platform_patch = patch.object(memory.platform, "system", return_value="Linux")
+        platform_patch.start()
+        self.addCleanup(platform_patch.stop)
         self.reads = []
         self.rss = {None: 2 * GB, 111: 4 * GB, 222: 6 * GB}
         owner = self

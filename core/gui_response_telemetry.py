@@ -26,19 +26,31 @@ def response_footer(snapshot, *, pro=False):
     return f"⚡ Generated tokens: {token_text} · {rate_text}{suffix}"
 
 
-def context_label(prompt_tokens, limit, *, completion_tokens=None):
+def context_label(prompt_tokens, limit, *, completion_tokens=None, live=False, multiple_invocations=False):
     """Report only confirmed counts, and distinguish prompt-only occupancy."""
     if not measured_int(limit) or limit <= 0:
         return "📊 Context: limit unavailable"
     if not measured_int(prompt_tokens):
-        return f"📊 Context: measuring / {limit:,}"
+        mode = "Live context" if live else "Context"
+        generated = f" · {completion_tokens:,} generated" if measured_int(completion_tokens) else ""
+        return f"📊 {mode}: unknown / {limit:,}{generated}"
     if measured_int(completion_tokens):
         used = prompt_tokens + completion_tokens
-        mode = "Last request"
+        mode = "Live context" if live else ("Last invocation" if multiple_invocations else "Last request")
     else:
         used = prompt_tokens
-        mode = "Prompt"
+        mode = "Live prompt" if live else "Prompt"
     return f"📊 {mode}: {used:,} / {limit:,} tokens ({100 * used / limit:.1f}%)"
+
+
+def active_backend_owner(engine):
+    """Select exactly the backend owning this model, including direct Torch."""
+    active = getattr(engine, "active_backend", None)
+    name = {"mlx": "mlx_backend", "controller": "controller_backend",
+            "gguf": "gguf_backend", "bitnet": "bitnet_backend"}.get(active)
+    if name:
+        return getattr(engine, name, None)
+    return engine if active in {"torch", "cuda", "cpu", "mps"} else None
 
 
 def context_limit(model_info, engine, configured_limit):
@@ -51,16 +63,7 @@ def context_limit(model_info, engine, configured_limit):
     info = model_info or {}
     published = info.get("max_context")
     selected = getattr(engine, "_context_budget_tokens", None)
-    owner = None
-    for key in ("controller_backend", "mlx_backend", "gguf_backend", "bitnet_backend"):
-        value = getattr(engine, key, None)
-        if value is not None and (
-            getattr(value, "is_loaded", False)
-            or getattr(value, "is_mlx_available", False)
-            or getattr(value, "model", None) is not None
-        ):
-            owner = value
-            break
+    owner = active_backend_owner(engine)
     actual = []
     if owner is not None:
         n_ctx = getattr(owner, "n_ctx", None)
@@ -90,15 +93,14 @@ def context_limit(model_info, engine, configured_limit):
 
 def observed_prompt_tokens(engine):
     """Read exact native/backend prompt usage; never replace it with a guess."""
-    active = getattr(engine, 'active_backend', None)
-    name = {'mlx': 'mlx_backend', 'controller': 'controller_backend',
-            'gguf': 'gguf_backend', 'bitnet': 'bitnet_backend'}.get(active)
-    owner = getattr(engine, name, None) if name else None
+    owner = active_backend_owner(engine)
     if owner is None:
         return None
-    count = getattr(owner, 'last_prompt_token_count', None)
-    if measured_int(count):
-        return count
+    if hasattr(owner, 'last_prompt_token_count'):
+        count = owner.last_prompt_token_count
+        # None is intentional at the start of an unmeasured invocation. Do not
+        # resurrect a previous usage record while the current model prefills.
+        return count if measured_int(count) else None
     for data in (getattr(owner, 'last_usage', None),
                  getattr(owner, 'last_generation', None)):
         if not isinstance(data, dict):

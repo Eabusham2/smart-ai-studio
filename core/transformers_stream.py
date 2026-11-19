@@ -13,8 +13,9 @@ def stream_transformers(model, tokenizer, inputs, options, *, owner=None,
                         stop_at_tool_boundary=False, cancelled=None):
     from transformers import TextIteratorStreamer, StoppingCriteriaList
     import torch
-    meter = TokenMeter(owner, "transformers")
     prompt = inputs.get("input_ids") if hasattr(inputs, "get") else None
+    meter = TokenMeter(owner, "transformers",
+                       prompt_tokens=int(prompt.shape[-1]) if prompt is not None else None)
     encoder_decoder = bool(getattr(getattr(model, "config", None), "is_encoder_decoder", False))
     prefix = 1 if encoder_decoder else int(prompt.shape[-1]) if prompt is not None else 0
     stopped = threading.Event()

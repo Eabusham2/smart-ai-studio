@@ -460,7 +460,7 @@ def test_native_telemetry_clears_stale_word_estimate_and_keeps_measured_speed(ap
     app._update_telemetry(5.0)
     # No backend prompt-token count: do not carry the previous 777-token guess.
     assert app.total_tokens_used == 0
-    assert app.lbl_context.cget("text") == "📊 Context: measuring / 32,768"
+    assert app.lbl_context.cget("text") == "📊 Context: unknown / 32,768"
     assert app.lbl_tps.cget("text") == "⚡ 5.0 tok/s"
 
 

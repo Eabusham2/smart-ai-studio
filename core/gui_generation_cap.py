@@ -225,9 +225,13 @@ def install_gui_generation_cap(module=None) -> None:
             font=getattr(mod, "_FONT_TINY"),
             bg=self.C["bg_hud"],
             fg=self.C["text_muted"],
-            anchor="e",
+            anchor="w", justify="left",
         )
-        self.lbl_generation_cap_reason.pack(side="right", padx=(4, 10))
+        self.lbl_generation_cap_reason.pack(side="left", fill="x", expand=True, padx=(4, 10))
+        self.lbl_generation_cap_reason.bind(
+            "<Configure>", lambda event: self.lbl_generation_cap_reason.configure(
+                wraplength=max(1, event.width - 6)),
+        )
         if _strata_selected(self):
             _refresh_context_model_note(self)
 

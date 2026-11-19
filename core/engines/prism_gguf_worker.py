@@ -200,9 +200,12 @@ def main() -> int:
                 last_metrics_sent = [0.0]
                 def report(sample):
                     now = time.perf_counter()
-                    if sample["finished"] or sample["tokens"] == 1 or now-last_metrics_sent[0] >= 0.04:
+                    if (sample["finished"] or sample["tokens"] == 1 or
+                            sample["prompt_tokens"] is not None and sample["tokens"] is None or
+                            now-last_metrics_sent[0] >= 0.04):
                         last_metrics_sent[0] = now
                         _emit({"event": "metrics", "tokens": sample["tokens"],
+                               "prompt_tokens": sample["prompt_tokens"],
                                "decode_tps": sample["decode_tps"]})
                 meter.callback = report
                 observed_usage = None
@@ -219,7 +222,8 @@ def main() -> int:
                             for chunk in stream:
                                 if isinstance(chunk.get("usage"), dict):
                                     observed_usage = chunk["usage"]
-                                    meter.observe(count=observed_usage.get("completion_tokens"))
+                                    meter.observe(count=observed_usage.get("completion_tokens"),
+                                                  prompt_tokens=observed_usage.get("prompt_tokens"))
                                 token = str((chunk.get("choices") or [{}])[0].get("text", ""))
                                 stop_here = False
                                 if detector is not None:
@@ -238,6 +242,8 @@ def main() -> int:
                     meter.finish()
                 if meter.tokens is not None:
                     observed_usage = dict(observed_usage or {}, completion_tokens=meter.tokens)
+                if meter.prompt_tokens is not None:
+                    observed_usage = dict(observed_usage or {}, prompt_tokens=meter.prompt_tokens)
                 _emit({"event": "done", "usage": observed_usage})
                 continue
             if op == "entropy":
