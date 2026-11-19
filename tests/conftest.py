@@ -8,10 +8,43 @@ from __future__ import annotations
 
 import ipaddress
 import http.client
+import gc
 import os
 import socket
 import urllib.parse
 import urllib.request
+
+import pytest
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Collect destroyed Tk object cycles on their owner between GUI tests."""
+    try:
+        import tkinter as tk
+    except ImportError:
+        yield
+        return
+    destroyed_widget = False
+    original_destroy = tk.Misc.destroy
+
+    def destroy(widget, *args, **kwargs):
+        nonlocal destroyed_widget
+        destroyed_widget = True
+        return original_destroy(widget, *args, **kwargs)
+
+    # Observe actual widget teardown, including roots created inside test bodies
+    # and unittest class fixtures. Importing tkinter alone must not trigger GC.
+    tk.Misc.destroy = destroy
+    try:
+        yield
+    finally:
+        tk.Misc.destroy = original_destroy
+        if destroyed_widget:
+            # Run after all fixture references are released. Otherwise a later
+            # model worker's gc.collect() can finalize these dead interpreters'
+            # Variables off the Tk thread and delay an unrelated model test.
+            gc.collect()
 
 
 def _local_host(host):

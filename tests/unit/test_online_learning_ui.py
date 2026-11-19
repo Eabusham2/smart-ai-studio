@@ -1,5 +1,6 @@
 """Real Tk paging and learning-panel worker handoff, using synthetic replies."""
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from types import SimpleNamespace
@@ -48,8 +49,45 @@ def descendants(widget):
         yield from descendants(child)
 
 
-def test_implementation_control_preserves_both_transcripts_and_original_default_actions(app):
+def _wait_for_idle(app, timeout_ms=3000):
+    """Give each operation its own deadline and release every test callback."""
+    poll_id = None
+
+    def poll():
+        nonlocal poll_id
+        worker = getattr(app, "_generation_worker", None)
+        if not app.is_generating and (worker is None or not worker.is_alive()):
+            app.root.quit()
+        else:
+            poll_id = app.root.after(10, poll)
+
+    poll_id = app.root.after(10, poll)
+    deadline_id = app.root.after(timeout_ms, app.root.quit)
+    try:
+        app.root.mainloop()
+    finally:
+        # A completed operation must not leave a quit callback that interrupts
+        # a later operation. Cancel the poll too if this operation timed out.
+        app.root.after_cancel(poll_id)
+        app.root.after_cancel(deadline_id)
+    assert not app.is_generating
+    worker = getattr(app, "_generation_worker", None)
+    assert worker is None or not worker.is_alive()
+
+
+@pytest.mark.parametrize("switch_delay", [0.0, 0.6], ids=["normal", "delayed-worker"])
+def test_implementation_control_preserves_both_transcripts_and_original_default_actions(app, monkeypatch, switch_delay):
     from core.memory_preferences import load_learning_implementation
+    original_switch = app.engine.set_learning_implementation
+
+    def switch(*args, **kwargs):
+        # Each change fits its deadline, while the full sequence deliberately
+        # outlives the first deadline to expose callbacks leaked between waits.
+        if switch_delay:
+            time.sleep(switch_delay)
+        return original_switch(*args, **kwargs)
+
+    monkeypatch.setattr(app.engine, "set_learning_implementation", switch)
     app.chat_history[app.active_tab_id].append({"role": "user", "content": "Managed conversation"})
     archived = app.chat_history[app.active_tab_id]
     show_online_learning(app)
@@ -62,15 +100,7 @@ def test_implementation_control_preserves_both_transcripts_and_original_default_
     def select(mode):
         chooser.set(mode)
         apply.invoke()
-        def poll():
-            if not app.is_generating:
-                app.root.quit()
-            else:
-                app.root.after(10, poll)
-        app.root.after(10, poll)
-        app.root.after(3000, app.root.quit)
-        app.root.mainloop()
-        assert not app.is_generating
+        _wait_for_idle(app)
         assert app.settings.learning_implementation == mode
         assert app.engine.awake_consolidator.learning_implementation == mode
         assert load_learning_implementation(app.settings.database_path) == mode
@@ -186,15 +216,7 @@ def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app, task, me
                       if isinstance(widget, ttk.Button) and widget.cget("text") == "Run learning task")
     run_button.invoke()
 
-    def poll():
-        if observed and not app.is_generating:
-            app.root.quit()
-        else:
-            app.root.after(10, poll)
-
-    app.root.after(10, poll)
-    app.root.after(3000, app.root.quit)
-    app.root.mainloop()
+    _wait_for_idle(app)
     assert observed and observed[0][0] != main_thread
     assert observed[0][1]["method"] == method
     assert not app.is_generating and not app._sleep_consolidating
@@ -276,14 +298,7 @@ def test_sleep_keeps_verified_episode_queue_and_chat_modes_separate(app, monkeyp
         chooser.event_generate('<<ComboboxSelected>>')
         expected = len(observed) + 1
         trigger.invoke()
-        def poll():
-            if len(observed) == expected and not app.is_generating:
-                app.root.quit()
-            else:
-                app.root.after(10, poll)
-        app.root.after(10, poll)
-        app.root.after(4000, app.root.quit)
-        app.root.mainloop()
+        _wait_for_idle(app, timeout_ms=4000)
         assert len(observed) == expected and not app.is_generating
         assert str(chooser.cget('state')) == 'readonly'
 
@@ -412,16 +427,7 @@ def test_implementation_control_restores_its_scope_fields_and_keeps_both_startup
 
     def apply(label):
         next(w for w in controls if isinstance(w, ttk.Button) and w.cget("text") == label).invoke()
-        def poll():
-            if app.is_generating:
-                app.root.after(10, poll)
-            else:
-                app.root.quit()
-        app.root.after(10, poll)
-        timeout = app.root.after(3000, app.root.quit)
-        app.root.mainloop()
-        app.root.after_cancel(timeout)
-        assert not app.is_generating
+        _wait_for_idle(app)
 
     scope.set(managed.kind)
     key.insert(0, managed.key)

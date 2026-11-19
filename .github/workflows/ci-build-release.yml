@@ -326,6 +326,7 @@ jobs:
               'test_manual_scroll_preempts_pending_tail_callbacks_and_new_chunks_do_not_jump': 1,
               'test_model_switch_routes_sql_tools_learner_and_transcript_to_same_owner': 1,
               'test_stop_then_send_waits_for_the_old_worker_to_release_its_request': 1,
+              'test_implementation_control_preserves_both_transcripts_and_original_default_actions': 2,
               'test_context_updates_on_prefill_and_decode_then_labels_completed_invocation': 1,
               'test_canvas_preserves_editor_line_number_and_shows_exception': 1,
               'test_canvas_long_stdout_keeps_final_traceback_visible_in_bounded_real_widget': 1,
@@ -423,6 +424,10 @@ jobs:
                            if c.get('name') == 'test_real_mlx_failed_prefill_tensor_is_freed_before_retry']
           assert len(retry_cleanup) == 1, 'Native inference retry cleanup must execute'
           assert retry_cleanup[0].find('skipped') is None, 'Native inference retry cleanup cannot be skipped'
+          entropy = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
+                     if c.get('name', '').split('[', 1)[0] == 'test_real_mlx_last_projection_entropy_matches_original_forward']
+          assert len(entropy) == 2, 'Both native entropy projection contracts must execute'
+          assert all(c.find('skipped') is None for c in entropy), 'Native entropy projection parity cannot be skipped'
           PY
       - name: Preserve native learning results
         if: always()
@@ -817,6 +822,9 @@ jobs:
             MLX request cache limit. Unchanged monitor ticks keep the cache intact.
           - Require real desktop regression cases to execute in every platform
             test lane, including both themes at the minimum 760x600 window size.
+          - Avoid unused full-sequence vocabulary logits in the entropy prepass
+            on compatible MLX models, preserving the full prompt and routing
+            calculation, and reclaim failed prepass state before generation.
 
           **Mac (Apple Silicon): automatic full installation to Applications**
           Download `Install-SmartAI-macOS-Full.command` and its `.sha256` receipt.

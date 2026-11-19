@@ -106,6 +106,9 @@ cache copies, releases failed inference state, and retries a memory failure once
 only if no response has been delivered. Recovery preserves the selected model
 and full conversation. The background memory monitor cannot raise a stricter
 request cache limit, and unchanged monitor ticks leave the allocator alone.
+The entropy prepass requests only the final vocabulary projection on compatible
+MLX models while still evaluating the full prompt; its routing formula stays the
+same. A failed prepass releases its temporary tensors before generation starts.
 A model and context still need to fit available memory;
 repeated small native CPU/Metal regressions do not certify every 27B workload.
 

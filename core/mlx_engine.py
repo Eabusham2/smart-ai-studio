@@ -781,15 +781,20 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         if not self.is_mlx_available or self.model is None:
             return 0.45
         mx = logits = last_logits = probs = None
+        memory_failed = False
         try:
             import math
             import mlx.core as mx
+            from core.mlx_memory_guard import native_last_logits_kwargs
             self._prepare_generation_memory(mx)
             tokens = self._encode_prompt(prompt)
             if not tokens:
                 return 0.45
             lm = getattr(self.model, "language_model", self.model)
-            logits = lm(mx.array([tokens]))
+            # Routing only consumes the last row. A supported native control
+            # avoids allocating prompt-length x vocabulary logits while still
+            # evaluating the complete prompt with the same decoder schedule.
+            logits = lm(mx.array([tokens]), **native_last_logits_kwargs(lm))
             logits = getattr(logits, "logits", logits)
             last_logits = logits[:, -1, :]
             probs = mx.softmax(last_logits, axis=-1)
@@ -797,14 +802,22 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             if math.isnan(entropy_val) or math.isinf(entropy_val):
                 return 0.45
             return float(entropy_val)
-        except Exception:
+        except Exception as exc:
+            if _is_metal_oom(exc):
+                import traceback
+                memory_failed = True
+                traceback.clear_frames(exc.__traceback__)
+                exc.__traceback__ = None
             return 0.45
         finally:
             # The route still uses the same full-prompt entropy calculation.
             # Its temporary logits must not stay live into the real response.
             logits = last_logits = probs = None
             if mx is not None:
-                _reclaim_if_needed(mx)
+                if memory_failed:
+                    self._recover_generation_memory(mx)
+                else:
+                    _reclaim_if_needed(mx)
 
     def generate_branches(
         self,

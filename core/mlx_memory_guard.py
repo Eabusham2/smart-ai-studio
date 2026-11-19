@@ -120,6 +120,41 @@ def native_vlm_prefill_default():
         return None
 
 
+def native_last_logits_kwargs(model):
+    """Request only the final vocabulary projection when the runtime supports it.
+
+    This keeps the complete prompt and decoder forward unchanged. Older models
+    with no native control retain their original call. Current mlx-vlm models
+    forward the control through **kwargs to ``project_logits``. vMLX's Qwen3.5
+    implementation advertises its different control on the callable itself.
+    Recognize those contracts from metadata, including in pyc-only release
+    bundles, without treating arbitrary **kwargs as support.
+    """
+    try:
+        forward = model.__call__
+        parameters = inspect.signature(forward).parameters
+        for name in ("logits_to_keep", "num_logits_to_keep"):
+            parameter = parameters.get(name)
+            if parameter is not None and parameter.kind in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+                return {name: 1}
+        if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+            return {}
+        implementation = getattr(forward, "__func__", forward)
+        if getattr(implementation, "_vmlx_prefill_last_logits_only", False) is True:
+            return {"prefill_last_logits_only": True}
+        code = getattr(implementation, "__code__", None)
+        projection = getattr(implementation, "__globals__", {}).get("project_logits")
+        if (str(getattr(implementation, "__module__", "")).startswith("mlx_vlm.models.")
+                and code is not None and "logits_to_keep" in code.co_consts
+                and "project_logits" in code.co_names and callable(projection)
+                and getattr(projection, "__module__", None) == "mlx_vlm.models.base"):
+            return {"logits_to_keep": 1}
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return {}
+
+
 def set_allocator_cache_limit(mx, allowance, *, only_reduce=False):
     """Serialize request/monitor policy so a watchdog cannot raise a live cap.
 
