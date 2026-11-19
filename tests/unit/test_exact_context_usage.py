@@ -206,3 +206,75 @@ def test_mlx_prefix_reuse_does_not_shrink_live_context_to_suffix(runtime):
         assert metrics.snapshot()["context"]["prompt_tokens"] == 5
         assert metrics.snapshot()["context"]["completion_tokens"] == 2
     assert backend.last_prompt_reused_tokens == 4
+
+
+@pytest.mark.parametrize("kind", ["image", "video", "audio"])
+def test_media_review_replaces_old_text_context_with_unknown_then_new_measured_text(kind):
+    from core.media_orchestrator import MediaController
+    controller = MediaController.__new__(MediaController)
+    controller._can_perceive = lambda value: value == kind
+    metrics = RequestMetrics()
+    calls = []
+    native_result = {"perception_available": True, "description": "actual review fixture"}
+    def review(**kwargs):
+        calls.append(kwargs)
+        context = metrics.snapshot()["context"]
+        assert context["source"] == "media-review" and not context["finished"]
+        assert context["prompt_tokens"] is None and context["completion_tokens"] is None
+        assert "unknown" in context_label(context["prompt_tokens"], 2048, live=True)
+        return native_result
+    controller._controller_review_hook = lambda: review
+    with observe_generations(metrics.update):
+        prior = TokenMeter(source="previous-text", prompt_tokens=71)
+        prior.observe(count=8)
+        prior.finish()
+        result = controller._review_with_controller({"kind": kind, "path": "fixture.media",
+                                                    "prompt": "inspect exact artifact", "artifact_id": "artifact"})
+        context = metrics.snapshot()["context"]
+        assert context["source"] == "media-review" and context["finished"]
+        assert context["prompt_tokens"] is None and context["completion_tokens"] is None
+        continuation = TokenMeter(source="text-after-media", prompt_tokens=125)
+        continuation.observe(count=3)
+        continuation.finish()
+    assert calls == [{"path": "fixture.media", "kind": kind, "prompt": "inspect exact artifact"}]
+    assert result == {"status": "success", "artifact_id": "artifact", "review": native_result,
+                      "weights_updated": False}
+    assert metrics.snapshot()["context"]["prompt_tokens"] == 125
+    assert metrics.snapshot()["context"]["completion_tokens"] == 3
+
+
+def test_media_review_failure_finishes_unknown_invocation_without_restoring_old_usage():
+    from core.media_orchestrator import MediaController
+    controller = MediaController.__new__(MediaController)
+    controller._can_perceive = lambda kind: True
+    def fail(**kwargs):
+        raise RuntimeError("media inference failed")
+    controller._controller_review_hook = lambda: fail
+    metrics = RequestMetrics()
+    with observe_generations(metrics.update):
+        prior = TokenMeter(prompt_tokens=99)
+        prior.observe(count=9)
+        prior.finish()
+        with pytest.raises(RuntimeError, match="media inference failed"):
+            controller._review_with_controller({"kind": "image", "path": "fixture.png"})
+    context = metrics.snapshot()["context"]
+    assert context["source"] == "media-review" and context["finished"]
+    assert context["prompt_tokens"] is None and context["completion_tokens"] is None
+
+
+def test_native_media_meter_remains_authoritative_when_outer_review_scope_finishes():
+    from core.media_orchestrator import MediaController
+    controller = MediaController.__new__(MediaController)
+    controller._can_perceive = lambda kind: True
+    metrics = RequestMetrics()
+    def measured_review(**kwargs):
+        native = TokenMeter(source="native-media", prompt_tokens=512)
+        native.observe(count=9)
+        native.finish()
+        return {"perception_available": True}
+    controller._controller_review_hook = lambda: measured_review
+    with observe_generations(metrics.update):
+        controller._review_with_controller({"kind": "image", "path": "fixture.png", "artifact_id": "artifact"})
+    context = metrics.snapshot()["context"]
+    assert context["source"] == "native-media" and context["finished"]
+    assert context["prompt_tokens"] == 512 and context["completion_tokens"] == 9

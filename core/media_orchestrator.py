@@ -74,11 +74,21 @@ class MediaController:
                 ),
             }
         hook = self._controller_review_hook()
-        result = hook(
-            path=str(record["path"]),
-            kind=kind,
-            prompt=str(record.get("prompt", "")),
-        )
+        # Perception is a new native invocation. Its input can include image,
+        # video, or audio embeddings, so a preceding text request's token count
+        # cannot describe it. Keep usage unknown unless the backend publishes
+        # its own exact meter; that newer invocation remains authoritative even
+        # when this outer scope finishes later.
+        from core.generation_metrics import TokenMeter
+        meter = TokenMeter(source="media-review")
+        try:
+            result = hook(
+                path=str(record["path"]),
+                kind=kind,
+                prompt=str(record.get("prompt", "")),
+            )
+        finally:
+            meter.finish()
         if not isinstance(result, dict):
             raise RuntimeError("Multimodal controller review must return a result object")
         if not bool(result.get("perception_available", False)):
