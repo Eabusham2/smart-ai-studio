@@ -68,8 +68,10 @@ def test_lossy_shortcuts_remain_disabled_outside_app_turboquant_exception():
     full_context = _src("core/full_context_hardening.py")
     compat = _src("run_studio_complete.py")
 
-    assert 'speculative_mode: str = Field(default="none"' in settings
-    assert 'os.getenv("SPECULATIVE_MODE", "none")' in settings
+    # Fresh native preferences select only installed, verified strategies.
+    # This does not enable the older unverified/MLX speculative shortcut.
+    assert 'speculative_mode: str = Field(default="auto"' in settings
+    assert 'os.getenv("SPECULATIVE_MODE", "auto")' in settings
     assert 'self.mode = "none"' in speculative
     assert "return []" in speculative
     assert "root_prefix_cache" not in core_init

@@ -45,6 +45,29 @@ class SleepConsolidationDaemon:
         self.optimizer = None
         self.base_model = None
 
+    def close(self):
+        """Release this standalone trainer after a completed or failed GUI job.
+
+        The daemon owns a second model, optimizer moments and Fisher snapshots.
+        Dropping only the GUI worker is insufficient if a callback/traceback
+        still references the daemon. Keep its small database/config objects,
+        but explicitly retire every tensor owner before trimming allocators.
+        Call only after run_consolidation_cycle has returned or raised.
+        """
+        try:
+            if self.optimizer is not None:
+                self.optimizer.zero_grad(set_to_none=True)
+        finally:
+            self.optimizer = None
+            self.model = None
+            self.base_model = None
+            self.tokenizer = None
+            self.fisher_estimator.fisher_matrix.clear()
+            self.fisher_estimator.anchor_weights.clear()
+            from core.training_memory import release_training_memory
+            stats = release_training_memory()
+        return stats
+
     def _init_model_and_lora(self) -> None:
         """Initializes Slow-LoRA trainable synaptic adapter."""
         if not getattr(self.settings, "use_mock", False):

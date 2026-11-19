@@ -20,7 +20,7 @@ from tools.build_macos_noadmin_portable import (
 )
 
 
-def _sample_bundle(tmp_path):
+def _sample_bundle(tmp_path, *, full_app=False):
     packed = tmp_path / ARCHIVE
     with zipfile.ZipFile(packed, 'w') as archive:
         root = 'SmartAI.app/Contents/Resources/app/'
@@ -29,6 +29,14 @@ def _sample_bundle(tmp_path):
         runtime_bin.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(runtime_bin, '#!/bin/sh\nexit 0\n')
         archive.writestr(root + 'runtime/python/.smartai-deps-ready', 'synthetic-test\n')
+        if full_app:
+            applet = zipfile.ZipInfo('SmartAI.app/Contents/MacOS/applet')
+            applet.create_system = 3
+            applet.external_attr = (stat.S_IFREG | 0o755) << 16
+            archive.writestr(applet, '#!/bin/sh\nexit 0\n')
+            archive.writestr('SmartAI.app/Contents/Info.plist', '<plist/>')
+            archive.writestr(root + 'app_gui.py', '# synthetic app, no inference\n')
+            archive.writestr(root + 'launch_studio.sh', '#!/bin/bash\nexit 0\n')
         for repo in sorted(REPOS):
             folder = root + 'preloaded_models/' + repo.replace('/', '--') + '/'
             archive.writestr(folder + 'config.json', '{"model_type":"test_only"}')

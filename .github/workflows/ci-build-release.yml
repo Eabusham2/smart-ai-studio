@@ -373,7 +373,7 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
           MLX_TEST_DEVICE: ${{ matrix.device }}
         run: |
-          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py
+          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py tests/unit/test_consolidation_memory_lifecycle.py
           python - <<'PY'
           import xml.etree.ElementTree as ET
           cases = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
@@ -391,6 +391,10 @@ jobs:
                            'test_own_current_generation_reference_publishes_only_a_successor'))]
           assert len(protected) >= 9, 'Every implementation must protect its immutable checkpoints'
           assert all(c.find('skipped') is None for c in protected), 'Immutable checkpoint protection tests cannot be skipped'
+          lifecycle = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
+                       if 'test_consolidation_memory_lifecycle' in c.get('classname', '')]
+          assert len(lifecycle) >= 4, 'Repeated consolidation lifecycle tests must execute'
+          assert all(c.find('skipped') is None for c in lifecycle), 'Native consolidation lifecycle tests cannot be skipped'
           PY
       - name: Preserve native learning results
         if: always()
@@ -710,6 +714,21 @@ jobs:
           cd dist
           /usr/bin/shasum -a 256 -c SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256
 
+      - name: Build standalone full Mac installer with verified two-model kit
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
+        run: |
+          python -m tools.build_macos_full_installer \
+            --kit dist/SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip \
+            --output-dir dist \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --commit "$GITHUB_SHA"
+          /bin/bash -n dist/Install-SmartAI-macOS-Full.command
+          cd dist
+          /usr/bin/shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256
+
       - name: Upload Build Artifacts to Workflow Run
         uses: actions/upload-artifact@v4
         with:
@@ -741,6 +760,35 @@ jobs:
           # published release, without suggesting it contains a second 18GB copy.
           cat > smartai-release-notes.md <<'SMARTAI_RELEASE_NOTES'
           ## Smart AI Studio — full release
+
+          ### Desktop fixes
+
+          - Restore Eval, Context Limit, Auto speed and Speedups in the packaged
+            app; initialization failures now produce a visible diagnostic.
+          - Apply light/dark themes to existing dialogs, hidden panels and chat
+            content, and keep action rows accessible when windows are resized.
+          - Keep compatible execution speedups enabled when calibration lacks
+            memory headroom; verified native Auto selects an available strategy.
+          - Isolate episodic memory and chat updates by model, retain earlier
+            shared history for read-only viewing, and require confirmed unloading
+            before starting a replacement model or benchmark.
+          - Keep thinking sections expandable after completion and preserve the
+            reader's position when scrolling during generation.
+          - Correct AI RAM accounting and explicitly release standalone Sleep
+            training state; add repeated native consolidation lifecycle tests.
+
+          **Mac (Apple Silicon): automatic full installation to Applications**
+          Download `Install-SmartAI-macOS-Full.command` and its `.sha256` receipt.
+          In the download folder, run `shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256`,
+          then `/bin/bash Install-SmartAI-macOS-Full.command`.
+          It downloads the exact checksum-pinned kit, verifies and assembles all
+          Mac archive parts, installs `SmartAI.app` with the complete embedded
+          runtime and BOTH Bonsai 2 models into `/Applications`, removes its own
+          redundant downloads and assembled ZIP, and opens the app. A previous
+          app is backed up, and chat/learning data is preserved. An administrator
+          password is requested only if writing to Applications requires it.
+          Quit SmartAI before upgrading. Allow at least 55 GB free for a fresh
+          installation. Completed downloads are retained after a failed attempt.
 
           **Mac (Apple Silicon): no-admin portable option**
           Download `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip` and its
@@ -799,6 +847,20 @@ jobs:
               throw new Error('No-admin portable release kit has an invalid SHA256 receipt');
             }
             for (const name of [kitName, receiptName]) {
+              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
+            }
+            const installerName = 'Install-SmartAI-macOS-Full.command';
+            const installerBytes = await fs.readFile(`dist/${installerName}`);
+            const installerDigest = require('crypto').createHash('sha256').update(installerBytes).digest('hex');
+            const installerReceiptName = installerName + '.sha256';
+            const installerReceipt = (await fs.readFile(`dist/${installerReceiptName}`, 'utf8')).trim();
+            const installerText = installerBytes.toString('utf8');
+            if (installerReceipt !== `${installerDigest}  ${installerName}` ||
+                !installerText.includes(`COMMIT="${context.sha}"`) ||
+                !installerText.includes(`KIT_SHA256="${kitDigest}"`)) {
+              throw new Error('Full Mac installer does not pin this commit and verified two-model kit');
+            }
+            for (const name of [installerName, installerReceiptName]) {
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
             }
             for (const target of ['Linux-x86_64', 'Windows-x86_64', 'macOS-arm64']) {

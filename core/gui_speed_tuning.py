@@ -108,6 +108,10 @@ def speed_busy_reason(app: Any) -> str:
         return "Speed tuning is running. Cancel it or wait for it to finish."
     if getattr(app, "_model_load_in_progress", False):
         return "Wait for model loading to finish before tuning."
+    if any(getattr(app, name, False) for name in (
+        "_model_unload_in_progress", "_model_unload_pending", "_strata_unload_pending", "_native_unload_pending",
+    )):
+        return "Wait for model unloading to finish before tuning."
     if getattr(app, "is_generating", False):
         return "Finish the current chat or learning task before tuning."
     if getattr(getattr(app, "multimodal", None), "busy", False):
@@ -117,21 +121,21 @@ def speed_busy_reason(app: Any) -> str:
     consolidator = getattr(getattr(app, "engine", None), "awake_consolidator", None)
     if getattr(consolidator, "is_consolidating", False):
         return "Wait for the current memory update before tuning."
+    worker = getattr(app, "_generation_worker", None)
+    if worker is not None and worker.is_alive():
+        return "Wait for the current model worker to finish before tuning."
     proc = getattr(app, "_eval_proc", None)
     if proc is not None and proc.poll() is None:
         return "Finish or cancel evaluation before tuning."
     return ""
 
 
-def install_gui_speed_tuning() -> None:
-    mod = sys.modules.get("app_gui")
-    if mod is None:
-        main = sys.modules.get("__main__")
-        if os.path.basename(str(getattr(main, "__file__", ""))) == "app_gui.py":
-            mod = main
-    cls = getattr(mod, "SmartAIChatbotApp", None) if mod is not None else None
-    tk = getattr(mod, "tk", None)
-    if cls is None or tk is None or getattr(cls, "_speed_tuning_ui_installed", False):
+def install_gui_speed_tuning(module=None) -> None:
+    from core.gui_extensions import resolve_gui_module
+    mod = resolve_gui_module(module)
+    cls = mod.SmartAIChatbotApp
+    tk = mod.tk
+    if getattr(cls, "_speed_tuning_ui_installed", False):
         return
 
     original_build = cls._build_single_top_bar

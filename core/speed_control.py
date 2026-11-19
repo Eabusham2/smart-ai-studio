@@ -99,6 +99,8 @@ def install_speed_control(cls) -> None:
 
             update("Comparing native execution settings…" if enabled else "Restoring native defaults…")
             result = hook(enabled=bool(enabled), force=bool(force), progress=update, cancelled=is_cancelled)
+            from core.lossless_speed_control import describe_speed_result
+            result = describe_speed_result(self, result)
             if result.get("status") in {"busy", "cancelled", "timeout", "memory_pressure", "error", "failed"}:
                 self.auto_speed_enabled = previous_enabled
             self.speed_status = dict(result)
@@ -106,7 +108,9 @@ def install_speed_control(cls) -> None:
         except Exception as exc:
             # Tuning is optional; it must not turn a successful model load into failure.
             self.auto_speed_enabled = previous_enabled
-            self.speed_status = {"status": "error", "message": f"Speed tuning unavailable; previous settings retained. {exc}"}
+            from core.lossless_speed_control import describe_speed_result
+            self.speed_status = describe_speed_result(self, {
+                "status": "error", "message": f"Speed tuning unavailable; previous settings retained. {exc}"})
             return dict(self.speed_status)
         finally:
             self.speed_tuning_active = False

@@ -113,6 +113,7 @@ def test_switching_models_in_legacy_reopens_managed_text_for_the_destination_sco
     app = SmartAIChatbotApp.__new__(SmartAIChatbotApp)
     app.settings, app.engine = engine.settings, engine
     app.models_config = {"A": {}, "B": {}, "audio": {"model_type": "audio"}}
+    app.active_tab_id = "A"
     app.tools, app.db = object(), object()
     app._show_transcript_page = lambda: None
     monkeypatch.setattr("app_gui.make_autonomous_learner", lambda **kwargs: object())
@@ -197,6 +198,48 @@ def test_learning_panel_runs_model_work_off_tk_and_returns_to_idle(app, task, me
     assert any('"trained_chunks": 1' in text and '"completed"' in text for text in output)
 
 
+@pytest.mark.parametrize("unload_flag", [
+    "_model_unload_in_progress", "_model_unload_pending",
+    "_strata_unload_pending", "_native_unload_pending",
+])
+@pytest.mark.parametrize("source_label", [
+    "Verified episodes (original Sleep/EWC)", "Current chat exchanges",
+])
+def test_open_managed_sleep_refuses_pending_or_running_unload(app, monkeypatch, unload_flag, source_label):
+    service = app.engine.awake_consolidator
+    trained = []
+    # A failed cleanup can retain a backend that still passes readiness checks.
+    monkeypatch.setattr(service, "_real_training_ready", lambda: True)
+    monkeypatch.setattr(service, "pending_verified_episodes", lambda db: 1)
+    monkeypatch.setattr(service, "pending_exchanges", lambda history: 1)
+
+    def train(*args, **kwargs):
+        trained.append((args, kwargs))
+        return {"status": "idle"}
+
+    monkeypatch.setattr(service, "sleep_verified_episodes", train)
+    monkeypatch.setattr(service, "sleep", train)
+    app._on_open_sleep_consolidation_panel()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    chooser = next(w for w in descendants(modal) if isinstance(w, ttk.Combobox))
+    trigger = next(w for w in descendants(modal) if isinstance(w, tk.Button)
+                   and "Trigger Sleep" in w.cget("text"))
+    chooser.set(source_label)
+
+    # Set the cleanup state after opening the panel: its real button must recheck.
+    setattr(app, unload_flag, True)
+    previous_worker = getattr(app, "_generation_worker", None)
+    trigger.invoke()
+    assert getattr(app, "_generation_worker", None) is previous_worker
+    assert not trained
+    assert not app.is_generating and not getattr(app, "_sleep_consolidating", False)
+    assert getattr(app, unload_flag)
+    assert str(chooser.cget("state")) == "readonly"
+    assert str(trigger.cget("state")) == "normal"
+    text = "".join(w.get("1.0", "end") for w in descendants(modal) if isinstance(w, tk.Text))
+    assert "Finish unloading the current model" in text and "Retry unload" in text
+
+
 def test_sleep_keeps_verified_episode_queue_and_chat_modes_separate(app, monkeypatch):
     service = app.engine.awake_consolidator
     observed = []
@@ -245,7 +288,7 @@ def test_sleep_keeps_verified_episode_queue_and_chat_modes_separate(app, monkeyp
     assert all(item[2] != ui_thread for item in observed)
     text = ''.join(w.get('1.0', 'end') for w in descendants(modal) if isinstance(w, tk.Text))
     assert 'verified-checkpoint' in text and 'chat-checkpoint' in text
-    assert 'shared queue' in text and 'remain in active context' in text
+    assert "this model and learning implementation's queue" in text and 'remain in active context' in text
 
     from core.memory_scopes import LearningScope
     app.engine.learning_scope = LearningScope('project', 'different-project')

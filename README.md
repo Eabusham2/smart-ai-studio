@@ -55,6 +55,36 @@ defaults, exactness boundaries, released native runtimes and source-only build
 instructions. The tests and native compile gates run without a model; they do
 not claim measured hardware output parity or a throughput gain.
 
+### Desktop controls, chat and model memory
+
+The **Eval**, **Context Limit**, **Auto speed** and **Speedups…** controls are
+installed when the desktop starts, including the packaged Mac launcher. **Eval**
+is visible for normal Bonsai 2 before and after loading. Starting an evaluation
+first unloads chat; a failed unload shows **Retry unload** and prevents a second
+model from starting. A control that fails to initialize produces a visible
+notice and a diagnostic in the app data folder's `logs/gui-extensions.log`.
+
+Exact prompt reuse, shared branch prefill and tokenizer memoization stay enabled
+on compatible backends when calibration reports insufficient headroom. Native
+drafting defaults to **auto** for a verified compatible native runtime; an
+explicitly saved **none** (off) choice is preserved. Enabling an optimization does not
+claim a measured speed increase for every prompt.
+
+Chats, episodic recall and learning queues follow their selected model. Each
+learning implementation has its own episodic database and saved state. Earlier
+unscoped records remain available under **Memory → Earlier shared history…** as
+read-only history. Standalone Legacy Sleep requires an unloaded chat model and a
+compatible Transformers training base; use Managed or Hybrid Sleep for the
+bundled packed models' native training path.
+
+Thinking sections expand while reasoning arrives, can be collapsed immediately,
+and collapse once reasoning finishes. Their toggle remains available to reopen
+them. Scrolling away from the bottom suspends automatic following until you
+return to the bottom. Theme changes update existing dialogs and chat widgets as
+well as the main window. **AI RAM** reports the app and its owned workers in GiB;
+MLX active tensors, peak and cache are shown separately because they overlap the
+process footprint.
+
 ### Your chosen model: automatic placement and speed configuration
 
 Import a local model or fetch an exact Hugging Face artifact. Studio preserves
@@ -317,6 +347,26 @@ Release packages and Best Work behavior are documented in
 bundle Python and dependencies; setup packages install dependencies into a private
 user directory on first launch. No pretrained model is executed by the package
 smoke check.
+
+**Apple Silicon full installer:** Download
+[`Install-SmartAI-macOS-Full.command`](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Install-SmartAI-macOS-Full.command)
+and [its SHA256 receipt](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Install-SmartAI-macOS-Full.command.sha256)
+from the same release. Quit SmartAI, then run these commands in the download folder:
+
+```bash
+shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256 &&
+  /bin/bash Install-SmartAI-macOS-Full.command
+```
+
+The helper verifies a commit-pinned kit, downloads and checks every model/archive
+part, assembles the complete app with its embedded runtime and both Bonsai 2
+models, installs `/Applications/SmartAI.app`, removes its own redundant downloads,
+and opens the app. It preserves chat/learning data and keeps the previous app as
+a dated backup. It requests an administrator password only when the Applications
+folder requires one. Allow at least 55 GB free for a fresh download and extraction.
+After a failed attempt, completed downloads remain available for retry. The
+installer needs no Homebrew, Xcode or system Python. To install elsewhere, set
+`SMARTAI_FULL_TARGET` to an absolute path ending in `/SmartAI.app`.
 
 **Apple Silicon no-admin portable:** The release also provides
 `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip`. It assembles the existing

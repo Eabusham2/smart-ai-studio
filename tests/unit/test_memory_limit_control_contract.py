@@ -13,7 +13,7 @@ def test_top_bar_memory_limit_control_is_persistent_and_visible():
     assert 'APP_PREFS_FILE = os.path.join(get_portable_data_dir(), "app_preferences.json")' in src
     assert 'text="Mem Limit"' in src
     assert "self.entry_memory_limit.pack(" in src
-    assert 'text="GB"' in src
+    assert 'text="GiB"' in src
     assert 'data["memory_limit"]' in src
     assert '"enabled": bool(self._memory_limit_enabled)' in src
     assert '"limit_gb": round(float(self._memory_limit_gb), 2)' in src

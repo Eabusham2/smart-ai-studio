@@ -10,7 +10,8 @@ from memory.db import EpisodicMemoryDB
 
 
 def test_original_sleep_action_uses_daemon_and_stale_dialog_cannot_start_it(tmp_path, monkeypatch):
-    settings = Settings(database_path=str(tmp_path / "episodes.sqlite3"), use_mock=True, learning_implementation="legacy")
+    settings = Settings(database_path=str(tmp_path / "episodes.sqlite3"), use_mock=True, learning_implementation="legacy",
+                        small_model=True, base_model_path='unrelated/default-base')
     assert settings.learning_implementation == "legacy"
     db = EpisodicMemoryDB(db_path=settings.database_path)
     episode_ids = [db.log_interaction(f"prompt-{i}", "answer", verified_reward=1, surprise_score=0.7)
@@ -29,7 +30,7 @@ def test_original_sleep_action_uses_daemon_and_stale_dialog_cannot_start_it(tmp_
     daemon = Mock()
     monkeypatch.setattr(app_gui, "SleepConsolidationDaemon", daemon)
     badges = [Mock(), Mock(), Mock()]
-    app = SimpleNamespace(root=root, settings=settings, C=defaultdict(str), models_config={"tab": {}},
+    app = SimpleNamespace(root=root, settings=settings, C=defaultdict(str), models_config={"tab": {'repo_id': 'fixture/selected-base'}},
                           active_tab_id="tab", engine=SimpleNamespace(), _make_badge=Mock(side_effect=badges),
                           _update_telemetry=Mock())
 
@@ -48,8 +49,17 @@ def test_original_sleep_action_uses_daemon_and_stale_dialog_cannot_start_it(tmp_
 
     trigger = button.configure.call_args.kwargs["command"]
     trigger()
-    daemon.assert_called_once_with(settings=settings, use_mock=True)
+    daemon.assert_called_once()
+    selected = daemon.call_args.kwargs['settings']
+    assert selected is not settings
+    assert selected.database_path == settings.database_path
+    assert selected.small_model is False
+    assert selected.base_model_path == 'fixture/selected-base'
+    assert settings.base_model_path == 'unrelated/default-base' and settings.small_model is True
+    assert selected.lora_adapter_path == str(tmp_path / 'standalone-slow-lora')
+    assert daemon.call_args.kwargs['use_mock'] is True
     daemon.return_value.run_consolidation_cycle.assert_called_once_with()
+    daemon.return_value.close.assert_called_once_with()
     assert db.get_stats()["unconsolidated_verified"] == 1
     assert "Pending verified episodes: 1" in badges[0].configure.call_args.kwargs["text"]
     assert app._sleep_consolidating is False

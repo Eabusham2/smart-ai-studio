@@ -42,6 +42,12 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
     (dist / kit_name).write_bytes(kit_payload)
     (dist / (kit_name + ".sha256")).write_text(
         f"{hashlib.sha256(kit_payload).hexdigest()}  {kit_name}\n", encoding="ascii")
+    installer_name = "Install-SmartAI-macOS-Full.command"
+    installer = (f'#!/bin/bash\nCOMMIT="{SHA}"\n'
+                 f'KIT_SHA256="{hashlib.sha256(kit_payload).hexdigest()}"\n').encode()
+    (dist / installer_name).write_bytes(installer)
+    (dist / (installer_name + '.sha256')).write_text(
+        f'{hashlib.sha256(installer).hexdigest()}  {installer_name}\n', encoding='ascii')
     for name in ("Reassemble-SmartAI-macOS-arm64.command", "SmartAI-Windows.zip",
                  "SmartAI-Linux-x86_64.tar.gz", "SmartAI-Unix-POSIX.tar.gz",
                  "SmartAI-native-cpu-Linux-X64.zip", "SmartAI-native-metal-macOS-ARM64.zip"):
@@ -74,6 +80,19 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
     elif fault == "bad_noadmin_receipt":
         (dist / "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256").write_text(
             "0" * 64 + "  SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip\n", encoding="ascii")
+    elif fault == "missing_full_installer":
+        assets = [item for item in assets if item["name"] != installer_name]
+    elif fault == "missing_full_receipt":
+        assets = [item for item in assets if item["name"] != installer_name + '.sha256']
+    elif fault in {"bad_full_receipt", "wrong_full_commit", "wrong_full_kit"}:
+        if fault == "bad_full_receipt":
+            (dist / (installer_name + '.sha256')).write_text('0' * 64 + f'  {installer_name}\n')
+        else:
+            bad = installer.replace(SHA.encode(), b'b' * 40) if fault == "wrong_full_commit" else installer.replace(
+                hashlib.sha256(kit_payload).hexdigest().encode(), b'0' * 64)
+            (dist / installer_name).write_bytes(bad)
+            (dist / (installer_name + '.sha256')).write_text(
+                f'{hashlib.sha256(bad).hexdigest()}  {installer_name}\n')
     elif fault == "wrong_size":
         assets[0]["size"] += 1
     elif fault == "upload_in_progress":
@@ -151,7 +170,7 @@ def test_successful_release_removes_only_obsolete_packages_and_moves_exact_rolli
     assert order.index("assets") < order.index("delete") < order.index("update") < order.index("getRef")
 
 
-@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "missing_noadmin_kit", "missing_noadmin_receipt", "bad_noadmin_receipt", "wrong_size", "upload_in_progress", "duplicate_part"])
+@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "missing_noadmin_kit", "missing_noadmin_receipt", "bad_noadmin_receipt", "missing_full_installer", "missing_full_receipt", "bad_full_receipt", "wrong_full_commit", "wrong_full_kit", "wrong_size", "upload_in_progress", "duplicate_part"])
 def test_incomplete_replacement_neither_deletes_legacy_download_nor_moves_tag(tmp_path, fault):
     result = run_release_gate(tmp_path, fault=fault)
     assert result["error"]
@@ -182,6 +201,8 @@ def test_provenance_gate_runs_after_all_uploads_and_missing_package_is_fatal():
     assert all(target in source for target in ("Linux-x86_64", "Windows-x86_64", "macOS-arm64"))
     assert "SmartAI-native-" in source
     assert "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip" in source
+    assert source.index("- name: Build standalone full Mac installer") < source.index("- name: Publish or Update GitHub Release")
+    assert 'Install-SmartAI-macOS-Full.command' in source
     assert source.index("- name: Publish or Update GitHub Release") < source.index(f"- name: {STEP_NAME}")
     assert 'python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"' in source
     assert ",check=True)" in source

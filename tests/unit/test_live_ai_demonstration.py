@@ -67,7 +67,8 @@ class TestLiveAIDemonstration(unittest.TestCase):
         # 1. System Monitor (Dynamic)
         ok, res = self.tools.execute_tool("system_monitor", {})
         self.assertTrue(ok)
-        self.assertIn("Process Memory", res)
+        self.assertIn("AI RAM (app and owned workers)", res)
+        self.assertIn("GiB", res)
         self.assertNotIn("27.4B", res)
 
         # 2. Math & Calculus (Auto Variable Detection)

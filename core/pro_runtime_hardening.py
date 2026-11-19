@@ -55,11 +55,8 @@ def _active_backend_name(engine) -> str:
 
 
 def _rss_mb() -> float:
-    try:
-        import psutil
-        return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
-    except Exception:
-        return 0.0
+    from core.training_memory import process_rss_mb
+    return process_rss_mb()
 
 
 def install_pro_runtime_hardening(cls) -> None:
@@ -100,18 +97,14 @@ def install_pro_runtime_hardening(cls) -> None:
         return result
 
     def hardened_unload(self, *args, **kwargs):
-        owns_sidecar = (
-            getattr(getattr(self, "controller_backend", None), "runtime", None) == "strata"
-            or getattr(getattr(self, "gguf_backend", None), "runtime", None) == "prism_speculative"
-        )
         result = None
         try:
             result = original_unload(self, *args, **kwargs)
             return result
         finally:
-            # A failed owned shutdown can leave real model resources resident.
-            # Keep their registration until the retained runtime is stopped.
-            if not owns_sidecar or (isinstance(result, dict) and result.get("status") == "unloaded"):
+            # Any failed shutdown may retain weights or an owned worker. Keep
+            # its files registered until that runtime confirms full release.
+            if isinstance(result, dict) and result.get("status") == "unloaded":
                 unregister_loaded_model()
 
     def hardened_fallback(self, prompt: str, branch_count: int):
@@ -134,7 +127,8 @@ def install_pro_runtime_hardening(cls) -> None:
         measurements = measured_work.snapshot()
         metadata = dict(metadata or {})
         controller = getattr(self, "controller_backend", None)
-        is_strata = getattr(controller, "runtime", None) == "strata"
+        is_strata = (getattr(self, "active_backend", None) == "controller"
+                     and getattr(controller, "runtime", None) == "strata")
         native = getattr(self, "gguf_backend", None)
         is_native = (getattr(self, "active_backend", None) == "gguf"
                      and getattr(native, "runtime", None) == "prism_speculative")
@@ -161,12 +155,15 @@ def install_pro_runtime_hardening(cls) -> None:
         metadata["tok_speed"] = generated / elapsed if generated else 0.0
         metadata["measured_wall_time_s"] = elapsed
         metadata["memory_rss_mb"] = _rss_mb()
-        if is_strata or is_native:
+        memory_owner = (controller if getattr(self, "active_backend", None) == "controller"
+                        else native if getattr(self, "active_backend", None) == "gguf" else None)
+        owned_processes = getattr(memory_owner, "owned_process_ids", None)
+        if callable(owned_processes):
             # Count only processes whose ownership the managed runtime verified.
             from core.memory_watchdog import SystemMemoryWatchdog
-            memory = SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owner.owned_process_ids())
+            memory = SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owned_processes())
             metadata["memory_rss_mb"] = memory["total_allocated_gb"] * 1024
-            if not metadata["token_usage_available"]:
+            if (is_strata or is_native) and not metadata["token_usage_available"]:
                 metadata.pop("tokens_generated", None)
         metadata["backend"] = _active_backend_name(self)
 

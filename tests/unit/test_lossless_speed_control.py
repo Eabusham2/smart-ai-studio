@@ -74,7 +74,7 @@ def test_prompt_options_apply_without_loading_or_changing_native_selection():
     assert calls[0]["enabled"] is True and calls[0]["prompt_reuse"] is False
     assert calls[0]["branch_prefill"] is True and calls[0]["cache_dir"] == "/chosen/cache"
     assert "speculative_mode" not in calls[0] and "draft_model_path" not in calls[0]
-    assert engine.lossless_speed_options["speculative_mode"] == "none"
+    assert engine.lossless_speed_options["speculative_mode"] == "auto"
 
 
 def test_disk_default_location_is_resolved_only_when_explicitly_enabled(monkeypatch, tmp_path):
@@ -147,7 +147,7 @@ def test_preference_save_preserves_other_sections_and_corruption_keeps_defaults(
     assert not list(tmp_path.glob("*.tmp"))
     path.write_text("invalid json")
     fallback = load_preferences(path, defaults={"prompt_reuse": False})
-    assert fallback["prompt_reuse"] is False and fallback["speculative_mode"] == "none"
+    assert fallback["prompt_reuse"] is False and fallback["speculative_mode"] == "auto"
 
 
 def test_owned_native_unload_cancels_before_waiting_and_retains_failed_owner():

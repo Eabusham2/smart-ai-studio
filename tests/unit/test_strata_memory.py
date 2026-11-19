@@ -103,7 +103,7 @@ class TestOwnedWorkerMemory(unittest.TestCase):
         self.assertEqual(memory.SystemMemoryWatchdog.get_process_rss_gb(owned_pids=[111]), 6)
         self.assertEqual(memory.SystemMemoryWatchdog.get_process_rss_gb(), 2)
 
-    def test_metal_accounting_is_preserved_while_owned_rss_is_added_once(self):
+    def test_metal_is_telemetry_and_not_added_to_process_total_twice(self):
         mlx = types.ModuleType("mlx")
         mlx.__path__ = []
         mx = types.ModuleType("mlx.core")
@@ -117,7 +117,39 @@ class TestOwnedWorkerMemory(unittest.TestCase):
         self.assertEqual(result["model_metal_active_gb"], 3)
         self.assertEqual(result["model_metal_peak_gb"], 5)
         self.assertEqual(result["owned_process_rss_gb"], 4)
-        self.assertEqual(result["total_allocated_gb"], 9)
+        self.assertEqual(result["total_allocated_gb"], 6)
+
+    def test_mac_physical_footprint_includes_metal_and_workers_once(self):
+        footprints = {None: 5 * GB, 111: 7 * GB}
+        with patch.object(memory.platform, "system", return_value="Darwin"), \
+             patch("core.training_memory.process_memory_bytes", side_effect=lambda pid=None: footprints[pid]):
+            result = memory.SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=[111, 111])
+        self.assertEqual(result["app_rss_gb"], 2)
+        self.assertEqual(result["app_footprint_gb"], 5)
+        self.assertEqual(result["owned_process_footprint_gb"], 7)
+        self.assertEqual(result["total_allocated_gb"], 12)
+
+    def test_unknown_system_memory_does_not_fabricate_a_machine_or_unload(self):
+        with patch.object(sys.modules["psutil"], "virtual_memory", side_effect=OSError("unavailable")):
+            result = memory.SystemMemoryWatchdog.get_detailed_memory_breakdown()
+            watchdog = memory.SystemMemoryWatchdog(max_process_ram_gb=10)
+            with patch.object(watchdog, "adjust_dynamic_metal_headroom"):
+                pressure, _ = watchdog.check_memory_pressure()
+        self.assertFalse(result["system_memory_known"])
+        self.assertEqual(result["system_total_gb"], 0)
+        self.assertFalse(pressure)
+
+    def test_optional_metal_cache_respects_os_reserve(self):
+        mlx = types.ModuleType("mlx")
+        mlx.__path__ = []
+        mx = types.ModuleType("mlx.core")
+        limits = []
+        mx.set_cache_limit = limits.append
+        mlx.core = mx
+        with patch.dict(sys.modules, {"mlx": mlx, "mlx.core": mx}), \
+             patch.object(sys.modules["psutil"], "virtual_memory", return_value=types.SimpleNamespace(available=GB)):
+            memory.SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
+        self.assertEqual(limits, [0])
 
 
 if __name__ == "__main__":

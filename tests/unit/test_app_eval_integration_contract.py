@@ -201,7 +201,9 @@ def test_top_app_controls_explicitly_include_context_limit_and_memory_watcher():
 
     # One existing app Context control + one existing top-app memory control.
     # Eval gets its own memory watcher but must not clone the normal app controls.
-    assert app.count("install_gui_generation_cap()") == 1
+    from core.gui_extensions import EXTENSIONS
+    assert app.count("install_gui_extensions(sys.modules[__name__])") == 1
+    assert sum(row[2] == "install_gui_generation_cap" for row in EXTENSIONS) == 1
     assert context.count('text="Context Limit"') == 1
     assert app.count('text="Mem Limit"') == 1
     assert 'text="Context Limit"' not in eval_ui
@@ -209,7 +211,7 @@ def test_top_app_controls_explicitly_include_context_limit_and_memory_watcher():
 
     assert "self.memory_limit_var = tk.BooleanVar" in app
     assert "self.entry_memory_limit.pack(" in app
-    assert 'text="GB"' in app
+    assert 'text="GiB"' in app
     assert "tk.Toplevel(self.root)" in eval_ui
 
 

@@ -10,6 +10,15 @@ from app_gui import SmartAIChatbotApp
 from config.settings import Settings
 
 
+def _cancel_ui_callbacks(root):
+    # Each test owns a separate interpreter. Do not leave invalid after scripts
+    # for a later test's Tk event loop to encounter after this root is destroyed.
+    for pending in root.tk.splitlist(root.tk.call('after', 'info')):
+        # Cancel scheduling only. The callback command may belong to a child;
+        # that widget's destroy() must remove it from its own command registry.
+        root.tk.call('after', 'cancel', pending)
+
+
 @pytest.mark.parametrize('starts_with_pro', [False, True])
 def test_selected_handoff_is_painted_once_and_all_thinking_sections_render(tmp_path, monkeypatch, starts_with_pro):
     monkeypatch.setenv('SMARTAI_DATA_DIR', str(tmp_path))
@@ -37,7 +46,14 @@ def test_selected_handoff_is_painted_once_and_all_thinking_sections_render(tmp_p
         status({'kind':'executing','name':'read_file'})
         # This executes on the generation worker; the real Tk event loop must
         # have painted both preceding yields before the handoff callback returns.
-        observed.append(app.chat_stream.get('1.0','end'))
+        snapshot_ready = threading.Event()
+        def snapshot():
+            try:
+                observed.append(app.chat_stream.get('1.0','end'))
+            finally:
+                snapshot_ready.set()
+        app._event_queue.put(('ui_callback', snapshot))
+        assert snapshot_ready.wait(2), 'The Tk owner did not capture the painted tool handoff'
         yield 'Returned tool data.\n'
         status({'kind':'routing','stage':2})
         status({'kind':'route','total':1 if starts_with_pro else 9,'branch_count':1 if starts_with_pro else 8})
@@ -81,6 +97,7 @@ def test_selected_handoff_is_painted_once_and_all_thinking_sections_render(tmp_p
             app.watchdog.stop_monitoring()
         app.engine.unload_model()
         worker.join(timeout=2)
+        _cancel_ui_callbacks(root)
         root.destroy()
 
 
@@ -136,6 +153,7 @@ def work_app(tmp_path, monkeypatch):
         if app.watchdog:
             app.watchdog.stop_monitoring()
         app.engine.unload_model()
+        _cancel_ui_callbacks(root)
         root.destroy()
         import gc
         gc.collect()
@@ -164,6 +182,9 @@ def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(wo
     from tkinter import ttk
     app = work_app
     app.settings.best_work_passes = 2
+    app.last_metadata = {"winning_branch": 0, "verified": True,
+        "branches": [{"index": 0, "temp": .2, "passed": True, "reward": 1.0,
+                      "candidate": "Measured candidate text", "code": "print('verified')", "stderr": ""}]}
     app._on_open_branch_visualizer()
     modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
     widgets = list(_descendants(modal))
@@ -181,6 +202,19 @@ def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(wo
     assert app.settings.best_work_passes == 1
     assert any(isinstance(w, tk.Label) and 'positive whole number' in w.cget('text') for w in widgets)
     assert any(isinstance(w, ttk.Treeview) and w.get_children() for w in widgets)
+    assert any(isinstance(w, tk.Text) and 'Measured candidate text' in w.get('1.0', 'end') for w in widgets)
+
+
+def test_branch_dialog_without_a_completed_run_keeps_an_empty_candidate_inspector(work_app):
+    from tkinter import ttk
+    app = work_app
+    app.last_metadata = None
+    app._on_open_branch_visualizer()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    widgets = list(_descendants(modal))
+    tree = next(w for w in widgets if isinstance(w, ttk.Treeview))
+    assert not tree.get_children()
+    assert any(isinstance(w, tk.Label) and 'No completed run' in w.cget('text') for w in widgets)
     assert any(isinstance(w, tk.Text) for w in widgets)
 
 

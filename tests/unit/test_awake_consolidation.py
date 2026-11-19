@@ -152,32 +152,42 @@ class TestAwakeConsolidationSuite(unittest.TestCase):
         root = tk.Tk()
         root.withdraw()
         app = SmartAIChatbotApp(root, settings=self.settings)
-        app._append_ai_message(
-            "Here is the final verified answer.",
-            thinking_text="Step 1: Analyzed input.\nStep 2: Applied formal logic rules.\nStep 3: Verification complete.",
-            thinking_tokens=42,
-            duration_s=0.35,
-            tok_per_sec=120.0,
-        )
-        content = app.chat_stream.get("1.0", "end")
-        self.assertIn("Thought for", content)
-        self.assertIn("[Click to Expand]", content)
-        self.assertNotIn("Step 1: Analyzed input.", content)
+        try:
+            app._append_ai_message(
+                "Here is the final verified answer.",
+                thinking_text="Step 1: Analyzed input.\nStep 2: Applied formal logic rules.\nStep 3: Verification complete.",
+                thinking_tokens=42,
+                duration_s=0.35,
+                tok_per_sec=120.0,
+            )
+            # Collapsed thoughts remain in stable, elided text tags so live
+            # decoding can append without replacing the permanent control.
+            def displayed():
+                return str(app.chat_stream.tk.call(app.chat_stream._w, "get", "-displaychars", "1.0", "end"))
 
-        think_id = "think_1"
-        app._on_toggle_thinking_dropdown(think_id)
-        content_expanded = app.chat_stream.get("1.0", "end")
-        self.assertIn("[Click to Collapse]", content_expanded)
-        self.assertIn("Step 1: Analyzed input.", content_expanded)
+            content = displayed()
+            self.assertIn("Thought for", content)
+            self.assertIn("[Click to Expand]", content)
+            self.assertNotIn("Step 1: Analyzed input.", content)
+            self.assertIn("(42 tokens)", content)
 
-        app._on_toggle_thinking_dropdown(think_id)
-        content_collapsed = app.chat_stream.get("1.0", "end")
-        self.assertIn("[Click to Expand]", content_collapsed)
-        self.assertNotIn("Step 1: Analyzed input.", content_collapsed)
+            think_id = "think_1"
+            app._on_toggle_thinking_dropdown(think_id)
+            content_expanded = displayed()
+            self.assertIn("[Click to Collapse]", content_expanded)
+            self.assertIn("Step 1: Analyzed input.", content_expanded)
 
-        if hasattr(app, "watchdog") and app.watchdog:
-            app.watchdog.stop_monitoring()
-        root.destroy()
+            app._on_toggle_thinking_dropdown(think_id)
+            content_collapsed = displayed()
+            self.assertIn("[Click to Expand]", content_collapsed)
+            self.assertNotIn("Step 1: Analyzed input.", content_collapsed)
+            self.assertIn("Step 1: Analyzed input.", app.thinking_cache[think_id])
+        finally:
+            if hasattr(app, "watchdog") and app.watchdog:
+                app.watchdog.stop_monitoring()
+            for pending in root.tk.splitlist(root.tk.call('after', 'info')):
+                root.tk.call('after', 'cancel', pending)
+            root.destroy()
 
 
 if __name__ == "__main__":

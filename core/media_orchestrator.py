@@ -94,8 +94,8 @@ class MediaController:
             "weights_updated": False,
         }
 
-    def _install_tools(self):
-        registry = self.app.tools
+    def _install_tools(self, registry=None):
+        registry = self.app.tools if registry is None else registry
         old_list, old_execute = registry.list_available_tools, registry.execute_tool
         def list_tools(_registry):
             tools = old_list() + [

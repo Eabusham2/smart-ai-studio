@@ -107,9 +107,10 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         # Test system monitor tool format
         ok, res = self.tools.execute_tool("system_monitor", {})
         self.assertTrue(ok)
-        self.assertIn("Process Memory", res)
-        self.assertIn("Model Metal Active Buffer", res)
-        self.assertIn("Host System RAM Used", res)
+        self.assertIn("AI RAM (app and owned workers)", res)
+        self.assertIn("MLX active tensors", res)
+        self.assertIn("Host RAM used", res)
+        self.assertIn("not added again", res)
 
     def test_07_gui_model_presets_and_canvas_toggle(self):
         """Verify GUI initializes expanded presets (RealVisXL, Z-Image Turbo, LTX-Video, etc.) and toggles Canvas."""

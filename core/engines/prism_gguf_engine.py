@@ -145,6 +145,14 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         self._io_lock = threading.RLock()
         self._worker_error_log = os.path.join(self.adapter_root, "prism-worker.stderr.log")
 
+    def owned_process_ids(self) -> List[int]:
+        """Account only this backend's still-running, explicitly owned worker."""
+        worker = self._worker
+        if worker is None or worker.poll() is not None:
+            return []
+        pid = getattr(worker, "pid", None)
+        return [pid] if type(pid) is int and pid > 0 else []
+
     def _worker_env(self) -> Dict[str, str]:
         llama_dir, mtmd_dir = ensure_prism_native_runtime()
         env = dict(os.environ)
@@ -459,21 +467,43 @@ class PrismGGUFReasoningBackend(GGUFReasoningBackend):
         })
 
     def unload_model(self):
+        """Retire the isolated worker only after the OS confirms its exit.
+
+        A failed stop must retain the handle for RAM accounting and a later
+        retry. load_model calls this first, so it cannot allocate replacement
+        weights beside an untracked surviving worker.
+        """
         worker = getattr(self, "_worker", None)
         if worker is not None:
-            try:
-                if worker.poll() is None and worker.stdin is not None:
-                    worker.stdin.write(json.dumps({"op": "shutdown"}) + "\n")
-                    worker.stdin.flush()
-                    worker.wait(timeout=3.0)
-            except Exception:
+            stop_error = None
+            if worker.poll() is None:
                 try:
-                    worker.terminate()
+                    if worker.stdin is not None:
+                        worker.stdin.write(json.dumps({"op": "shutdown"}) + "\n")
+                        worker.stdin.flush()
+                    worker.wait(timeout=3.0)
+                except Exception as error:
+                    stop_error = error
+            for action in ("terminate", "kill"):
+                if worker.poll() is not None:
+                    break
+                try:
+                    getattr(worker, action)()
                     worker.wait(timeout=2.0)
-                except Exception:
+                except Exception as error:
+                    stop_error = error
+            if worker.poll() is None:
+                self.last_error = (
+                    f"Prism GGUF worker (PID {worker.pid}) is still running. "
+                    "Retry unloading before loading another model."
+                )
+                raise RuntimeError(self.last_error) from stop_error
+            for name in ("stdin", "stdout", "stderr"):
+                pipe = getattr(worker, name, None)
+                if pipe is not None:
                     try:
-                        worker.kill()
-                    except Exception:
+                        pipe.close()
+                    except (OSError, ValueError):
                         pass
         self._worker = None
         self._speed_tuner = None

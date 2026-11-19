@@ -17,18 +17,19 @@ import time
 from pathlib import Path
 
 from core.training_memory import process_memory_bytes
+from core.gui_extensions import resolve_gui_module, report_gui_failure
 
 
-def install_gui_eval_panel() -> None:
-    mod = sys.modules.get("app_gui")
-    cls = getattr(mod, "SmartAIChatbotApp", None) if mod is not None else None
-    if cls is None or getattr(cls, "_eval_panel_installed", False):
+def install_gui_eval_panel(module=None) -> None:
+    mod = resolve_gui_module(module)
+    cls = mod.SmartAIChatbotApp
+    if getattr(cls, "_eval_panel_installed", False):
         return
 
     tk = getattr(mod, "tk", None)
     messagebox = getattr(mod, "messagebox", None)
-    if tk is None or messagebox is None:
-        return
+    if messagebox is None:
+        raise RuntimeError("Eval controls require the application's messagebox module")
 
     original_build = cls._build_single_top_bar
     original_switch = cls._on_switch_model_tab
@@ -118,8 +119,8 @@ def install_gui_eval_panel() -> None:
         result = original_switch(self, target_tab_id)
         try:
             _sync_eval_button(self)
-        except Exception:
-            pass
+        except Exception as error:
+            report_gui_failure(mod, "Eval visibility", error, app=self)
         return result
 
     def theme_with_eval(self):
@@ -134,8 +135,8 @@ def install_gui_eval_panel() -> None:
                     activeforeground=self.C["btn_fg"],
                     highlightbackground=self.C["btn_bg"],
                 )
-            except Exception:
-                pass
+            except Exception as error:
+                report_gui_failure(mod, "Eval theme", error, app=self)
         return result
 
     def _append_eval_log(self, text: str):
@@ -349,7 +350,7 @@ def install_gui_eval_panel() -> None:
             try:
                 if self._eval_ram_label is not None:
                     self._eval_ram_label.configure(
-                        text=f"RAM tree: {ram_gb:.2f} GB • peak {self._eval_peak_gb:.2f} GB • CPU {cpu:.0f}%"
+                        text=f"RAM tree: {ram_gb:.2f} GiB • peak {self._eval_peak_gb:.2f} GiB • CPU {cpu:.0f}%"
                     )
                 if self._eval_elapsed_label is not None:
                     self._eval_elapsed_label.configure(text=f"Elapsed: {int(elapsed)}s")
@@ -369,7 +370,7 @@ def install_gui_eval_panel() -> None:
                 self._eval_memory_tripped = True
                 _append_eval_log(
                     self,
-                    f"\n[MEM WATCH] Process tree reached {ram_gb:.2f} GB >= {limit:.2f} GB; "
+                    f"\n[MEM WATCH] Process tree reached {ram_gb:.2f} GiB >= {limit:.2f} GiB; "
                     "requesting graceful cancellation.\n",
                 )
                 _signal_eval_cancel(self, "memory-limit")
@@ -437,6 +438,21 @@ def install_gui_eval_panel() -> None:
         ):
             messagebox.showinfo("Speed Test Running", "Finish or cancel speed tuning before starting evaluation.")
             return
+        worker = getattr(self, "_generation_worker", None)
+        if (
+            getattr(self, "is_generating", False)
+            or (worker is not None and worker.is_alive())
+            or getattr(self, "_sleep_consolidating", False)
+            or getattr(getattr(getattr(self, "engine", None), "awake_consolidator", None), "is_consolidating", False)
+            or getattr(getattr(self, "multimodal", None), "busy", False)
+            or getattr(self, "_model_unload_in_progress", False)
+            or getattr(self, "_model_unload_pending", False)
+            or getattr(self, "_strata_unload_pending", False)
+            or getattr(self, "_native_unload_pending", False)
+        ):
+            messagebox.showinfo(
+                "Model Busy", "Finish or cancel the current chat, learning, media or unload operation before starting evaluation.")
+            return
         info = _active_text_info(self)
         if info is None:
             messagebox.showinfo("Text Models Only", "The evaluation suite is available only for text models.")
@@ -451,7 +467,7 @@ def install_gui_eval_panel() -> None:
             if memory_enabled and memory_gb < 1.0:
                 raise ValueError
         except Exception:
-            messagebox.showerror("Invalid Memory Limit", "Enter a memory limit of at least 1.0 GB.")
+            messagebox.showerror("Invalid Memory Limit", "Enter a memory limit of at least 1.0 GiB.")
             return
 
         # Preserve the exact resolved runtime artifact before unloading chat. This
@@ -463,9 +479,34 @@ def install_gui_eval_panel() -> None:
 
         if getattr(self, "is_model_loaded", False):
             try:
-                self.engine.unload_model()
-            except Exception:
-                pass
+                stopped = self.engine.unload_model()
+                if (not isinstance(stopped, dict) or stopped.get("status") != "unloaded"
+                        or stopped.get("unloaded") is False
+                        or (not getattr(getattr(self.engine, "settings", None), "use_mock", False)
+                            and getattr(self.engine, "is_model_loaded", False))):
+                    detail = stopped.get("error") if isinstance(stopped, dict) else None
+                    raise RuntimeError(detail or "The model runtime did not confirm a complete unload.")
+            except Exception as error:
+                # Keep the engine and every surviving backend owner reachable.
+                # A partially stopped runtime still owns memory; Eval must not
+                # allocate another model until the existing owner is released.
+                self._model_unload_pending = True
+                self.is_model_loaded = False
+                self.lbl_model_status.configure(
+                    text="⚠ Cleanup incomplete — Retry unload", fg=self.C["accent_red"])
+                self._update_model_action_buttons()
+                self._update_input_lock_state()
+                self.btn_load_unload.configure(state="normal")
+                self._eval_state_label.configure(text="Cleanup incomplete — use Retry unload in Studio")
+                _append_eval_log(self, f"[UI] Eval did not start: model unload failed: {error}\n")
+                messagebox.showerror(
+                    "Model Unload Failed",
+                    f"Evaluation did not start because the chat model could not be fully unloaded.\n\n"
+                    f"{error}\n\nUse Retry unload in Studio, then start Eval again.",
+                    parent=getattr(self, "_eval_modal", None),
+                )
+                return
+            self._model_unload_pending = False
             self.is_model_loaded = False
             try:
                 self._sync_memory_watchdog(force_stop=True)
@@ -638,7 +679,7 @@ def install_gui_eval_panel() -> None:
         self._eval_mem_entry.pack(side="left", ipady=3)
         tk.Label(
             controls,
-            text="GB process-tree limit",
+            text="GiB process-tree limit",
             font=getattr(mod, "_FONT_TINY"),
             bg=self.C["bg_card"],
             fg=self.C["text_muted"],
@@ -701,6 +742,8 @@ def install_gui_eval_panel() -> None:
             command=lambda: _cancel_button(self),
         )
         self._eval_cancel_button.pack(side="right", padx=4)
+        from core.responsive_toolbar import install_wrapping_controls
+        install_wrapping_controls(controls)
 
         telemetry = tk.Frame(modal, bg=self.C["bg_hud"])
         telemetry.pack(fill="x", padx=16, pady=(4, 6))
@@ -714,7 +757,7 @@ def install_gui_eval_panel() -> None:
         self._eval_state_label.pack(side="left", padx=(0, 14))
         self._eval_ram_label = tk.Label(
             telemetry,
-            text=f"RAM tree: 0.00 GB • peak {float(getattr(self, '_eval_peak_gb', 0.0)):.2f} GB • CPU 0%",
+            text=f"RAM tree: 0.00 GiB • peak {float(getattr(self, '_eval_peak_gb', 0.0)):.2f} GiB • CPU 0%",
             font=getattr(mod, "_FONT_TINY"),
             bg=self.C["bg_hud"],
             fg=self.C["text_main"],

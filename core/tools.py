@@ -43,9 +43,11 @@ from core.visual_maker import InteractiveVisualMaker
 class AgentToolRegistry:
     """Registry managing execution of built-in agent tools and external MCP servers."""
 
-    def __init__(self, db_path: str = "memory.db", workspace_dir: Optional[str] = None):
+    def __init__(self, db_path: str = "memory.db", workspace_dir: Optional[str] = None,
+                 *, owned_processes_provider=None):
         self.db_path = os.path.abspath(db_path)
         self.workspace_dir = os.path.abspath(workspace_dir or os.getcwd())
+        self.owned_processes_provider = owned_processes_provider
         self.visual_maker = InteractiveVisualMaker(workspace_dir=self.workspace_dir)
         self.diagram_builder = HTMLDiagramBuilder(workspace_dir=self.workspace_dir)
         self.mcp_servers: Dict[str, Dict[str, Any]] = {
@@ -554,10 +556,13 @@ class AgentToolRegistry:
                 return False, f"Failed to parse mathematical expression: {str(e)}"
 
     def _tool_system_monitor(self) -> Tuple[bool, str]:
-        """Gathers granular system, CPU, App RSS, Model Metal RAM, and platform hardware metrics."""
+        """Report measured process/owned-worker and host memory in binary units."""
         try:
             from core.memory_watchdog import SystemMemoryWatchdog
-            mem = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+            provider = getattr(self, "owned_processes_provider", None)
+            owned = list(provider() or ()) if callable(provider) else []
+            mem = (SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owned)
+                   if owned else SystemMemoryWatchdog.get_detailed_memory_breakdown())
 
             sys_info = {
                 "OS": f"{platform.system()} {platform.release()} ({platform.machine()})",
@@ -569,22 +574,30 @@ class AgentToolRegistry:
             
             # Disk space
             total, used, free = shutil.disk_usage(self.workspace_dir)
-            disk_str = f"{used / (1024**3):.1f} GB used / {total / (1024**3):.1f} GB total ({free / (1024**3):.1f} GB free)"
+            disk_str = f"{used / (1024**3):.1f} GiB used / {total / (1024**3):.1f} GiB total ({free / (1024**3):.1f} GiB free)"
             
             out = "### 📊 System Hardware & Telemetry Profile\n\n"
             for k, v in sys_info.items():
                 out += f"• **{k}:** {v}\n"
             out += f"• **Disk Storage:** {disk_str}\n\n"
 
-            out += "#### 💾 Memory Allocation & Dynamic RAM Telemetry\n"
-            out += f"• **Process Memory (App RSS):** `{mem['app_rss_gb']:.2f} GB` (Python GUI & Runtime)\n"
-            out += f"• **Model Metal Active Buffer:** `{mem['model_metal_active_gb']:.2f} GB` (Active Neural Weights)\n"
-            out += f"• **Model Metal Peak Allocated:** `{mem['model_metal_peak_gb']:.2f} GB` (Peak Rollout Buffer)\n"
-            out += f"• **Total App + Model Allocated:** `{mem['total_allocated_gb']:.2f} GB`\n"
-            out += f"• **Host System RAM Used:** `{mem['system_used_gb']:.1f} GB` / `{mem['system_total_gb']:.1f} GB` ({mem['system_percent']:.1f}%)\n"
-            out += f"• **Host Available RAM:** `{mem['system_free_gb']:.1f} GB`\n"
-            out += f"• **Allocation Strategy:** `{mem['allocation_strategy']}`\n"
-            out += "• **AI Model Precision:** 1.58-Bit Ternary BitLinear\n"
+            out += "#### 💾 Memory Allocation\n"
+            if mem.get("process_memory_known", True):
+                out += f"• **AI RAM (app and owned workers):** `{mem['total_allocated_gb']:.2f} GiB`\n"
+                out += f"• **App footprint:** `{mem.get('app_footprint_gb', mem['app_rss_gb']):.2f} GiB`\n"
+                out += f"• **Owned workers:** `{mem.get('owned_process_footprint_gb', 0):.2f} GiB`\n"
+                out += f"• **App resident pages (RSS):** `{mem['app_rss_gb']:.2f} GiB`\n"
+            else:
+                out += "• **AI RAM:** unavailable\n"
+            out += f"• **MLX active tensors:** `{mem['model_metal_active_gb']:.2f} GiB`\n"
+            out += f"• **MLX historical active peak:** `{mem['model_metal_peak_gb']:.2f} GiB`\n"
+            out += "  MLX counters overlap process memory; they are not added again.\n"
+            if mem.get("system_memory_known", True):
+                out += f"• **Host RAM used:** `{mem['system_used_gb']:.1f} / {mem['system_total_gb']:.1f} GiB` ({mem['system_percent']:.1f}%)\n"
+                out += f"• **Host available RAM:** `{mem['system_free_gb']:.1f} GiB`\n"
+            else:
+                out += "• **Host RAM:** unavailable\n"
+            out += "macOS uses physical footprint when available; otherwise RSS.\n"
             return True, out
         except Exception as e:
             return False, f"Failed to retrieve system metrics: {str(e)}"

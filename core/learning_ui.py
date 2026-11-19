@@ -36,8 +36,14 @@ def show_online_learning(app):
     modal.geometry("860x720")
     modal.minsize(640, 560)
     modal.transient(app.root)
+    colors = app.C
+    modal.configure(bg=colors["bg_hud"])
     frame = ttk.Frame(modal, padding=14)
     frame.pack(fill="both", expand=True)
+    # Reserve actions before the resizable editors so small windows cannot
+    # squeeze Run/Cancel/Close out of the visible area.
+    controls = ttk.Frame(frame)
+    controls.pack(side="bottom", fill="x", pady=(10, 0))
     ttk.Label(frame, text="Learn from documents, examples and feedback", font=("Arial", 16, "bold")).pack(anchor="w")
     ttk.Label(frame, text=("Learning persists in the selected memory. Temporary practice restores the previous weights afterward.\n"
                           "A paused document job resumes when you run the same request. Agreement is not a correctness check."),
@@ -72,7 +78,13 @@ def show_online_learning(app):
     temporary_var = tk.BooleanVar(value=False)
     temporary_button = ttk.Checkbutton(method_bar, text="Temporary practice", variable=temporary_var)
     temporary_button.pack(side="left", padx=8)
-    request_editor = tk.Text(frame, height=13, wrap="word", undo=True)
+    editors = ttk.Panedwindow(frame, orient="vertical")
+    editors.pack(fill="both", expand=True)
+    request_panel = ttk.Frame(editors)
+    editors.add(request_panel, weight=1)
+    request_editor = tk.Text(request_panel, height=8, wrap="word", undo=True,
+                             bg=colors["bg_input_inner"], fg=colors["text_main"],
+                             insertbackground=colors["text_main"])
     request_editor.pack(fill="both", expand=True, pady=(0, 8))
     request_editor.insert("1.0", json.dumps(TASKS[task_var.get()], indent=2))
 
@@ -99,11 +111,12 @@ def show_online_learning(app):
                 messagebox.showerror("Request", "Correct the request JSON before choosing a source.", parent=modal)
 
     ttk.Button(method_bar, text="Choose source…", command=attach).pack(side="right")
-    ttk.Label(frame, text="Result and progress").pack(anchor="w")
-    output = tk.Text(frame, height=10, wrap="word", state="disabled")
+    output_panel = ttk.Frame(editors)
+    editors.add(output_panel, weight=1)
+    ttk.Label(output_panel, text="Result and progress").pack(anchor="w")
+    output = tk.Text(output_panel, height=6, wrap="word", state="disabled",
+                     bg=colors["code_bg"], fg=colors["code_fg"], insertbackground=colors["code_fg"])
     output.pack(fill="both", expand=True)
-    controls = ttk.Frame(frame)
-    controls.pack(fill="x", pady=(10, 0))
     events = queue.Queue()
     running = False
 
@@ -118,7 +131,16 @@ def show_online_learning(app):
 
     def start(operation, *, changed_scope=False, changed_implementation=False):
         nonlocal running
+        worker = getattr(app, "_generation_worker", None)
+        evaluation = getattr(app, "_eval_proc", None)
         if (running or app.is_generating or getattr(app, "_model_load_in_progress", False)
+                or (worker is not None and worker.is_alive())
+                or (evaluation is not None and evaluation.poll() is None)
+                or getattr(app, "_sleep_consolidating", False)
+                or getattr(app, "_model_unload_in_progress", False)
+                or getattr(app, "_model_unload_pending", False)
+                or getattr(app, "_strata_unload_pending", False)
+                or getattr(app, "_native_unload_pending", False)
                 or getattr(app, "_speed_ui_running", False) or getattr(app.engine, "speed_tuning_active", False)
                 or getattr(app.multimodal, "busy", False)
                 or getattr(app.engine.awake_consolidator, "is_consolidating", False)):
@@ -231,3 +253,12 @@ def show_online_learning(app):
     ttk.Button(controls, text="Cancel", command=app.cancel_event.set).pack(side="left", padx=8)
     ttk.Button(controls, text="Close", command=lambda: None if running else modal.destroy()).pack(side="right")
     modal.protocol("WM_DELETE_WINDOW", lambda: None if running else modal.destroy())
+    from core.responsive_toolbar import install_wrapping_controls
+    for bar in (implementation_bar, scope_bar, method_bar):
+        install_wrapping_controls(bar)
+    def wrap_notes(event):
+        if event.widget is frame:
+            for widget in frame.winfo_children():
+                if isinstance(widget, ttk.Label):
+                    widget.configure(wraplength=max(200, event.width - 32))
+    frame.bind("<Configure>", wrap_notes, add="+")

@@ -167,14 +167,6 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         from core.vlm_prompt_reuse import NativeVLMCacheReuse
         self._vlm_prefixes = NativeVLMCacheReuse()
 
-        # The GUI class is already defined when its ProReasoningEngine is constructed.
-        # Install the optional top-row generation-cap control without rewriting app_gui.py.
-        try:
-            from core.gui_generation_cap import install_gui_generation_cap
-            install_gui_generation_cap()
-        except Exception:
-            pass
-
     def configure_auto_speed(self, enabled=True, force=False, progress=None, cancelled=None):
         from core.mlx_speed_tuning import configure_mlx_speed
         from core.native_speed import runtime_lock

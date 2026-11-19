@@ -112,6 +112,15 @@ def test_existing_native_history_filters_are_unchanged(pro_module):
     assert "  old text" not in packed
 
 
+def test_display_only_thoughts_never_enter_native_structured_api_payload(pro_module):
+    engine = engine_for(pro_module, loaded_backend())
+    turn = {"role": "assistant", "content": "answer", "name": "assistant_name",
+            "display_thoughts": [{"offset": 0, "text": "UI reasoning"}]}
+    packed = engine._format_prompt_with_history("next", [turn])
+    assert packed.messages[0] == {"role": "assistant", "content": "answer", "name": "assistant_name"}
+    assert turn["display_thoughts"]  # the archive/reopenable UI keeps it intact
+
+
 @pytest.mark.parametrize("has_head", [False, True])
 def test_packed_mlx_load_reports_decoder_capability_on_owner(pro_module, monkeypatch, tmp_path, has_head):
     from concurrent.futures import ThreadPoolExecutor

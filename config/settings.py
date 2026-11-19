@@ -89,7 +89,7 @@ try:
         auto_download: bool = Field(default=True, description="Automatically stream missing weights from Hugging Face")
 
         # Drafting requires an explicitly selected, hash-verified native build.
-        speculative_mode: str = Field(default="none", description="Native drafting: none, auto, lookup, mtp, dflash2; MLX drafting remains disabled")
+        speculative_mode: str = Field(default="auto", description="Native drafting: none, auto, lookup, mtp, dflash2; MLX drafting remains disabled")
         speculative_tokens: int = Field(default=4, description="Number of draft tokens K to speculate ahead")
         speculative_server_path: Optional[str] = Field(default=None, description="Local patched native server; no automatic runtime or target substitution")
         draft_model_path: Optional[str] = Field(default=None, description="Path to secondary draft model or DFlash drafter")
@@ -159,7 +159,7 @@ except ImportError:
         vision_mmproj_path: Optional[str] = os.getenv("VISION_MMPROJ_PATH", None)
         auto_download: bool = os.getenv("AUTO_DOWNLOAD", "true").lower() in ("1", "true", "yes")
 
-        speculative_mode: str = os.getenv("SPECULATIVE_MODE", "none")
+        speculative_mode: str = os.getenv("SPECULATIVE_MODE", "auto")
         speculative_tokens: int = int(os.getenv("SPECULATIVE_TOKENS", "4"))
         speculative_server_path: Optional[str] = os.getenv("SPECULATIVE_SERVER_PATH", None)
         draft_model_path: Optional[str] = os.getenv("DRAFT_MODEL_PATH", None)

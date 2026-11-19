@@ -68,22 +68,35 @@ class SystemMemoryWatchdog:
         1. App Process RSS and optional, caller-verified owned worker RSS.
         2. Model Metal Active Memory (MLX unified memory tensors).
         3. Model Metal Peak & Cache Allocation.
-        4. Host System RAM (Used, Available, Total) matching macOS Activity Monitor.
+        4. Host System RAM (Used, Available, Total).
         5. Dynamic RAM scaling parameters.
         """
         app_rss_gb = 0.0
+        process_memory_known = False
         try:
             import psutil
             app_rss_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+            process_memory_known = True
         except Exception:
-            try:
-                import resource
-                rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                app_rss_gb = (rss / (1024 ** 3)) if platform.system() == "Darwin" else (rss / (1024 ** 2))
-            except Exception:
-                pass
+            # ru_maxrss is a historical peak, not live RAM; displaying it as
+            # current allocation makes a completed consolidation look leaked.
+            pass
+
+        # Metal's active/cache counters overlap process memory. Adding them to
+        # RSS counts the same unified-memory pages twice. macOS physical
+        # footprint also covers compressed/Metal memory which RSS can omit.
+        app_footprint_gb = app_rss_gb
+        accounting_method = "rss"
+        if platform.system() == "Darwin":
+            from core.training_memory import process_memory_bytes
+            footprint = process_memory_bytes()
+            if footprint > 0:
+                app_footprint_gb = footprint / (1024 ** 3)
+                accounting_method = "physical_footprint_or_rss"
+                process_memory_known = True
 
         owned_rss_gb = 0.0
+        owned_footprint_gb = 0.0
         owned_process_count = 0
         if owned_pids is not None:
             try:
@@ -98,6 +111,8 @@ class SystemMemoryWatchdog:
                         if rss < 0:
                             continue
                         owned_rss_gb += rss / (1024 ** 3)
+                        footprint = process_memory_bytes(pid) if platform.system() == "Darwin" else rss
+                        owned_footprint_gb += (footprint if footprint > 0 else rss) / (1024 ** 3)
                         owned_process_count += 1
                     except Exception:
                         # A verified worker can exit between discovery and this read.
@@ -127,10 +142,8 @@ class SystemMemoryWatchdog:
         except Exception:
             pass
 
-        system_total_gb = 16.0
-        system_used_gb = 5.0
-        system_free_gb = 11.0
-        system_percent = 31.25
+        system_total_gb = system_used_gb = system_free_gb = system_percent = 0.0
+        system_memory_known = False
 
         try:
             import psutil
@@ -139,23 +152,19 @@ class SystemMemoryWatchdog:
             system_used_gb = vm.used / (1024 ** 3)
             system_free_gb = vm.available / (1024 ** 3)
             system_percent = vm.percent
-        except ImportError:
-            try:
-                if platform.system() == "Darwin":
-                    import subprocess
-                    out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip()
-                    system_total_gb = int(out) / (1024 ** 3)
-                    system_free_gb = max(2.0, system_total_gb * 0.3)
-                    system_used_gb = system_total_gb - system_free_gb
-                    system_percent = (system_used_gb / system_total_gb) * 100
-            except Exception:
-                pass
+            system_memory_known = True
+        except Exception:
+            # Unknown is not a fabricated 16 GB machine or a measured zero-free
+            # event. The watchdog can still enforce the measured process cap.
+            pass
 
-        total_allocated_gb = max(app_rss_gb, app_rss_gb + model_active_gb) + owned_rss_gb
+        total_allocated_gb = app_footprint_gb + owned_footprint_gb
 
         return {
             "app_rss_gb": round(app_rss_gb, 2),
+            "app_footprint_gb": round(app_footprint_gb, 2),
             "owned_process_rss_gb": round(owned_rss_gb, 2),
+            "owned_process_footprint_gb": round(owned_footprint_gb, 2),
             "owned_process_count": owned_process_count,
             "model_metal_active_gb": round(model_active_gb, 2),
             "model_metal_peak_gb": round(max(model_active_gb, model_peak_gb), 2),
@@ -165,6 +174,9 @@ class SystemMemoryWatchdog:
             "system_used_gb": round(system_used_gb, 1),
             "system_free_gb": round(system_free_gb, 1),
             "system_percent": round(system_percent, 1),
+            "system_memory_known": system_memory_known,
+            "accounting_method": accounting_method,
+            "process_memory_known": process_memory_known,
             "dynamic_scaling_active": True,
             "allocation_strategy": "Dynamic Unified Memory (Elastic Expansion on Demand)"
         }
@@ -179,8 +191,9 @@ class SystemMemoryWatchdog:
             import psutil
             import mlx.core as mx
             avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-            # Allow Metal to scale dynamically up to 95% of available free RAM
-            dynamic_cache_gb = max(2.5, avail_gb * 0.95)
+            # The cache is optional. Never impose a 2.5 GB minimum when the
+            # machine is already short of memory, or spend the OS reserve.
+            dynamic_cache_gb = max(0.0, min(avail_gb * 0.25, avail_gb - min_headroom_gb))
             dynamic_cache_bytes = int(dynamic_cache_gb * (1024 ** 3))
 
             if hasattr(mx, "set_cache_limit"):
@@ -209,10 +222,13 @@ class SystemMemoryWatchdog:
             "used_percent": breakdown["system_percent"],
             "process_rss_gb": breakdown["total_allocated_gb"],
             "app_rss_gb": breakdown["app_rss_gb"],
+            "app_footprint_gb": breakdown.get("app_footprint_gb", breakdown["app_rss_gb"]),
             "owned_process_rss_gb": breakdown.get("owned_process_rss_gb", 0.0),
             "owned_process_count": breakdown.get("owned_process_count", 0),
             "model_metal_active_gb": breakdown["model_metal_active_gb"],
-            "model_metal_peak_gb": breakdown["model_metal_peak_gb"]
+            "model_metal_peak_gb": breakdown["model_metal_peak_gb"],
+            "system_memory_known": breakdown.get("system_memory_known", True),
+            "accounting_method": breakdown.get("accounting_method", "rss"),
         }
 
     def check_memory_pressure(self) -> Tuple[bool, Dict[str, Any]]:
@@ -238,8 +254,9 @@ class SystemMemoryWatchdog:
             self.reclaim_process_memory()
 
         is_under_pressure = (
-            status["used_percent"] >= self.max_ram_usage_percent or
-            status["free_gb"] < self.min_free_ram_gb or
+            (status.get("system_memory_known", True) and (
+                status["used_percent"] >= self.max_ram_usage_percent or
+                status["free_gb"] < self.min_free_ram_gb)) or
             status.get("process_rss_gb", 0) >= self.max_process_ram_gb
         )
 

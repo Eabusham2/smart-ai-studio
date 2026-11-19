@@ -11,22 +11,23 @@ than confusing complete Pro/prefill wall time with decoder throughput.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import json
+import logging
 import sqlite3
 import sys
 
 from core.platform import get_auto_context_window_size
+from core.gui_extensions import resolve_gui_module, report_gui_failure
 
 
-def install_gui_generation_cap() -> None:
-    mod = sys.modules.get("app_gui")
-    cls = getattr(mod, "SmartAIChatbotApp", None) if mod is not None else None
-    if cls is None or getattr(cls, "_generation_cap_ui_installed", False):
+def install_gui_generation_cap(module=None) -> None:
+    mod = resolve_gui_module(module)
+    cls = mod.SmartAIChatbotApp
+    if getattr(cls, "_generation_cap_ui_installed", False):
         return
 
-    tk = getattr(mod, "tk", None)
-    if tk is None:
-        return
+    tk = mod.tk
 
     original_build_top = cls._build_single_top_bar
     original_set_generating = cls._set_generating_state
@@ -253,8 +254,22 @@ def install_gui_generation_cap() -> None:
         **kwargs,
     ):
         # Preserve newer Learn/attachment arguments while adding only telemetry.
-        result = original_process(self, full_msg, user_prompt, *args, **kwargs)
+        origin_tab = getattr(self, "active_tab_id", None)
+        origin_epoch = getattr(self, "_generation_epoch", 0)
+        origin_stream = getattr(self, "chat_stream", None)
         engine = getattr(self, "engine", None)
+        database = getattr(getattr(self, "db", None), "db_path", None)
+
+        def owns_request():
+            return (getattr(self, "active_tab_id", None) == origin_tab
+                    and getattr(self, "_generation_epoch", 0) == origin_epoch
+                    and getattr(self, "chat_stream", None) is origin_stream
+                    and getattr(self, "engine", None) is engine
+                    and getattr(getattr(self, "db", None), "db_path", None) == database)
+
+        result = original_process(self, full_msg, user_prompt, *args, **kwargs)
+        if not owns_request():
+            return result
         backend = (None if getattr(getattr(engine, "controller_backend", None), "runtime", None) == "strata"
                    else getattr(engine, "mlx_backend", None))
 
@@ -262,26 +277,33 @@ def install_gui_generation_cap() -> None:
             raw_decode_tps = float(getattr(backend, "last_tok_per_sec", 0.0) or 0.0)
         except Exception:
             raw_decode_tps = 0.0
-        if raw_decode_tps > 0.0:
-            try:
-                self.root.after(0, lambda t=raw_decode_tps: self._update_telemetry(t))
-            except Exception:
-                pass
-
         meta = getattr(engine, "_last_stream_pro_meta", None)
-        if not isinstance(meta, dict) or int(meta.get("branch_count", 1) or 1) <= 1:
-            return result
+        meta = dict(meta) if isinstance(meta, dict) else {}
+        pro = int(meta.get("branch_count", 1) or 1) > 1
 
-        try:
-            self.last_metadata = dict(meta)
-        except Exception:
-            pass
+        def publish_telemetry():
+            # The Tk callback may run after another model/chat was selected.
+            if not owns_request():
+                return
+            if pro:
+                self.last_metadata = meta
+            if raw_decode_tps > 0.0:
+                self._update_telemetry(raw_decode_tps)
+
+        if pro or raw_decode_tps > 0.0:
+            try:
+                from core.gui_dispatch import post_ui
+                post_ui(self, publish_telemetry)
+            except (RuntimeError, getattr(tk, "TclError", RuntimeError)):
+                logging.getLogger(__name__).exception("Could not publish completed model telemetry")
+        if not pro or not database or not owns_request():
+            return result
 
         # The streaming GUI historically wrote a hard-coded Instant N=1 row after
         # every response. Correct only the newest row for this exact prompt when Pro ran.
         try:
             raw_branches = meta.get("raw_branches")
-            with sqlite3.connect(self.db.db_path) as conn:
+            with closing(sqlite3.connect(database)) as conn:
                 row = conn.execute(
                     "SELECT id FROM interactions WHERE prompt=? AND mode='Instant Stream (N=1)' "
                     "ORDER BY id DESC LIMIT 1",
@@ -303,8 +325,8 @@ def install_gui_generation_cap() -> None:
                         ),
                     )
                     conn.commit()
-        except Exception:
-            pass
+        except (sqlite3.Error, ValueError, TypeError):
+            logging.getLogger(__name__).exception("Could not save completed model telemetry")
         return result
 
     def apply_theme_with_cap(self):
@@ -312,11 +334,6 @@ def install_gui_generation_cap() -> None:
         if hasattr(self, "generation_cap_bar"):
             try:
                 self.generation_cap_bar.configure(bg=self.C["bg_hud"])
-                for child in self.generation_cap_bar.winfo_children():
-                    try:
-                        child.configure(bg=self.C["bg_hud"])
-                    except Exception:
-                        pass
                 self.lbl_generation_cap_reason.configure(
                     bg=self.C["bg_hud"], fg=self.C["text_muted"]
                 )
@@ -326,8 +343,8 @@ def install_gui_generation_cap() -> None:
                     insertbackground=self.C["text_main"],
                     highlightbackground=self.C["border"],
                 )
-            except Exception:
-                pass
+            except Exception as error:
+                report_gui_failure(mod, "Context Limit theme", error, app=self)
         return result
 
     cls._build_single_top_bar = build_top_with_cap

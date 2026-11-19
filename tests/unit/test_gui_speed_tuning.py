@@ -434,6 +434,8 @@ def test_text_tab_switch_uses_async_loader_without_implicit_download(cached, loc
         lbl_model_status=Mock(), lbl_params=Mock(),
         C={"accent_cyan": "cyan", "accent_yellow": "yellow"},
     )
+    for method in ("winfo_children", "tag_names", "mark_names"):
+        getattr(app.chat_stream, method).return_value = ()
     for name in (
         "_render_tab_transcript", "_scroll_chat_to_bottom", "_sync_memory_watchdog",
         "_update_memory_hud_badge", "_update_model_action_buttons",

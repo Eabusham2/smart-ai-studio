@@ -20,7 +20,10 @@ def install(cls) -> None:
         if getattr(controller, "runtime", None) == "strata":
             # Strata owns the chat template. Preserve the structured conversation
             # before the legacy native-only whitespace/warning filters below.
-            messages = [dict(turn) for turn in (history or [])]
+            # GUI-only collapsible reasoning is persisted with a transcript,
+            # but is never a model/API field. Preserve all real message fields.
+            messages = [{key: value for key, value in turn.items() if key != "display_thoughts"}
+                        for turn in (history or [])]
             if (not messages or messages[-1].get("role") != "user"
                     or messages[-1].get("content") != prompt):
                 messages.append({"role": "user", "content": prompt})

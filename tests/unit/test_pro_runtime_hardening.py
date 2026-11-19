@@ -141,10 +141,11 @@ def test_failed_strata_shutdown_keeps_registration_until_successful_retry():
     assert not is_model_registered_loaded("strata://gyro-s")
 
 
-def test_failed_native_shutdown_keeps_registered_files_and_owner_until_retry():
+@pytest.mark.parametrize("runtime", ["prism_speculative", "prism_gguf", "gguf"])
+def test_failed_native_shutdown_keeps_registered_files_and_owner_until_retry(runtime):
     engine = DummyPro(use_mock=False, loaded=False)
     engine.load_model("Pinned native", model_path="local/pinned.gguf", backend="gguf")
-    native = SimpleNamespace(runtime="prism_speculative", model=object())
+    native = SimpleNamespace(runtime=runtime, model=object())
     engine.gguf_backend = native
     engine.unload_error = True
     assert engine.unload_model()["status"] == "error"

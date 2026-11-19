@@ -9,6 +9,7 @@ import functools
 import inspect
 import math
 import os
+import platform
 import threading
 
 
@@ -46,11 +47,19 @@ def tuning_memory_ok(max_process_gb: float | None = None, owner_pid: int | None 
             return False
         if max_process_gb is not None and float(max_process_gb) > 0:
             proc = psutil.Process(owner_pid) if owner_pid is not None else psutil.Process()
-            used = proc.memory_info().rss
+            def footprint(process):
+                if platform.system() == "Darwin":
+                    from core.training_memory import process_memory_bytes
+                    value = process_memory_bytes(process.pid)
+                    if value <= 0:
+                        raise RuntimeError("Cannot measure the application's physical footprint")
+                    return value
+                return process.memory_info().rss
+            used = footprint(proc)
             # Isolated Prism/BitNet workers are part of the application's budget.
             for child in proc.children(recursive=True):
                 try:
-                    used += child.memory_info().rss
+                    used += footprint(child)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             if used + 256 * 1024 ** 2 >= float(max_process_gb) * 1024 ** 3:

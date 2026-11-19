@@ -87,6 +87,7 @@ def app(tmp_path):
         "_on_toggle_load_unload", "_unload_strata_async", "_on_switch_model_tab",
         "_on_memory_pressure_emergency", "_on_send_message", "_run_queued_task",
         "_process_message_thread", "_update_telemetry",
+        "_check_and_run_next_queue",
     }
     from core.context_memory import ChatArchive
     methods.update({"_open_tab_history", "_render_tab_transcript"})
@@ -227,6 +228,88 @@ def test_switch_waits_for_owned_stop_and_does_not_download_uncached_target(app):
     assert not app.is_model_loaded
     app.engine.load_model.assert_not_called()
     app._on_download_hf_model.assert_not_called()
+
+
+@pytest.mark.parametrize("busy_kind", ["generating", "worker"])
+def test_core_model_switch_cannot_rebind_a_running_request_even_without_toolbar_extension(app, busy_kind):
+    if busy_kind == "generating":
+        app.is_generating = True
+    else:
+        app._generation_worker = SimpleNamespace(is_alive=lambda: True)
+    app._on_switch_model_tab("native")
+    assert app.active_tab_id == "strata"
+    app.engine.unload_model.assert_not_called()
+    assert not app.pending
+
+
+@pytest.mark.parametrize("change", ["model", "request", "stream"])
+def test_delayed_stream_and_telemetry_callbacks_cannot_write_into_another_session(app, change):
+    app.chat_history["native"] = []
+    app.multimodal.stream_solve = lambda *_args, **_kwargs: iter(["Original model answer."])
+    app._process_message_thread("Question", "Question")
+    assert app.chat_history["strata"] == [{"role": "assistant", "content": "Original model answer."}]
+    if change == "model":
+        app.active_tab_id = "native"
+    elif change == "request":
+        app._generation_epoch = 1
+    else:
+        app.chat_stream = Widget()
+    app.chat_stream.text = "New session stays here"
+    app.lbl_tps.configure(text="New session rate")
+    app.root.drain()
+    assert app.chat_stream.text == "New session stays here"
+    assert app.lbl_tps.cget("text") == "New session rate"
+    assert app.chat_history["native"] == []
+    app._set_generating_state.assert_not_called()
+
+
+def test_queued_prompt_delayed_handoff_stays_with_its_original_model(app):
+    item = ("original prompt", "original prompt", None, None)
+    app.prompt_queue = [item]
+    original_queue = app.prompt_queue
+    app._model_prompt_queues = {"strata": original_queue}
+    app._update_queue_ui = Mock()
+    type(app)._check_and_run_next_queue(app)
+    assert original_queue == []
+    app.active_tab_id = "native"
+    app.prompt_queue = []
+    app.root.drain()
+    assert original_queue == [item]
+    assert app.prompt_queue == []
+    app._append_user_message.assert_not_called()
+
+
+def test_generation_worker_routes_all_ui_posts_through_queue_without_entering_tk(app):
+    owner = threading.get_ident()
+    previous_after = app.root.after
+    violations = []
+
+    def owner_after(delay, callback):
+        if threading.get_ident() != owner:
+            violations.append('worker called Tk.after')
+            raise AssertionError(violations[-1])
+        return previous_after(delay, callback)
+
+    app.root.after = owner_after
+    app.multimodal.stream_solve = lambda *_a, **_k: iter(['Owned streamed answer.'])
+    errors = []
+
+    def generate():
+        try:
+            app._process_message_thread('Question', 'Question')
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=generate)
+    worker.start(); worker.join(timeout=2)
+    assert not worker.is_alive() and not errors and not violations
+    assert not app.root.callbacks
+    assert not app._event_queue.empty()
+    while not app._event_queue.empty():
+        kind, callback = app._event_queue.get_nowait()
+        assert kind == 'ui_callback'
+        callback()
+    assert 'Owned streamed answer.' in app.chat_stream.text
 
 
 def test_unload_does_not_stop_replacement_backend(app):

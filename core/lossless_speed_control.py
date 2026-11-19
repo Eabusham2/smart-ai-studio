@@ -12,7 +12,7 @@ from core.native_speed import runtime_lock, uses_mlx_thread_owner
 DEFAULT_OPTIONS = {
     "enabled": True, "prompt_reuse": True, "branch_prefill": True,
     "tokenizer_memo": True, "persistent_cache": False, "metal_warmup": False,
-    "cache_dir": None, "speculative_mode": "none", "max_draft_tokens": None,
+    "cache_dir": None, "speculative_mode": "auto", "max_draft_tokens": None,
     "speculative_server_path": None, "draft_model_path": None,
     "speculative_runtime_receipt_path": None,
     "native_branch_count": 1,
@@ -51,7 +51,7 @@ def normalize_options(options=None, *, base=None):
 def initial_options(settings):
     values = {key: getattr(settings, "speedup_" + key, default)
               for key, default in DEFAULT_OPTIONS.items()}
-    values["speculative_mode"] = getattr(settings, "speculative_mode", "none")
+    values["speculative_mode"] = getattr(settings, "speculative_mode", DEFAULT_OPTIONS["speculative_mode"])
     values["draft_model_path"] = getattr(settings, "draft_model_path", None)
     values["speculative_server_path"] = getattr(settings, "speculative_server_path", None)
     return normalize_options(values)
@@ -88,12 +88,41 @@ def apply_loaded_options(engine, options=None):
         if selected["persistent_cache"] and not cache_dir:
             cache_dir = str(Path(get_portable_data_dir()) / "prompt_state")
         result = hook(**{key: selected[key] for key in _BOOL_KEYS}, cache_dir=cache_dir)
+        configured = [key for key in ("prompt_reuse", "branch_prefill", "tokenizer_memo",
+                                      "persistent_cache", "metal_warmup")
+                      if isinstance(result, dict) and result.get(key) is True]
         return {"status": "configured", "message": "Prompt speedups configured for the loaded runtime.",
+                "configured_speedups": configured, "benchmark_required": False,
                 "backend": result}
     if getattr(backend, "runtime", None) == "prism_speculative":
+        telemetry = backend.get_speculative_telemetry()
+        mode = telemetry.get("mode", "none")
+        configured = ["native_" + mode] if mode in {"lookup", "mtp", "dflash2"} else []
         return {"status": "configured", "message": "Native target verification is configured.",
-                "backend": backend.get_speculative_telemetry()}
+                "configured_speedups": configured, "benchmark_required": False, "backend": telemetry}
     return {"status": "pending", "message": "Speed options saved for a compatible model load."}
+
+
+def describe_speed_result(engine, result):
+    """Keep calibration outcome separate from optimizations enabled without it.
+
+    Configuration is not a measured speed claim: reuse requires a matching
+    prompt/cache and native drafting still depends on target acceptance.
+    """
+    status = getattr(engine, "lossless_speed_status", {}) or {}
+    configured = list(status.get("configured_speedups", ()))
+    output = dict(result)
+    output["configured_speedups"] = configured
+    if configured:
+        labels = {"prompt_reuse": "exact prompt reuse", "branch_prefill": "shared branch prefill",
+                  "tokenizer_memo": "tokenizer memo", "persistent_cache": "disk prompt cache",
+                  "metal_warmup": "GPU warmup", "native_lookup": "native lookup drafting",
+                  "native_mtp": "native MTP drafting", "native_dflash2": "native DFlash2 drafting"}
+        output["message"] = str(output.get("message", "")) + " Speedups enabled without tuning: " + ", ".join(
+            labels.get(key, key) for key in configured) + "."
+    elif status.get("status") == "error":
+        output["message"] = str(output.get("message", "")) + " " + str(status.get("message", ""))
+    return output
 
 
 def configure_speedups(engine, options):

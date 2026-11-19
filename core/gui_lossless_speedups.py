@@ -81,16 +81,13 @@ def apply_dialog_options(app, selected, preferences_path):
     return {**result, "message": text}
 
 
-def install_gui_lossless_speedups() -> None:
+def install_gui_lossless_speedups(module=None) -> None:
     """Install once after the existing speed-tuning HUD installer."""
-    mod = sys.modules.get("app_gui")
-    if mod is None:
-        main = sys.modules.get("__main__")
-        if os.path.basename(str(getattr(main, "__file__", ""))) == "app_gui.py":
-            mod = main
-    cls = getattr(mod, "SmartAIChatbotApp", None) if mod is not None else None
-    tk = getattr(mod, "tk", None)
-    if cls is None or tk is None or getattr(cls, "_lossless_speedups_ui_installed", False):
+    from core.gui_extensions import resolve_gui_module
+    mod = resolve_gui_module(module)
+    cls = mod.SmartAIChatbotApp
+    tk = mod.tk
+    if getattr(cls, "_lossless_speedups_ui_installed", False):
         return
     original_build = cls._build_single_top_bar
     original_theme = getattr(cls, "_apply_theme_colors", None)
@@ -178,6 +175,7 @@ def install_gui_lossless_speedups() -> None:
         bold = getattr(mod, "_FONT_TINY_BOLD", ("Arial", 10, "bold"))
         labels = []
         themed = []
+        checkboxes = []
 
         def label(text, *, bold_text=False):
             widget = tk.Label(content, text=text, font=bold if bold_text else font,
@@ -203,6 +201,7 @@ def install_gui_lossless_speedups() -> None:
                                    activeforeground=self.C["text_main"], selectcolor=self.C["btn_bg"],
                                    highlightthickness=0)
             check.pack(fill="x", pady=1)
+            checkboxes.append(check)
             themed.append((check, "check"))
         label("Local persistence stores prompt tokens and state in a bounded cache. It is off by default. "
               "GPU warmup primes the runtime after idle; it does not generate text or hold clocks up continuously.")
@@ -251,19 +250,19 @@ def install_gui_lossless_speedups() -> None:
         draft_row.pack(fill="x", pady=(2, 8))
         draft_label = tk.Label(draft_row, text="Maximum draft tokens (blank = automatic, 1–64)", font=font,
                                bg=self.C["bg_hud"], fg=self.C["text_main"])
-        draft_label.pack(side="left")
         draft_entry = tk.Entry(draft_row, textvariable=variables["max_draft_tokens"], width=6, font=font,
                               bg=self.C["btn_bg"], fg=self.C["text_main"], insertbackground=self.C["text_main"])
         draft_entry.pack(side="right")
+        draft_label.pack(side="left", fill="x", expand=True)
         themed.extend(((draft_row, "frame"), (draft_label, "label"), (draft_entry, "entry")))
         branch_row = tk.Frame(content, bg=self.C["bg_hud"])
         branch_row.pack(fill="x", pady=(2, 8))
         branch_label = tk.Label(branch_row, text="Native branches (1–64; common choices: 1, 8, 16)", font=font,
                                 bg=self.C["bg_hud"], fg=self.C["text_main"])
-        branch_label.pack(side="left")
         branch_entry = tk.Entry(branch_row, textvariable=variables["native_branch_count"], width=6, font=font,
                                bg=self.C["btn_bg"], fg=self.C["text_main"], insertbackground=self.C["text_main"])
         branch_entry.pack(side="right")
+        branch_label.pack(side="left", fill="x", expand=True)
         themed.extend(((branch_row, "frame"), (branch_label, "label"), (branch_entry, "entry")))
         label("Native branches applies only to the native text server. The same branch count is used with drafting "
               "off or on; automatic model-entropy routing is unavailable there.")
@@ -292,7 +291,14 @@ def install_gui_lossless_speedups() -> None:
                        (self._speedups_save_button, "button"), (close, "button")))
         self._speedups_dialog_widgets = themed
         self._speedups_dialog_labels = labels
-        content.bind("<Configure>", lambda event: [item.configure(wraplength=max(260, event.width - 12)) for item in labels])
+        def wrap_content(event):
+            for item in labels:
+                item.configure(wraplength=max(260, event.width - 12))
+            for item in checkboxes:
+                item.configure(wraplength=max(240, event.width - 35), justify="left")
+            for item in (draft_label, branch_label):
+                item.configure(wraplength=max(180, event.width - 90), justify="left", anchor="w")
+        content.bind("<Configure>", wrap_content)
         self._speedups_dialog_status.bind("<Configure>", lambda event:
             self._speedups_dialog_status.configure(wraplength=max(260, event.width - 12))
             if self._speedups_dialog_status is not None else None)

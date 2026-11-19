@@ -37,6 +37,21 @@ def test_long_message_preview_does_not_modify_archived_or_exported_text(tmp_path
     assert content in destination.read_text()
 
 
+def test_collapsed_reasoning_is_bounded_on_screen_and_fully_preserved_on_export(tmp_path):
+    archive = ChatArchive(tmp_path / "transcript.sqlite3", "normal")
+    thought = "reasoning " * 20_000 + "THOUGHT_END"
+    archive.append({"role": "assistant", "content": "answer",
+                    "display_thoughts": [{"offset": 0, "text": thought}]})
+    page = transcript_page(archive, max_chars=5000, message_chars=4000)
+    assert page.previewed
+    turn = page.turns[0]
+    assert len(turn["content"]) + sum(len(t["text"]) for t in turn["display_thoughts"]) <= 4000
+    assert archive[0]["display_thoughts"][0]["text"] == thought
+    destination = tmp_path / "complete.md"
+    export_transcript(archive, destination)
+    assert thought in destination.read_text() and "answer" in destination.read_text()
+
+
 def test_cli_request_is_bounded_json_data(tmp_path, monkeypatch):
     from tools import online_learning
     request = tmp_path / "request.json"

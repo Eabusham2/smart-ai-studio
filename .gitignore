@@ -68,6 +68,7 @@ venv.bak/
 *.log
 memory.db
 memory.db-journal
+data/*_models/
 test_*.db
 test_*.svg
 test_*.md

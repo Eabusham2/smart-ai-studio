@@ -61,3 +61,17 @@ def test_media_pause_takes_lifecycle_before_runtime_and_reenters_for_reload():
         with engine._model_lock:
             assert held == ["lifecycle", "runtime", "lifecycle"]
     assert held == []
+
+
+def test_prism_memory_provider_returns_only_its_live_owned_worker():
+    from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
+
+    backend = PrismGGUFReasoningBackend.__new__(PrismGGUFReasoningBackend)
+    backend._worker = None
+    assert backend.owned_process_ids() == []
+    backend._worker = SimpleNamespace(pid=1234, poll=lambda: None)
+    assert backend.owned_process_ids() == [1234]
+    backend._worker = SimpleNamespace(pid=1234, poll=lambda: 0)
+    assert backend.owned_process_ids() == []
+    backend._worker = SimpleNamespace(pid=True, poll=lambda: None)
+    assert backend.owned_process_ids() == []

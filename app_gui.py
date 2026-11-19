@@ -285,6 +285,21 @@ class SolidButton(tk.Label):
 
     config = configure
 
+    def cget(self, key):
+        # Tk's underlying Label remains "normal"; expose the actual button
+        # state so model loading/tuning can reliably capture and restore it.
+        if key == "state":
+            return self._state
+        if key == "command":
+            return self._command
+        if key == "activebackground":
+            return self._hover_bg
+        if key == "activeforeground":
+            return self._hover_fg
+        return super().cget(key)
+
+    __getitem__ = cget
+
 
 tk.Button = SolidButton
 
@@ -584,8 +599,6 @@ class SmartAIChatbotApp:
         self.custom_lora_str = 0.7   # Mystic XXX / secondary blend (default: 0.7)
 
         # Core Engines & Tools
-        self.db = EpisodicMemoryDB(db_path=self.settings.database_path)
-        self.tools = AgentToolRegistry(db_path=self.settings.database_path)
         from core.memory_preferences import load_learning_implementation
         try:
             self.settings.learning_implementation = load_learning_implementation(
@@ -604,8 +617,8 @@ class SmartAIChatbotApp:
             print(f"Saved memory selection could not be read: {error}")
         self.audio_engine = AudioGenerationEngine()
         self.media_engine = MediaGenerationEngine()
+        self._bind_model_memory()
         self.multimodal = MediaController(self)
-        self.learner = make_autonomous_learner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
 
         # State Variables
         self.workspace_dir: Optional[str] = None
@@ -630,6 +643,8 @@ class SmartAIChatbotApp:
 
         # Prompt Task Queue
         self.prompt_queue: List[Tuple[str, str, Optional[str], Optional[str]]] = []
+        self._model_prompt_queues = {self.active_tab_id: self.prompt_queue}
+        self._generation_epoch = 0
 
         # Thinking & Code Snippet Caches
         self.thinking_cache: Dict[str, str] = {}
@@ -665,17 +680,78 @@ class SmartAIChatbotApp:
         self._update_input_lock_state()
         self._start_event_queue_polling()
 
+    def _bind_model_memory(self, tab_id=None):
+        """Bind tools, episodic recall and Sleep to one model and implementation.
+
+        The original shared database remains the preferences/transcript store;
+        old unscoped episodes are never silently assigned to a selected model.
+        Construct the replacement before rebinding any live reference.
+        """
+        from memory.model_db import model_episodic_db_path
+        tab_id = tab_id or self.active_tab_id
+        mode = getattr(self.settings, "learning_implementation", "legacy")
+        path = model_episodic_db_path(self.settings.database_path, self.models_config[tab_id],
+                                     implementation=mode, tab_id=tab_id)
+        if (getattr(getattr(self, "db", None), "db_path", None) == path
+                and getattr(getattr(self, "learner", None), "learning_implementation", None) == mode):
+            return
+        database = EpisodicMemoryDB(db_path=path)
+        tools = AgentToolRegistry(db_path=path, workspace_dir=getattr(self, "workspace_dir", None),
+                                  owned_processes_provider=self._owned_runtime_pids)
+        learner = make_autonomous_learner(engine=self.engine, tools=tools, db=database, settings=self.settings)
+        controller = getattr(self, "multimodal", None)
+        if controller is not None:
+            controller._install_tools(tools)
+        self.db, self.tools, self.learner = database, tools, learner
+
     def _owned_runtime_pids(self):
-        backend = getattr(getattr(self, "engine", None), "controller_backend", None)
-        if getattr(backend, "runtime", None) == "strata":
-            return backend.owned_process_ids()
-        native = getattr(getattr(self, "engine", None), "gguf_backend", None)
-        if getattr(native, "runtime", None) == "prism_speculative":
-            return native.owned_process_ids()
-        return []
+        engine = getattr(self, "engine", None)
+        active = getattr(engine, "active_backend", None)
+        attributes = {"controller": "controller_backend", "gguf": "gguf_backend", "bitnet": "bitnet_backend"}
+        names = [attributes[active]] if active in attributes else []
+        if getattr(self, "_strata_unload_pending", False):
+            names.append("controller_backend")
+        if getattr(self, "_native_unload_pending", False):
+            names.append("gguf_backend")
+        pids = set()
+        for name in set(names):
+            hook = getattr(getattr(engine, name, None), "owned_process_ids", None)
+            if callable(hook):
+                pids.update(hook())
+        # Eval unloads chat and runs its own model in a retained subprocess.
+        # Follow only that owner's live subtree, never all application children.
+        evaluation = getattr(self, "_eval_proc", None)
+        if evaluation is not None and evaluation.poll() is None:
+            try:
+                import psutil
+            except ImportError:
+                return sorted(pids)
+            try:
+                parent = psutil.Process(evaluation.pid)
+                if parent.ppid() != os.getpid():
+                    return sorted(pids)
+                started = parent.create_time()
+                eval_pids = {parent.pid}
+                for child in parent.children(recursive=True):
+                    try:
+                        if child.is_running() and any(
+                            ancestor.pid == parent.pid and ancestor.create_time() == started
+                            for ancestor in child.parents()
+                        ):
+                            eval_pids.add(child.pid)
+                    except (psutil.Error, OSError):
+                        continue  # A child can finish during this snapshot.
+                # Reject a replaced/exited owner, including PID reuse during
+                # discovery. Process.is_running also checks creation identity.
+                if (evaluation is getattr(self, "_eval_proc", None)
+                        and evaluation.poll() is None and parent.is_running()):
+                    pids.update(eval_pids)
+            except (psutil.Error, OSError):
+                pass
+        return sorted(pids)
 
     def _update_memory_hud_badge(self):
-        """Updates top HUD memory badge with exactly 2 figures: AI RAM (App + Model) and Total Used System RAM."""
+        """Show the app/owned-worker footprint and host RAM without counting Metal twice."""
         if not hasattr(self, "lbl_vram"):
             return
         try:
@@ -684,26 +760,29 @@ class SmartAIChatbotApp:
                    if owned_pids else SystemMemoryWatchdog.get_detailed_memory_breakdown())
             ai_ram = mem.get("total_allocated_gb", 0.0)
             sys_used = mem.get("system_used_gb", 0.0)
-            sys_total = mem.get("system_total_gb", 16.0)
-
-            if ai_ram > 0.05:
-                text = f"💾 AI RAM: {ai_ram:.1f}G | Total RAM: {sys_used:.1f}/{sys_total:.0f}G"
-            elif getattr(self, "is_model_loaded", False):
-                text = f"💾 AI RAM: Ready | Total RAM: {sys_used:.1f}/{sys_total:.0f}G"
-            else:
-                text = f"💾 AI RAM: Standby | Total RAM: {sys_used:.1f}/{sys_total:.0f}G"
+            sys_total = mem.get("system_total_gb", 0.0)
+            ai_text = f"{ai_ram:.1f} GiB" if mem.get("process_memory_known", True) else "unavailable"
+            host_text = (f"{sys_used:.1f}/{sys_total:.0f} GiB" if mem.get("system_memory_known", True)
+                         else "unavailable")
+            text = f"💾 AI RAM: {ai_text} | Total RAM: {host_text}"
 
             self.lbl_vram.configure(text=text)
         except Exception:
-            pass
+            self.lbl_vram.configure(text="💾 AI RAM: unavailable | Total RAM: unavailable")
 
     def _start_event_queue_polling(self):
         """Safely consumes thread-safe background events inside Tkinter main GUI thread."""
+        self._ui_thread_ident = threading.get_ident()
+        self._ui_poll_closed = False
+        last_hud_update = [0.0]
         def _poll():
+            if self._ui_poll_closed:
+                return
             try:
-                while True:
+                # Bound each drain so a fast model cannot starve user input.
+                for _ in range(128):
                     evt, data = self._event_queue.get_nowait()
-                    if evt == "model_load_complete":
+                    if evt in {"model_load_complete", "ui_callback"}:
                         data()
                     elif evt == "memory_pressure":
                         try:
@@ -718,24 +797,39 @@ class SmartAIChatbotApp:
                             self._on_memory_pressure_emergency(status)
             except queue.Empty:
                 pass
-            except Exception:
-                pass
+            except Exception as error:
+                from core.gui_extensions import report_gui_failure
+                report_gui_failure(sys.modules[__name__], "Background UI update", error, app=self)
 
-            if getattr(self, "_model_load_in_progress", False):
-                update = getattr(self, "_model_loading_update", None)
-                message = (getattr(self.engine, "speed_status", {}) or {}).get("message")
-                if callable(update) and message:
-                    update(0, message)
-            self._update_memory_hud_badge()
+            now = time.monotonic()
+            if now - last_hud_update[0] >= .5:
+                last_hud_update[0] = now
+                if getattr(self, "_model_load_in_progress", False):
+                    update = getattr(self, "_model_loading_update", None)
+                    message = (getattr(self.engine, "speed_status", {}) or {}).get("message")
+                    if callable(update) and message:
+                        update(0, message)
+                self._update_memory_hud_badge()
 
             try:
                 if hasattr(self, "root") and self.root.winfo_exists():
-                    self.root.after(500, _poll)
+                    self._ui_poll_after_id = self.root.after(16, _poll)
             except Exception:
                 pass
 
+        def _stop_poll(event):
+            if event.widget is self.root:
+                self._ui_poll_closed = True
+                pending = getattr(self, "_ui_poll_after_id", None)
+                if pending is not None:
+                    try:
+                        self.root.after_cancel(pending)
+                    except tk.TclError:
+                        pass
+
+        self.root.bind("<Destroy>", _stop_poll, add="+")
         try:
-            self.root.after(500, _poll)
+            self._ui_poll_after_id = self.root.after(16, _poll)
         except Exception:
             pass
 
@@ -878,7 +972,7 @@ class SmartAIChatbotApp:
     def _on_memory_limit_entry_commit(self, _event=None):
         raw = ""
         try:
-            raw = str(self.memory_limit_value_var.get()).strip().lower().replace("gb", "").strip()
+            raw = str(self.memory_limit_value_var.get()).strip().lower().replace("gib", "").replace("gb", "").strip()
             value = float(raw)
             if value < 0.5:
                 raise ValueError("memory limit too small")
@@ -975,6 +1069,7 @@ class SmartAIChatbotApp:
         self.root.bind("<Control-0>", lambda e: self._on_zoom_reset())
 
         self._configure_ttk_styles()
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_app)
 
     def _on_zoom_in(self):
@@ -1088,6 +1183,10 @@ class SmartAIChatbotApp:
             fg_main = self.C["text_main"]
             accent_cyan = self.C["accent_cyan"]
             bg_inner = self.C["bg_input_inner"]
+            style.configure(".", background=bg_card, foreground=fg_main,
+                            fieldbackground=bg_inner, troughcolor=bg_app,
+                            bordercolor=self.C["border"], lightcolor=self.C["border"],
+                            darkcolor=self.C["border"])
 
             # Treeview Styling
             style.configure(
@@ -1132,10 +1231,28 @@ class SmartAIChatbotApp:
                 "TCombobox",
                 fieldbackground=[("readonly", bg_inner), ("disabled", bg_inner)],
                 selectbackground=[("readonly", "#333333" if is_dark else "#e0e0e0")],
-                selectforeground=[("readonly", fg_main)]
+                selectforeground=[("readonly", fg_main)],
+                foreground=[("readonly", fg_main), ("disabled", self.C["text_placeholder"])],
             )
-        except Exception:
-            pass
+            for name in ("TFrame", "TLabel", "TCheckbutton", "TRadiobutton", "TLabelframe", "TLabelframe.Label"):
+                style.configure(name, background=bg_card, foreground=fg_main)
+            for name in ("Horizontal.TScrollbar", "Vertical.TScrollbar"):
+                style.configure(name, background=bg_card, troughcolor=bg_app,
+                                arrowcolor=fg_main, bordercolor=self.C["border"])
+            style.configure("TEntry", foreground=fg_main, fieldbackground=bg_inner,
+                            insertcolor=fg_main)
+            style.configure("TSpinbox", foreground=fg_main, fieldbackground=bg_inner,
+                            insertcolor=fg_main, arrowcolor=fg_main)
+            style.configure("TPanedwindow", background=self.C["border"])
+            for name in ("TCheckbutton", "TRadiobutton"):
+                style.map(name, background=[("active", self.C["bg_card_hover"])],
+                          foreground=[("disabled", self.C["text_placeholder"]), ("active", fg_main)])
+            style.configure("TButton", background=self.C["btn_bg"], foreground=self.C["btn_fg"])
+            style.map("TButton", background=[("active", self.C["btn_hover"])],
+                      foreground=[("active", self.C["btn_fg"])])
+        except Exception as error:
+            from core.gui_extensions import report_gui_failure
+            report_gui_failure(sys.modules[__name__], "Widget theme", error)
 
     def _on_toggle_theme(self):
         """Toggles between Dark Mode and Light Mode with instant high-contrast visual refresh."""
@@ -1144,9 +1261,35 @@ class SmartAIChatbotApp:
 
     def _apply_theme_colors(self):
         """Applies current light/dark theme colors dynamically across all UI widgets and ttk styles."""
-        self.C = dict(_THEMES[self.current_theme])
+        previous = dict(self.C)
+        # Dialog callbacks retain this palette. Keep its identity when changing
+        # themes, otherwise later updates repaint old dark colors into light UI.
+        self.C.clear()
+        self.C.update(_THEMES[self.current_theme])
         _COLORS.clear()
         _COLORS.update(self.C)
+
+        from core.gui_theme import apply_widget_palette
+        roles = {self.root: {"background": "bg_app"}}
+        for name, role in {
+            "main_container": "bg_app", "hud_bar": "bg_hud",
+            "workspace_box": "bg_hud", "memory_limit_box": "bg_hud",
+            "chat_stream": "bg_chat", "input_container": "bg_input",
+            "input_card": "bg_input_inner", "txt_input": "bg_input_inner",
+            "entry_memory_limit": "bg_input_inner", "ent_generation_cap": "bg_input_inner",
+            "content_paned": "border", "canvas_panel": "canvas_bg",
+            "txt_canvas": "code_bg",
+        }.items():
+            widget = getattr(self, name, None)
+            if widget is not None:
+                roles[widget] = {"background": role}
+        apply_widget_palette(self.root, previous, self.C, roles)
+        for info in self.models_config.values():
+            accent = info.get("accent")
+            for name in ("accent_cyan", "accent_green", "accent_purple", "accent_orange", "accent_yellow", "accent_red"):
+                if accent == previous[name]:
+                    info["accent"] = self.C[name]
+                    break
 
         is_dark = (self.current_theme == "dark")
         fg_main = self.C["text_main"]
@@ -1219,9 +1362,11 @@ class SmartAIChatbotApp:
             )
         if hasattr(self, "btn_send"):
             self.btn_send.configure(
-                bg=btn_p_bg, fg=btn_p_fg,
+                bg=self.C["accent_red"] if self.is_generating else btn_p_bg,
+                fg="#ffffff" if self.is_generating else btn_p_fg,
                 highlightbackground=btn_p_bg,
-                activebackground=btn_p_hover, activeforeground=btn_p_fg
+                activebackground="#dc2626" if self.is_generating else btn_p_hover,
+                activeforeground="#ffffff" if self.is_generating else btn_p_fg,
             )
 
         bottom_buttons = ["btn_attach", "btn_steer", "btn_live_steer", "btn_stop", "btn_reset_chat", "btn_export_chat"]
@@ -1251,6 +1396,13 @@ class SmartAIChatbotApp:
             )
 
         self._configure_ttk_styles()
+
+        # Theme changes must preserve loading/tuning locks while updating the
+        # current Send/Queue/Steer/Stop colors for this model's actual state.
+        if hasattr(self, "btn_send"):
+            state = self.btn_send.cget("state")
+            self._update_send_button_state()
+            self.btn_send.configure(state=state)
 
     def _on_close_app(self):
         """Cleanly halts all background threads, unloads models from VRAM, and terminates."""
@@ -1311,6 +1463,9 @@ class SmartAIChatbotApp:
 
         # Side-by-Side AI Canvas (Opens when code generated or toggled)
         self._build_ai_canvas_panel()
+
+        from core.gui_extensions import show_gui_failures
+        show_gui_failures(self, sys.modules[__name__])
 
     # ─────────────────────────────────────────────────────
     #  1. SINGLE SLEEK TOP HEADER ROW (WELL-ORGANIZED BUTTONS)
@@ -1443,7 +1598,7 @@ class SmartAIChatbotApp:
         self.entry_memory_limit.bind("<FocusOut>", self._on_memory_limit_entry_commit)
         tk.Label(
             self.memory_limit_box,
-            text="GB",
+            text="GiB",
             font=_FONT_TINY_BOLD,
             bg=self.C["bg_hud"],
             fg=self.C["btn_fg"],
@@ -1743,7 +1898,7 @@ class SmartAIChatbotApp:
 
         ent_repo = tk.Entry(
             body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"],
-            insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1
+            insertbackground=self.C["text_main"], bd=0, highlightbackground=self.C["border"], highlightthickness=1
         )
         ent_repo.pack(fill="x", ipady=5)
         ent_repo.focus_set()
@@ -1933,7 +2088,7 @@ class SmartAIChatbotApp:
 
         # 1. Model Name
         tk.Label(body, text="Model Display Name:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
-        ent_name = tk.Entry(body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_name = tk.Entry(body, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground=self.C["text_main"], bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_name.pack(fill="x", pady=(2, 8), ipady=4)
         ent_name.insert(0, "Custom model")
 
@@ -1951,7 +2106,7 @@ class SmartAIChatbotApp:
         path_frame = tk.Frame(body, bg=self.C["bg_hud"])
         path_frame.pack(fill="x", pady=(2, 8))
 
-        ent_path = tk.Entry(path_frame, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_path = tk.Entry(path_frame, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground=self.C["text_main"], bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_path.pack(side="left", fill="x", expand=True, ipady=4)
         ent_path.insert(0, "")
 
@@ -1971,13 +2126,13 @@ class SmartAIChatbotApp:
         param_frame.pack(fill="x", pady=(0, 8))
 
         tk.Label(param_frame, text="Parameters:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
-        ent_param = tk.Entry(param_frame, width=8, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_param = tk.Entry(param_frame, width=8, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground=self.C["text_main"], bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_param.pack(side="left", padx=(6, 16), ipady=3)
         ent_param.insert(0, "Auto")
         ent_param.configure(state="readonly")
 
         tk.Label(param_frame, text="Precision:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
-        ent_prec = tk.Entry(param_frame, width=14, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground="#ffffff", bd=0, highlightbackground=self.C["border"], highlightthickness=1)
+        ent_prec = tk.Entry(param_frame, width=14, font=_FONT_MAIN, bg=self.C["bg_input_inner"], fg=self.C["text_main"], insertbackground=self.C["text_main"], bd=0, highlightbackground=self.C["border"], highlightthickness=1)
         ent_prec.pack(side="left", padx=6, ipady=3)
         ent_prec.insert(0, "From model")
         ent_prec.configure(state="readonly")
@@ -2148,14 +2303,16 @@ class SmartAIChatbotApp:
 
         body = tk.Frame(self.res_drawer, bg=self.C["bg_resources"])
         body.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        for column in range(2):
+            body.columnconfigure(column, weight=1, uniform="resource_columns")
 
         col1 = tk.Frame(body, bg=self.C["bg_resources"])
-        col1.pack(side="left", fill="both", expand=True)
+        col1.grid(row=0, column=0, sticky="nsew")
 
         self.lbl_res_model = tk.Label(col1, text="• Model: Ternary Bonsai (1.58-Bit)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_main"], anchor="w")
         self.lbl_res_model.pack(fill="x", pady=2)
 
-        self.lbl_res_vram = tk.Label(col1, text="• VRAM Usage: 0.0 GB (Unloaded)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_orange"], anchor="w")
+        self.lbl_res_vram = tk.Label(col1, text="• Accelerator: model unloaded", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_orange"], anchor="w")
         self.lbl_res_vram.pack(fill="x", pady=2)
 
         self.lbl_res_synapses = tk.Label(col1, text="• Learned Weights: +0 Synapses (EWC Replay Active)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_purple"], anchor="w")
@@ -2165,7 +2322,7 @@ class SmartAIChatbotApp:
         self.lbl_res_adapter_updates.pack(fill="x", pady=2)
 
         col2 = tk.Frame(body, bg=self.C["bg_resources"])
-        col2.pack(side="right", fill="both", expand=True)
+        col2.grid(row=0, column=1, sticky="nsew")
 
         folder_disp = os.path.basename(self.workspace_dir) if self.workspace_dir else "None (No Folder Selected)"
         self.lbl_res_folder = tk.Label(col2, text=f"• Target Folder: {folder_disp}", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_main"], anchor="w")
@@ -2176,6 +2333,12 @@ class SmartAIChatbotApp:
 
         self.lbl_res_arch = tk.Label(col2, text=f"• Platform: {platform.system()} {platform.machine()} (MLX Native)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_muted"], anchor="w")
         self.lbl_res_arch.pack(fill="x", pady=2)
+        def wrap_column(event):
+            for label in event.widget.winfo_children():
+                if isinstance(label, tk.Label):
+                    label.configure(wraplength=max(100, event.width - 12), justify="left")
+        col1.bind("<Configure>", wrap_column)
+        col2.bind("<Configure>", wrap_column)
 
         # LoRA Conditioning & Slider Controls Frame
         lora_box = tk.Frame(self.res_drawer, bg=self.C["bg_hud"], highlightbackground=self.C["border"], highlightthickness=1)
@@ -2187,10 +2350,12 @@ class SmartAIChatbotApp:
 
         sliders_bar = tk.Frame(lora_box, bg=self.C["bg_hud"])
         sliders_bar.pack(fill="x", padx=10, pady=(0, 6))
+        for column in range(3):
+            sliders_bar.columnconfigure(column, weight=1, uniform="resource_sliders")
 
         # Slider 1: Softer LoRA (Anatomy / Detail)
         s1_frame = tk.Frame(sliders_bar, bg=self.C["bg_hud"])
-        s1_frame.pack(side="left", fill="x", expand=True, padx=4)
+        s1_frame.grid(row=0, column=0, sticky="ew", padx=4)
         lbl_s1 = tk.Label(s1_frame, text=f"Softer LoRA (Anatomy): {self.softer_lora_str:.2f}x", font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_main"])
         lbl_s1.pack(anchor="w")
         scale_s1 = tk.Scale(s1_frame, from_=0.0, to=1.5, resolution=0.05, orient="horizontal", bg=self.C["bg_hud"], fg=self.C["accent_cyan"], highlightthickness=0, bd=0, showvalue=False, command=lambda v: [setattr(self, 'softer_lora_str', float(v)), lbl_s1.configure(text=f"Softer LoRA (Anatomy): {float(v):.2f}x")])
@@ -2199,7 +2364,7 @@ class SmartAIChatbotApp:
 
         # Slider 2: Harder LoRA (Motion / Dynamics)
         s2_frame = tk.Frame(sliders_bar, bg=self.C["bg_hud"])
-        s2_frame.pack(side="left", fill="x", expand=True, padx=4)
+        s2_frame.grid(row=0, column=1, sticky="ew", padx=4)
         lbl_s2 = tk.Label(s2_frame, text=f"Harder LoRA (Motion R32): {self.harder_lora_str:.2f}x", font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_main"])
         lbl_s2.pack(anchor="w")
         scale_s2 = tk.Scale(s2_frame, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", bg=self.C["bg_hud"], fg=self.C["accent_orange"], highlightthickness=0, bd=0, showvalue=False, command=lambda v: [setattr(self, 'harder_lora_str', float(v)), lbl_s2.configure(text=f"Harder LoRA (Motion R32): {float(v):.2f}x")])
@@ -2208,12 +2373,17 @@ class SmartAIChatbotApp:
 
         # Slider 3: Custom / Mystic LoRA
         s3_frame = tk.Frame(sliders_bar, bg=self.C["bg_hud"])
-        s3_frame.pack(side="left", fill="x", expand=True, padx=4)
+        s3_frame.grid(row=0, column=2, sticky="ew", padx=4)
         lbl_s3 = tk.Label(s3_frame, text=f"Mystic / Secondary LoRA: {self.custom_lora_str:.2f}x", font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_main"])
         lbl_s3.pack(anchor="w")
         scale_s3 = tk.Scale(s3_frame, from_=0.0, to=1.5, resolution=0.05, orient="horizontal", bg=self.C["bg_hud"], fg=self.C["accent_green"], highlightthickness=0, bd=0, showvalue=False, command=lambda v: [setattr(self, 'custom_lora_str', float(v)), lbl_s3.configure(text=f"Mystic / Secondary LoRA: {float(v):.2f}x")])
         scale_s3.set(self.custom_lora_str)
         scale_s3.pack(fill="x")
+        for frame, label in ((s1_frame, lbl_s1), (s2_frame, lbl_s2), (s3_frame, lbl_s3)):
+            frame.bind("<Configure>", lambda event, label=label: label.configure(
+                wraplength=max(100, event.width - 4), justify="left"))
+        for scale in (scale_s1, scale_s2, scale_s3):
+            scale.configure(troughcolor=self.C["bg_app"], activebackground=self.C["bg_card_hover"])
 
     def _on_toggle_resource_viewer(self):
         if self.show_resources:
@@ -2222,7 +2392,7 @@ class SmartAIChatbotApp:
             self.show_resources = False
         else:
             self.res_drawer.pack(fill="x", after=self.hud_bar)
-            self.btn_toggle_resources.configure(fg="#ffffff")
+            self.btn_toggle_resources.configure(fg=self.C["btn_fg"])
             self.show_resources = True
             self._update_resource_view_metrics()
 
@@ -2234,7 +2404,8 @@ class SmartAIChatbotApp:
                if owned_pids else SystemMemoryWatchdog.get_system_memory_status())
         proc_rss = mem.get("process_rss_gb", 0.0)
         self.lbl_res_ram.configure(
-            text=f"• Process RSS: {proc_rss:.1f} GB | Host RAM: {mem['used_gb']:.1f} GB / {mem['total_gb']:.1f} GB ({mem['used_percent']:.0f}%)"
+            text=(f"• AI memory: {proc_rss:.1f} GiB | Host RAM: {mem['used_gb']:.1f} / {mem['total_gb']:.1f} GiB ({mem['used_percent']:.0f}%)"
+                  if mem.get("system_memory_known", True) else f"• AI memory: {proc_rss:.1f} GiB | Host RAM: unavailable")
         )
         info = self.models_config[self.active_tab_id]
         self.lbl_res_model.configure(text=f"• Model: {info['name']}")
@@ -2296,7 +2467,8 @@ class SmartAIChatbotApp:
             inactiveselectbackground=self.C.get("bg_card", "#27272a")
         )
         self.chat_stream.pack(fill="both", expand=True)
-        scroll.configure(command=self.chat_stream.yview)
+        from core.gui_chat_scroll import install_chat_scroll
+        install_chat_scroll(self, scroll)
 
         # Selection & Copy Key Bindings
         self.chat_stream.bind("<Command-c>", lambda e: self._on_copy_chat_selection(e))
@@ -2400,6 +2572,7 @@ class SmartAIChatbotApp:
         self.canvas_panel = tk.Frame(self.content_paned, bg=self.C["canvas_bg"])
 
         hdr = tk.Frame(self.canvas_panel, bg=self.C["canvas_hdr"], height=42)
+        self.canvas_toolbar = hdr
         hdr.pack(fill="x", side="top")
         hdr.pack_propagate(False)
 
@@ -2496,6 +2669,17 @@ class SmartAIChatbotApp:
             command=self._on_toggle_canvas_viewer
         )
         btn_close.pack(side="right", padx=8)
+        from core.responsive_toolbar import install_wrapping_controls
+        install_wrapping_controls(hdr)
+
+        def fit_panes(event=None):
+            if not self.show_canvas:
+                return
+            half = max(180, (self.content_paned.winfo_width() - 12) // 2)
+            self.content_paned.paneconfigure(self.chat_container_frame, minsize=min(460, half))
+            self.content_paned.paneconfigure(self.canvas_panel, minsize=min(380, half))
+        self.content_paned.bind("<Configure>", fit_panes, add="+")
+        self._fit_canvas_panes = fit_panes
 
         editor_frame = tk.Frame(self.canvas_panel, bg=self.C["canvas_bg"])
         editor_frame.pack(fill="both", expand=True)
@@ -2505,7 +2689,7 @@ class SmartAIChatbotApp:
 
         self.txt_canvas = tk.Text(
             editor_frame, bg=self.C["code_bg"], fg=self.C["code_fg"],
-            insertbackground="#ffffff", font=_FONT_MONO, wrap="none",
+            insertbackground=self.C["code_fg"], font=_FONT_MONO, wrap="none",
             bd=0, padx=16, pady=16, highlightthickness=0,
             spacing1=3, spacing3=3, yscrollcommand=scroll_y.set
         )
@@ -2521,8 +2705,9 @@ class SmartAIChatbotApp:
             self.show_canvas = False
         else:
             self.content_paned.add(self.canvas_panel, stretch="always", minsize=380)
-            self.btn_toggle_canvas.configure(text="🎨 Canvas ▴", fg="#ffffff")
+            self.btn_toggle_canvas.configure(text="🎨 Canvas ▴", fg=self.C["btn_fg"])
             self.show_canvas = True
+            self._fit_canvas_panes()
 
     def _open_in_canvas(self, content: str):
         """Opens or updates the AI Canvas with generated code or document text."""
@@ -3483,7 +3668,7 @@ class SmartAIChatbotApp:
             return
         cached = self._model_is_cached(target_info)
 
-        if getattr(self, "_native_unload_pending", False):
+        if getattr(self, "_native_unload_pending", False) or getattr(self, "_model_unload_pending", False):
             self.btn_load_unload.configure(text="Retry unload", command=self._on_toggle_load_unload)
             return
 
@@ -3630,6 +3815,9 @@ class SmartAIChatbotApp:
 
     def _on_toggle_load_unload(self, *, _skip_download: bool = False, _legacy_adapter_path=None,
                                _legacy_adapter_format=None):
+        worker = getattr(self, "_generation_worker", None)
+        if getattr(self, "is_generating", False) or (worker is not None and worker.is_alive()):
+            return
         learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
         if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
             return
@@ -3652,13 +3840,21 @@ class SmartAIChatbotApp:
             self._unload_strata_async()
             return
 
-        if self.is_model_loaded and not _legacy_adapter_path:
-            if model_type == "text":
-                self.engine.unload_model()
-            elif model_type == "audio":
-                self.audio_engine.unload_model()
-            else:
-                self.media_engine.unload_model()
+        if (self.is_model_loaded or getattr(self, "_model_unload_pending", False)) and not _legacy_adapter_path:
+            try:
+                owner = self.engine if model_type == "text" else self.audio_engine if model_type == "audio" else self.media_engine
+                result = owner.unload_model()
+                if isinstance(result, dict) and result.get("status") != "unloaded":
+                    raise RuntimeError(result.get("error") or "The model runtime has not unloaded.")
+            except Exception as error:
+                self._model_unload_pending = True
+                self.is_model_loaded = False
+                self.lbl_model_status.configure(text="⚠ Cleanup incomplete — Retry unload", fg=self.C["accent_red"])
+                self._update_model_action_buttons()
+                self._update_input_lock_state()
+                self._append_ai_message(f"⚠️ **Unload incomplete**: {error}. Retry unload before starting another model.")
+                return
+            self._model_unload_pending = False
             self.is_model_loaded = False
             self._sync_memory_watchdog(force_stop=True)
             self.lbl_model_status.configure(
@@ -3884,29 +4080,20 @@ class SmartAIChatbotApp:
         self.chat_stream.insert("end", f"\n👤 You\n", "user_header")
         self.chat_stream.insert("end", f"{text.strip()}\n\n", "user_msg")
 
-    def _append_rendered_ai_turn(self, text: str):
+    def _append_rendered_ai_turn(self, text: str, display_thoughts=None):
+        from core.gui_thinking import render_segments, transcript_segments
         info = self.models_config[self.active_tab_id]
         self.chat_stream.insert("end", f"\n✦ {info['short_name']}\n", "ai_header")
-        parts = text.split("```")
-        for i, part in enumerate(parts):
-            if i % 2 == 0:
-                self._render_styled_markdown(part)
-            else:
-                lines = part.split("\n", 1)
-                lang = lines[0].strip() if lines else "python"
-                code_content = lines[1] if len(lines) > 1 else part
-                self.chat_stream.insert("end", f"📄 {lang or 'python'}\n", "code_hdr")
-                self.chat_stream.insert("end", code_content.rstrip(), "code_block")
-                self.chat_stream.insert("end", "\n\n")
+        render_segments(self, transcript_segments({"content": text, "display_thoughts": display_thoughts}))
 
     def _learning_implementation_changed(self, previous):
         selected = getattr(self.settings, "learning_implementation", "legacy")
+        self._bind_model_memory()
         histories = getattr(self, "_implementation_histories", {})
         histories[previous] = self.chat_history
         self._implementation_histories = histories
         cached = histories.get(selected, {})
         self.chat_history = {tab: self._open_tab_history(tab, cached.get(tab)) for tab in self.models_config}
-        self.learner = make_autonomous_learner(engine=self.engine, tools=self.tools, db=self.db, settings=self.settings)
         self._show_transcript_page()
 
     def _open_tab_history(self, tab, cached=None):
@@ -3925,13 +4112,11 @@ class SmartAIChatbotApp:
     def _show_transcript_page(self, end=None, *, start=None):
         if getattr(self, "is_generating", False):
             return
+        from core.gui_thinking import clear_display_state
+        clear_display_state(self)
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
-        for name in ("thinking_cache", "thinking_expanded", "thinking_meta", "code_snippets"):
-            getattr(self, name, {}).clear()
-        for tag in self.chat_stream.tag_names():
-            if tag.startswith(("tag_btn_", "tag_cp_", "tag_cv_", "think_body_")):
-                self.chat_stream.tag_delete(tag)
+        self._chat_follow_tail = True
         self._render_tab_transcript(end=end, start=start)
 
     def _limit_rendered_transcript(self):
@@ -3940,7 +4125,7 @@ class SmartAIChatbotApp:
         if getattr(self, "is_generating", False) or not hasattr(self, "chat_history"):
             return
         history = self.chat_history.get(self.active_tab_id, [])
-        if getattr(self, "_transcript_browsing", False):
+        if getattr(self, "_transcript_browsing", False) or not getattr(self, "_chat_follow_tail", True):
             return
         visible = len(history) - getattr(self, "_transcript_page_start", 0)
         count = self.chat_stream.count("1.0", "end", "chars")
@@ -3981,11 +4166,16 @@ class SmartAIChatbotApp:
                 if role == "user":
                     self._append_rendered_user_turn(content)
                 elif role == "assistant":
-                    self._append_rendered_ai_turn(content)
+                    self._append_rendered_ai_turn(content, item.get("display_thoughts"))
             self.chat_stream.configure(state="disabled")
             self._scroll_chat_to_bottom()
 
     def _on_switch_model_tab(self, target_tab_id: str):
+        worker = getattr(self, "_generation_worker", None)
+        if getattr(self, "is_generating", False) or (worker is not None and worker.is_alive()):
+            # This is a core ownership rule, even if an optional toolbar fails
+            # to install. The old worker cannot own a newly selected model.
+            return
         learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
         if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
             return
@@ -4002,7 +4192,48 @@ class SmartAIChatbotApp:
                 and (self.is_model_loaded or getattr(self, "_native_unload_pending", False))):
             self._unload_strata_async(on_complete=lambda: self._on_switch_model_tab(target_tab_id))
             return
+        # Do not rebind the tab, transcript or memory until the old owner has
+        # actually released its model. A failed stop retains the original owner
+        # and exposes a retry instead of hiding resident weights behind a new tab.
+        self._sync_memory_watchdog(force_stop=True)
+        try:
+            for name in ("engine", "audio_engine", "media_engine"):
+                owner = getattr(self, name, None)
+                unload = getattr(owner, "unload_model", None)
+                if not callable(unload):
+                    continue
+                result = unload()
+                if isinstance(result, dict) and result.get("status") != "unloaded":
+                    raise RuntimeError(result.get("error") or f"{name} has not released the previous model")
+        except Exception as error:
+            self._model_unload_pending = True
+            self.is_model_loaded = False
+            self.lbl_model_status.configure(text="⚠ Switch stopped — Retry unload", fg=self.C["accent_red"])
+            self._update_model_action_buttons()
+            self._update_input_lock_state()
+            self._append_ai_message(f"⚠️ **Model switch stopped**: {error}. The original model and memory remain selected.")
+            return
+        self._model_unload_pending = False
+        self.is_model_loaded = False
+        bind_memory = getattr(self, "_bind_model_memory", None)
+        if callable(bind_memory):
+            try:
+                bind_memory(target_tab_id)
+            except (OSError, ValueError, sqlite3.Error) as error:
+                messagebox.showerror("Model memory", f"Could not open this model's memory: {error}", parent=self.root)
+                self._update_model_action_buttons()
+                self._update_input_lock_state()
+                return
+        queues = getattr(self, "_model_prompt_queues", {})
+        queues[self.active_tab_id] = getattr(self, "prompt_queue", [])
+        self._model_prompt_queues = queues
+        self.prompt_queue = queues.setdefault(target_tab_id, [])
         self.active_tab_id = target_tab_id
+        self._generation_epoch = getattr(self, "_generation_epoch", 0) + 1
+        self._chat_follow_tail = True
+        update_queue = getattr(self, "_update_queue_ui", None)
+        if callable(update_queue):
+            update_queue()
         self._last_context_snapshot = None
         target_info = self.models_config[target_tab_id]
         model_type = str(target_info.get("model_type", "text") or "text").lower()
@@ -4013,6 +4244,9 @@ class SmartAIChatbotApp:
 
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
+        from core.gui_thinking import clear_display_state
+        if hasattr(self.chat_stream, "winfo_children"):
+            clear_display_state(self)
 
         if self.active_tab_id not in self.chat_history:
             self.chat_history[self.active_tab_id] = self._open_tab_history(self.active_tab_id)
@@ -4021,22 +4255,6 @@ class SmartAIChatbotApp:
 
         self.chat_stream.configure(state="disabled")
         self._scroll_chat_to_bottom()
-
-        # Strict single active generation model. Media never enters the Pro text engine.
-        # Disarm the old model's watcher before any unload/switch work.
-        self._sync_memory_watchdog(force_stop=True)
-        try:
-            self.engine.unload_model()
-        except Exception:
-            pass
-        try:
-            self.audio_engine.unload_model()
-        except Exception:
-            pass
-        try:
-            self.media_engine.unload_model()
-        except Exception:
-            pass
 
         repo_id = str(target_info.get("repo_id") or "")
         cached = self._model_is_cached(target_info)
@@ -4150,7 +4368,7 @@ class SmartAIChatbotApp:
             critical = status.get("used_percent", 0.0) >= 99.0 and status.get("free_gb", 1.0) < 0.10
             if cap_reached or critical:
                 if not getattr(self, "_model_unload_in_progress", False):
-                    reason = (f"Studio and its native runtime reached the {cap:.1f} GB RAM limit ({process_gb:.1f} GB)."
+                    reason = (f"Studio and its native runtime reached the {cap:.1f} GiB RAM limit ({process_gb:.1f} GiB)."
                               if cap_reached else "The system reached critical RAM pressure.")
                     self._append_ai_message(f"🛡️ {reason} Stopping the owned native runtime; prepared model files are kept.")
                 self._unload_strata_async()
@@ -4186,7 +4404,7 @@ class SmartAIChatbotApp:
             proc_gb = status.get("process_rss_gb", 0.0)
             self._append_ai_message(
                 f"🛡️ **System Memory Watchdog**: Total host RAM utilization reached {used_pct:.1f}% "
-                f"({used_gb:.1f} GB / {total_gb:.1f} GB; app process: {proc_gb:.1f} GB).\n\n"
+                f"({used_gb:.1f} GiB / {total_gb:.1f} GiB; app process: {proc_gb:.1f} GiB).\n\n"
                 f"• Cleaned transient caches to preserve responsiveness while keeping model ready."
             )
 
@@ -4217,13 +4435,9 @@ class SmartAIChatbotApp:
     # ─────────────────────────────────────────────────────
     #  RICH TEXT & MARKDOWN FORMATTING RENDERER
     # ─────────────────────────────────────────────────────
-    def _scroll_chat_to_bottom(self):
-        try:
-            self.chat_stream.see("end")
-            self.chat_stream.yview_moveto(1.0)
-            self.root.after_idle(lambda: self.chat_stream.see("end"))
-        except Exception:
-            pass
+    def _scroll_chat_to_bottom(self, *, force=False):
+        from core.gui_chat_scroll import follow_chat_tail
+        follow_chat_tail(self, force=force)
 
     def _render_styled_markdown(self, raw_text: str):
         lines = raw_text.splitlines()
@@ -4330,6 +4544,7 @@ class SmartAIChatbotApp:
         self._scroll_chat_to_bottom()
 
     def _append_user_message(self, text: str):
+        self._chat_follow_tail = True
         if getattr(self, "_transcript_browsing", False):
             self._show_transcript_page()
         if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
@@ -4543,70 +4758,27 @@ class SmartAIChatbotApp:
         duration_s: float = 0.0,
         tok_per_sec: float = 0.0
     ):
+        from core.gui_thinking import reasoning_segments, render_segments, transcript_payload
+        segments = reasoning_segments(text)
+        if thinking_text:
+            segments.insert(0, (True, thinking_text))
         is_warning = "weights are not currently loaded" in text or "Click '⬇️ Download" in text
         if not is_warning and hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
-            self.chat_history[self.active_tab_id].append({"role": "assistant", "content": text})
+            self.chat_history[self.active_tab_id].append(transcript_payload(segments))
 
         self.chat_stream.configure(state="normal")
         info = self.models_config[self.active_tab_id]
         self.chat_stream.insert("end", f"\n✦ {info['short_name']}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
 
-        # Collapsible Thinking Dropdown Pill
-        if thinking_text or thinking_tokens > 0:
-            self._think_counter += 1
-            think_id = f"think_{self._think_counter}"
-            clean_thinking = thinking_text or "Step-by-step reasoning verified."
-            self.thinking_cache[think_id] = clean_thinking
-            self.thinking_expanded[think_id] = False
-
-            speed_str = f" • {tok_per_sec:.1f} tok/s" if tok_per_sec > 0 else ""
-            # Do not turn words into fake model tokens. Only show a backend count.
-            t_toks = thinking_tokens if type(thinking_tokens) is int and thinking_tokens > 0 else None
-
-            self.thinking_meta[think_id] = {
-                "duration_s": duration_s,
-                "tokens": t_toks,
-                "speed_str": speed_str
-            }
-
-            btn_tag = f"tag_btn_{think_id}"
-            self.chat_stream.insert(
-                "end", f"  ▶ 💭 Thought for {duration_s:.1f}s"
-                f"{f' ({t_toks} tokens)' if t_toks is not None else ''}{speed_str} [Click to Expand]  ",
-                ("think_dropdown_btn", btn_tag)
+        first_thought = f"think_{self._think_counter + 1}"
+        render_segments(self, segments, duration_s=duration_s, open_canvas=True)
+        if thinking_text and first_thought in self.thinking_meta:
+            from core.gui_thinking import update_thought
+            self.thinking_meta[first_thought].update(
+                tokens=thinking_tokens if type(thinking_tokens) is int and thinking_tokens > 0 else None,
+                speed_str=f" • {tok_per_sec:.1f} tok/s" if tok_per_sec > 0 else "",
             )
-            self.chat_stream.insert("end", "\n\n")
-            self.chat_stream.tag_bind(btn_tag, "<Button-1>", lambda e, tid=think_id: self._on_toggle_thinking_dropdown(tid))
-
-        # Render Markdown & Code blocks
-        parts = text.split("```")
-        for i, part in enumerate(parts):
-            if i % 2 == 0:
-                self._render_styled_markdown(part)
-            else:
-                lines = part.split("\n", 1)
-                lang = lines[0].strip() if lines else "python"
-                code_content = lines[1] if len(lines) > 1 else part
-
-                self._code_counter += 1
-                code_id = f"code_{self._code_counter}"
-                self.code_snippets[code_id] = code_content.strip()
-
-                tag_copy = f"tag_cp_{code_id}"
-                tag_canvas = f"tag_cv_{code_id}"
-
-                self.chat_stream.insert("end", f"  📄 {lang or 'python'}  ", "code_hdr")
-                self.chat_stream.insert("end", " [ 📋 Copy ] ", ("code_action_copy", tag_copy))
-                self.chat_stream.insert("end", " [ 🎨 Open in Canvas ] \n", ("code_action_canvas", tag_canvas))
-
-                self.chat_stream.insert("end", code_content.rstrip(), "code_block")
-                self.chat_stream.insert("end", "\n\n")
-
-                self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
-                self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
-
-                if len(code_content.splitlines()) > 4 and hasattr(self, "txt_canvas"):
-                    self._open_in_canvas(code_content.strip())
+            update_thought(self, first_thought)
 
         self.chat_stream.configure(state="disabled")
         self._scroll_chat_to_bottom()
@@ -4659,6 +4831,15 @@ class SmartAIChatbotApp:
 
     def _on_toggle_thinking_dropdown(self, think_id: str):
         if think_id not in self.thinking_cache:
+            return
+
+        if "stream" in self.thinking_meta.get(think_id, {}):
+            from core.gui_thinking import update_thought
+            stream = self.thinking_meta[think_id]["stream"]
+            stream.configure(state="normal")
+            self.thinking_expanded[think_id] = not self.thinking_expanded.get(think_id, False)
+            update_thought(self, think_id)
+            stream.configure(state="disabled")
             return
 
         is_exp = self.thinking_expanded.get(think_id, False)
@@ -4761,6 +4942,12 @@ class SmartAIChatbotApp:
             return "break"
 
     def _on_send_message(self):
+        if (getattr(self, "_sleep_consolidating", False)
+                or getattr(self, "_model_unload_pending", False)
+                or getattr(self, "_native_unload_pending", False)
+                or getattr(self, "_strata_unload_pending", False)
+                or getattr(self, "_model_load_in_progress", False)):
+            return
         raw_text = self.txt_input.get("1.0", "end").strip()
         if self._placeholder_active or not raw_text:
             return
@@ -4851,6 +5038,25 @@ class SmartAIChatbotApp:
         route_with_history: bool = False,
     ):
         start_time = time.perf_counter()
+        origin_tab = self.active_tab_id
+        request_epoch = getattr(self, "_generation_epoch", 0)
+        origin_history = self.chat_history.get(origin_tab, [])
+        origin_stream = self.chat_stream
+        origin_db = getattr(self, "db", None)
+        origin_tools = getattr(self, "tools", None)
+        origin_learner = getattr(self, "learner", None)
+
+        def _owns_request():
+            return (self.active_tab_id == origin_tab
+                    and getattr(self, "_generation_epoch", 0) == request_epoch
+                    and self.chat_stream is origin_stream)
+
+        def _post(delay, callback):
+            from core.gui_dispatch import post_ui
+            def guarded():
+                if _owns_request():
+                    callback()
+            return post_ui(self, guarded, delay_ms=delay)
         # Preserve historical routing. The GUI only enables/disables Pro;
         # neither a keyword heuristic nor a GUI count overrides the router.
         use_pro_branches = bool(use_pro_branches)
@@ -4858,32 +5064,32 @@ class SmartAIChatbotApp:
             media_command = self.multimodal.handle_command(full_msg)
             if media_command is not None:
                 message = json.dumps(media_command, ensure_ascii=False, indent=2)
-                self.root.after(0, lambda text=message: self._append_ai_message(text))
+                _post(0, lambda text=message: self._append_ai_message(text))
                 return
             msg_lower = full_msg.lower().strip()
             response_text = None
             thinking_text = None
             matched = False
 
-            active_info = self.models_config.get(self.active_tab_id, {})
+            active_info = self.models_config.get(origin_tab, {})
             active_type = str(active_info.get("model_type", "text") or "text").lower()
 
             if active_type == "audio":
                 if not self.is_model_loaded:
-                    self.root.after(0, lambda: self._append_ai_message(
+                    _post(0, lambda: self._append_ai_message(
                         "⚠️ Load the selected audio model before generating."
                     ))
                     return
 
                 visual_id = f"audio_gen_{int(time.time() * 1000)}"
                 title = str(active_info.get("short_name") or "Audio generation")
-                self.root.after(
+                _post(
                     0,
                     lambda vid=visual_id, t=title: self._create_generation_visual(vid, "audio", t),
                 )
 
                 def _audio_progress(progress: float, message: str):
-                    self.root.after(
+                    _post(
                         0,
                         lambda vid=visual_id, p=progress, m=message:
                             self._update_generation_visual(vid, p, m),
@@ -4902,45 +5108,45 @@ class SmartAIChatbotApp:
                 if audio_res.get("status") == "success":
                     path = str(audio_res.get("path") or output_path)
                     backend = str(audio_res.get("backend") or "audio")
-                    self.root.after(
+                    _post(
                         0,
                         lambda vid=visual_id: self._finish_generation_visual(
                             vid, True, "✓ Audio complete"
                         ),
                     )
-                    self.root.after(0, lambda p=path, b=backend: self._append_ai_message(
+                    _post(0, lambda p=path, b=backend: self._append_ai_message(
                         f"🎵 **Audio generated** with {b}: `{p}`"
                     ))
                 else:
                     error = str(audio_res.get("error") or "Audio generation failed.")
-                    self.root.after(
+                    _post(
                         0,
                         lambda vid=visual_id: self._finish_generation_visual(
                             vid, False, "⚠ Audio generation failed"
                         ),
                     )
-                    self.root.after(0, lambda e=error: self._append_ai_message(
+                    _post(0, lambda e=error: self._append_ai_message(
                         f"⚠️ **Audio generation failed**: {e}"
                     ))
                 return
 
             if active_type in ("image", "video"):
                 if not self.is_model_loaded:
-                    self.root.after(0, lambda: self._append_ai_message(
+                    _post(0, lambda: self._append_ai_message(
                         "⚠️ Install and Load the selected media model before generating."
                     ))
                     return
 
                 visual_id = f"{active_type}_gen_{int(time.time() * 1000)}"
                 title = str(active_info.get("short_name") or f"{active_type.title()} generation")
-                self.root.after(
+                _post(
                     0,
                     lambda vid=visual_id, k=active_type, t=title:
                         self._create_generation_visual(vid, k, t),
                 )
 
                 def _media_progress(progress: float, message: str):
-                    self.root.after(
+                    _post(
                         0,
                         lambda vid=visual_id, p=progress, m=message:
                             self._update_generation_visual(vid, p, m),
@@ -4967,40 +5173,40 @@ class SmartAIChatbotApp:
                         )
                     if media_res.get("status") == "success":
                         path = str(media_res.get("path") or output_path)
-                        self.root.after(
+                        _post(
                             0,
                             lambda vid=visual_id, kind=active_type:
                                 self._finish_generation_visual(
                                     vid, True, f"✓ {kind.title()} complete"
                                 ),
                         )
-                        self.root.after(0, lambda p=path, kind=active_type: self._append_ai_message(
+                        _post(0, lambda p=path, kind=active_type: self._append_ai_message(
                             f"✓ **{kind.title()} generated**: `{p}`"
                         ))
                     else:
                         error = str(media_res.get("error") or f"{active_type.title()} generation failed.")
-                        self.root.after(
+                        _post(
                             0,
                             lambda vid=visual_id, kind=active_type:
                                 self._finish_generation_visual(
                                     vid, False, f"⚠ {kind.title()} generation failed"
                                 ),
                         )
-                        self.root.after(0, lambda e=error: self._append_ai_message(
+                        _post(0, lambda e=error: self._append_ai_message(
                             f"⚠️ **Media generation failed**: {e}"
                         ))
                 else:
                     # Legacy media backends do not expose denoising callbacks, so the
                     # same card uses its smooth indeterminate growth animation.
-                    self.root.after(
+                    _post(
                         0,
                         lambda vid=visual_id:
                             self._update_generation_visual(vid, 0.15, "Generating…"),
                     )
                     tool_name = "generate_image_diffusion" if active_type == "image" else "generate_video_diffusion"
                     args = {"prompt": full_msg, "model_id": active_info.get("repo_id")}
-                    ok, res = self.tools.execute_tool(tool_name, args)
-                    self.root.after(
+                    ok, res = origin_tools.execute_tool(tool_name, args)
+                    _post(
                         0,
                         lambda vid=visual_id, passed=ok, kind=active_type:
                             self._finish_generation_visual(
@@ -5009,9 +5215,9 @@ class SmartAIChatbotApp:
                                 f"{'✓' if passed else '⚠'} {kind.title()} {'complete' if passed else 'failed'}",
                             ),
                     )
-                    self.root.after(0, lambda tn=tool_name, r=res: self._append_tool_call(tn, "", r))
+                    _post(0, lambda tn=tool_name, r=res: self._append_tool_call(tn, "", r))
                     if not ok:
-                        self.root.after(0, lambda r=res: self._append_ai_message(f"⚠️ {r}"))
+                        _post(0, lambda r=res: self._append_ai_message(f"⚠️ {r}"))
                 return
 
             # 1. Autonomous Learning Mode (/learn or learn <topic>)
@@ -5025,8 +5231,8 @@ class SmartAIChatbotApp:
                     if syn_delta > 0:
                         self.synapses_learned_count += syn_delta * 1_000_000
                         self.synapses_learned_m += syn_delta
-                        self.root.after(0, self._update_telemetry)
-                    self.root.after(0, lambda m=message: self._append_ai_message(m))
+                        _post(0, self._update_telemetry)
+                    _post(0, lambda m=message: self._append_ai_message(m))
 
                 inspection = None
                 if learn_source_path:
@@ -5044,7 +5250,7 @@ class SmartAIChatbotApp:
                         },
                         allow_update=True,
                     )
-                    self.root.after(
+                    _post(
                         0,
                         lambda r=media_result: self._append_ai_message(
                             "### Media Learn\n```json\n"
@@ -5059,11 +5265,11 @@ class SmartAIChatbotApp:
                     inspection is None or (inspection.get("text_files") or [])
                 )
                 if has_text and active_info.get("inference_only"):
-                    self.root.after(0, lambda: self._append_ai_message(
+                    _post(0, lambda: self._append_ai_message(
                         "This Strata model supports text inference only. Select a trainable model to update text weights with Learn."
                     ))
                 elif has_text:
-                    self.learner.run_learning_session(
+                    origin_learner.run_learning_session(
                         topic=topic,
                         cancel_event=self.cancel_event,
                         progress_callback=_learn_callback,
@@ -5071,7 +5277,7 @@ class SmartAIChatbotApp:
                         source_path=learn_source_path,
                     )
                 elif not learn_media_target:
-                    self.root.after(
+                    _post(
                         0,
                         lambda: self._append_ai_message(
                             "⚠️ The attached Learn source contains no extractable text, "
@@ -5079,8 +5285,8 @@ class SmartAIChatbotApp:
                         ),
                     )
 
-                self.root.after(0, lambda: self._set_generating_state(False))
-                self._check_and_run_next_queue()
+                _post(0, lambda: self._set_generating_state(False))
+                _post(0, self._check_and_run_next_queue)
                 return
 
             # Natural Language Tool Router
@@ -5161,22 +5367,22 @@ class SmartAIChatbotApp:
             for triggers, tool_name, arg_builder in tool_routes:
                 if any(msg_lower.startswith(t) for t in triggers):
                     args = arg_builder(full_msg)
-                    ok, res = self.tools.execute_tool(tool_name, args)
+                    ok, res = origin_tools.execute_tool(tool_name, args)
                     args_display = ", ".join(f"{k}='{v}'" for k, v in args.items() if v)
-                    self.root.after(0, lambda tn=tool_name, ad=args_display, r=res: self._append_tool_call(tn, ad, r))
+                    _post(0, lambda tn=tool_name, ad=args_display, r=res: self._append_tool_call(tn, ad, r))
                     response_text = res
                     matched = True
                     break
 
             if not matched and ("mcp" in msg_lower and "tool" in msg_lower):
-                ok, res = self.tools.execute_tool("mcp_list_tools", {})
-                self.root.after(0, lambda: self._append_tool_call("mcp_list_tools", "", res))
+                ok, res = origin_tools.execute_tool("mcp_list_tools", {})
+                _post(0, lambda: self._append_tool_call("mcp_list_tools", "", res))
                 response_text = f"### Connected MCP Endpoints:\n```json\n{res}\n```"
                 matched = True
 
             if not matched:
-                curr_history = self.chat_history.get(self.active_tab_id, [])
-                info = self.models_config[self.active_tab_id]
+                curr_history = origin_history
+                info = self.models_config[origin_tab]
                 strata_backend = getattr(self.engine, "controller_backend", None)
                 is_strata_stream = getattr(strata_backend, "runtime", None) == "strata"
                 is_native_stream = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
@@ -5188,9 +5394,9 @@ class SmartAIChatbotApp:
                             self.chat_stream.configure(state="disabled")
                             self._scroll_chat_to_bottom()
                             self._update_telemetry(0.0)
-                        self.root.after(0, cancelled_before_stream)
+                        _post(0, cancelled_before_stream)
                     else:
-                        self.root.after(0, lambda: self._append_ai_message("⏹ Generation stopped."))
+                        _post(0, lambda: self._append_ai_message("⏹ Generation stopped."))
                     return
 
                 # 1. Initialize streaming container in chat
@@ -5204,6 +5410,9 @@ class SmartAIChatbotApp:
                 self._live_generation_snapshot = None
                 self._live_tps = 0.0
                 mark_name = f"stream_ai_{int(time.time() * 1000)}"
+                from core.gui_thinking import ThinkingStream, starts_in_thinking
+                initial_thinking = starts_in_thinking(self.engine, info)
+                thought_stream = ThinkingStream(self, starts_in_thought=initial_thinking)
 
                 def _init_ai_stream():
                     self.chat_stream.configure(state="normal")
@@ -5217,16 +5426,16 @@ class SmartAIChatbotApp:
                         self.chat_stream.insert("end", "\n")
                     self.chat_stream.mark_set(mark_name, "end-1c")
                     self.chat_stream.mark_gravity(mark_name, "left")
+                    thought_stream.feed("")
                     self.chat_stream.configure(state="disabled")
                     self._scroll_chat_to_bottom()
 
-                self.root.after(0, _init_ai_stream)
+                _post(0, _init_ai_stream)
 
                 # 2. Yield tokens in real time. Paint the UI in tiny batches so
                 # Tkinter does not steal CPU / flood its event queue once decode gets fast.
                 ui_pending: List[str] = []
-                live_think_ids = []
-                think_scan_tail = [""]
+                live_think_ids = thought_stream.ids
                 last_ui_flush = time.perf_counter()
 
                 def _schedule_stream_insert(text_batch: str):
@@ -5235,19 +5444,13 @@ class SmartAIChatbotApp:
                     def _insert_chunk(c=text_batch):
                         try:
                             self.chat_stream.configure(state="normal")
-                            self.chat_stream.insert("end", c, "ai_msg")
-                            # A complete closing tag collapses the finished
-                            # reasoning immediately, even while answer streams.
-                            recent = think_scan_tail[0] + c
-                            think_scan_tail[0] = recent[-15:]
-                            if "</think>" in recent:
-                                self._collapse_completed_stream_thinking(
-                                    mark_name, live_think_ids, time.perf_counter() - start_time)
+                            thought_stream.feed(c, time.perf_counter() - start_time)
                             self.chat_stream.configure(state="disabled")
                             self._scroll_chat_to_bottom()
                         except Exception:
-                            pass
-                    self.root.after(0, _insert_chunk)
+                            import logging
+                            logging.getLogger(__name__).exception("Failed to render a streamed response")
+                    _post(0, _insert_chunk)
 
                 from core.generation_metrics import RequestMetrics, observe_generations, valid_rate
                 measurements = RequestMetrics()
@@ -5274,6 +5477,8 @@ class SmartAIChatbotApp:
 
                 def _decision(event):
                     nonlocal pro_active
+                    if not _owns_request():
+                        return
                     kind = event.get("kind")
                     total = event.get("total", 0)
                     if kind == "pass":
@@ -5324,25 +5529,29 @@ class SmartAIChatbotApp:
                                     self.chat_stream.update_idletasks()
                                 finally:
                                     painted.set()
-                            self.root.after(0, _paint_before_execution)
+                            _post(0, _paint_before_execution)
                             # No execution can overtake display of the selected
                             # branch and invocation; closing/cancelling aborts.
                             while not painted.wait(0.05):
-                                if self.cancel_event.is_set():
+                                if self.cancel_event.is_set() or not _owns_request():
                                     return
                         else:
-                            self.root.after(0, lambda text=value: _paint_best_work(text))
+                            _post(0, lambda text=value: _paint_best_work(text))
 
                 def _branch_progress(done, total, tokens, seconds, finished=True, **_kwargs):
+                    if not _owns_request():
+                        return
                     best_work_ui["done"] = int(done)
                     best_work_ui["total"] = int(total)
                     action = "comparing candidates" if finished and done == total else (
                         f"branch #{done} done" if finished else f"generating branch #{done+1}")
-                    self.root.after(0, lambda text=_pass_label(f"🌿 Best Work {done}/{total} · {action}"):
+                    _post(0, lambda text=_pass_label(f"🌿 Best Work {done}/{total} · {action}"):
                                     _paint_best_work(text))
 
                 def _observed(sample):
                     nonlocal last_metrics_paint
+                    if not _owns_request():
+                        return
                     snap = measurements.update(sample)
                     self._live_generation_snapshot = snap
                     rate = snap.get("decode_tps")
@@ -5361,7 +5570,7 @@ class SmartAIChatbotApp:
                         value = f"⚡ {prefix}First token {snap['ttft_s']:.2f}s · measuring decode"
                     else:
                         value = "⚡ Preparing first token…"
-                    self.root.after(0, lambda text=value: self.lbl_tps.configure(text=text))
+                    _post(0, lambda text=value: self.lbl_tps.configure(text=text))
 
                 previous_force_single = getattr(self.engine, "_gui_force_single_stream", False)
                 self.engine._gui_force_single_stream = not bool(use_pro_branches)
@@ -5376,7 +5585,7 @@ class SmartAIChatbotApp:
                 try:
                     with observe_generations(_observed):
                         for chunk in iterator:
-                            if self.cancel_event.is_set():
+                            if self.cancel_event.is_set() or not _owns_request():
                                 break
                             part = str(chunk)
                             accumulated.append(part)
@@ -5409,11 +5618,21 @@ class SmartAIChatbotApp:
                     else:
                         complete_label = _pass_label(
                             f"🌿 Best Work {best_work_ui['total']}/{best_work_ui['total']} · complete")
-                    self.root.after(0, lambda text=complete_label: _paint_best_work(text))
+                    _post(0, lambda text=complete_label: _paint_best_work(text))
 
                 if ui_pending:
                     _schedule_stream_insert("".join(ui_pending))
                     ui_pending.clear()
+
+                def _finish_thinking():
+                    self.chat_stream.configure(state="normal")
+                    thought_stream.feed("", time.perf_counter() - start_time, final=True)
+                    self.chat_stream.configure(state="disabled")
+                    self._scroll_chat_to_bottom()
+                _post(0, _finish_thinking)
+
+                if not _owns_request():
+                    return
 
                 full_ans = "".join(accumulated).strip()
                 if not full_ans and not self.cancel_event.is_set():
@@ -5425,7 +5644,7 @@ class SmartAIChatbotApp:
                         self.chat_stream.configure(state="disabled")
                         self._scroll_chat_to_bottom()
                         self._update_telemetry(0.0)
-                    self.root.after(0, _no_text_notice)
+                    _post(0, _no_text_notice)
                     return
 
                 duration_s = max(0.01, time.perf_counter() - start_time)
@@ -5449,7 +5668,7 @@ class SmartAIChatbotApp:
                         self.chat_stream.configure(state="disabled")
                         self._scroll_chat_to_bottom()
                         self._update_telemetry(0.0)
-                    self.root.after(0, finish_without_answer)
+                    _post(0, finish_without_answer)
                     # Cancellation on every backend is a stopped request,
                     # never a fabricated fallback or a completed saved reply.
                     return
@@ -5467,102 +5686,52 @@ class SmartAIChatbotApp:
                                      and stat_snapshot.get("all_counts_available")
                                      and not pro_active else None)
 
-                # 3. Finalize markdown styling and collapsible thinking pill
-                def _finalize_ai_msg(text=full_ans, dur=duration_s, tps=tok_per_sec):
+                # Persist against the captured model, independent of when Tk
+                # drains this request's callbacks. Display reasoning never enters
+                # the normal answer content used as the model's chat history.
+                from core.gui_thinking import reasoning_segments, render_segments, transcript_payload
+                segments = reasoning_segments(full_ans, starts_in_thought=initial_thinking)
+                origin_history.append(transcript_payload(segments))
+
+                def _finalize_ai_msg(dur=duration_s):
+                    stream = self.chat_stream
+                    stream.configure(state="normal")
+                    keep_position = not getattr(self, "_chat_follow_tail", True)
+                    if keep_position:
+                        stream.mark_set("reader_position", stream.index("@0,0"))
+                        stream.mark_gravity("reader_position", "left")
                     try:
-                        self.chat_stream.configure(state="normal")
-                        if not text:
-                            text = "I am ready. How can I assist you?"
-
-                        # Delete raw stream chunk to replace with styled markdown
-                        try:
-                            if mark_name in self.chat_stream.mark_names():
-                                self.chat_stream.delete(mark_name, "end-1c")
-                        except Exception:
-                            pass
-
-                        # The live temporary pills belong to the raw stream
-                        # being replaced. The final render creates permanent ones.
-                        for tid in live_think_ids:
-                            self.thinking_cache.pop(tid, None)
-                            self.thinking_expanded.pop(tid, None)
-                            self.thinking_meta.pop(tid, None)
+                        if mark_name in stream.mark_names():
+                            stream.delete(mark_name, "end-1c")
                         self._last_context_snapshot = (prompt_count, chosen_completion)
                         self._telemetry_request_pending = False
                         if pro_summary:
-                            self.chat_stream.insert("end", pro_summary + "\n\n", "ai_msg")
-
-                        # A selected tool handoff can produce several thinking
-                        # sections. Preserve their position around the call and
-                        # result; never leave later sections as raw XML tags.
-                        segments = []
-                        cursor = 0
-                        for match in re.finditer(r"<think>(.*?)</think>", text, re.I | re.S):
-                            segments.append((False, text[cursor:match.start()]))
-                            segments.append((True, match.group(1)))
-                            cursor = match.end()
-                        segments.append((False, text[cursor:]))
-                        main_body = "".join(value for is_thought, value in segments if not is_thought).strip()
-                        for is_thought, segment in segments:
-                            th_text = segment.strip() if is_thought else None
-                            # Compact, shrink-to-fit thinking pill
-                            if th_text:
-                                self._think_counter += 1
-                                think_id = f"think_{self._think_counter}"
-                                self.thinking_cache[think_id] = th_text
-                                self.thinking_expanded[think_id] = False
-                                btn_tag = f"tag_btn_{think_id}"
-                                self.chat_stream.insert(
-                                    "end", f"  ▶ 💭 Thought for {dur:.1f}s [Click to Expand]  ",
-                                    ("think_dropdown_btn", btn_tag)
-                                )
-                                self.chat_stream.insert("end", "\n\n")
-                                self.chat_stream.tag_bind(btn_tag, "<Button-1>", lambda e, tid=think_id: self._on_toggle_thinking_dropdown(tid))
-
-                            if not is_thought:
-                                parts = segment.split("```")
-                                for i, part in enumerate(parts):
-                                    if i % 2 == 0:
-                                        self._render_styled_markdown(part)
-                                    else:
-                                        lines = part.split("\n", 1)
-                                        lang = lines[0].strip() if lines else "python"
-                                        code_content = lines[1] if len(lines) > 1 else part
-                                        self._code_counter += 1
-                                        code_id = f"code_{self._code_counter}"
-                                        self.code_snippets[code_id] = code_content.strip()
-                                        tag_copy = f"tag_cp_{code_id}"
-                                        tag_canvas = f"tag_cv_{code_id}"
-                                        self.chat_stream.insert("end", f"  📄 {lang or 'python'}  ", "code_hdr")
-                                        self.chat_stream.insert("end", " [ 📋 Copy ] ", ("code_action_copy", tag_copy))
-                                        self.chat_stream.insert("end", " [ 🎨 Open in Canvas ] \n", ("code_action_canvas", tag_canvas))
-                                        self.chat_stream.insert("end", code_content.rstrip(), "code_block")
-                                        self.chat_stream.insert("end", "\n\n")
-                                        self.chat_stream.tag_bind(tag_copy, "<Button-1>", lambda e, cid=code_id: self._on_copy_code_snippet(cid))
-                                        self.chat_stream.tag_bind(tag_canvas, "<Button-1>", lambda e, cid=code_id: self._on_open_snippet_in_canvas(cid))
-
-                        self.chat_stream.insert("end", "\n" + stats_footer + "\n\n", "reply_stats")
-                        if hasattr(self, "chat_history") and self.active_tab_id in self.chat_history:
-                            self.chat_history[self.active_tab_id].append({"role": "assistant", "content": main_body})
-
-                        self.chat_stream.configure(state="disabled")
+                            stream.insert("end", pro_summary + "\n\n", "ai_msg")
+                        # Reuse IDs and expansion states. A completed thought the
+                        # user reopened must stay open when the answer finishes.
+                        render_segments(self, segments, duration_s=dur, existing_ids=live_think_ids)
+                        stream.insert("end", "\n" + stats_footer + "\n\n", "reply_stats")
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception("Failed to format the completed response")
+                        if mark_name in stream.mark_names():
+                            stream.delete(mark_name, "end-1c")
+                        plain = "".join(value for is_thought, value in segments if not is_thought)
+                        stream.insert("end", plain + "\n\n", "ai_msg")
+                    finally:
+                        if hasattr(stream, "mark_unset"):
+                            stream.mark_unset(mark_name)
+                        stream.configure(state="disabled")
+                        if keep_position:
+                            stream.yview("reader_position")
+                            stream.mark_unset("reader_position")
                         self._scroll_chat_to_bottom()
-                    except Exception as e:
-                        try:
-                            self.chat_stream.configure(state="normal")
-                            if mark_name in self.chat_stream.mark_names():
-                                self.chat_stream.delete(mark_name, "end-1c")
-                            self.chat_stream.insert("end", f"\n{text}\n\n", "ai_msg")
-                            self.chat_stream.configure(state="disabled")
-                            self._scroll_chat_to_bottom()
-                        except Exception:
-                            pass
 
-                self.root.after(0, _finalize_ai_msg)
-                self.root.after(0, lambda tps=tok_per_sec: self._update_telemetry(tps))
+                _post(0, _finalize_ai_msg)
+                _post(0, lambda tps=tok_per_sec: self._update_telemetry(tps))
 
                 # 4. Log trace into SQLite memory
-                self.db.log_interaction(
+                origin_db.log_interaction(
                     prompt=full_msg,
                     completion=full_ans,
                     raw_branches=[full_ans],
@@ -5577,15 +5746,16 @@ class SmartAIChatbotApp:
 
         except Exception as e:
             err_msg = str(e)
-            self.root.after(0, lambda em=err_msg: self._append_ai_message(f"⚠️ Error executing query: {em}"))
+            _post(0, lambda em=err_msg: self._append_ai_message(f"⚠️ Error executing query: {em}"))
 
         finally:
-            self.root.after(0, lambda: self._set_generating_state(False))
-            self._check_and_run_next_queue()
+            _post(0, lambda: self._set_generating_state(False))
+            _post(0, self._check_and_run_next_queue)
 
     def _set_generating_state(self, generating: bool):
         self.is_generating = generating
         if generating:
+            self._generation_epoch = getattr(self, "_generation_epoch", 0) + 1
             self._last_context_snapshot = None
             owner = getattr(self.engine, {
                 "mlx": "mlx_backend", "controller": "controller_backend",
@@ -5613,6 +5783,7 @@ class SmartAIChatbotApp:
             return
         if self.prompt_queue:
             item = self.prompt_queue.pop(0)
+            queued_tab = self.active_tab_id
             if len(item) == 2:
                 next_user_msg, next_raw = item
                 learn_source_path = None
@@ -5620,11 +5791,14 @@ class SmartAIChatbotApp:
             else:
                 next_user_msg, next_raw, learn_source_path, learn_media_target = item
             self._update_queue_ui()
-            self.root.after(
-                120,
-                lambda m=next_user_msg, r=next_raw, sp=learn_source_path, mt=learn_media_target:
-                    self._run_queued_task(m, r, sp, mt),
-            )
+            def run_owned_task():
+                if self.active_tab_id != queued_tab or self.is_generating:
+                    queues = getattr(self, "_model_prompt_queues", {})
+                    queues.setdefault(queued_tab, self.prompt_queue if self.active_tab_id == queued_tab else []).insert(0, item)
+                    self._model_prompt_queues = queues
+                    return
+                self._run_queued_task(next_user_msg, next_raw, learn_source_path, learn_media_target)
+            self.root.after(120, run_owned_task)
         else:
             self._update_queue_ui()
 
@@ -5797,9 +5971,16 @@ class SmartAIChatbotApp:
             self.lbl_res_adapter_updates.configure(text="• " + label)
 
     def _on_clear_chat(self):
+        worker = getattr(self, "_generation_worker", None)
+        if getattr(self, "is_generating", False) or (worker is not None and worker.is_alive()):
+            return
         learning = getattr(getattr(self, "engine", None), "awake_consolidator", None)
         if getattr(self, "_sleep_consolidating", False) or getattr(learning, "is_consolidating", False):
             return
+        from core.gui_thinking import clear_display_state
+        clear_display_state(self)
+        self._generation_epoch = getattr(self, "_generation_epoch", 0) + 1
+        self._chat_follow_tail = True
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
         self.chat_stream.configure(state="disabled")
@@ -5848,24 +6029,7 @@ assert glyph_res["invariants_passed"] == True
         modal.configure(bg=self.C["bg_hud"])
         modal.transient(self.root)
 
-        meta = self.last_metadata or {
-            "mode": "Pro Search (N=16)",
-            "entropy": 0.52,
-            "branch_count": 16,
-            "verified": True,
-            "verified_reward": 1.0,
-            "surprise_score": 0.48,
-            "winning_branch": 2,
-            "winning_temp": 0.35,
-            "tok_speed": 10.9,
-            "memory_rss_mb": 1536.0,
-            "temp_ladder": [0.20, 0.23, 0.28, 0.35, 0.42, 0.50, 0.58, 0.67, 0.76, 0.88],
-            "branches": [
-                {"index": 0, "temp": 0.20, "passed": False, "reward": 0.0, "code": "def solve(): return False", "stderr": "AssertionError: Expected [12, 18, 6]"},
-                {"index": 1, "temp": 0.23, "passed": False, "reward": 0.0, "code": "def solve(): return None", "stderr": "AssertionError"},
-                {"index": 2, "temp": 0.35, "passed": True, "reward": 1.0, "code": "def solve(): return [12, 18, 6]", "stderr": ""},
-            ]
-        }
+        meta = self.last_metadata or {}
 
         # Header
         hdr = tk.Frame(modal, bg=self.C["bg_hud"])
@@ -5898,28 +6062,35 @@ assert glyph_res["invariants_passed"] == True
         ttk.Button(pass_controls, text="Apply passes", command=_apply_passes).pack(side="left", padx=(0, 8))
         pass_status.pack(side="left")
         pass_entry.bind("<Return>", lambda _event: _apply_passes())
+        from core.responsive_toolbar import install_wrapping_controls
+        install_wrapping_controls(pass_controls)
 
         # Telemetry HUD Row
         hud_row = tk.Frame(modal, bg=self.C["bg_hud"])
         hud_row.pack(fill="x", padx=16, pady=(0, 10))
 
-        ent_val = meta.get("entropy", 0.0)
-        mode_str = meta.get("mode", "Pro Search")
+        ent_val = meta.get("entropy")
+        mode_str = meta.get("mode", "No completed run for this model")
         tps = meta.get("tok_speed")
-        rss = meta.get("memory_rss_mb", 1024.0)
-        s_score = meta.get("surprise_score", 0.0)
-        r_score = meta.get("verified_reward", 0.0)
-        win_idx = meta.get("winning_branch", 0)
-        win_temp = meta.get("winning_temp", 0.20)
+        rss = meta.get("memory_rss_mb")
+        s_score = meta.get("surprise_score")
+        r_score = meta.get("verified_reward")
+        win_idx = meta.get("winning_branch")
+        win_temp = meta.get("winning_temp")
 
         speed_text = f"⚡ {tps:.1f} tok/s" if type(tps) in (int, float) and math.isfinite(tps) else "⚡ Speed unavailable"
         entropy_text = f"H={ent_val:.2f}" if type(ent_val) in (int, float) and math.isfinite(ent_val) else "unavailable"
         surprise_text = f"{s_score:.2f}" if type(s_score) in (int, float) and math.isfinite(s_score) else "unavailable"
+        reward_text = f"{r_score:.1f}" if type(r_score) in (int, float) and math.isfinite(r_score) else "unavailable"
+        winner_text = (f"Branch #{win_idx+1} (T={win_temp:.2f})" if type(win_idx) is int
+                       and type(win_temp) in (int, float) and math.isfinite(win_temp) else "unavailable")
+        rss_text = f"{rss:.0f} MB" if type(rss) in (int, float) and math.isfinite(rss) else "unavailable"
         self._make_badge(hud_row, speed_text, self.C["accent_green"])
         self._make_badge(hud_row, f"🧠 Entropy {entropy_text} ({mode_str})", self.C["accent_cyan"])
-        self._make_badge(hud_row, f"🏆 Winner: Branch #{win_idx+1} (T={win_temp:.2f})", self.C["accent_yellow"])
-        self._make_badge(hud_row, f"🎯 Reward R={r_score:.1f} | S={surprise_text}", self.C["accent_purple"])
-        self._make_badge(hud_row, f"💾 RSS: {rss:.0f} MB", self.C["accent_orange"])
+        self._make_badge(hud_row, f"🏆 Winner: {winner_text}", self.C["accent_yellow"])
+        self._make_badge(hud_row, f"🎯 Reward R={reward_text} | S={surprise_text}", self.C["accent_purple"])
+        self._make_badge(hud_row, f"💾 RSS: {rss_text}", self.C["accent_orange"])
+        install_wrapping_controls(hud_row)
 
         # Main Paned / Treeview & Inspector
         paned = tk.PanedWindow(modal, orient="vertical", bg=self.C["border"], sashwidth=4, bd=0)
@@ -5994,10 +6165,17 @@ assert glyph_res["invariants_passed"] == True
             tree.selection_set(str(win_idx) if str(win_idx) in [str(b['index']) for b in branches] else "0")
             _on_select(None)
 
-    def _on_open_memory_explorer(self):
-        """Opens interactive episodic memory database explorer for data/memory.db."""
+    def _on_open_memory_explorer(self, *, legacy_shared=False):
+        """Inspect a captured model database, or the earlier shared read-only history."""
+        from pathlib import Path
+        from contextlib import closing
+        source_path = self.settings.database_path if legacy_shared else self.db.db_path
+        source_uri = Path(source_path).expanduser().resolve().as_uri() + "?mode=ro"
+        model_name = self.models_config.get(self.active_tab_id, {}).get("short_name", self.active_tab_id)
+        owner = ("Earlier shared history (read-only)" if legacy_shared else
+                 f"{model_name} · {getattr(self.settings, 'learning_implementation', 'legacy')}")
         modal = tk.Toplevel(self.root)
-        modal.title("Episodic Memory Database Explorer (memory.db)")
+        modal.title("Episodic Memory — " + owner)
         modal.geometry("920x620")
         modal.minsize(780, 520)
         modal.configure(bg=self.C["bg_hud"])
@@ -6015,18 +6193,52 @@ assert glyph_res["invariants_passed"] == True
             from core.learning_ui import show_online_learning
             modal.destroy()
             show_online_learning(self)
-        tk.Button(hdr, text="Learning & saved memory…", command=open_learning,
-                  bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat", padx=8, pady=3).pack(side="right", padx=3)
+        if not legacy_shared:
+            tk.Button(hdr, text="Learning & saved memory…", command=open_learning,
+                      bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat", padx=8, pady=3).pack(side="right", padx=3)
+            try:
+                old_uri = Path(self.settings.database_path).expanduser().resolve().as_uri() + "?mode=ro"
+                with closing(sqlite3.connect(old_uri, uri=True)) as connection:
+                    has_earlier_rows = bool(connection.execute("SELECT 1 FROM interactions LIMIT 1").fetchone())
+            except sqlite3.Error:
+                has_earlier_rows = False
+            if has_earlier_rows:
+                tk.Button(hdr, text="Earlier shared history…",
+                          command=lambda: self._on_open_memory_explorer(legacy_shared=True),
+                          bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat", padx=8, pady=3).pack(side="right", padx=3)
 
-        btn_export = tk.Button(hdr, text="📥 Export Markdown", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, pady=3, cursor="hand2", highlightthickness=0, command=lambda: self.tools.execute_tool("export_chat_history", {}))
+        def export_records():
+            target = filedialog.asksaveasfilename(parent=modal, title="Export " + owner,
+                defaultextension=".md", initialfile="earlier_shared_history.md" if legacy_shared else "model_memory.md",
+                filetypes=[("Markdown", "*.md")])
+            if not target:
+                return
+            try:
+                with closing(sqlite3.connect(source_uri, uri=True)) as connection, open(target, "w", encoding="utf-8") as output:
+                    connection.row_factory = sqlite3.Row
+                    output.write(f"# {owner}\n\n")
+                    for row in connection.execute("SELECT * FROM interactions ORDER BY id"):
+                        output.write(f"## Record {row['id']} — {row['created_at']}\n\n"
+                                     f"### User\n\n{row['prompt']}\n\n### Assistant\n\n{row['completion']}\n\n")
+                messagebox.showinfo("Memory exported", f"History saved to:\n{target}", parent=modal)
+            except (OSError, sqlite3.Error) as error:
+                messagebox.showerror("Memory export", str(error), parent=modal)
+
+        btn_export = tk.Button(hdr, text="📥 Export Markdown", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, pady=3, cursor="hand2", highlightthickness=0, command=export_records)
         btn_export.pack(side="right", padx=3)
+        from core.responsive_toolbar import install_wrapping_controls
+        install_wrapping_controls(hdr)
 
         tab_id = self.active_tab_id
         service = getattr(self.engine, "awake_consolidator", None)
         backend = getattr(service, "engine", None)
-        state = getattr(backend, "learning_state", None)
+        state = None if legacy_shared else getattr(backend, "learning_state", None)
         migration = getattr(backend, "learning_migration_status", None) or {}
-        note = "Clear Chat and New Chat clear the transcript. Learned adapter weights persist across chats."
+        note = ("Earlier shared records have no reliable model owner. This read-only history is preserved, "
+                "and is not used by model memory tools or Sleep."
+                if legacy_shared else
+                f"{owner}. Episodic memory and Sleep episodes belong to this model and learning implementation. "
+                "Clear Chat clears the transcript; learned weights persist.")
         manifest = None
         state_readable = True
         if state is not None:
@@ -6037,10 +6249,10 @@ assert glyph_res["invariants_passed"] == True
             except (OSError, ValueError, RuntimeError) as error:
                 state_readable = False
                 note += f"  Checkpoint unavailable: {error}."
-        if migration.get("status") == "legacy_adapter_available":
+        if not legacy_shared and migration.get("status") == "legacy_adapter_available":
             note += f"\nShared adapter with an unrecorded base: {migration['path']}. Select it only on its original model."
         imported = getattr(backend, "last_restored_adapter_provenance", "")
-        if imported == "explicit-unverified-legacy":
+        if not legacy_shared and imported == "explicit-unverified-legacy":
             note += f"\nLoaded legacy seed: {backend.last_restored_adapter_path}. Its original base is user-identified."
         memory_bar = tk.Frame(modal, bg=self.C["bg_hud"])
         memory_bar.pack(fill="x", padx=16, pady=(0, 4))
@@ -6066,7 +6278,7 @@ assert glyph_res["invariants_passed"] == True
             tk.Button(memory_bar, text="Import MLX adapter…", command=_import_legacy,
                       bg=self.C["btn_bg"], fg=self.C["btn_fg"], relief="flat").pack(side="right", padx=3)
 
-        pending_legacy = self._pending_legacy_learning()
+        pending_legacy = None if legacy_shared else self._pending_legacy_learning()
         if pending_legacy and not self.is_model_loaded:
             restore_bar = tk.Frame(modal, bg=self.C["bg_hud"])
             restore_bar.pack(fill="x", padx=16, pady=(0, 8))
@@ -6108,6 +6320,7 @@ assert glyph_res["invariants_passed"] == True
         var_cons = tk.StringVar(value="All")
         opt_cons = ttk.Combobox(filter_bar, textvariable=var_cons, values=["All", "Unconsolidated (0)", "Consolidated (1)"], width=16, state="readonly")
         opt_cons.pack(side="left", padx=4, pady=6)
+        install_wrapping_controls(filter_bar)
 
         # Main Paned (Table + Detail)
         paned = tk.PanedWindow(modal, orient="vertical", bg=self.C["border"], sashwidth=4, bd=0)
@@ -6159,12 +6372,9 @@ assert glyph_res["invariants_passed"] == True
 
             try:
                 import sqlite3
-                conn = sqlite3.connect(self.settings.database_path)
-                conn.row_factory = sqlite3.Row
-                cur = conn.cursor()
-                cur.execute("SELECT * FROM interactions ORDER BY id DESC LIMIT 150")
-                rows = cur.fetchall()
-                conn.close()
+                with closing(sqlite3.connect(source_uri, uri=True)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    rows = conn.execute("SELECT * FROM interactions ORDER BY id DESC LIMIT 150").fetchall()
 
                 for r in rows:
                     p = r["prompt"] or ""
@@ -6180,7 +6390,7 @@ assert glyph_res["invariants_passed"] == True
                         continue
 
                     r_id = r["id"]
-                    records_cache[str(r_id)] = r
+                    records_cache[str(r_id)] = dict(r)
                     temp_val = r["winning_temp"] if "winning_temp" in r.keys() else 0.20
                     tree.insert("", "end", iid=str(r_id), values=(
                         r_id, r["created_at"], r["mode"] or "Instant",
@@ -6188,8 +6398,9 @@ assert glyph_res["invariants_passed"] == True
                         f"T={temp_val:.2f}", "Yes" if c_status else "Pending",
                         p.replace("\n", " ")[:45]
                     ))
-            except Exception as e:
-                pass
+            except sqlite3.Error as error:
+                txt_detail.delete("1.0", "end")
+                txt_detail.insert("1.0", f"Could not read this history: {error}")
 
         def _on_select_record(event):
             sel = tree.selection()
@@ -6225,6 +6436,18 @@ assert glyph_res["invariants_passed"] == True
         if self.models_config.get(self.active_tab_id, {}).get("inference_only"):
             messagebox.showinfo("Inference Only", "Select a trainable model to consolidate dialogue into weights. Strata keeps your conversation as text.")
             return
+        from copy import copy
+        tab_id = self.active_tab_id
+        selected_info = dict(self.models_config.get(tab_id, {}))
+        database_path = getattr(getattr(self, "db", None), "db_path", self.settings.database_path)
+        sleep_settings = copy(self.settings)
+        sleep_settings.database_path = database_path
+        sleep_settings.small_model = False
+        selected_source = (selected_info.get("gguf_training_base_model_id") or selected_info.get("model_path")
+                           or selected_info.get("repo_id"))
+        if selected_source:
+            sleep_settings.base_model_path = str(selected_source)
+        sleep_settings.lora_adapter_path = os.path.join(os.path.dirname(database_path), "standalone-slow-lora")
         modal = tk.Toplevel(self.root)
         modal.title("Sleep Consolidation Control Panel (EWC-LoRA)")
         modal.geometry("720x520")
@@ -6248,7 +6471,7 @@ assert glyph_res["invariants_passed"] == True
             from contextlib import closing
 
             try:
-                with closing(sqlite3.connect(self.settings.database_path)) as conn:
+                with closing(sqlite3.connect(database_path)) as conn:
                     # Match the original daemon's surprise-ordered queue. A managed
                     # Sleep batch may still own a reservation after an interruption.
                     return conn.execute("""
@@ -6267,7 +6490,10 @@ assert glyph_res["invariants_passed"] == True
         tk.Label(body, text="📈 Live Sleep Consolidation Progress & Parameter Shift:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w", pady=(8, 2))
         txt_cons_log = tk.Text(body, height=12, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=12, pady=10)
         txt_cons_log.pack(fill="both", expand=True, pady=(0, 10))
-        txt_cons_log.insert("1.0", f"✦ EWC Consolidation Daemon Ready.\n• Target Weights: eval_results/adapters.safetensors\n• Fisher Diagonal Matrix: Preserving foundation attention matrices\n• Pending Traces: {uncons_count} verified episodes ready for synaptic integration.\n")
+        txt_cons_log.insert("1.0", f"✦ EWC Consolidation Daemon Ready.\n• Training base: {sleep_settings.base_model_path}\n"
+                            f"• Target Weights: {sleep_settings.lora_adapter_path}\n"
+                            f"• Pending Traces: {uncons_count} verified episodes ready for synaptic integration.\n"
+                            "Standalone Sleep loads its own training model. Unload chat before starting it.\n")
 
         btn_bar = tk.Frame(body, bg=self.C["bg_hud"])
         btn_bar.pack(fill="x", pady=(0, 10))
@@ -6281,6 +6507,10 @@ assert glyph_res["invariants_passed"] == True
         btn_trigger.pack(side="left")
 
         def _run_daemon():
+            if (self.active_tab_id != tab_id
+                    or getattr(getattr(self, "db", None), "db_path", database_path) != database_path):
+                txt_cons_log.insert("end", "\nSelected model changed; reopen Sleep for that model.\n")
+                return
             if getattr(self.settings, "learning_implementation", "legacy") != "legacy":
                 txt_cons_log.insert("end", "\nLearning implementation changed; reopen Sleep for the selected implementation.\n")
                 return
@@ -6288,10 +6518,34 @@ assert glyph_res["invariants_passed"] == True
                 getattr(self, "_speed_ui_running", False)
                 or getattr(self.engine, "speed_tuning_active", False)
                 or getattr(self, "_sleep_consolidating", False)
+                or getattr(self, "is_generating", False)
+                or getattr(self, "_model_load_in_progress", False)
             ):
                 txt_cons_log.insert("end", "\nWait for the active speed test or consolidation to finish.\n")
                 return
+            if (getattr(self, "is_model_loaded", False) or getattr(self.engine, "is_model_loaded", False)
+                    or getattr(self, "_model_unload_pending", False)
+                    or getattr(self, "_strata_unload_pending", False)
+                    or getattr(self, "_native_unload_pending", False)):
+                txt_cons_log.insert("end", "\nUnload the chat model first so standalone Sleep does not allocate a second model.\n")
+                return
+            if not selected_source and not self.settings.use_mock:
+                txt_cons_log.insert("end", "\nThis selection has no training source. Select a trainable model and reopen Sleep.\n")
+                return
+            if not self.settings.use_mock and not selected_info.get("gguf_training_base_model_id"):
+                from core.controller_runtime import resolve_controller_runtime
+                runtime = resolve_controller_runtime(selected_info, str(selected_source))
+                if runtime.startswith("mlx") or runtime in {"jang_vlm", "jang-vlm", "repo_mlx_vlm", "gguf", "bitnet"}:
+                    txt_cons_log.insert("end", "\nStandalone Legacy Sleep requires a compatible Transformers training base. "
+                                        "This selected packed model uses its native runtime; use Managed or Hybrid Sleep "
+                                        "to train the loaded model without substituting another base.\n")
+                    return
             self._sleep_consolidating = True
+            generating = getattr(self, "_set_generating_state", None)
+            if callable(generating):
+                generating(True)
+            else:
+                self.is_generating = True
             btn_trigger.configure(state="disabled", text="⏳ Consolidating Weights...")
             txt_cons_log.insert("end", "\n[*] Initiating EWC Consolidation Cycle...\n")
             txt_cons_log.see("end")
@@ -6306,10 +6560,15 @@ assert glyph_res["invariants_passed"] == True
                         btn_trigger.configure(state="normal", text="▶ Trigger Sleep Consolidation Now")
                 finally:
                     self._sleep_consolidating = False
+                    if callable(generating):
+                        generating(False)
+                    else:
+                        self.is_generating = False
 
             def _worker():
+                daemon = None
                 try:
-                    daemon = SleepConsolidationDaemon(settings=self.settings, use_mock=self.settings.use_mock)
+                    daemon = SleepConsolidationDaemon(settings=sleep_settings, use_mock=sleep_settings.use_mock)
                     res = daemon.run_consolidation_cycle()
                     if res["status"] == "success":
                         report = (f"[✓] Cycle Complete! Memories Consolidated: {res['memories_consolidated']} "
@@ -6321,10 +6580,23 @@ assert glyph_res["invariants_passed"] == True
                         report = f"Sleep {res['status']}: {res.get('reason') or res['status']}\n"
                 except Exception as exc:
                     report = f"[!] Consolidation failed: {type(exc).__name__}: {exc}\n"
+                finally:
+                    close = getattr(daemon, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception as error:
+                            report += f"[!] Sleep cleanup failed: {type(error).__name__}: {error}\n"
+                    daemon = None
                 pending = pending_count()
-                self.root.after(0, lambda: finish(report, pending))
+                events = getattr(self, "_event_queue", None)
+                if events is not None:
+                    events.put(("ui_callback", lambda: finish(report, pending)))
+                else:
+                    self.root.after(0, lambda: finish(report, pending))
 
-            threading.Thread(target=_worker, daemon=True).start()
+            self._generation_worker = threading.Thread(target=_worker, name="standalone-model-sleep", daemon=True)
+            self._generation_worker.start()
 
         btn_trigger.configure(command=_run_daemon)
 
@@ -6393,8 +6665,8 @@ assert glyph_res["invariants_passed"] == True
         tk.Label(body, text="📈 Live Sleep Consolidation Progress & Parameter Shift:", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w", pady=(8, 2))
         txt_cons_log = tk.Text(body, height=12, bg=self.C["code_bg"], fg=self.C["code_fg"], font=_FONT_MONO, bd=0, padx=12, pady=10)
         txt_cons_log.pack(fill="both", expand=True, pady=(0, 10))
-        txt_cons_log.insert("1.0", "Verified episodes replays the original shared queue of verified solutions into the selected model and memory scope. "
-                            "Legacy episodes do not identify their originating model; accepted updates acknowledge the trained rows. "
+        txt_cons_log.insert("1.0", "Verified episodes replays this model and learning implementation's queue of verified solutions into its selected memory scope. "
+                            "Earlier shared records remain separate in the read-only history; accepted updates acknowledge only this model's trained rows. "
                             "Current chat exchanges separately consolidates completed dialogue, retiring text only after recall validation. "
                             "The transcript remains available in chat.\n")
 
@@ -6421,7 +6693,16 @@ assert glyph_res["invariants_passed"] == True
         btn_trigger.pack(side="left")
 
         def _run_sleep():
+            if any(getattr(self, flag, False) for flag in (
+                    "_model_unload_in_progress", "_model_unload_pending",
+                    "_strata_unload_pending", "_native_unload_pending")):
+                txt_cons_log.insert("end", "\nFinish unloading the current model before starting Sleep. "
+                                    "Use Retry unload if cleanup is incomplete, then load the model and reopen this panel.\n")
+                txt_cons_log.see("end")
+                return
             if (self.active_tab_id != tab_id or service.engine is not backend
+                    or self.engine.awake_consolidator is not service
+                    or getattr(self, "db", database) is not database
                     or getattr(self.engine, "learning_scope", None) != scope
                     or not service._real_training_ready()):
                 txt_cons_log.insert("end", "\nSelect and load a trainable backend, then reopen this panel.\n")
@@ -6474,7 +6755,7 @@ assert glyph_res["invariants_passed"] == True
                                    f"Checkpoint: {res['adapter_saved_to']}")
                 except Exception as error:
                     message = f"Consolidation stopped: {error}"
-                self.root.after(0, lambda: _finish(message))
+                self._event_queue.put(("ui_callback", lambda: _finish(message)))
 
             self._generation_worker = threading.Thread(target=_worker, name="active-model-sleep", daemon=True)
             self._generation_worker.start()
@@ -6508,6 +6789,8 @@ assert glyph_res["invariants_passed"] == True
 
         btn_canvas = tk.Button(tool_bar, text="Send to AI Canvas", font=_FONT_TINY_BOLD, bg=self.C["btn_bg"], fg=self.C["btn_fg"], activebackground=self.C["btn_hover"], activeforeground=self.C["btn_fg"], relief="flat", bd=0, padx=8, pady=3, cursor="hand2", highlightthickness=0)
         btn_canvas.pack(side="right", padx=6)
+        from core.responsive_toolbar import install_wrapping_controls
+        install_wrapping_controls(tool_bar)
 
         paned = tk.PanedWindow(modal, orient="vertical", bg=self.C["border"], sashwidth=4, bd=0)
         paned.pack(fill="both", expand=True, padx=16, pady=(0, 10))
@@ -6567,7 +6850,7 @@ assert glyph_res["invariants_passed"] == True
         """Displays interactive granular memory telemetry modal (App vs Model vs System RAM)."""
         modal = tk.Toplevel(self.root)
         modal.title("💾 System & AI Model Memory Telemetry")
-        modal.geometry("560x420")
+        modal.geometry("680x480")
         modal.configure(bg=self.C["bg_app"])
         modal.transient(self.root)
         modal.grab_set()
@@ -6575,7 +6858,7 @@ assert glyph_res["invariants_passed"] == True
         hdr = tk.Frame(modal, bg=self.C["bg_hud"], padx=16, pady=12)
         hdr.pack(fill="x")
         tk.Label(hdr, text="📊 Live Memory Allocation Profile", font=_FONT_TITLE, bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(anchor="w")
-        tk.Label(hdr, text="Dynamic Unified RAM scaling & real-time Metal allocation telemetry", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(anchor="w")
+        tk.Label(hdr, text="App footprint, owned workers and system memory", font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]).pack(anchor="w")
 
         body = tk.Frame(modal, bg=self.C["bg_app"], padx=16, pady=12)
         body.pack(fill="both", expand=True)
@@ -6585,19 +6868,26 @@ assert glyph_res["invariants_passed"] == True
 
         def _refresh_telemetry():
             try:
-                mem = SystemMemoryWatchdog.get_detailed_memory_breakdown()
+                owned_pids = self._owned_runtime_pids()
+                mem = (SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owned_pids)
+                       if owned_pids else SystemMemoryWatchdog.get_detailed_memory_breakdown())
+                app_total = (f"{mem['total_allocated_gb']:.2f} GiB" if mem.get("process_memory_known", True)
+                             else "unavailable")
+                host = (f"{mem['system_used_gb']:.1f} / {mem['system_total_gb']:.1f} GiB "
+                        f"({mem['system_percent']:.1f}%), {mem['system_free_gb']:.1f} GiB available"
+                        if mem.get("system_memory_known", True) else "unavailable")
                 text = (
-                    f"• App Process Resident (RSS) : {mem['app_rss_gb']:.2f} GB (Python GUI & Runtime)\n"
-                    f"• Model Metal Active Tensor  : {mem['model_metal_active_gb']:.2f} GB (Weights in RAM)\n"
-                    f"• Model Metal Peak Buffer    : {mem['model_metal_peak_gb']:.2f} GB (Historical Peak)\n"
-                    f"• Metal Cache Memory         : {mem['model_metal_cache_gb']:.2f} GB (Dynamic Cache Pool)\n"
-                    f"─────────────────────────────────────────────────────────────\n"
-                    f"• Total App + Model Memory   : {mem['total_allocated_gb']:.2f} GB\n"
-                    f"• Host System RAM Used       : {mem['system_used_gb']:.1f} GB / {mem['system_total_gb']:.1f} GB ({mem['system_percent']:.1f}%)\n"
-                    f"• Host System RAM Available  : {mem['system_free_gb']:.1f} GB Free\n"
-                    f"─────────────────────────────────────────────────────────────\n"
-                    f"• RAM Allocation Strategy    : {mem['allocation_strategy']}\n"
-                    f"• Dynamic Scaling Status     : Active (Elastic on-demand KV expansion)"
+                    f"• AI RAM total               : {app_total}\n"
+                    f"• App footprint              : {mem.get('app_footprint_gb', mem['app_rss_gb']):.2f} GiB\n"
+                    f"• Owned workers              : {mem.get('owned_process_footprint_gb', 0):.2f} GiB "
+                    f"({mem.get('owned_process_count', 0)} processes)\n"
+                    f"• App resident pages (RSS)   : {mem['app_rss_gb']:.2f} GiB\n\n"
+                    f"• MLX active tensors         : {mem['model_metal_active_gb']:.2f} GiB\n"
+                    f"• MLX historical active peak : {mem['model_metal_peak_gb']:.2f} GiB\n"
+                    f"• MLX reusable cache         : {mem['model_metal_cache_gb']:.2f} GiB\n"
+                    "  MLX counters overlap process memory; they are not added again.\n\n"
+                    f"• Host RAM                   : {host}\n"
+                    "  macOS uses physical footprint when available; otherwise RSS."
                 )
                 lbl_info.configure(text=text, wraplength=max(280, modal.winfo_width() - 70))
             except Exception as exc:
@@ -6634,36 +6924,10 @@ assert glyph_res["invariants_passed"] == True
 
 
 
-# Top-level runtime controls are installed after the GUI class exists so they
-# wrap the normal app additively instead of rewriting the main class.
-try:
-    from core.gui_generation_cap import install_gui_generation_cap
-    install_gui_generation_cap()
-except Exception:
-    pass
-
-# Text-model evaluation window. This wraps the already context-enabled top bar.
-try:
-    from core.gui_eval_panel import install_gui_eval_panel
-    install_gui_eval_panel()
-except Exception:
-    pass
-
-
-# Speed controls share the native engines' bounded calibration API.
-try:
-    from core.gui_speed_tuning import install_gui_speed_tuning
-    install_gui_speed_tuning()
-except Exception:
-    pass
-
-
-# Exact prompt reuse and opt-in native drafting controls.
-try:
-    from core.gui_lossless_speedups import install_gui_lossless_speedups
-    install_gui_lossless_speedups()
-except Exception:
-    pass
+# Pass the actual module: the packaged launcher runs this file as __main__.
+# Registration failures are rolled back and shown in the log and main window.
+from core.gui_extensions import install_gui_extensions
+GUI_EXTENSION_FAILURES = install_gui_extensions(sys.modules[__name__])
 
 
 # Aliases for backward compatibility

@@ -8,6 +8,79 @@ widen a shared grid column and push controls outside the visible window.
 from __future__ import annotations
 
 
+def install_wrapping_controls(frame):
+    """Wrap every existing action in a dialog/pane toolbar within its width."""
+    import tkinter as tk
+
+    controls = tuple(frame.pack_slaves())
+    for widget in controls:
+        widget.pack_forget()
+    frame.pack_propagate(False)
+    pending = None
+    previous = None
+    timer_id = None
+
+    def reflow():
+        nonlocal pending, previous
+        pending = None
+        if not frame.winfo_exists():
+            return
+        available = max(80, frame.winfo_width() - 8)
+        sizes = tuple((widget.winfo_reqwidth(), widget.winfo_reqheight()) for widget in controls)
+        if previous == (available, sizes):
+            return
+        x, y, row_height = 4, 4, 0
+        for widget in controls:
+            if widget.winfo_reqwidth() > available and "wraplength" in widget.keys():
+                widget.configure(wraplength=max(60, available - 20))
+            width = min(widget.winfo_reqwidth(), available)
+            height = widget.winfo_reqheight()
+            if x > 4 and x + width > available + 4:
+                y += row_height + 5
+                x, row_height = 4, 0
+            widget.place(x=x, y=y, width=width, height=height)
+            x += width + 6
+            row_height = max(row_height, height)
+        frame.configure(height=y + row_height + 4)
+        previous = (available, tuple((widget.winfo_reqwidth(), widget.winfo_reqheight()) for widget in controls))
+
+    def schedule(event=None):
+        nonlocal pending
+        if event is not None and event.widget is not frame:
+            return
+        if pending is None:
+            pending = frame.after_idle(reflow)
+
+    def destroy(event):
+        nonlocal pending, timer_id
+        if event.widget is not frame:
+            return
+        for callback in (pending, timer_id):
+            if callback is None:
+                continue
+            try:
+                frame.after_cancel(callback)
+            except tk.TclError:
+                pass
+        pending = timer_id = None
+
+    def watch_sizes():
+        nonlocal timer_id
+        if not frame.winfo_exists():
+            return
+        state = (max(80, frame.winfo_width() - 8),
+                 tuple((widget.winfo_reqwidth(), widget.winfo_reqheight()) for widget in controls))
+        if state != previous:
+            schedule()
+        timer_id = frame.after(160, watch_sizes)
+
+    frame.bind("<Configure>", schedule, add="+")
+    frame.bind("<Destroy>", destroy, add="+")
+    schedule()
+    timer_id = frame.after(160, watch_sizes)
+    return schedule
+
+
 def install_responsive_toolbar(app, left, right):
     header = app.hud_bar
     groups = ((left, list(left.pack_slaves())), (right, list(right.pack_slaves())))
