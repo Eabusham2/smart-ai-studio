@@ -221,14 +221,14 @@ def test_wrapping_controls_wait_for_real_width_and_restore_labels_when_widened(a
     natural_width, natural_height = label.winfo_reqwidth(), label.winfo_reqheight()
     schedule = install_wrapping_controls(frame)
     app.root.update()
-    assert int(label.cget("wraplength")) == 0  # The unmapped 1px frame is not a real viewport.
+    assert label.winfo_pixels(label.cget("wraplength")) == 0  # The unmapped 1px frame is not a real viewport.
     frame.place(x=10, y=10, width=150, height=140)
     app.root.update()
     assert label.winfo_reqheight() > natural_height
     frame.place_configure(width=natural_width + 40)
     schedule()
     app.root.update()
-    assert int(label.cget("wraplength")) == 0
+    assert label.winfo_pixels(label.cget("wraplength")) == 0
     assert label.winfo_reqwidth() == natural_width
     assert label.winfo_reqheight() == natural_height
     frame.destroy()
