@@ -324,6 +324,7 @@ jobs:
               'test_repeated_theme_switch_covers_hidden_panels_dialogs_tags_and_hover': 1,
               'test_live_thought_opens_can_collapse_during_decode_then_closes_once_and_reopens': 1,
               'test_manual_scroll_preempts_pending_tail_callbacks_and_new_chunks_do_not_jump': 1,
+              'test_completion_reformat_preserves_the_readers_visible_content': 6,
               'test_model_switch_routes_sql_tools_learner_and_transcript_to_same_owner': 1,
               'test_stop_then_send_waits_for_the_old_worker_to_release_its_request': 1,
               'test_implementation_control_preserves_both_transcripts_and_original_default_actions': 2,

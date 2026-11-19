@@ -7,6 +7,7 @@ from core.gui_thinking import (
     ReasoningParser, ThinkingStream, clear_display_state, reasoning_segments,
     render_segments, starts_in_thinking, transcript_payload, transcript_segments,
 )
+from tests.unit.test_best_work_chat_ui import work_app
 
 
 @pytest.mark.parametrize("opening,closing", [
@@ -236,6 +237,70 @@ def test_mouse_wheel_scroll_disables_follow_until_reader_returns_to_bottom(ui):
     follow_chat_tail(app)
     app.root.update()
     assert stream.index("@0,0") == first
+
+
+@pytest.mark.parametrize("location", ["history", "plain", "markdown", "code", "reopened_thought", "repeated"])
+def test_completion_reformat_preserves_the_readers_visible_content(work_app, location):
+    """Finishing an answer must not relocate a reader inside the replaced text."""
+    app, root = work_app, work_app.root
+    root.deiconify()
+    root.geometry("1100x900")
+    root.update()
+    stream = app.chat_stream
+    stream.configure(state="normal")
+    stream.delete("1.0", "end")
+    stream.insert("end", "".join(f"Earlier paragraph {number:03d}: saved conversation.\n" for number in range(100)))
+    stream.configure(state="disabled")
+    before = []
+    reopened = []
+    body = "".join(f"Paragraph {number:03d}: reading this unchanged sentence.\n" for number in range(250))
+    if location == "markdown":
+        body = "# Heading\n" + body.replace("Paragraph ", "**Paragraph ").replace(": reading", "**: reading")
+    elif location == "code":
+        body = "```python\n" + body + "```\n"
+    elif location == "reopened_thought":
+        body = "<think>" + body + "</think>Answer after thinking.\n"
+    elif location == "repeated":
+        body = "Repeated paragraph with identical content.\n" * 250
+
+    def generate(*_args, **_kwargs):
+        yield body
+        # Run the actual scheduled stream painter, then emulate a reader using
+        # the scrollbar while generation is still active.
+        root.update()
+        if location == "reopened_thought":
+            tid = next(iter(app.thinking_cache))
+            app._on_toggle_thinking_dropdown(tid)
+            reopened.append(tid)
+        target = "Earlier paragraph 050" if location == "history" else "Paragraph 130"
+        if location == "repeated":
+            target = "Repeated paragraph with identical content."
+            first = stream.search(target, "1.0", "end")
+            position = stream.index(f"{first}+130lines")
+        else:
+            position = stream.search(target, "1.0", "end")
+        assert position
+        app._chat_follow_tail = False
+        app._chat_scroll_epoch += 1
+        stream.yview(position)
+        root.update()
+        before.append(stream.get("@0,0", "@0,0 lineend").replace("**", ""))
+        assert target in before[0]
+        yield "Final continuation."
+
+    app.multimodal = SimpleNamespace(busy=False, handle_command=lambda _msg: None, stream_solve=generate)
+    app._set_generating_state(True)
+    app._process_message_thread("Example prompt", "Example prompt")
+    root.update()
+    assert len(before) == 1
+    assert not app._chat_follow_tail
+    assert stream.get("@0,0", "@0,0 lineend") == before[0]
+    if reopened:
+        assert app.thinking_expanded[reopened[0]]
+        assert "Paragraph 130" in visible(stream)
+    if location == "repeated":
+        first_line = int(stream.search(before[0], "1.0", "end").split(".")[0])
+        assert int(stream.index("@0,0").split(".")[0]) - first_line == 130
 
 
 def test_automatic_transcript_paging_on_completion_does_not_move_a_scrolled_reader():

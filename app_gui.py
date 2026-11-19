@@ -5736,8 +5736,8 @@ class SmartAIChatbotApp:
                     stream.configure(state="normal")
                     keep_position = not getattr(self, "_chat_follow_tail", True)
                     if keep_position:
-                        stream.mark_set("reader_position", stream.index("@0,0"))
-                        stream.mark_gravity("reader_position", "left")
+                        from core.gui_chat_scroll import capture_reader_position, restore_reader_position
+                        reader_position = capture_reader_position(stream, mark_name)
                     try:
                         if mark_name in stream.mark_names():
                             stream.delete(mark_name, "end-1c")
@@ -5757,12 +5757,11 @@ class SmartAIChatbotApp:
                         plain = "".join(value for is_thought, value in segments if not is_thought)
                         stream.insert("end", plain + "\n\n", "ai_msg")
                     finally:
-                        if hasattr(stream, "mark_unset"):
-                            stream.mark_unset(mark_name)
                         stream.configure(state="disabled")
                         if keep_position:
-                            stream.yview("reader_position")
-                            stream.mark_unset("reader_position")
+                            restore_reader_position(stream, mark_name, reader_position)
+                        if hasattr(stream, "mark_unset"):
+                            stream.mark_unset(mark_name)
                         self._scroll_chat_to_bottom()
 
                 _post(0, _finalize_ai_msg)
