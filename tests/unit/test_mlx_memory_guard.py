@@ -47,6 +47,47 @@ def test_allocator_trims_cached_memory_without_releasing_model_arrays(monkeypatc
     assert limits == [0] and cleared == [True]
 
 
+def test_watchdog_cannot_raise_request_cache_cap_when_host_memory_recovers(monkeypatch):
+    import psutil
+    import core.mlx_memory_guard as guard
+    from core.memory_watchdog import SystemMemoryWatchdog
+
+    mlx, mx = types.ModuleType("mlx"), types.ModuleType("mlx.core")
+    mlx.core = mx
+    cap, writes = [2 * GIB], []
+
+    def set_limit(value):
+        previous = cap[0]
+        cap[0] = value
+        writes.append(value)
+        return previous
+
+    mx.set_cache_limit = set_limit
+    mx.clear_cache = lambda: None
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: types.SimpleNamespace(available=8 * GIB))
+    current = [headroom(GIB // 4)]
+    monkeypatch.setattr(guard, "memory_headroom", lambda **kwargs: current[0])
+
+    trim_allocator(mx)
+    assert cap[0] == 0
+    # The watchdog sees abundant host RAM but does not know about the active
+    # request's tighter Metal/process bound. It must preserve that request cap.
+    SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
+    assert cap[0] == 0 and writes == [0]
+
+    # A subsequent request can re-evaluate its own safe allowance. The monitor
+    # then preserves it instead of restoring the old multi-GiB allocator cache.
+    current[0] = headroom(8 * GIB)
+    trim_allocator(mx)
+    assert cap[0] == guard.MAX_ALLOCATOR_CACHE_BYTES
+    SystemMemoryWatchdog.adjust_dynamic_metal_headroom()
+    assert cap[0] == guard.MAX_ALLOCATOR_CACHE_BYTES
+    # No repeated zero probe: a monitor tick must not churn a healthy cache.
+    assert writes == [0, guard.MAX_ALLOCATOR_CACHE_BYTES]
+
+
 def test_unknown_headroom_never_admits_a_snapshot():
     unknown = headroom(None)
     assert unknown.pressure and unknown.prefill_tokens == 128

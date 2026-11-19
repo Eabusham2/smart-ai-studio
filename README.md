@@ -80,7 +80,9 @@ bundled packed models' native training path.
 Thinking sections expand while reasoning arrives, can be collapsed immediately,
 and collapse once reasoning finishes. Their toggle remains available to reopen
 them. Scrolling away from the bottom suspends automatic following until you
-return to the bottom. Theme changes update existing dialogs and chat widgets as
+return to the bottom. A message sent after Stop waits for the previous worker's
+cleanup before starting, preserving its cancellation and model ownership.
+Theme changes update existing dialogs and chat widgets as
 well as the main window. **AI RAM** reports the app and its owned workers in GiB;
 MLX active tensors, peak and cache are shown separately because they overlap the
 process footprint.
@@ -92,11 +94,19 @@ candidate costs remain separate from that invocation's context occupancy. A
 backend that has not reported an exact count displays **unknown** until it can
 measure one; old model/request counters are never reused as a live reading.
 
+Python **Canvas → Run** preserves editor line numbers and reports both printed
+output and the exception traceback. Printing before an error no longer hides the
+reason it failed; long Python output keeps its final diagnostics visible in a
+bounded preview. The existing interpreter, workspace and six-second execution
+limit still apply.
+
 MLX checks memory headroom before every request, including when optional tuning
 or the user-selected RAM watchdog is off. It limits prefill batches and optional
 cache copies, releases failed inference state, and retries a memory failure once
 only if no response has been delivered. Recovery preserves the selected model
-and full conversation. A model and context still need to fit available memory;
+and full conversation. The background memory monitor cannot raise a stricter
+request cache limit, and unchanged monitor ticks leave the allocator alone.
+A model and context still need to fit available memory;
 repeated small native CPU/Metal regressions do not certify every 27B workload.
 
 ### Your chosen model: automatic placement and speed configuration

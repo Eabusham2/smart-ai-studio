@@ -308,10 +308,34 @@ jobs:
           RUN_REAL_WEIGHTS_EVAL: "0"
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
-            xvfb-run -a python -m pytest -v
+            xvfb-run -a python -m pytest -v --junitxml=desktop-tests.xml
           else
-            python -m pytest -v
+            python -m pytest -v --junitxml=desktop-tests.xml
           fi
+
+      - name: Require real desktop regression coverage
+        shell: bash
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse('desktop-tests.xml').iter('testcase'))
+          required = {
+              'test_all_persistent_controls_visible_clickable_and_inside_window': 8,
+              'test_repeated_theme_switch_covers_hidden_panels_dialogs_tags_and_hover': 1,
+              'test_live_thought_opens_can_collapse_during_decode_then_closes_once_and_reopens': 1,
+              'test_manual_scroll_preempts_pending_tail_callbacks_and_new_chunks_do_not_jump': 1,
+              'test_model_switch_routes_sql_tools_learner_and_transcript_to_same_owner': 1,
+              'test_stop_then_send_waits_for_the_old_worker_to_release_its_request': 1,
+              'test_context_updates_on_prefill_and_decode_then_labels_completed_invocation': 1,
+              'test_canvas_preserves_editor_line_number_and_shows_exception': 1,
+              'test_canvas_long_stdout_keeps_final_traceback_visible_in_bounded_real_widget': 1,
+          }
+          for name, minimum in required.items():
+              matched = [case for case in cases if case.get('name', '').split('[', 1)[0] == name]
+              assert len(matched) >= minimum, f'Missing desktop regression coverage: {name}'
+              assert all(case.find('skipped') is None for case in matched), f'Desktop regression was skipped: {name}'
+          print('Verified actual desktop visibility, theme, reasoning, scrolling, model ownership, context and Canvas coverage')
+          PY
 
   mlx-learning:
     name: Native MLX Learning (${{ matrix.device }})
@@ -786,6 +810,13 @@ jobs:
           - Check MLX memory before each turn, bound prefill and optional cache
             copies, and release failed request state before one pre-output retry
             without changing the selected model or discarding conversation text.
+          - Preserve Python Canvas editor line numbers and show the traceback
+            even when the script printed long output before failing.
+          - Queue messages sent after Stop until the previous worker finishes
+            cleanup, and prevent the background monitor from raising a stricter
+            MLX request cache limit. Unchanged monitor ticks keep the cache intact.
+          - Require real desktop regression cases to execute in every platform
+            test lane, including both themes at the minimum 760x600 window size.
 
           **Mac (Apple Silicon): automatic full installation to Applications**
           Download `Install-SmartAI-macOS-Full.command` and its `.sha256` receipt.

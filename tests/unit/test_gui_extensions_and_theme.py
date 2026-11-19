@@ -136,13 +136,13 @@ print('all packaged controls visible')
     assert "all packaged controls visible" in result.stdout
 
 
-@pytest.mark.parametrize("width", [760, 1280])
+@pytest.mark.parametrize("width,height", [(760, 600), (760, 900), (1280, 720), (1280, 900)])
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_all_persistent_controls_visible_clickable_and_inside_window(app, width, theme):
+def test_all_persistent_controls_visible_clickable_and_inside_window(app, width, height, theme):
     root = app.root
     app.current_theme = theme
     app._apply_theme_colors()
-    _resize_on_screen(root, width, 900)
+    _resize_on_screen(root, width, height)
     names = (
         "btn_model_menu", "lbl_workspace", "chk_pro_branches", "chk_memory_limit",
         "entry_memory_limit", "btn_eval", "btn_load_unload", "btn_reset_reinstall",

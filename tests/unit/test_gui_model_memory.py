@@ -1,6 +1,8 @@
 """The real desktop binds all episodic consumers to its selected model."""
 from pathlib import Path
 import sqlite3
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -32,6 +34,55 @@ def descendants(widget):
     for child in widget.winfo_children():
         yield child
         yield from descendants(child)
+
+
+@pytest.mark.parametrize('messages', [('The next request',), ('First queued request', 'Second queued request')])
+def test_stop_then_send_waits_for_the_old_worker_to_release_its_request(desktop, monkeypatch, messages):
+    app, root, _ = desktop
+    release = threading.Event()
+    old_worker = threading.Thread(target=lambda: release.wait(5), daemon=True)
+    started, handed_off = [], []
+    monkeypatch.setattr(app, '_process_message_thread', lambda *args: started.append(args))
+    monkeypatch.setattr(app, '_run_queued_task', lambda *args: handed_off.append((old_worker.is_alive(), args)))
+    app.is_model_loaded = True
+    app._set_generating_state(True)
+    app._generation_worker = old_worker
+    old_worker.start()
+    try:
+        app._on_stop_generation()
+        assert not app.is_generating and app.cancel_event.is_set()
+        # The previous request's completion callback can run before its outer
+        # telemetry/SQLite wrapper has released the worker, with no next item.
+        app._check_and_run_next_queue()
+        assert app.prompt_queue == []
+        stopped_epoch = app._generation_epoch
+        app._placeholder_active = False
+        app.txt_input.configure(state='normal')
+        pending_waits = []
+        for message in messages:
+            app.txt_input.delete('1.0', 'end')
+            app.txt_input.insert('1.0', message)
+            app._on_send_message()
+            pending_waits.append(app._queue_worker_wait_id)
+        assert None not in pending_waits and len(set(pending_waits)) == 1
+        assert not started
+        assert app._generation_worker is old_worker
+        assert app.cancel_event.is_set() and app._generation_epoch == stopped_epoch
+        queued = [(message, message, None, None) for message in messages]
+        assert app.prompt_queue == queued
+        root.update()
+        assert not handed_off and app.prompt_queue == queued
+        release.set()
+        old_worker.join(timeout=2)
+        deadline = time.monotonic() + 2
+        while not handed_off and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.01)
+        assert handed_off == [(False, queued[0])]
+        assert app.prompt_queue == queued[1:]
+    finally:
+        release.set()
+        old_worker.join(timeout=2)
 
 
 def test_model_switch_routes_sql_tools_learner_and_transcript_to_same_owner(desktop):

@@ -21,6 +21,7 @@ Features 15+ built-in tools:
 
 import ast
 import csv
+import errno
 import json
 import math
 import os
@@ -494,30 +495,64 @@ class AgentToolRegistry:
             return False, f"Failed to execute command: {str(e)}"
 
     def _tool_python_sandbox(self, code: str) -> Tuple[bool, str]:
-        if not code:
+        if not isinstance(code, str) or not code.strip():
             return False, "Python code required."
         try:
-            # Strip markdown wrappers if passed
-            clean_code = re.sub(r"^```(?:python)?\s*\n", "", code.strip(), flags=re.IGNORECASE)
-            clean_code = re.sub(r"\n```$", "", clean_code)
+            # Remove only a complete outer Python fence. Keep its lines (and
+            # leading blank lines) so traceback locations match the Canvas.
+            lines = code.splitlines(keepends=True)
+            nonempty = [index for index, line in enumerate(lines) if line.strip()]
+            if (len(nonempty) >= 2
+                    and re.fullmatch(r"```(?:python3?|py)?", lines[nonempty[0]].strip(), re.IGNORECASE)
+                    and lines[nonempty[-1]].strip() == "```"):
+                for index in (nonempty[0], nonempty[-1]):
+                    lines[index] = "\n" if lines[index].endswith(("\n", "\r")) else ""
+            clean_code = "".join(lines)
+            if not clean_code.strip():
+                return False, "Python code required."
             
             start_t = time.perf_counter()
-            res = subprocess.run(
-                [sys.executable, "-c", clean_code],
+            options = dict(
                 cwd=self.workspace_dir,
                 capture_output=True,
                 text=True,
-                timeout=6.0
+                encoding="utf-8",
+                errors="replace",
+                env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1"),
+                timeout=6.0,
             )
+            try:
+                res = subprocess.run([sys.executable, "-c", clean_code], **options)
+            except OSError as exc:
+                if exc.errno != errno.E2BIG and getattr(exc, "winerror", None) != 206:
+                    raise
+                # The failed launch did not execute code. Large Canvas scripts
+                # can exceed the OS argument limit; use the same interpreter,
+                # workspace and timeout with source on stdin instead.
+                res = subprocess.run([sys.executable, "-"], input=clean_code, **options)
             dur_ms = (time.perf_counter() - start_t) * 1000
             out = res.stdout.strip()
             err = res.stderr.strip()
             status = "✓ Success" if res.returncode == 0 else f"✗ Error (Exit {res.returncode})"
             
-            output_text = out if out else (f"Traceback:\n{err}" if err else "[Code executed successfully with 0 output]")
+            # A print before an exception must not hide the actual traceback.
+            parts = [out] if out else []
+            if err:
+                parts.append("Standard error:\n" + err)
+            output_text = "\n\n".join(parts) or (
+                "[Code executed successfully with 0 output]" if res.returncode == 0
+                else f"[Python exited with code {res.returncode} and no output]"
+            )
             return (res.returncode == 0), f"### 🐍 Python Execution [{status} in {dur_ms:.1f}ms]\n```\n{output_text}\n```"
-        except subprocess.TimeoutExpired:
-            return False, "Python execution timed out (6.0s limit)."
+        except subprocess.TimeoutExpired as exc:
+            partial = []
+            for label, value in (("Standard output", exc.stdout), ("Standard error", exc.stderr)):
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="replace")
+                if value and value.strip():
+                    partial.append(label + ":\n" + value.strip())
+            details = "\n```\n" + "\n\n".join(partial) + "\n```" if partial else ""
+            return False, "Python execution timed out (6.0s limit)." + details
         except Exception as e:
             return False, str(e)
 

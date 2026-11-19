@@ -2726,8 +2726,9 @@ class SmartAIChatbotApp:
             self.txt_canvas.configure(font=_FONT_MONO, wrap="none", bg=self.C["code_bg"])
 
     def _on_canvas_run_code(self):
-        code = self.txt_canvas.get("1.0", "end").strip()
-        if not code:
+        # Preserve source positions so Python's traceback matches the editor.
+        code = self.txt_canvas.get("1.0", "end-1c")
+        if not code.strip():
             return
         ok, res = self.tools.execute_tool("python_sandbox", {"code": code})
         self._append_tool_call("python_sandbox", "Canvas Code Execution", res)
@@ -4888,7 +4889,16 @@ class SmartAIChatbotApp:
         self.chat_stream.configure(state="normal")
         self.chat_stream.insert("end", f"  ⚙️ Tool Execution: {tool_name}({args_str})  ", "tool_pill")
         self.chat_stream.insert("end", "\n")
-        out_display = result_str if len(result_str) < 1200 else result_str[:1200] + "... [Output Truncated]"
+        if len(result_str) <= 1200:
+            out_display = result_str
+        elif tool_name in {"python_sandbox", "python_exec", "python"}:
+            # Python appends stderr/tracebacks after stdout. Keep their tail
+            # visible even when the script printed more than the preview budget.
+            notice = "\n... [Output truncated; showing start and final diagnostics] ...\n"
+            tail_size = 1200 - 400 - len(notice)
+            out_display = result_str[:400] + notice + result_str[-tail_size:]
+        else:
+            out_display = result_str[:1200] + "... [Output Truncated]"
         self.chat_stream.insert("end", out_display.strip(), "tool_output")
         self.chat_stream.insert("end", "\n\n")
         self.chat_stream.configure(state="disabled")
@@ -5001,7 +5011,8 @@ class SmartAIChatbotApp:
                 except Exception:
                     pass
 
-        if self.is_generating:
+        worker = getattr(self, "_generation_worker", None)
+        if self.is_generating or (worker is not None and worker.is_alive()):
             self.prompt_queue.append(
                 (user_msg, raw_text, learn_source_path, learn_media_target)
             )
@@ -5009,6 +5020,10 @@ class SmartAIChatbotApp:
             self._append_queued_message(raw_text, len(self.prompt_queue))
             self.txt_input.delete("1.0", "end")
             self._recompute_input_height(is_focused=True)
+            if not self.is_generating:
+                # The completion callback may already have checked an empty
+                # queue while the old worker was still finalizing telemetry.
+                self._check_and_run_next_queue()
             return
 
         self.txt_input.delete("1.0", "end")
@@ -5818,6 +5833,21 @@ class SmartAIChatbotApp:
     def _check_and_run_next_queue(self):
         if getattr(self, "_pending_steer", None) is not None or getattr(self, "_closing_during_learning", False):
             return
+        worker = getattr(self, "_generation_worker", None)
+        if worker is not None and worker.is_alive():
+            # Stop updates the buttons immediately, but the old iterator may
+            # still be releasing its native cache. Do not clear its cancel
+            # event or allocate a second request until that worker has exited.
+            if self.prompt_queue and getattr(self, "_queue_worker_wait_id", None) is None:
+                def check_after_cleanup():
+                    self._queue_worker_wait_id = None
+                    self._check_and_run_next_queue()
+                self._queue_worker_wait_id = self.root.after(50, check_after_cleanup)
+            return
+        pending_wait = getattr(self, "_queue_worker_wait_id", None)
+        if pending_wait is not None:
+            self._queue_worker_wait_id = None
+            self.root.after_cancel(pending_wait)
         if self.prompt_queue:
             item = self.prompt_queue.pop(0)
             queued_tab = self.active_tab_id
@@ -5829,7 +5859,9 @@ class SmartAIChatbotApp:
                 next_user_msg, next_raw, learn_source_path, learn_media_target = item
             self._update_queue_ui()
             def run_owned_task():
-                if self.active_tab_id != queued_tab or self.is_generating:
+                worker = getattr(self, "_generation_worker", None)
+                if (self.active_tab_id != queued_tab or self.is_generating
+                        or (worker is not None and worker.is_alive())):
                     queues = getattr(self, "_model_prompt_queues", {})
                     queues.setdefault(queued_tab, self.prompt_queue if self.active_tab_id == queued_tab else []).insert(0, item)
                     self._model_prompt_queues = queues

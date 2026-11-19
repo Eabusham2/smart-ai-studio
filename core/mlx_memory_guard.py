@@ -9,9 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import importlib
 import inspect
+import threading
+import weakref
 
 
 GIB = 1024 ** 3
+MAX_ALLOCATOR_CACHE_BYTES = 256 * 1024 ** 2
+_CACHE_LIMIT_LOCK = threading.Lock()
+_CACHE_LIMITS = weakref.WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -115,18 +120,53 @@ def native_vlm_prefill_default():
         return None
 
 
+def set_allocator_cache_limit(mx, allowance, *, only_reduce=False):
+    """Serialize request/monitor policy so a watchdog cannot raise a live cap.
+
+    MLX exposes the previous cap through its setter, but has no cache-limit
+    getter. Remember our successful writes per runtime so normal monitor ticks
+    do not disturb its allocator. An unknown cap is queried once by setting
+    zero and restoring at most the prior allowance. The shared lock prevents
+    an owner-thread OOM recovery from interleaving those writes.
+    """
+    setter = getattr(mx, "set_cache_limit", None) or getattr(getattr(mx, "metal", None), "set_cache_limit", None)
+    if not callable(setter):
+        return
+    allowance = min(MAX_ALLOCATOR_CACHE_BYTES, max(0, int(allowance)))
+    with _CACHE_LIMIT_LOCK:
+        try:
+            previous = _CACHE_LIMITS.get(mx)
+        except TypeError:
+            previous = None
+        if only_reduce and previous is not None:
+            allowance = min(allowance, previous)
+            if allowance == previous:
+                return
+        try:
+            if only_reduce and previous is None and allowance:
+                previous = setter(0)
+                # Older/custom runtimes without the documented return value
+                # stay at zero instead of accidentally raising an unknown cap.
+                allowance = min(allowance, previous) if type(previous) is int and previous > 0 else 0
+                if allowance:
+                    setter(allowance)
+            else:
+                setter(allowance)
+            try:
+                _CACHE_LIMITS[mx] = allowance
+            except TypeError:
+                pass
+        except (RuntimeError, ValueError):
+            # CPU-only/older builds may expose an unsupported allocator API.
+            pass
+
+
 def trim_allocator(mx, *, force=False, max_process_gb=None):
     """Bound optional allocator cache on the caller's MLX owner thread."""
     headroom = memory_headroom(mx=mx, max_process_gb=max_process_gb)
     allowance = (0 if force or headroom.pressure else
-                 min(256 * 1024 ** 2, max(0, int(headroom.usable_bytes or 0) // 8)))
-    setter = getattr(mx, "set_cache_limit", None)
-    if callable(setter):
-        try:
-            setter(allowance)
-        except (RuntimeError, ValueError):
-            # CPU-only/older builds may expose an unsupported allocator API.
-            pass
+                 min(MAX_ALLOCATOR_CACHE_BYTES, max(0, int(headroom.usable_bytes or 0) // 8)))
+    set_allocator_cache_limit(mx, allowance)
     if force or headroom.cache_bytes > allowance:
         clear = getattr(mx, "clear_cache", None) or getattr(getattr(mx, "metal", None), "clear_cache", None)
         if callable(clear):

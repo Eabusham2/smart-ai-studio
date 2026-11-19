@@ -196,10 +196,11 @@ class SystemMemoryWatchdog:
             dynamic_cache_gb = max(0.0, min(avail_gb * 0.25, avail_gb - min_headroom_gb))
             dynamic_cache_bytes = int(dynamic_cache_gb * (1024 ** 3))
 
-            if hasattr(mx, "set_cache_limit"):
-                mx.set_cache_limit(dynamic_cache_bytes)
-            elif hasattr(mx, "metal") and hasattr(mx.metal, "set_cache_limit"):
-                mx.metal.set_cache_limit(dynamic_cache_bytes)
+            # Requests can enforce a smaller cap using device/process headroom
+            # or OOM recovery. The monitor runs concurrently and must never
+            # replace that cap with a larger host-RAM-derived allowance.
+            from core.mlx_memory_guard import set_allocator_cache_limit
+            set_allocator_cache_limit(mx, dynamic_cache_bytes, only_reduce=True)
         except Exception:
             pass
 
