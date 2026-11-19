@@ -153,6 +153,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self._metal_warmup = SafeMLXWarmup()
         from core.vlm_prompt_reuse import NativeVLMCacheReuse
         self._vlm_prefixes = NativeVLMCacheReuse()
+        from core.vlm_prompt_tokens import PreparedTextInputMemo
+        self._vlm_input_memo = PreparedTextInputMemo()
         self._oom_prefill_step_size = None
         self.last_memory_recovery = ""
 
@@ -177,6 +179,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         """Run after the failed iterator and exception scope have been released."""
         from core.mlx_memory_guard import trim_allocator
         self._oom_prefill_step_size = _adaptive_prefill_step_size(aggressive=True)
+        self._vlm_input_memo.clear()
         self._prompt_prefixes.clear()
         self._vlm_prefixes.clear()
         if self.kv_cache_manager is not None:
@@ -275,6 +278,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self._prompt_prefixes.clear()
             self._vlm_prefixes.clear()
             self._tokenizer_memo.clear()
+            self._vlm_input_memo.clear()
             self._persistent_prompt_identity = None
             if self._persistent_prompt_store is not None:
                 self._persistent_prompt_store.close()
@@ -296,6 +300,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self._prompt_prefixes.clear()
             self._vlm_prefixes.clear()
             self._tokenizer_memo.clear()
+            self._vlm_input_memo.clear()
             self._persistent_prompt_identity = None
             self._prompt_reuse_identity = signature
             if self.kv_cache_manager is not None and self.kv_cache_manager.model is not self.model:
@@ -315,6 +320,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 "tokenizer_hits": self._tokenizer_memo.hits,
                 "tokenizer_misses": self._tokenizer_memo.misses,
                 **self._vlm_prefixes.telemetry(),
+                **self._vlm_input_memo.telemetry(),
                 **self._metal_warmup.telemetry()}
 
     def _vlm_reuse_kwargs(self, prepared_prompt, prefill_kwargs, *, branches=False):
@@ -770,6 +776,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
     def review_media_input(self, path: str, kind: str, prompt: str = ""):
         self._vlm_prefixes.clear()
+        self._vlm_input_memo.clear()
         if self._vlm_loader is None:
             return {
                 "perception_available": False,
@@ -842,11 +849,12 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
-            from core.vlm_prompt_tokens import prepare_vlm_inputs
             count = max(1, min(int(branch_count), 16))
             temps = list(temperature) if isinstance(temperature, (list, tuple)) else [float(temperature)] * count
             prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
-            prepared_inputs, prompt_count = prepare_vlm_inputs(self.model, self.processor, prepared_prompt)
+            prepared_inputs, prompt_count = self._vlm_input_memo.prepare(
+                self.model, self.processor, prepared_prompt,
+                enabled=self._lossless_speedups["tokenizer_memo"])
             self.last_prompt_token_count = prompt_count
             effective_max = self._effective_generation_cap(
                 prepared_prompt,
@@ -1010,9 +1018,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         if self._vlm_runtime is not None:
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
-            from core.vlm_prompt_tokens import prepare_vlm_inputs
             prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
-            prepared_inputs, prompt_count = prepare_vlm_inputs(self.model, self.processor, prepared_prompt)
+            prepared_inputs, prompt_count = self._vlm_input_memo.prepare(
+                self.model, self.processor, prepared_prompt,
+                enabled=self._lossless_speedups["tokenizer_memo"])
             effective_max = self._effective_generation_cap(
                 prepared_prompt, max_tokens, prompt_token_count=prompt_count)
             meter = TokenMeter(self, "mlx-vlm", prompt_tokens=prompt_count)

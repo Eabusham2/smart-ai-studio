@@ -127,6 +127,9 @@ def fake_vlm_runtime(folder, *, runtime="mlx_repo_vlm", default_chunk=256):
         generation.generate_step = step
         env.backend._vlm_runtime = runtime
         env.backend._speed_profile_context = None
+        from core.vlm_prompt_tokens import PreparedTextInputMemo
+        env.backend._vlm_input_memo = PreparedTextInputMemo()
+        env.backend._lossless_speedups = {"tokenizer_memo": True}
         vision_tower = object()
         env.backend.model = types.SimpleNamespace(
             language_model=types.SimpleNamespace(_rope_deltas="original delta"), vision_tower=vision_tower)

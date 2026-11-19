@@ -398,7 +398,7 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
           MLX_TEST_DEVICE: ${{ matrix.device }}
         run: |
-          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py tests/unit/test_consolidation_memory_lifecycle.py tests/unit/test_mlx_memory_guard.py tests/unit/test_exact_context_usage.py
+          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py tests/unit/test_consolidation_memory_lifecycle.py tests/unit/test_mlx_memory_guard.py tests/unit/test_exact_context_usage.py tests/unit/test_vlm_input_memo.py
           python - <<'PY'
           import xml.etree.ElementTree as ET
           cases = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
@@ -428,6 +428,10 @@ jobs:
                      if c.get('name', '').split('[', 1)[0] == 'test_real_mlx_last_projection_entropy_matches_original_forward']
           assert len(entropy) == 2, 'Both native entropy projection contracts must execute'
           assert all(c.find('skipped') is None for c in entropy), 'Native entropy projection parity cannot be skipped'
+          input_memo = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
+                        if 'test_vlm_input_memo' in c.get('classname', '')]
+          assert len(input_memo) >= 14, 'Native VLM input memo exactness, lifecycle and deferred tuning tests must execute'
+          assert all(c.find('skipped') is None for c in input_memo), 'Native VLM input memo tests cannot be skipped'
           PY
       - name: Preserve native learning results
         if: always()
@@ -802,6 +806,9 @@ jobs:
             content, and keep action rows accessible when windows are resized.
           - Keep compatible execution speedups enabled when calibration lacks
             memory headroom; verified native Auto selects an available strategy.
+          - Apply tokenizer memoization to eligible native VLM text requests,
+            retaining only one bounded CPU snapshot and verifying exact input
+            restoration in both native CPU and Metal test lanes.
           - Isolate episodic memory and chat updates by model, retain earlier
             shared history for read-only viewing, and require confirmed unloading
             before starting a replacement model or benchmark.
