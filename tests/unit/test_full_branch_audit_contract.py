@@ -165,7 +165,14 @@ def test_end_to_end_call_chain_is_wired_through_existing_components():
     phase = _src("eval/phase4_pro_rsi.py")
 
     assert "self.multimodal.stream_solve(full_msg" in app
-    assert "self.learner.run_learning_session(" in app
+    # The worker owns the model's learner captured at request start. Calling
+    # through mutable self.learner would allow a later model binding to bleed
+    # into the original Learn request.
+    request = app[app.index("    def _process_message_thread("):app.index("    def _set_generating_state(")]
+    captured = request.index('origin_learner = getattr(self, "learner", None)')
+    invoked = request.index("origin_learner.run_learning_session(")
+    assert captured < invoked
+    assert "self.learner.run_learning_session(" not in request
     assert "iterator = self.app.engine.stream_solve(" in media
     assert "self.learning.learn" in media
     assert init.index("install_awake_auto_learning") < init.index("install_full_context_hardening")
