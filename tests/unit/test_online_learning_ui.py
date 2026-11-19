@@ -33,6 +33,10 @@ def app(tmp_path, monkeypatch):
         if app.watchdog:
             app.watchdog.stop_monitoring()
         app.engine.unload_model()
+        # Child widgets own some of these Tcl callback commands. Cancel their
+        # schedules without deleting commands before the owning widgets die.
+        for pending in root.tk.splitlist(root.tk.call("after", "info")):
+            root.tk.call("after", "cancel", pending)
         root.destroy()
         import gc
         gc.collect()

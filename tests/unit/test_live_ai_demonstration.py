@@ -14,6 +14,7 @@ import os
 import tempfile
 import unittest
 import tkinter as tk
+from unittest.mock import patch
 from config.settings import get_settings
 from core.pro_engine import ProReasoningEngine
 from core.tools import AgentToolRegistry
@@ -97,39 +98,60 @@ class TestLiveAIDemonstration(unittest.TestCase):
         """Verify GUI initialization, thinking pill rendering, tokens/s, and model tab switching."""
         try:
             root = tk.Tk()
-            root.withdraw()
-            app = SmartAIChatbotApp(root, settings=self.settings)
-        except Exception:
+        except tk.TclError:
             self.skipTest("Headless environment without display server")
             return
+        root.withdraw()
+        app = None
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(os.environ, {"SMARTAI_DATA_DIR": data_dir}):
+            try:
+                settings = self.settings.model_copy(update={
+                    "database_path": os.path.join(data_dir, "chat.sqlite3"),
+                    "auto_download": False,
+                })
+                app = SmartAIChatbotApp(root, settings=settings)
 
-        # 1. Check initial state
-        self.assertEqual(app.total_tokens_used, 0)
-        self.assertEqual(app.synapses_learned_m, 0.0)
-        self.assertEqual(app.active_tab_id, "model_1")
-        self.assertFalse(app.is_model_loaded)
+                # 1. Check initial state without another test's archived chat.
+                self.assertEqual(app.total_tokens_used, 0)
+                self.assertEqual(app.synapses_learned_m, 0.0)
+                self.assertEqual(app.active_tab_id, "model_1")
+                self.assertFalse(app.is_model_loaded)
 
-        # 2. Append User & AI Messages
-        app._append_user_message("Hello from test")
-        app._append_ai_message("Hello! Ready to help.", thinking_tokens=32, duration_s=0.25, tok_per_sec=128.0)
-        content = app.chat_stream.get("1.0", "end")
-        self.assertIn("Hello from test", content)
-        self.assertIn("Thought for", content)
-        self.assertIn("128.0 tok/s", content)
+                # 2. A thinking pill represents actual model reasoning. Its
+                # telemetry must preserve the supplied token count and speed.
+                app._append_user_message("Hello from test")
+                thought = "The user greeted me; answer with a friendly greeting."
+                app._append_ai_message(
+                    "Hello! Ready to help.", thinking_text=thought,
+                    thinking_tokens=32, duration_s=0.25, tok_per_sec=128.0,
+                )
+                content = app.chat_stream.get("1.0", "end")
+                self.assertIn("Hello from test", content)
+                self.assertIn("Thought for", content)
+                self.assertIn("32 tokens", content)
+                self.assertIn("128.0 tok/s", content)
+                self.assertIn(thought, app.thinking_cache.values())
 
-        # 3. Test Model Switching
-        app._on_switch_model_tab("model_2")
-        self.assertEqual(app.active_tab_id, "model_2")
-        model_2 = app.models_config["model_2"]
-        status = app.lbl_model_status.cget("text")
-        self.assertTrue(
-            str(model_2.get("short_name") or "") in status
-            or str(model_2.get("name") or "") in status
-        )
-
-        if hasattr(app, "watchdog") and app.watchdog:
-            app.watchdog.stop_monitoring()
-        root.destroy()
+                # 3. Test Model Switching.
+                app._on_switch_model_tab("model_2")
+                self.assertEqual(app.active_tab_id, "model_2")
+                model_2 = app.models_config["model_2"]
+                status = app.lbl_model_status.cget("text")
+                self.assertTrue(
+                    str(model_2.get("short_name") or "") in status
+                    or str(model_2.get("name") or "") in status
+                )
+            finally:
+                if app is not None:
+                    app.cancel_event.set()
+                    if app.watchdog:
+                        app.watchdog.stop_monitoring()
+                    app.engine.unload_model()
+                # Cancel schedules only: each widget owns the Tcl commands
+                # that its destroy() must remove from the command registry.
+                for pending in root.tk.splitlist(root.tk.call("after", "info")):
+                    root.tk.call("after", "cancel", pending)
+                root.destroy()
 
     def test_06_convex_temperature_ladder(self):
         """Verify the current chat/Pro temperature policy and SQLite metadata logging."""

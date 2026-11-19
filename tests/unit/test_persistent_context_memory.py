@@ -216,6 +216,7 @@ def test_archive_cache_scans_only_new_or_still_active_turns(tmp_path, monkeypatc
 def test_sleep_panel_dispatches_to_selected_backend_and_reports_only_committed_result(tmp_path, monkeypatch):
     import app_gui
     from collections import defaultdict
+    from queue import Queue
 
     widgets = []
 
@@ -262,6 +263,7 @@ def test_sleep_panel_dispatches_to_selected_backend_and_reports_only_committed_r
     app = SimpleNamespace(engine=SimpleNamespace(awake_consolidator=service), active_tab_id="model_1",
                           models_config={"model_1": {}}, chat_history={"model_1": archive},
                           is_generating=False, root=Widget(), C=defaultdict(str), _make_badge=Widget,
+                          _event_queue=Queue(),
                           cancel_event=threading.Event(), multimodal=SimpleNamespace(busy=False),
                           _update_telemetry=lambda: None, _check_and_run_next_queue=lambda: None)
     app._set_generating_state = lambda state: setattr(app, "is_generating", state)
@@ -269,12 +271,23 @@ def test_sleep_panel_dispatches_to_selected_backend_and_reports_only_committed_r
     button = next(widget for widget in widgets if "command" in widget.options)
     button.options["command"]()
     assert backend.train_calls == 1
+    assert app.is_generating
+    checkpoint = backend.learning_state.current_checkpoint()
+    assert not any(checkpoint in line for widget in widgets for line in widget.log)
+    kind, callback = app._event_queue.get_nowait()
+    assert kind == "ui_callback"
+    callback()
+    assert app._event_queue.empty()
     assert not app.is_generating
     assert len(archive) == 2 and service.active_history(archive) == []
     logs = "".join(line for widget in widgets for line in widget.log)
     assert backend.learning_state.current_checkpoint() in logs
     button.options["command"]()
     assert backend.train_calls == 1
+    kind, callback = app._event_queue.get_nowait()
+    assert kind == "ui_callback"
+    callback()
+    assert not app.is_generating
     assert any("No pending complete exchanges" in line for widget in widgets for line in widget.log)
 
 

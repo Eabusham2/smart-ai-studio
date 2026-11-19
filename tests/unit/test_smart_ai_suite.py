@@ -134,7 +134,10 @@ class TestSmartAISuite(unittest.TestCase):
         ok, sys_res = self.tools.execute_tool("system_monitor", {})
         self.assertTrue(ok)
         self.assertIn("System Hardware & Telemetry Profile", sys_res)
-        self.assertIn("AI Model Precision", sys_res)
+        self.assertIn("AI RAM (app and owned workers)", sys_res)
+        self.assertIn("GiB", sys_res)
+        # The generic monitor has no selected-model precision to report.
+        self.assertNotIn("AI Model Precision", sys_res)
 
     def test_json_csv_analyzer_tool(self):
         """Test JSON and CSV analysis tools."""
