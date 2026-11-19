@@ -5617,7 +5617,7 @@ class SmartAIChatbotApp:
                 if use_pro_branches:
                     options.update(best_work_enabled=True, progress_callback=_branch_progress,
                                    status_callback=_decision, route_with_history=route_with_history,
-                                   best_work_passes=getattr(self.settings, "best_work_passes", 1))
+                                   best_work_passes=getattr(self.settings, "best_work_passes", 2))
                 iterator = self.multimodal.stream_solve(full_msg,
                     history=curr_history, cancel_event=self.cancel_event, **options
                 )
@@ -6118,7 +6118,7 @@ assert glyph_res["invariants_passed"] == True
         pass_controls.pack(fill="x", padx=16, pady=(0, 8))
         tk.Label(pass_controls, text="Best Work passes:", font=_FONT_SMALL,
                  bg=self.C["bg_hud"], fg=self.C["text_main"]).pack(side="left")
-        pass_count = tk.StringVar(master=modal, value=str(getattr(self.settings, "best_work_passes", 1)))
+        pass_count = tk.StringVar(master=modal, value=str(getattr(self.settings, "best_work_passes", 2)))
         pass_entry = ttk.Spinbox(pass_controls, from_=1, to=999, width=5, textvariable=pass_count)
         pass_entry.pack(side="left", padx=8)
         pass_status = tk.Label(pass_controls, text="1 keeps the original pass; 2+ refines the prior result.",

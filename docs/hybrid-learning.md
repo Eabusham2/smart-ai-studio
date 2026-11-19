@@ -1,6 +1,6 @@
 # Hybrid learning
 
-**Hybrid learning and Pro branches are enabled by default.** Hybrid is a third implementation alongside `legacy` (the original algorithms) and `managed` (persistent context learning). An existing explicit selection saved in the desktop database is respected; a new installation starts with `hybrid`.
+**Hybrid learning and Pro branches are enabled by default, with two Best Work passes.** Hybrid is a third implementation alongside `legacy` (the original algorithms) and `managed` (persistent context learning). An existing explicit selection saved in the desktop database is respected; a new installation starts with `hybrid`.
 
 ## What Hybrid combines
 
@@ -34,7 +34,7 @@ The online-learning CLI and the full Bonsai/CRACK persistent-memory evaluator ac
 
 The **Pro branches** checkbox starts checked. The existing entropy router chooses the candidate count; enabling Pro does not force every prompt to use the largest branch count. The selected candidate continues through the existing verifier and authorized tool handoff.
 
-**Best Work passes** remains an independent setting with a default of **one**. Select two or more under **Branches → Best Work passes** for sequential refinement. Turning off **Pro branches** retains ordinary streaming.
+**Best Work passes** remains an independent setting with a default of **two sequential passes**. Change it under **Branches → Best Work passes → Apply passes**; **1** selects the original single-pass workflow. An explicit setting or request override is respected. Turning off **Pro branches** retains ordinary streaming.
 
 ## Memory and backend limits
 

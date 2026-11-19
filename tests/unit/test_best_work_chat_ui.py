@@ -165,23 +165,23 @@ def _descendants(widget):
         yield from _descendants(child)
 
 
-def test_hybrid_and_pro_branches_are_on_by_default_without_changing_pass_count(work_app):
+def test_hybrid_and_pro_branches_are_on_by_default_with_two_passes(work_app):
     from core.online_consolidator import HybridAwakeOnlineConsolidator
     app = work_app
     assert app.settings.learning_implementation == "hybrid"
     assert isinstance(app.engine.awake_consolidator, HybridAwakeOnlineConsolidator)
     assert app.pro_branches_var.get() is True
-    assert app.settings.best_work_passes == 1
+    assert app.settings.best_work_passes == app.engine.settings.best_work_passes == 2
     app.chk_pro_branches.invoke()
     assert app.pro_branches_var.get() is False
     app.chk_pro_branches.invoke()
     assert app.pro_branches_var.get() is True
+    assert app.settings.best_work_passes == 2
 
 
 def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(work_app):
     from tkinter import ttk
     app = work_app
-    app.settings.best_work_passes = 2
     app.last_metadata = {"winning_branch": 0, "verified": True,
         "branches": [{"index": 0, "temp": .2, "passed": True, "reward": 1.0,
                       "candidate": "Measured candidate text", "code": "print('verified')", "stderr": ""}]}
@@ -205,6 +205,37 @@ def test_branch_dialog_adds_pass_control_without_removing_candidate_inspector(wo
     assert any(isinstance(w, tk.Text) and 'Measured candidate text' in w.get('1.0', 'end') for w in widgets)
 
 
+def test_branch_dialog_keeps_explicit_single_pass_for_the_next_best_work_request(work_app):
+    from tkinter import ttk
+    app = work_app
+    app._on_open_branch_visualizer()
+    modal = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel))
+    widgets = list(_descendants(modal))
+    control = next(w for w in widgets if isinstance(w, ttk.Spinbox))
+    apply = next(w for w in widgets if isinstance(w, ttk.Button) and w.cget('text') == 'Apply passes')
+    assert control.get() == '2'
+    control.delete(0, 'end')
+    control.insert(0, '1')
+    apply.invoke()
+    observed = []
+
+    def stream(_prompt, **kwargs):
+        observed.append(kwargs)
+        yield 'The explicitly selected single-pass response.'
+
+    app.multimodal.stream_solve = stream
+    app.is_model_loaded = True
+    app._set_generating_state(True)
+    app._process_message_thread('Explain this.', 'Explain this.', None, None, app.pro_branches_var.get())
+    app.root.update()
+    assert len(observed) == 1
+    assert observed[0]['best_work_enabled'] is True
+    assert observed[0]['best_work_passes'] == 1
+    assert app.settings.best_work_passes == app.engine.settings.best_work_passes == 1
+    assert app.pro_branches_var.get() is True
+    assert 'The explicitly selected single-pass response.' in app.chat_stream.get('1.0', 'end')
+
+
 def test_branch_dialog_without_a_completed_run_keeps_an_empty_candidate_inspector(work_app):
     from tkinter import ttk
     app = work_app
@@ -222,7 +253,7 @@ def test_branch_dialog_without_a_completed_run_keeps_an_empty_candidate_inspecto
 def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(work_app, capacity_fallback):
     from core.generation_metrics import TokenMeter
     app = work_app
-    app.settings.best_work_passes = 2
+    assert app.settings.best_work_passes == 2  # Exercise the default through the real dispatcher.
     app.is_model_loaded = True
     app.chat_history[app.active_tab_id] = []
     app._set_generating_state(True)

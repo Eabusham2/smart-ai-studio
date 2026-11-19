@@ -1,8 +1,8 @@
 <div align="center">
 
-> **Current defaults — Hybrid + Pro branches:** The third learning choice, **hybrid**, combines original update behavior with persistent memory, validation and context retirement. **Pro branches** starts enabled. The **legacy** and **managed** choices remain available with their separate saved states; Best Work still starts at one pass. This update supersedes the default selection described in the earlier restoration note below. See [Hybrid learning](docs/hybrid-learning.md).
+> **Current defaults — Hybrid + Pro branches + 2 Best Work passes:** The third learning choice, **hybrid**, combines original update behavior with persistent memory, validation and context retirement. **Pro branches** starts enabled, and **Best Work** starts at **two sequential passes**. The **legacy** and **managed** choices remain available with their separate saved states; selecting **1** pass retains the original single-pass workflow. These defaults supersede the earlier restoration defaults. See [Hybrid learning](docs/hybrid-learning.md).
 
-> **Original implementations restored:** Studio now starts with the original learning algorithms and one-pass Best Work. The newer persistent-learning mode and multiple sequential passes remain available through **Learning & saved memory… → Learning implementation → managed** and **Branches → Best Work passes**. See [Original and managed implementations](docs/original-and-managed-learning.md) for the behavior and checkpoint separation. Historical descriptions below of automatic managed learning or two default passes apply only when those features are selected.
+> **Earlier restoration update:** The original learning algorithms and one-pass Best Work remain available through **Learning & saved memory… → Learning implementation → legacy** and **Branches → Best Work passes → 1**. The current defaults are Hybrid learning, enabled Pro branches and two Best Work passes. See [Original and managed implementations](docs/original-and-managed-learning.md) for the behavior and checkpoint separation.
 
 # 🧠 Smart AI Studio
 ### Autonomous 1.58-Bit Local AI & Multi-Agent Reasoning Desktop Engine

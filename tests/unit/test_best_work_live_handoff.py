@@ -143,6 +143,47 @@ def _prior_draft(prompt):
     return json.loads(prompt.rsplit("\n", 1)[-1])
 
 
+@pytest.mark.parametrize("configuration", ["default_settings", "no_settings", "missing_pass_setting"])
+def test_default_best_work_executes_two_passes_and_only_displays_the_refined_answer(monkeypatch, configuration):
+    from config.settings import Settings
+
+    monkeypatch.delenv("BEST_WORK_PASSES", raising=False)
+
+    def review(prompt):
+        assert _prior_draft(prompt) == "Initial selected draft."
+        return ["Refined final answer."]
+
+    ctrl, events = controller([["Initial selected draft."], review])
+    if configuration == "default_settings":
+        ctrl.app.engine.settings = Settings(use_mock=True, auto_download=False)
+    elif configuration == "missing_pass_setting":
+        ctrl.app.engine.settings = SimpleNamespace()
+    statuses = []
+    assert list(stream_best_work(ctrl, "Question", status_callback=statuses.append)) == ["Refined final answer."]
+    assert ctrl.app.engine.turn == 2
+    assert [(event["pass_index"], event["passes"], event["final"])
+            for event in statuses if event["kind"] == "pass"] == [(1, 2, False), (2, 2, True)]
+    assert ctrl.last_best_work_metadata["passes_requested"] == ctrl.last_best_work_metadata["passes_completed"] == 2
+    assert not any(event[0] == "execute" for event in events)
+
+
+@pytest.mark.parametrize("selection", ["environment", "settings", "request"])
+def test_explicit_single_pass_still_overrides_the_two_pass_default(monkeypatch, selection):
+    from config.settings import Settings
+
+    monkeypatch.delenv("BEST_WORK_PASSES", raising=False)
+    if selection == "environment":
+        monkeypatch.setenv("BEST_WORK_PASSES", "1")
+    settings = Settings(use_mock=True, auto_download=False, **({"best_work_passes": 1} if selection == "settings" else {}))
+    ctrl, _ = controller([["Original single-pass answer."]])
+    ctrl.app.engine.settings = settings
+    request = {"passes": 1} if selection == "request" else {}
+    statuses = []
+    assert list(stream_best_work(ctrl, "Question", status_callback=statuses.append, **request)) == ["Original single-pass answer."]
+    assert ctrl.app.engine.turn == 1
+    assert not any(event["kind"] == "pass" for event in statuses)
+
+
 def test_opt_in_second_pass_reviews_only_selected_draft_and_streams_final_live():
     draft = 'Choose path "a".\n' + CALL
     def review(prompt):

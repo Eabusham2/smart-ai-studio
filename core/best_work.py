@@ -426,9 +426,9 @@ def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
 def stream_best_work(controller, prompt, history=None, cancel_event=None,
                      progress_callback=None, status_callback=None, max_tool_calls=None,
                      route_with_history=False, passes=None):
-    """Use the original implementation for one pass; opt into sequential refinement."""
+    """Refine through two passes by default; preserve an explicit single pass."""
     if passes is None:
-        passes = getattr(getattr(controller.app.engine, "settings", None), "best_work_passes", 1)
+        passes = getattr(getattr(controller.app.engine, "settings", None), "best_work_passes", 2)
     if type(passes) is not int or passes < 1:
         raise ValueError("Best Work passes must be a positive integer")
     if passes == 1:

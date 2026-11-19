@@ -44,19 +44,19 @@ def test_original_algorithm_bodies_match_pre_merge_version(path, name, expected)
     assert actual == expected
 
 
-def test_settings_restore_original_defaults(monkeypatch):
+def test_best_work_default_uses_two_passes_and_keeps_legacy_selectable(monkeypatch):
     monkeypatch.delenv("BEST_WORK_PASSES", raising=False)
     monkeypatch.delenv("LEARNING_IMPLEMENTATION", raising=False)
     settings = Settings(learning_implementation="legacy")
-    assert settings.best_work_passes == 1
+    assert settings.best_work_passes == 2
     assert settings.learning_implementation == "legacy"
 
 
-def test_default_best_work_really_executes_original_single_pass():
+def test_explicit_single_pass_really_executes_original_implementation():
     from tests.unit.test_best_work_live_handoff import controller
     ctrl, events = controller([["Original complete answer"]])
     seen = []
-    assert "".join(stream_best_work(ctrl, "Question", status_callback=seen.append)) == "Original complete answer"
+    assert "".join(stream_best_work(ctrl, "Question", status_callback=seen.append, passes=1)) == "Original complete answer"
     assert ctrl.app.engine.turn == 1
     assert not any(event["kind"] == "pass" for event in seen)
     assert not any(event[0] == "execute" for event in events)
