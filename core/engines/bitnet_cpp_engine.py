@@ -322,6 +322,7 @@ class BitNetCppReasoningBackend:
                         "temperature": temp,
                         "top_p": float(top_p),
                         "stream": False,
+                        **({"cache_prompt": False} if getattr(self, "_best_work_inference_fork", False) else {}),
                     },
                     timeout=1800,
                 )
@@ -347,6 +348,8 @@ class BitNetCppReasoningBackend:
         payload = {"prompt": prompt, "n_predict": int(max_tokens),
                    "temperature": float(temperature), "top_p": float(top_p),
                    "stream": True, "return_tokens": True, "timings_per_token": True}
+        if getattr(self, "_best_work_inference_fork", False):
+            payload["cache_prompt"] = False
         req = urllib.request.Request(self._base_url + "/completion",
                                      data=json.dumps(payload).encode("utf-8"),
                                      headers={"Content-Type": "application/json", "Accept": "text/event-stream"},

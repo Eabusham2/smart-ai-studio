@@ -150,6 +150,10 @@ def main() -> int:
             if op == "ping":
                 _emit({"status": "ok", "memory_placement": memory_placement})
                 continue
+            if op == "reset":
+                model.reset()
+                _emit({"status": "ok"})
+                continue
             if op == "learning_probe":
                 from core.native_context_learning import score_llama_probe
                 score = score_llama_probe(model, request["prompt"], request["completion"])

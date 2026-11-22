@@ -1380,8 +1380,11 @@ class ProReasoningEngine:
                 and getattr(native if is_native else controller, "last_generation", {}).get("status") == "cancelled"
             )
 
+        # Best Work supplies a scoped selector. Ordinary solve/eval callers
+        # retain their original single-pass and verifier paths.
+        best_work_selector = getattr(self, "_best_work_select_candidates", None)
         # Path 1: Instant Single-Pass Mode
-        if branch_count == 1 and not has_tests:
+        if branch_count == 1 and not has_tests and not callable(best_work_selector):
             candidates = self.generate_parallel_branches(prompt, branch_count=1, history=history, temperatures=temp_ladder, **branch_options)
             if strata_cancelled():
                 return cancelled_result(candidates)
@@ -1412,7 +1415,31 @@ class ProReasoningEngine:
             return response, metadata
 
         # Path 2: Pro Multi-Branch Search
-        candidates = self.generate_parallel_branches(prompt, branch_count=branch_count, history=history, temperatures=temp_ladder, **branch_options)
+        selection_metadata = None
+        if callable(best_work_selector):
+            from core.generation_metrics import RequestMetrics, observe_generations
+            from core.inference_fork import inference_cycle, inference_fork
+            initial_work = RequestMetrics()
+            # Share weights, isolate working context. This includes losing
+            # originals as well as every revision and temporary judge call.
+            with inference_cycle(self), inference_fork(self):
+                with observe_generations(initial_work.update):
+                    candidates = self.generate_parallel_branches(
+                        prompt, branch_count=branch_count, history=history,
+                        temperatures=temp_ladder, **branch_options)
+                if strata_cancelled():
+                    return cancelled_result(candidates)
+                try:
+                    candidates, selected_index, selection_metadata = best_work_selector(
+                        prompt=prompt, history=history, candidates=candidates,
+                        temperatures=temp_ladder, cancel_event=cancel_event,
+                        generation_usage={key: initial_work.snapshot()[key] for key in ("invocations", "tokens")})
+                except InterruptedError:
+                    if cancel_event is None or not cancel_event.is_set():
+                        raise
+                    return cancelled_result(candidates)
+        else:
+            candidates = self.generate_parallel_branches(prompt, branch_count=branch_count, history=history, temperatures=temp_ladder, **branch_options)
         if strata_cancelled():
             return cancelled_result(candidates)
         if not candidates:
@@ -1425,7 +1452,13 @@ class ProReasoningEngine:
         verifier_details = ""
 
         # Step 3: Ground-Truth Verification (RLVR)
-        if has_tests:
+        if selection_metadata is not None:
+            winning_branch = selected_index
+            winning_response = candidates[winning_branch]
+            winning_temp = temp_ladder[winning_branch]
+            surprise_score = None
+            verifier_details = "Model-selected tournament winner after per-branch Best Work; not assertion-verified."
+        elif has_tests:
             first_branch_passed = False
             for idx, candidate in enumerate(candidates):
                 # Check cancellation between branches
@@ -1498,7 +1531,7 @@ class ProReasoningEngine:
                 "reward": 1.0 if b_passed else 0.0,
                 "candidate": candidate,
                 "code": self.verifier.extract_code_block(candidate) or candidate,
-                "stderr": "" if b_passed else ("Assertion error" if has_tests else "")
+                "stderr": "" if b_passed else ("Assertion error" if has_tests and selection_metadata is None else "")
             })
 
         metadata = {
@@ -1521,6 +1554,8 @@ class ProReasoningEngine:
             "verifier_details": verifier_details,
             "speculative": telemetry()
         }
+        if selection_metadata is not None:
+            metadata.update(selection_metadata)
         return final_resp, metadata
 
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> Tuple[str, List[Dict[str, str]]]:

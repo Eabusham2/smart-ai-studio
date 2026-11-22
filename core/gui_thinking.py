@@ -232,8 +232,12 @@ class ThinkingStream:
                 stream.insert("end", value, "ai_msg")
 
 
-def transcript_payload(segments):
-    """Keep display reasoning outside the answer passed back to the model."""
+def transcript_payload(segments, *, preserve_thoughts=False):
+    """Keep normal display reasoning separate; retain selected Best Work context."""
+    if preserve_thoughts:
+        return {"role": "assistant", "content": "".join(
+            "<think>" + value + "</think>" if is_thought else value
+            for is_thought, value in segments)}
     content, thoughts = "", []
     for is_thought, value in segments:
         if is_thought:

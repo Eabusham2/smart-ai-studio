@@ -41,6 +41,7 @@ class LegacyAwakeOnlineConsolidator:
         self.lambda_ewc = lambda_ewc
         self.is_consolidating = False
         self.lock = threading.Lock()
+        self._update_lock = threading.RLock()
         self.consolidation_count = 0
         self.total_param_shift = 0.0
 
@@ -178,6 +179,12 @@ class LegacyAwakeOnlineConsolidator:
         return max(1, total_chars // 4)
 
     def _run_shadow_consolidation(self, chunk: List[Dict[str, str]], backend=None) -> bool:
+        # Best Work holds this same caller-side lock across its read-only
+        # branch cycle. A queued update runs afterwards on the usual trainer.
+        with self._update_lock:
+            return self._run_shadow_consolidation_locked(chunk, backend)
+
+    def _run_shadow_consolidation_locked(self, chunk: List[Dict[str, str]], backend=None) -> bool:
         """Run and persist a genuine parameter update; never fabricate drift."""
         backend = self.engine if backend is None else backend
         start_time = time.time()

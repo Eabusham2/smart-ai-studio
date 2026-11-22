@@ -239,6 +239,8 @@ def _explicit_document(prompt):
 
 def prepare_awake_request(engine, prompt, history, cancel_event=None):
     """Prepare the bounded text before a caller copies or routes the visible archive."""
+    if getattr(engine, "_best_work_inference_read_only", False):
+        return prompt, history
     if isinstance(history, ActiveChatHistory):
         history = history.archive
     service = getattr(engine, "awake_consolidator", None)
@@ -452,6 +454,8 @@ def install_awake_auto_learning(cls) -> None:
     original_solve = cls.solve
 
     def _apply_awake_learning(self, history, prompt: Optional[str] = None, cancel_event=None):
+        if getattr(self, "_best_work_inference_read_only", False):
+            return history
         if getattr(getattr(self, "awake_consolidator", None), "learning_implementation", None) == "legacy":
             if cancel_event is not None and cancel_event.is_set():
                 return history
@@ -698,7 +702,9 @@ def install_awake_auto_learning(cls) -> None:
             decision_callback({"kind": "route", "branch_count": int(branch_count),
                                "total": int(branch_count) + (1 if int(branch_count) > 1 else 0)})
 
-        if int(branch_count) <= 1:
+        selection = callable(getattr(self, "_best_work_select_candidates", None))
+        refine_single = selection and int(getattr(self, "_best_work_passes", 1)) > 1
+        if int(branch_count) <= 1 and not refine_single:
             previous_max = getattr(self.settings, "max_new_tokens", None)
             self.settings.max_new_tokens = int(remaining)
             try:

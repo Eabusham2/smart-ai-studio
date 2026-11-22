@@ -135,6 +135,9 @@ class _PrismModelProxy:
         result = self.backend._call({"op": "n_ctx"})
         return int(result.get("n_ctx") or self.backend.n_ctx)
 
+    def reset(self) -> None:
+        self.backend._call({"op": "reset"})
+
 
 class PrismGGUFReasoningBackend(GGUFReasoningBackend):
     """Prism PTQ1_0 backend isolated from the universal llama.cpp runtime."""

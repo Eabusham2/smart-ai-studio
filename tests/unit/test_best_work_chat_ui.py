@@ -251,34 +251,44 @@ def test_branch_dialog_without_a_completed_run_keeps_an_empty_candidate_inspecto
 
 @pytest.mark.parametrize('capacity_fallback', [False, True])
 def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(work_app, capacity_fallback):
-    from core.generation_metrics import TokenMeter
+    from core.best_work import BEST_WORK_GUIDE
+    from tests.unit.test_best_work_tournament import make_controller, previous_draft, comparison
+
     app = work_app
     assert app.settings.best_work_passes == 2  # Exercise the default through the real dispatcher.
-    app.is_model_loaded = True
-    app.chat_history[app.active_tab_id] = []
-    app._set_generating_state(True)
-    calls = []
+    question = 'Explain the result.'
+    original = '<think>ORIGINAL_THOUGHT</think>HIDDEN FIRST DRAFT'
     failure = []
     done = threading.Event()
 
-    def stream(prompt, history=None, cancel_event=None, progress_callback=None, decision_callback=None):
-        calls.append((prompt, history))
-        if capacity_fallback and len(calls) == 2:
-            from core.context_memory import ContextOverflow
-            raise ContextOverflow('Refinement cannot fit the complete draft')
-        decision_callback({'kind': 'route', 'total': 1, 'branch_count': 1})
-        meter = TokenMeter()
-        try:
-            meter.observe(delta=2 if len(calls) == 1 else 3)
-            yield 'HIDDEN FIRST DRAFT' if len(calls) == 1 else '<think>Final review.</think>Published answer.'
-        finally:
-            meter.finish()
+    def respond(model, call):
+        if call['kind'] == 'original':
+            return ['<think>ORIGINAL_THOUGHT</think>', 'HIDDEN FIRST DRAFT']
+        if call['kind'] == 'refine':
+            assert previous_draft(call['prompt']) == original
+            assert question in call['prompt']
+            return ['<think>DISCARD_REVISION_THOUGHT</think>', 'Published ', 'answer.']
+        candidates = comparison(call['prompt'])['candidates']
+        assert candidates[0]['text'] == original
+        assert candidates[1]['text'] == '<think>ORIGINAL_THOUGHT</think>Published answer.'
+        return '<think>DISCARD_JUDGMENT</think>{"winner":"B"}'
 
-    app.engine.stream_solve = stream
+    ctrl, model, entropies, _ = make_controller(respond, database_path=app.settings.database_path)
+    app.engine.unload_model()
+    app.engine = ctrl.app.engine
+    if capacity_fallback:
+        # The actual context guard has room for the complete original but not
+        # the full review prompt. No second decoder or comparison should run.
+        packed = app.engine._format_prompt_with_history(
+            question, [{'role': 'system', 'content': BEST_WORK_GUIDE}])
+        app.engine._context_budget_tokens = len(model.tokenize(packed)) + len(model.tokenize(original))
+    app.is_model_loaded = True
+    app.chat_history[app.active_tab_id] = []
+    app._set_generating_state(True)
 
     def run():
         try:
-            app._process_message_thread('Explain the result.', 'Explain the result.', None, None, True)
+            app._process_message_thread(question, question, None, None, True)
         except BaseException as exc:
             failure.append(exc)
         finally:
@@ -296,11 +306,20 @@ def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(wor
     app.root.mainloop()
     worker.join(timeout=2)
     assert done.is_set() and not failure
-    assert len(calls) == 2 and 'HIDDEN FIRST DRAFT' in calls[1][0]
-    assert 'Explain the result.' in calls[1][0]
+    assert len(entropies) == 1  # Refining and judging cannot reroute Pro.
+    assert len(model.closed) == len(model.calls)
+    assert model.context == ''  # Discarded decoder state cannot survive adoption.
     visible = app.chat_stream.get('1.0', 'end')
     labels = [w.cget('text') for w in _descendants(app.chat_stream) if isinstance(w, tk.Label)]
+    saved = app.chat_history[app.active_tab_id][-1]
+    assert saved['role'] == 'assistant'
+    assert '<think>ORIGINAL_THOUGHT</think>' in saved['content']
+    assert 'DISCARD_' not in saved['content'] and 'BEST_WORK_COMPARISON' not in saved['content']
+    assert 'DISCARD_' not in visible
+    assert list(app.thinking_cache.values())[-1] == 'ORIGINAL_THOUGHT'
     if capacity_fallback:
+        assert [call['kind'] for call in model.calls] == ['original']
+        assert saved['content'] == original
         assert visible.count('HIDDEN FIRST DRAFT') == 1 and 'Published answer.' not in visible
         assert app.last_metadata['passes_completed'] == 1
         assert app.last_metadata['pass_usage'] == {'invocations': 1, 'tokens': 2}
@@ -309,8 +328,11 @@ def test_gui_runs_sequential_best_work_and_displays_only_final_selected_pass(wor
         assert any('used pass 1/2' in label and 'refinement reached Context' in label for label in labels)
         assert not any('pass 2/2' in label and 'complete' in label for label in labels)
     else:
+        assert [call['kind'] for call in model.calls] == ['original', 'refine', 'compare']
+        assert saved['content'] == '<think>ORIGINAL_THOUGHT</think>Published answer.'
         assert 'HIDDEN FIRST DRAFT' not in visible and visible.count('Published answer.') == 1
         assert app.last_metadata['passes_completed'] == 2
-        assert app._live_generation_snapshot['tokens'] == 5
-        assert app._live_generation_snapshot['invocations'] == 2
+        assert app.last_metadata['pass_usage'] == {'invocations': 3, 'tokens': 6}
+        assert app._live_generation_snapshot['tokens'] == 6
+        assert app._live_generation_snapshot['invocations'] == 3
         assert any('pass 2/2' in label and 'complete' in label for label in labels)

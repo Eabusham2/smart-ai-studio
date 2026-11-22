@@ -136,7 +136,9 @@ def install_pro_runtime_hardening(cls) -> None:
         generated = measurements.get("tokens")
         metadata["token_usage_available"] = type(generated) is int
         metadata["generation_invocations"] = measurements["invocations"]
-        if is_strata or is_native:
+        # A Best Work tournament makes additional one-candidate calls. Its
+        # observer covers all of them; last_branch_usage covers only the last.
+        if (is_strata or is_native) and not metadata.get("best_work"):
             usage = dict(getattr(owner, "last_branch_usage", {}) or {})
             if is_native and any(type(value) is not int or value < 0 for value in usage.values()):
                 usage = {}

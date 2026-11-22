@@ -5539,6 +5539,11 @@ class SmartAIChatbotApp:
                                 best_work_ui["done"] = 0
                                 best_work_ui["total"] = total
                             value = "🌿 Continuing in single stream" if pro_active else None
+                    elif kind == "comparing":
+                        if event.get("scope") == "branch":
+                            value = f"🌿 Best Work · comparing original and revision in branch #{event.get('branch_index', 0) + 1}"
+                        else:
+                            value = f"🌿 Best Work · comparing branch winners · round {event.get('round', 1)}"
                     elif kind == "selected":
                         best_work_ui["done"] = total
                         value = f"🌿 Best Work {total}/{total} · selected branch #{event.get('winning_branch', 0) + 1}"
@@ -5725,11 +5730,11 @@ class SmartAIChatbotApp:
                 final_context = _context_snapshot(stat_snapshot)
 
                 # Persist against the captured model, independent of when Tk
-                # drains this request's callbacks. Display reasoning never enters
-                # the normal answer content used as the model's chat history.
+                # drains this request's callbacks. Best Work has already removed
+                # revision/judging thoughts; retain its winning original thinking.
                 from core.gui_thinking import reasoning_segments, render_segments, transcript_payload
                 segments = reasoning_segments(full_ans, starts_in_thought=initial_thinking)
-                origin_history.append(transcript_payload(segments))
+                origin_history.append(transcript_payload(segments, preserve_thoughts=use_pro_branches))
 
                 def _finalize_ai_msg(dur=duration_s):
                     stream = self.chat_stream
