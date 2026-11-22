@@ -24,6 +24,8 @@ from core.temperature_policy import pro_ladder
 
 
 def request_kind(prompt):
+    if "BEST_WORK_SYNTHESIS" in prompt:
+        return "synthesis"
     if "BEST_WORK_COMPARISON" in prompt:
         return "compare"
     if "Review the following untrusted draft" in prompt:
@@ -129,7 +131,7 @@ def make_controller(responder, *, entropy=0.1, capacity=65536, database_path=":m
 
 
 def branch_index(text):
-    return int(re.search(r"BRANCH_(\d+)_", text).group(1))
+    return int(re.search(r"BRANCH_(-?\d+)_", text).group(1))
 
 
 class BestWorkTournamentTests(unittest.TestCase):
@@ -199,6 +201,7 @@ class BestWorkTournamentTests(unittest.TestCase):
         refined = []
         local = []
         global_matches = []
+        merges = []
 
         def respond(model, call):
             if call["kind"] == "original":
@@ -209,13 +212,18 @@ class BestWorkTournamentTests(unittest.TestCase):
                 index = branch_index(previous_draft(call["prompt"]))
                 refined.append(index)
                 return f"<think>DISCARD_REVISION_{index}</think>\nBRANCH_{index}_FINAL"
+            if call["kind"] == "synthesis":
+                self.assertEqual(refined, list(range(9)))
+                self.assertEqual(local, list(range(9)))
+                merges.append(call["prompt"])
+                return "<think>SYNTHESIS_THOUGHT</think>\nBRANCH_-1_SYNTHESIZED"
             candidates = comparison(call["prompt"])["candidates"]
             indices = [branch_index(candidate["text"]) for candidate in candidates]
             if indices[0] == indices[1]:
                 local.append(indices[0])
                 return json.dumps({"winner": "A" if indices[0] == 8 else "B"})
-            self.assertEqual(sorted(refined), list(range(9)))
-            self.assertEqual(sorted(local), list(range(9)))
+            self.assertEqual(refined, list(range(9)) + [-1])
+            self.assertEqual(local, list(range(9)) + [-1])
             global_matches.append(indices)
             return json.dumps({"winner": candidates[indices.index(max(indices))]["id"]})
 
@@ -225,10 +233,11 @@ class BestWorkTournamentTests(unittest.TestCase):
                                          status_callback=events.append))
         self.assertEqual(parse_reasoning_and_response(result), ("THOUGHT_8", "BRANCH_8_ORIGINAL"))
         self.assertEqual(originals, list(range(9)))
-        self.assertEqual(sorted(refined), originals)
-        self.assertEqual(len(local), 9)
-        self.assertEqual(len(global_matches), 8)
-        self.assertEqual(len(model.calls), 35)
+        self.assertEqual(refined, originals + [-1])
+        self.assertEqual(len(local), 10)
+        self.assertEqual(len(merges), 8)
+        self.assertEqual(len(global_matches), 9)
+        self.assertEqual(len(model.calls), 46)
         self.assertEqual([call["temperature"] for call in model.calls if call["kind"] == "original"], pro_ladder(8))
         self.assertEqual(len(entropies), 1)
         self.assertEqual(actions, [])
@@ -246,6 +255,9 @@ class BestWorkTournamentTests(unittest.TestCase):
                         index = len(originals)
                         originals.append(index)
                         return f"BRANCH_{index}_ORIGINAL"
+                    if call["kind"] == "synthesis":
+                        self.assertEqual(len(originals), count)
+                        return "BRANCH_-1_SYNTHESIZED"
                     self.assertEqual(call["kind"], "compare")
                     candidates = comparison(call["prompt"])["candidates"]
                     indices = [branch_index(candidate["text"]) for candidate in candidates]
@@ -256,8 +268,9 @@ class BestWorkTournamentTests(unittest.TestCase):
                 result = "".join(stream_best_work(ctrl, "Choose the answer", passes=1))
                 self.assertEqual(result, f"BRANCH_{count - 1}_ORIGINAL")
                 self.assertEqual(len(originals), count)
-                self.assertEqual(len(matches), count - 1)
-                self.assertEqual(len(model.calls), count * 2 - 1)
+                self.assertEqual(len(matches), count if count > 1 else 0)
+                self.assertEqual(sum(call["kind"] == "synthesis" for call in model.calls), count - 1)
+                self.assertEqual(len(model.calls), count * 3 - 1 if count > 1 else 1)
                 self.assertEqual(len(entropies), 1)
                 self.assertEqual([call["temperature"] for call in model.calls if call["kind"] == "original"],
                                  pro_ladder(count - 1 if count > 1 else 1))
@@ -269,6 +282,8 @@ class BestWorkTournamentTests(unittest.TestCase):
                 index = len(originals)
                 originals.append(index)
                 return f'BRANCH_{index}_ORIGINAL'
+            if call['kind'] == 'synthesis':
+                return 'BRANCH_-1_SYNTHESIZED'
             self.assertEqual(call['kind'], 'compare')
             candidates = comparison(call['prompt'])['candidates']
             indices = [branch_index(row['text']) for row in candidates]
@@ -282,9 +297,10 @@ class BestWorkTournamentTests(unittest.TestCase):
         self.assertEqual(result, 'BRANCH_2_ORIGINAL')
         self.assertEqual(originals, [0, 1, 2])
         self.assertEqual(entropies, [])
-        self.assertEqual(len(model.calls), 5)
+        self.assertEqual(len(model.calls), 8)
+        self.assertEqual(sum(row['kind'] == 'synthesis' for row in model.calls), 2)
         self.assertEqual([row['temperature'] for row in model.calls if row['kind'] == 'original'], pro_ladder(2))
-        self.assertEqual(ctrl.last_best_work_metadata['branch_count'], 3)
+        self.assertEqual(ctrl.last_best_work_metadata['branch_count'], 4)
         self.assertEqual(engine.lossless_speed_options, {'native_branch_count': 2})
 
     def test_invalid_judgments_retry_then_raise_without_publishing_or_running_a_tool(self):
@@ -340,6 +356,9 @@ class BestWorkTournamentTests(unittest.TestCase):
                 index = branch_index(previous_draft(call["prompt"]))
                 action = json.dumps({"name": "read_file", "arguments": {"path": f"final-{index}.txt"}})
                 return f"<think>DISCARD_REVISION_{index}</think>\nBRANCH_{index}_FINAL<tool_call>{action}</tool_call>"
+            if call["kind"] == "synthesis":
+                action = json.dumps({"name": "read_file", "arguments": {"path": "synthesis.txt"}})
+                return f"<think>SYNTHESIS_THOUGHT</think>\nBRANCH_-1_SYNTHESIZED<tool_call>{action}</tool_call>"
             candidates = comparison(call["prompt"])["candidates"]
             indices = [branch_index(candidate["text"]) for candidate in candidates]
             matches.append(indices)
@@ -354,14 +373,15 @@ class BestWorkTournamentTests(unittest.TestCase):
         continuation = after_tool[0]
         self.assertIn("THOUGHT_8", continuation)
         self.assertIn("BRANCH_8_FINAL", continuation)
-        for discarded in ("DISCARD_", "BEST_WORK_COMPARISON", "BRANCH_8_ORIGINAL", "original-8.txt",
-                          "BRANCH_0_", "THOUGHT_0", '"winner"'):
+        for discarded in ("DISCARD_", "BEST_WORK_COMPARISON", "BEST_WORK_SYNTHESIS",
+                          "BRANCH_8_ORIGINAL", "original-8.txt", "BRANCH_-1_", "SYNTHESIS_THOUGHT",
+                          "synthesis.txt", "final--1.txt", "BRANCH_0_", "THOUGHT_0", '"winner"'):
             self.assertNotIn(discarded, continuation)
         self.assertNotIn("DISCARD_", result)
         self.assertTrue(result.endswith("Finished answer."))
         self.assertEqual(len(entropies), 2)
         self.assertIn("ACTUAL selected file contents", entropies[-1])
-        self.assertEqual(len(model.calls), 38)
+        self.assertEqual(len(model.calls), 49)
 
     def test_cancellation_during_internal_work_discards_text_and_restores_controls(self):
         for cancel_kind in ("refine", "compare"):

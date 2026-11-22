@@ -178,8 +178,10 @@ def install_chat(pro_module) -> None:
         candidates = list(metadata.get("raw_branches") or [])
         temps = list(metadata.get("temp_ladder") or [])
         actual_n = len(candidates)
-        if actual_n > 1 and len(temps) == actual_n:
-            routed_n = max(1, actual_n - 1)
+        generated_n = actual_n - sum(row.get("type") == "synthesis"
+                                    for row in metadata.get("best_work", {}).get("branches", []))
+        if generated_n > 1 and len(temps) == generated_n:
+            routed_n = max(1, generated_n - 1)
             metadata["routed_branch_count"] = routed_n
             metadata["branch_count"] = actual_n
             metadata["fixed_extra_temperature"] = FIXED_PRO_EXTRA_TEMPERATURE

@@ -529,6 +529,8 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
                        and bool(choices[chosen].get("refinement_skipped")))
             event = {"final": True,
                      "refinement_skipped": skipped,
+                     "branch_type": (choices[chosen].get("type")
+                                     if type(chosen) is int and 0 <= chosen < len(choices) else None),
                      "pass_index": report.get("best_work", {}).get("selected_pass", 1), **event}
         if status_callback:
             status_callback({"stage": stage, "passes": passes, **event})

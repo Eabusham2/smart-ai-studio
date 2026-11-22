@@ -808,6 +808,8 @@ jobs:
             revised answers, then select one branch winner through an isolated
             model tournament. Continue with only the chosen answer and original
             thinking, preserving Pro routing and winner-only tool handoffs.
+          - Add one synthesized candidate from the completed branch winners,
+            give it Best Work too, and let it compete in the same tournament.
           - Restore Eval, Context Limit, Auto speed and Speedups in the packaged
             app; initialization failures now produce a visible diagnostic.
           - Apply light/dark themes to existing dialogs, hidden panels and chat

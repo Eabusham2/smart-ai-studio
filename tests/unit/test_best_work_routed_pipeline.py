@@ -12,7 +12,7 @@ from core.best_work import stream_best_work
 from core.temperature_policy import pro_ladder
 from core.generation_metrics import RequestMetrics, observe_generations
 from tests.unit.test_native_context_learning import tiny_controller
-from tests.unit.test_best_work_tournament import request_kind, previous_draft
+from tests.unit.test_best_work_tournament import comparison, request_kind, previous_draft
 
 
 def _gguf_engine(model, entropy):
@@ -41,6 +41,7 @@ def test_original_router_switches_only_after_actual_tool_output(before, after, f
     closed = []
     winner_call = '<tool_call>{"name":"read_file","arguments":{"path":"selected.txt"}}</tool_call>'
     losing_call = '<tool_call>{"name":"read_file","arguments":{"path":"losing.txt"}}</tool_call>'
+    synthesized_call = '<tool_call>{"name":"read_file","arguments":{"path":"synthesis.txt"}}</tool_call>'
 
     class Model:
         def tokenize(self, text, **kwargs):
@@ -57,7 +58,14 @@ def test_original_router_switches_only_after_actual_tool_output(before, after, f
             def stream():
                 try:
                     if kind == 'compare':
-                        yield {'choices':[{'text':'{"winner":"B"}'}]}
+                        pair = comparison(prompt)['candidates']
+                        winner = 'A' if 'SYNTHESIS_PROPOSAL' in pair[1]['text'] else 'B'
+                        yield {'choices':[{'text':json.dumps({'winner': winner})}]}
+                    elif kind == 'synthesis':
+                        yield {'choices':[{'text':'<think>Discarded synthesis reasoning.</think>SYNTHESIS_PROPOSAL '}]}
+                        if stage == 0:
+                            yield {'choices':[{'text':synthesized_call}]}
+                            pytest.fail('Synthesis decoder advanced beyond its complete tool invocation')
                     elif stage == 0:
                         yield {'choices':[{'text':'<think>Inspect the file.</think>Chosen plan. '}]}
                         yield {'choices':[{'text':losing_call if first_n > 1 and index == 0 else winner_call}]}
@@ -94,25 +102,31 @@ def test_original_router_switches_only_after_actual_tool_output(before, after, f
     answer=''.join(text)
     assert answer.endswith('Final answer.')
     assert 'losing.txt' not in answer
+    assert 'synthesis.txt' not in answer and 'SYNTHESIS_PROPOSAL' not in answer
     assert sum(row[0]=='execute' for row in events) == 1
     assert len(entropies) == 2  # No redundant entropy evaluation in solve().
     assert 'ACTUAL selected file content' in entropies[-1]
-    assert len(invocations) == first_n + next_n + (first_n - 1) + (next_n - 1)
+    assert len(invocations) == sum(3 * count - 1 if count > 1 else 1 for count in (first_n, next_n))
     assert len(closed) == len(invocations)
     assert [d['total'] for d in decisions if d['kind']=='route'] == [first_n,next_n]
     for stage,count in [(0,first_n),(1,next_n)]:
         temperatures=[row['temperature'] for row in invocations if row['stage']==stage and row['kind']=='original']
         assert temperatures == pro_ladder(count-1 if count>1 else 1)
+        assert sum(row['stage'] == stage and row['kind'] == 'synthesis' for row in invocations) == count - 1
     assert all(row['max_tokens'] > 1536 for row in invocations)
     assert settings.max_new_tokens == 1 # Compatibility value restored, not enforced as a cap.
     assert not engine._best_work_stop_at_tools
 
 
-def test_real_pro_refines_all_branches_before_tournament_with_full_routing_and_usage():
+@pytest.mark.parametrize('entropy_value, branch_count, expected_invocations, expected_tokens',
+                         [(0.5, 9, 46, 112), (0.85, 17, 86, 208)])
+def test_real_pro_refines_all_branches_before_tournament_with_full_routing_and_usage(
+        entropy_value, branch_count, expected_invocations, expected_tokens):
     decoded = []
     entropies = []
     winner = "Winner: inspect north gallery."
     loser = "Loser: inspect south gallery."
+    synthesized = "SYNTHESIS: inspect both galleries."
     class Model:
         def tokenize(self, text, **kwargs):
             return list(text)
@@ -128,17 +142,25 @@ def test_real_pro_refines_all_branches_before_tournament_with_full_routing_and_u
                 text, tokens = (loser if index == 0 else winner), 3
             elif kind == 'refine':
                 draft = previous_draft(prompt)
-                assert draft in (winner, loser)
+                assert draft in (winner, loser, synthesized)
                 assert "Which gallery?" in prompt and "Use complete sentences." in prompt
-                text, tokens = ("The north gallery needs inspection." if draft == winner
-                                else "The south gallery needs inspection."), 5
+                revisions = {winner: "The north gallery needs inspection.",
+                             loser: "The south gallery needs inspection.",
+                             synthesized: "SYNTHESIS: both galleries need inspection."}
+                text, tokens = revisions[draft], 5
+            elif kind == 'synthesis':
+                assert sum(row['kind'] == 'refine' for row in decoded) == branch_count
+                text, tokens = synthesized, 2
             else:
-                text, tokens = '{"winner":"B"}', 1
+                pair = comparison(prompt)['candidates']
+                synthetic = [row['text'].startswith('SYNTHESIS:') for row in pair]
+                selection = 'A' if synthetic == [False, True] else 'B'
+                text, tokens = json.dumps({'winner': selection}), 1
             yield {"choices": [{"text": text}], "usage": {"completion_tokens": tokens}}
 
     def entropy(prompt):
         entropies.append(prompt)
-        return 0.1 if winner in prompt else 0.5
+        return 0.1 if winner in prompt else entropy_value
 
     engine = _gguf_engine(Model(), entropy)
     ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
@@ -149,17 +171,21 @@ def test_real_pro_refines_all_branches_before_tournament_with_full_routing_and_u
         response = "".join(stream_best_work(ctrl, "Which gallery?", history, status_callback=decisions.append, passes=2))
     assert response == "The north gallery needs inspection."
     assert len(entropies) == 1
-    assert [call["temperature"] for call in decoded if call['kind']=='original'] == pro_ladder(8)
-    assert [call["temperature"] for call in decoded if call['kind']=='refine'] == pro_ladder(8)
+    assert [call["temperature"] for call in decoded if call['kind']=='original'] == pro_ladder(branch_count - 1)
+    assert [call["temperature"] for call in decoded if call['kind']=='refine'] == pro_ladder(branch_count - 1) + [.20]
+    assert sum(call['kind'] == 'synthesis' for call in decoded) == branch_count - 1
     assert all(call['temperature'] == .20 for call in decoded if call['kind']=='compare')
-    assert [event["total"] for event in decisions if event["kind"] == "route"] == [9]
-    assert any(e["kind"] == "selected" and e["winning_branch"] == 8 for e in decisions)
+    assert [event["total"] for event in decisions if event["kind"] == "route"] == [branch_count]
+    assert any(e["kind"] == "selected" and e["winning_branch"] == branch_count - 1 for e in decisions)
     meta = ctrl.last_best_work_metadata
-    assert meta['pass_summaries'][0]['routed_branches'] == 9
-    assert [(p["invocations"], p["tokens"]) for p in meta["pass_summaries"]] == [(9, 27)] + [(1, 5)] * 9
+    assert meta['pass_summaries'][0]['routed_branches'] == branch_count
+    assert [(p["invocations"], p["tokens"]) for p in meta["pass_summaries"]] == (
+        [(branch_count, 3 * branch_count)] + [(1, 5)] * branch_count
+        + [(branch_count - 1, 2 * (branch_count - 1)), (1, 5)])
     assert meta["raw_branches"][meta["winning_branch"]] == response
-    assert meta["pass_usage"] == {"tokens": 89, "invocations": 35}
-    assert request.snapshot()["tokens"] == 89 and request.snapshot()["invocations"] == 35
+    assert meta["pass_usage"] == {"tokens": expected_tokens, "invocations": expected_invocations}
+    assert request.snapshot()["tokens"] == expected_tokens
+    assert request.snapshot()["invocations"] == expected_invocations
 
 
 @pytest.mark.parametrize("branches", [1, 9])
@@ -197,8 +223,8 @@ def test_full_window_selected_draft_survives_unfit_refinement(branches, monkeypa
     if branches == 1:
         assert "".join(stream_best_work(ctrl, question, history, status_callback=events.append, passes=2)) == selected
     else:
-        # A full pair must fit before it can be judged; never silently restore
-        # the former consensus/first-candidate fallback when comparison cannot fit.
+        # A full pair must fit for synthesis or judging; never silently restore
+        # the former consensus/first-candidate fallback when that pair cannot fit.
         with pytest.raises(ContextOverflow):
             list(stream_best_work(ctrl, question, history, status_callback=events.append, passes=2))
     assert len(decoded) == branches

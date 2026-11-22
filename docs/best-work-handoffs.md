@@ -39,7 +39,16 @@ candidates compete; intermediate revisions are not extra entries. The model
 returns an existing candidate ID, and Studio validates that ID and retains the
 selected answer exactly. It does not merge or rewrite the candidates.
 
-The branch winners then compete in pairs until one overall winner remains.
+When multiple normal branches exist, the shared model-synthesis routine merges
+their winners in pairs into one additional candidate. All normal winners remain
+available. The synthesized candidate receives the same Best Work pass count and
+original-versus-final comparison, retaining its own original thinking. Its winner
+joins the normal branch winners in the existing tournament; synthesis gets no
+automatic preference. A single normal branch skips synthesis. The benchmark
+adapter uses the same merge prompt and pairwise routine with its existing settings.
+
+The normal and synthesized branch winners then compete in pairs until one
+overall winner remains.
 An unpaired candidate advances to the next round. Each match uses the same loaded
 model in a separate temporary context, with the original request and relevant
 history. No hidden expected answer, verifier result, or reward tells the model
@@ -58,7 +67,8 @@ judging output has no tool result and grants no authorization.
 Only the overall winner is displayed in chat. The continued conversation keeps
 the original thinking from that winning branch plus the selected original or
 revised answer. Judging instructions, selection reasoning, revision thinking,
-and losing candidates do not enter the continued chat, learned memory, or
+temporary merge prompts, intermediate merges, and losing candidates do not enter
+the continued chat, learned memory, or
 reusable inference context. Temporary inference caches are discarded or restored
 at the fork boundary; the forks share model weights rather than copying them.
 
@@ -87,7 +97,9 @@ against that last completed revision. If none has completed, the original is
 that branch's only candidate. A comparison must fit both complete candidates and
 the task context; insufficient capacity reports an explicit error. Candidates are
 never silently truncated to make a comparison fit, and capacity failure does not
-choose a default winner.
+choose a default winner. Synthesis also requires both complete inputs and the
+task context; an overflowing merge reports an error instead of truncating inputs
+or silently dropping the extra candidate.
 
 The desktop and direct `stream_best_work` entry points both prepare a stored
 chat archive against the active model checkpoint before copying turns into a
@@ -100,7 +112,7 @@ remain private until selection completes, so a failed comparison cannot splice
 partial competing answers into the displayed response.
 
 Usage includes actual decoder invocations across every pass, candidate,
-comparison, and tool stage. Token totals come from sampled IDs or runtime-reported
+merge, comparison, and tool stage. Token totals come from sampled IDs or runtime-reported
 counters. Missing counts appear as unavailable. Displaying a selected branch adds no tokens.
 Decode timing excludes prefill and tool waits. Wall throughput includes elapsed
 request time. Strata's authenticated status endpoint supplies generated-token
@@ -117,14 +129,19 @@ each branch's selected candidate. `passes_requested` is the configured target
 for each branch. At stage completion, `passes_completed` records the number
 completed by the winning branch; the selected answer can still be its original.
 `total_passes_completed` counts completed candidate passes across all branches
-and stages, excluding judging calls. `pass_summaries` contains the original
-generation batch and each individual refinement.
+and stages, excluding judging calls and intermediate merges. `pass_summaries`
+contains the original generation batch, each individual refinement, and the
+synthesis candidate's first pass with the combined usage of its merges.
 
 The `best_work` record identifies the `model_tournament` method, each branch's
 `selected_pass` and `selected_version`, and the candidate IDs chosen in `matches`.
 Its `comparison_summaries` records judging usage without retaining the model's
-judging text. `pass_usage` aggregates observed invocations and token counts across
-the request, including comparisons. A skipped refinement records
+judging text. `synthesis_summaries` records each merge's usage without its prompt
+or output; the extra branch has `type="synthesis"` and temperature `0.20`.
+The original temperature ladder and routed branch count still describe only the
+normal candidates; the completed candidate count includes the synthesis branch.
+`pass_usage` aggregates observed invocations and token counts across
+the request, including merges and comparisons. A skipped refinement records
 `completed=False`, `skip_reason="context_limit"`, and `selected_pass` in its
 summary. Displaying an earlier answer does not count its tokens again.
 

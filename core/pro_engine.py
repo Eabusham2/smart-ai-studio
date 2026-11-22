@@ -1455,7 +1455,7 @@ class ProReasoningEngine:
         if selection_metadata is not None:
             winning_branch = selected_index
             winning_response = candidates[winning_branch]
-            winning_temp = temp_ladder[winning_branch]
+            winning_temp = selection_metadata["best_work"]["branches"][winning_branch]["temperature"]
             surprise_score = None
             verifier_details = "Model-selected tournament winner after per-branch Best Work; not assertion-verified."
         elif has_tests:
@@ -1523,10 +1523,14 @@ class ProReasoningEngine:
         branch_telemetry = []
         for idx, candidate in enumerate(candidates):
             b_temp = temp_ladder[idx] if idx < len(temp_ladder) else temp_ladder[-1]
+            selection_branch = (selection_metadata["best_work"]["branches"][idx]
+                                if selection_metadata is not None else {})
+            b_temp = selection_branch.get("temperature", b_temp)
             b_passed = (idx == winning_branch) if verified else False
             branch_telemetry.append({
                 "index": idx,
                 "temp": b_temp,
+                **({"type": selection_branch["type"]} if selection_branch else {}),
                 "passed": b_passed,
                 "reward": 1.0 if b_passed else 0.0,
                 "candidate": candidate,

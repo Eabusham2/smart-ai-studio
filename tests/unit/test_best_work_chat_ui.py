@@ -40,7 +40,8 @@ def test_selected_handoff_is_painted_once_and_all_thinking_sections_render(tmp_p
         status({'kind':'route','total':9 if starts_with_pro else 1,'branch_count':8 if starts_with_pro else 1})
         if starts_with_pro:
             for n in range(1,10): progress(n,9,5,0.1)
-            status({'kind':'selected','total':9,'winning_branch':2})
+            status({'kind':'synthesizing','total':10,'branch_index':9,'merge_index':8,'merge_total':8})
+            status({'kind':'selected','total':10,'winning_branch':2})
         yield '<think>First reasoning section.</think>Chosen text before invocation.\n'
         yield 'Calling read_file({"path":"selected.txt"})\n'
         status({'kind':'executing','name':'read_file'})
@@ -59,7 +60,8 @@ def test_selected_handoff_is_painted_once_and_all_thinking_sections_render(tmp_p
         status({'kind':'route','total':1 if starts_with_pro else 9,'branch_count':1 if starts_with_pro else 8})
         if not starts_with_pro:
             for n in range(1,10): progress(n,9,7,0.1)
-            status({'kind':'selected','total':9,'winning_branch':1})
+            status({'kind':'synthesizing','total':10,'branch_index':9,'merge_index':8,'merge_total':8})
+            status({'kind':'selected','total':10,'winning_branch':1})
         yield '<think>Second reasoning section.</think>Finished response.'
     app.multimodal.stream_solve = stream
     def run():
@@ -90,7 +92,7 @@ def test_selected_handoff_is_painted_once_and_all_thinking_sections_render(tmp_p
         assert list(app.thinking_cache.values())[-2:] == ['First reasoning section.', 'Second reasoning section.']
         labels = [child.cget('text') for panel in app.chat_stream.winfo_children()
                   for child in panel.winfo_children() if isinstance(child, tk.Label)]
-        assert any('Best Work 9/9' in label and 'complete' in label for label in labels)
+        assert any('Best Work 10/10' in label and 'complete' in label for label in labels)
     finally:
         app.cancel_event.set()
         if app.watchdog:
@@ -219,6 +221,8 @@ def test_best_work_selected_progress_uses_winning_branch_events(
         if call['kind'] == 'refine':
             index = branch_index(previous_draft(call['prompt']))
             return f'<think>DISCARD_REVISION</think>BRANCH_{index}_REVISED'
+        if call['kind'] == 'synthesis':
+            return '<think>SYNTHESIS_THOUGHT</think>BRANCH_-1_SYNTHESIZED'
         pair = comparison(call['prompt'])['candidates']
         same_branch = branch_index(pair[0]['text']) == branch_index(pair[1]['text'])
         return '{"winner":"' + (local_winner if same_branch else 'A') + '"}'
@@ -237,16 +241,17 @@ def test_best_work_selected_progress_uses_winning_branch_events(
     finish()
 
     expected_pass = 1 if local_winner == 'A' else 2
+    total_contenders = branches + (branches > 1)
     assert len(originals) == branches and len(entropies) == 1
     assert result == '<think>THOUGHT_0</think>BRANCH_0_' + ('ORIGINAL' if expected_pass == 1 else 'REVISED')
-    assert state['done'] == state['total'] == branches
+    assert state['done'] == state['total'] == total_contenders
     assert state['pass_index'] == expected_pass and state['passes'] == 2
     assert state['refinement_skipped'] is False
-    assert f'Best Work {branches}/{branches} · complete · pass {expected_pass}/2' in labels[-1]
+    assert f'Best Work {total_contenders}/{total_contenders} · complete · pass {expected_pass}/2' in labels[-1]
     assert 'refinement reached Context' not in labels[-1]
     if skipped_loser:
         assert any('refinement reached Context' in label for label in labels[:-1])
-        assert ctrl.last_best_work_metadata['best_work']['branches'][-1]['refinement_skipped'] == 'context_limit'
+        assert ctrl.last_best_work_metadata['best_work']['branches'][branches - 1]['refinement_skipped'] == 'context_limit'
 
 
 def _persist_gui_output(accumulated, history, *, use_pro_branches):

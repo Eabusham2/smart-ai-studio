@@ -218,13 +218,16 @@ The guide connects the desktop controls, reusable learned memory and online task
 
 Best Work keeps the existing router and branch temperatures. Each branch completes
 its refinement passes first; the same model then compares that branch's original
-and final revised answers in a temporary context. A pairwise tournament selects one
-branch winner. Only that exact winner and its original thinking continue; revision
-thinking and comparison text are discarded. Only the overall winner can dispatch
+and final revised answers in a temporary context. With multiple branches, their
+winners also feed one synthesized candidate, which receives the same Best Work
+passes and original-versus-final comparison. A pairwise tournament selects one
+winner from the normal and synthesis branches. Only that exact winner and its
+original thinking continue; revision thinking and comparison text are discarded.
+Only the overall winner can dispatch
 an authorized tool, whose real result starts a fresh routed stage. If a refinement
 cannot fit, the last completed draft remains eligible against the original. A
 comparison that cannot fit reports an error. Progress and token counts reflect the
-passes and comparisons that actually ran.
+passes, merges and comparisons that actually ran.
 See [Best Work, tool handoffs and telemetry](docs/best-work-handoffs.md).
 
 The new workflows coexist with ordinary streaming, Learn, RSI and both **Sleep EWC**

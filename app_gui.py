@@ -5518,7 +5518,8 @@ class SmartAIChatbotApp:
                         if best_work_ui["passes"] > 1:
                             pro_active = True
                             self._best_work_mode = True
-                            value = "🌿 Best Work · " + ("final response" if event.get("final") else "refining draft")
+                            draft = "synthesis candidate" if event.get("branch_type") == "synthesis" else "draft"
+                            value = "🌿 Best Work · " + ("final response" if event.get("final") else "refining " + draft)
                         else:
                             value = None
                     elif kind == "refinement_skipped":
@@ -5539,9 +5540,16 @@ class SmartAIChatbotApp:
                                 best_work_ui["done"] = 0
                                 best_work_ui["total"] = total
                             value = "🌿 Continuing in single stream" if pro_active else None
+                    elif kind == "synthesizing":
+                        best_work_ui["pass_index"] = 1
+                        best_work_ui["refinement_skipped"] = False
+                        value = (f"🌿 Best Work · creating synthesis candidate · "
+                                 f"merge {event.get('merge_index', 1)}/{event.get('merge_total', 1)}")
                     elif kind == "comparing":
                         if event.get("scope") == "branch":
-                            value = f"🌿 Best Work · comparing original and revision in branch #{event.get('branch_index', 0) + 1}"
+                            branch = ("the synthesis candidate" if event.get("branch_type") == "synthesis"
+                                      else f"branch #{event.get('branch_index', 0) + 1}")
+                            value = f"🌿 Best Work · comparing original and revision in {branch}"
                         else:
                             value = f"🌿 Best Work · comparing branch winners · round {event.get('round', 1)}"
                     elif kind == "selected":
@@ -5549,7 +5557,9 @@ class SmartAIChatbotApp:
                         best_work_ui["pass_index"] = int(event.get("pass_index", best_work_ui["pass_index"]))
                         best_work_ui["passes"] = int(event.get("passes", best_work_ui["passes"]))
                         best_work_ui["refinement_skipped"] = bool(event.get("refinement_skipped", False))
-                        value = f"🌿 Best Work {total}/{total} · selected branch #{event.get('winning_branch', 0) + 1}"
+                        selected = ("synthesis candidate" if event.get("branch_type") == "synthesis"
+                                    else f"branch #{event.get('winning_branch', 0) + 1}")
+                        value = f"🌿 Best Work {total}/{total} · selected {selected}"
                     elif kind == "executing":
                         value = ((f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · "
                                   f"executing selected {event.get('name', 'tool')}") if pro_active
@@ -6235,7 +6245,8 @@ assert glyph_res["invariants_passed"] == True
                           else "✓ PASSED (Winner)" if (b_idx == win_idx and passed) else ("✓ PASSED" if passed else "✗ FAILED"))
             reward_val = b.get("reward", 1.0 if passed else 0.0)
             code_line = b.get("code", "").replace("\n", " ")[:60]
-            tree.insert("", "end", iid=str(b_idx), values=(f"#{b_idx+1}", f"T={b_temp:.2f}", status_str, f"{reward_val:.1f}", code_line))
+            branch_label = "Synthesis" if b.get("type") == "synthesis" else f"#{b_idx+1}"
+            tree.insert("", "end", iid=str(b_idx), values=(branch_label, f"T={b_temp:.2f}", status_str, f"{reward_val:.1f}", code_line))
 
         def _on_select(event):
             sel = tree.selection()
