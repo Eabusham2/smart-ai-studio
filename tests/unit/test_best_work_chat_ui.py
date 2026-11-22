@@ -249,12 +249,80 @@ def test_best_work_selected_progress_uses_winning_branch_events(
         assert ctrl.last_best_work_metadata['best_work']['branches'][-1]['refinement_skipped'] == 'context_limit'
 
 
+def _persist_gui_output(accumulated, history, *, use_pro_branches):
+    """Execute the actual GUI text preparation, empty check, and persistence."""
+    from core.gui_thinking import reasoning_segments, transcript_payload
+
+    source = (Path(__file__).resolve().parents[2] / 'app_gui.py').read_text(encoding='utf-8')
+    method = next(node for node in ast.walk(ast.parse(source))
+                  if isinstance(node, ast.FunctionDef) and node.name == '_process_message_thread')
+    assignment = next(node for node in ast.walk(method)
+                      if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                      and node.targets[0].id == 'full_ans')
+    block = next(value for node in ast.walk(method) for _name, value in ast.iter_fields(node)
+                 if isinstance(value, list) and assignment in value)
+    start = block.index(assignment)
+    end = next(index for index in range(start + 1, len(block))
+               if isinstance(block[index], ast.Assign)
+               and isinstance(block[index].targets[0], ast.Name)
+               and block[index].targets[0].id == 'duration_s')
+    segments = next(node for node in ast.walk(method)
+                    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == 'segments')
+    append = next(node for node in ast.walk(method)
+                  if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                  and isinstance(node.value.func, ast.Attribute) and node.value.func.attr == 'append'
+                  and isinstance(node.value.func.value, ast.Name)
+                  and node.value.func.value.id == 'origin_history')
+    function = ast.parse('def persist():\n    pass\n').body[0]
+    function.body = block[start:end] + [segments, append]
+    notices = []
+    namespace = {'accumulated': accumulated, 'origin_history': history,
+                 'use_pro_branches': use_pro_branches, 'initial_thinking': False,
+                 'reasoning_segments': reasoning_segments, 'transcript_payload': transcript_payload,
+                 'self': SimpleNamespace(cancel_event=threading.Event()),
+                 '_post': lambda delay, callback: notices.append(callback)}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+                 'actual_gui_persistence', 'exec'), namespace)
+    namespace['persist']()
+    return notices
+
+
+@pytest.mark.parametrize('use_pro_branches', [False, True])
+def test_best_work_persistence_preserves_selected_whitespace(tmp_path, use_pro_branches):
+    from core.best_work import stream_best_work
+    from core.context_memory import ChatArchive
+    from tests.unit.test_best_work_tournament import make_controller
+
+    original = '    indented first line\n    indented second line\n\n'
+    ctrl, _model, _entropies, _actions = make_controller(
+        lambda _model, _call: original, database_path=str(tmp_path / 'model.db'))
+    selected = ''.join(stream_best_work(ctrl, 'Preserve the answer whitespace', passes=1))
+    assert selected == original
+    history = ChatArchive(str(tmp_path / 'transcript.db'), 'whitespace')
+    notices = _persist_gui_output([selected[:12], selected[12:]], history,
+                                  use_pro_branches=use_pro_branches)
+    expected = original if use_pro_branches else original.strip()
+    assert history[-1] == {'role': 'assistant', 'content': expected}
+    assert not notices
+
+
+@pytest.mark.parametrize('use_pro_branches', [False, True])
+@pytest.mark.parametrize('output', ['', ' \n\t '])
+def test_empty_gui_response_is_not_persisted(tmp_path, use_pro_branches, output):
+    from core.context_memory import ChatArchive
+
+    history = ChatArchive(str(tmp_path / 'transcript.db'), 'empty')
+    notices = _persist_gui_output([output], history, use_pro_branches=use_pro_branches)
+    assert len(history) == 0
+    assert len(notices) == 1
+
+
 @pytest.mark.parametrize('local_winner', ['A', 'B'])
 def test_best_work_transcript_preserves_selected_literal_tool_arguments(tmp_path, local_winner):
     import json
     from core.best_work import stream_best_work
     from core.context_memory import ChatArchive
-    from core.gui_thinking import reasoning_segments, transcript_payload
     from tests.unit.test_best_work_tournament import make_controller
 
     literal = '<thinking>keep literally</thinking> and <analysis>keep exactly</analysis>'
@@ -273,33 +341,23 @@ def test_best_work_transcript_preserves_selected_literal_tool_arguments(tmp_path
     ctrl, model, _entropies, actions = make_controller(
         respond, database_path=str(tmp_path / 'model.db'))
     ctrl.app.tools.list_available_tools = lambda: [{'name': 'write_file'}]
-    selected = ''.join(stream_best_work(ctrl, 'Save the literal text', passes=2)).strip()
+    selected = ''.join(stream_best_work(ctrl, 'Save the literal text', passes=2))
     assert actions == [('write_file', arguments)]
     assert literal in selected and '<think>ORIGINAL_THOUGHT</think>' in selected
     assert 'DISCARD_' not in selected and 'BEST_WORK_COMPARISON' not in selected
     assert model.context == ''
 
-    # Exercise the production persistence expression and real archive. Display
+    # Exercise production preparation/persistence and the real archive. Display
     # parsing must not change the exact tool data that continues on the next turn.
-    source = (Path(__file__).resolve().parents[2] / 'app_gui.py').read_text(encoding='utf-8')
-    append = next(node for node in ast.walk(ast.parse(source))
-                  if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-                  and isinstance(node.value.func, ast.Attribute) and node.value.func.attr == 'append'
-                  and isinstance(node.value.func.value, ast.Name)
-                  and node.value.func.value.id == 'origin_history')
     history = ChatArchive(str(tmp_path / 'transcript.db'), 'best-work')
-    namespace = {'origin_history': history, 'full_ans': selected, 'use_pro_branches': True,
-                 'segments': reasoning_segments(selected), 'transcript_payload': transcript_payload}
-    persistence = compile(ast.Module(body=[append], type_ignores=[]), 'actual_gui_persistence', 'exec')
-    exec(persistence, namespace)
+    assert not _persist_gui_output([selected], history, use_pro_branches=True)
     assert history[-1] == {'role': 'assistant', 'content': selected}
     continuation = ctrl.app.engine._format_prompt_with_history('Continue', history)
     assert selected in continuation and 'DISCARD_' not in continuation
 
     # Ordinary chat keeps the existing display-only thinking contract.
-    namespace.update(full_ans='<think>DISPLAY_ONLY</think>Ordinary answer.', use_pro_branches=False,
-                     segments=reasoning_segments('<think>DISPLAY_ONLY</think>Ordinary answer.'))
-    exec(persistence, namespace)
+    assert not _persist_gui_output(['<think>DISPLAY_ONLY</think>Ordinary answer.'], history,
+                                  use_pro_branches=False)
     assert history[-1] == {'role': 'assistant', 'content': 'Ordinary answer.',
                            'display_thoughts': [{'offset': 0, 'text': 'DISPLAY_ONLY'}]}
 

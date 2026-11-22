@@ -49,6 +49,15 @@ def test_original_algorithm_bodies_match_pre_merge_version(path, name, expected)
         corrected = ast.parse('turns = [turn.copy() for turn in (history or [])]').body[0]
         assert _canonical_ast(assignment) == _canonical_ast(corrected)
         assignment.value.elt = ast.parse('dict(turn)', mode='eval').body
+        # Approved authorization fix: the unprepared user request is used only
+        # for dispatch; legacy generation and continuation keep their prompt.
+        dispatch = next(call for call in ast.walk(node) if isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name) and call.func.id == '_execute_action')
+        corrected = ast.parse(
+            '_execute_action(controller, action, original_prompt if authorization_prompt is None '
+            'else str(authorization_prompt), executed)', mode='eval').body
+        assert _canonical_ast(dispatch) == _canonical_ast(corrected)
+        dispatch.args[2] = ast.parse('original_prompt', mode='eval').body
     serialized = json.dumps(_canonical_ast(node.body), sort_keys=True, separators=(',', ':'))
     actual = hashlib.sha256(serialized.encode()).hexdigest()
     assert actual == expected

@@ -7,6 +7,7 @@ inference state, so they cannot route another Pro search or invoke learning.
 from __future__ import annotations
 
 import json
+import re
 
 from core.context_memory import ContextOverflow
 from core.generation_metrics import RequestMetrics, observe_generations
@@ -19,6 +20,34 @@ class SelectionError(RuntimeError):
     """A comparison did not select one of its complete, existing candidates."""
 
 
+_QUOTED_LITERAL = re.compile(
+    r'```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`|'
+    r'(?P<quoted>"(?:\\[^\n]|[^"\\\n])*"|'
+    r"(?<!\w)'(?:\\[^\n]|(?<=\w)'(?=\w)|[^'\\\n])*'(?!\w))"
+)
+
+
+def _protect_quoted_markup(text):
+    """Shield literal delimiters without changing JSON syntax or code parsing."""
+    prefix, literals = "BEST_WORK_LITERAL_", {}
+    while prefix in text:
+        prefix = "_" + prefix
+
+    def replace_token(match):
+        key = prefix + str(len(literals)) + "_"
+        literals[key] = match.group()
+        return key
+
+    protected = _QUOTED_LITERAL.sub(
+        lambda match: _DELIMITER.sub(replace_token, match.group())
+        if match.group("quoted") is not None else match.group(), text)
+
+    def restore(value):
+        return re.sub(re.escape(prefix) + r"\d+_", lambda match: literals[match.group()], value)
+
+    return protected, restore
+
+
 def _check_cancel(cancel_event):
     if cancel_event is not None and cancel_event.is_set():
         raise InterruptedError("Best Work cancelled")
@@ -26,6 +55,7 @@ def _check_cancel(cancel_event):
 
 def _segments(text, *, starts_in_thought=False):
     from core.best_work import _action_span
+    text, restore = _protect_quoted_markup(text)
     span = _action_span(text)
     if span:
         start, end, _ = span
@@ -34,15 +64,18 @@ def _segments(text, *, starts_in_thought=False):
         if not parser.thinking:
             # JSON argument strings may legitimately contain thinking markup.
             # Preserve the complete selected invocation byte-for-byte.
-            return (reasoning_segments(text[:start], starts_in_thought=starts_in_thought)
-                    + [(False, text[start:end])]
-                    + reasoning_segments(text[end:]))
-        # An implicit opening delimiter can make this an example inside
-        # unfinished thinking. Literal JSON strings cannot close that thought.
-        return (reasoning_segments(text[:start], starts_in_thought=starts_in_thought)
-                + [(True, text[start:end])]
-                + reasoning_segments(text[end:], starts_in_thought=True))
-    return reasoning_segments(text, starts_in_thought=starts_in_thought)
+            segments = (reasoning_segments(text[:start], starts_in_thought=starts_in_thought)
+                        + [(False, text[start:end])]
+                        + reasoning_segments(text[end:]))
+        else:
+            # An implicit opening delimiter can make this an example inside
+            # unfinished thinking. Literal JSON strings cannot close that thought.
+            segments = (reasoning_segments(text[:start], starts_in_thought=starts_in_thought)
+                        + [(True, text[start:end])]
+                        + reasoning_segments(text[end:], starts_in_thought=True))
+    else:
+        segments = reasoning_segments(text, starts_in_thought=starts_in_thought)
+    return [(thought, restore(value)) for thought, value in segments]
 
 
 def _answer(text, *, starts_in_thought=False):
@@ -61,8 +94,9 @@ def _complete_original_prefix(text, *, starts_in_thought=False):
     if not starts_in_thought:
         return text
     from core.best_work import _action_span
-    span = _action_span(text)
-    prefix = text[:span[0]] if span else text
+    protected, _ = _protect_quoted_markup(text)
+    span = _action_span(protected)
+    prefix = protected[:span[0]] if span else protected
     parser = ReasoningParser()
     openings = {closing.casefold(): opening for opening, closing in _PAIRS}
     offset = 0

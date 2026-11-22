@@ -9,7 +9,7 @@ import unittest
 from core.best_work import split_selected_action, stream_best_work
 from core.best_work_selection import SelectionError, _complete_original_prefix, retain_original_thinking
 from core.gui_thinking import _PAIRS
-from tests.unit.test_best_work_tournament import comparison, make_controller
+from tests.unit.test_best_work_tournament import comparison, make_controller, previous_draft
 
 
 class BestWorkReasoningIsolationTests(unittest.TestCase):
@@ -74,6 +74,62 @@ class BestWorkReasoningIsolationTests(unittest.TestCase):
         result = retain_original_thinking("<think>Actual original.</think>" + literal,
                                           "<think>Discard revision.</think>Final answer.")
         self.assertEqual(result, "<think>Actual original.</think>Final answer.")
+
+    def test_quoted_answer_markup_survives_revisions_and_selection_exactly(self):
+        thought = "<think>Original reasoning.</think>"
+        for opening, closing in _PAIRS:
+            for kind in ("json", "double_quote", "single_quote"):
+                with self.subTest(opening=opening, kind=kind):
+                    def answer(label):
+                        literal = opening + label + closing
+                        if kind == "json":
+                            return json.dumps({"html": 'Keep "' + literal + '" and ``` literally.'})
+                        if kind == "double_quote":
+                            return 'Keep the exact literal "' + literal + '".'
+                        return "Don't change 'the user's " + literal + "'."
+
+                    original = thought + answer("ORIGINAL_LITERAL")
+                    intermediate = thought + answer("INTERMEDIATE_LITERAL")
+                    final = thought + answer("FINAL_LITERAL")
+                    drafts, compared = [], []
+
+                    def respond(_model, call):
+                        if call["kind"] == "original":
+                            return original
+                        if call["kind"] == "refine":
+                            drafts.append(previous_draft(call["prompt"]))
+                            label = "INTERMEDIATE_LITERAL" if len(drafts) == 1 else "FINAL_LITERAL"
+                            return '<think>DISCARD_REVISION; literal "```".</think>' + answer(label)
+                        compared.append(comparison(call["prompt"]))
+                        return '<analysis>DISCARD_JUDGMENT</analysis>{"winner":"B"}'
+
+                    ctrl, model, _, actions = self.controller(respond)
+                    result = "".join(stream_best_work(ctrl, "Keep the literal text intact", passes=3))
+                    self.assertEqual(result, final)
+                    self.assertEqual(drafts, [original, intermediate])
+                    self.assertEqual([row["text"] for row in compared[0]["candidates"]], [original, final])
+                    self.assertEqual(actions, [])
+                    self.assertEqual(model.context, "")
+
+    def test_implicit_reasoning_ignores_quoted_closing_markers(self):
+        for _opening, closing in _PAIRS:
+            with self.subTest(closing=closing):
+                sampled = 'The literal "' + closing + '" and "```" matter.</think>Answer.'
+                canonical = _complete_original_prefix(sampled, starts_in_thought=True)
+                self.assertEqual(canonical, "<think>" + sampled)
+                self.assertEqual(retain_original_thinking(
+                    canonical, "Don't keep revision reasoning.</think>Revised answer.",
+                    starts_in_thought=True), canonical.removesuffix("Answer.") + "Revised answer.")
+                with self.assertRaisesRegex(SelectionError, "without an answer"):
+                    retain_original_thinking(canonical, 'Unclosed reasoning with "' + closing + '".',
+                                             starts_in_thought=True)
+
+    def test_quotes_inside_multiline_code_do_not_change_reasoning_boundaries(self):
+        for fence in ("`", "```", "~~~"):
+            with self.subTest(fence=fence):
+                revision = '<think>Use ' + fence + 'a\n"b' + fence + ' carefully.</think>Answer "c".'
+                self.assertEqual(retain_original_thinking("<think>Original.</think>Old answer.", revision),
+                                 '<think>Original.</think>Answer "c".')
 
     def test_template_supplied_initial_marker_is_restored_without_rewriting_content(self):
         for opening, closing in _PAIRS:

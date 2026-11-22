@@ -5684,8 +5684,10 @@ class SmartAIChatbotApp:
                 if not _owns_request():
                     return
 
-                full_ans = "".join(accumulated).strip()
-                if not full_ans and not self.cancel_event.is_set():
+                full_ans = "".join(accumulated)
+                if not use_pro_branches:
+                    full_ans = full_ans.strip()
+                if not full_ans.strip() and not self.cancel_event.is_set():
                     def _no_text_notice():
                         self.chat_stream.configure(state="normal")
                         self.chat_stream.insert(

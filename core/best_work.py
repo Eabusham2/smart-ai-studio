@@ -329,7 +329,7 @@ def _selected_pass(engine, prompt, history, cancel_event, progress_callback, dec
 
 def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
                      progress_callback=None, status_callback=None, max_tool_calls=None,
-                     route_with_history=False):
+                     route_with_history=False, *, authorization_prompt=None):
     """Use the existing stream/entropy/Pro pipeline at every real handoff.
 
     N=1 streams immediately; N>1 streams only the existing scorer's winner.
@@ -407,7 +407,8 @@ def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
                 status_callback({"kind": "executing", "name": action[1], "stage": stage + 1})
             if cancel_event is not None and cancel_event.is_set():
                 return
-            ok, result, repeated = _execute_action(controller, action, original_prompt, executed)
+            ok, result, repeated = _execute_action(
+                controller, action, original_prompt if authorization_prompt is None else str(authorization_prompt), executed)
             yield f"\n⚙️ {action[1]} ({'complete' if ok else 'failed'}): {result}\n"
             if repeated or (cancel_event is not None and cancel_event.is_set()):
                 return
@@ -459,6 +460,9 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
     controller.last_best_work_metadata = report
     if cancel_event is not None and cancel_event.is_set():
         return
+    # Document preparation may replace authorized instructions with a learned
+    # address. Keep the user's request only for authorization, not continuation.
+    authorization_prompt = str(prompt)
     # Prepare original archived history before any copies, just as before.
     # Its learning is separate from the subsequent read-only inference cycle.
     if isinstance(history, (ChatArchive, ActiveChatHistory)):
@@ -546,7 +550,8 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
         with observe_generations(measurements.update):
             yield from stream_best_work_legacy(
                 controller, prompt, history, cancel_event, progress_callback,
-                decision, max_tool_calls, route_with_history)
+                decision, max_tool_calls, route_with_history,
+                authorization_prompt=authorization_prompt)
 
     context = copy_context()
     iterator = measured_handoff()

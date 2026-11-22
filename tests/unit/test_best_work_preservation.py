@@ -9,8 +9,9 @@ from core.best_work_selection import SelectionError
 from core.context_memory import ChatArchive
 from core.online_consolidator import ManagedAwakeOnlineConsolidator
 from tests.unit.context_backend_fixture import TransactionalBackend
-from tests.unit.test_best_work_tournament import make_controller
+from tests.unit.test_best_work_tournament import make_controller, request_kind
 from tests.unit.test_persistent_context_memory import add_pair
+from tests.unit.test_segmented_chat_recall import PassageBackend
 
 
 class DecoderReached(Exception):
@@ -79,6 +80,64 @@ def test_best_work_preserves_single_use_capacity_recovery_marker(tmp_path, monke
     assert backend.train_calls == 0
     assert marker == {}
     assert not any(getattr(turn, "_capacity_recovery", None) for turn in prepared)
+
+
+@pytest.mark.parametrize("authorized", [True, False])
+def test_learned_document_keeps_original_tool_authorization(tmp_path, monkeypatch, authorized):
+    ctrl, _, _, actions = make_controller(lambda *_: "unused", database_path=str(tmp_path / "app.db"))
+    engine = ctrl.app.engine
+    backend = engine.controller_backend = PassageBackend(tmp_path / "learned")
+    backend.tokenizer.model_max_length = engine._context_budget_tokens = 2048
+    backend.is_loaded = True
+    engine.active_backend = "controller"
+    engine.gguf_backend = None
+    engine.calculate_token_entropy = lambda _: 0.1
+    engine.awake_consolidator = ManagedAwakeOnlineConsolidator(backend)
+    ctrl.app.tools.list_available_tools = lambda: [{"name": "write_file"}]
+    monkeypatch.setattr("core.online_consolidator.release_training_memory",
+                        lambda _: {"after_mb": 0, "released_mb": 0})
+
+    instruction = "Write a short note to notes.txt. " if authorized else "The label is cedar. "
+    source = instruction + "cedar is the label. " * 230
+    prompt = "Follow these instructions: <document>" + source + "</document>"
+    archive = ChatArchive(str(tmp_path / "archive.db"), "chat")
+    archive.append({"role": "user", "content": prompt})
+    sampled_prompts = []
+    recall_stream = backend.stream_generate_tokens
+
+    def answer(text):
+        sampled_prompts.append(text)
+        if request_kind(text) == "compare":
+            return '{"winner":"B"}'
+        if "Actual tool result" in text:
+            return "Completed."
+        return '<tool_call>{"name":"write_file","arguments":{"path":"notes.txt","content":"cedar"}}</tool_call>'
+
+    def stream_tokens(prompt, **options):
+        if "<|im_start|>" in prompt:
+            yield answer(prompt)
+        else:
+            yield from recall_stream(prompt, **options)
+
+    # Only sampled chat text is scripted. Document learning, recall verification,
+    # archive preparation, installed Pro wrappers and authorization remain real.
+    backend.stream_generate_tokens = stream_tokens
+    backend.generate_branches = lambda prompt, branch_count=1, **options: [
+        answer(prompt) for _ in range(branch_count)]
+    rendered = "".join(stream_best_work(ctrl, prompt, archive, passes=2))
+
+    assert backend.train_calls > 0
+    assert len(actions) == int(authorized)
+    if authorized:
+        assert actions == [("write_file", {"path": "notes.txt", "content": "cedar"})]
+        assert "write_file (complete)" in rendered
+    else:
+        assert "This operation requires an explicit user request" in rendered
+    assert rendered.endswith("Completed.")
+    assert sampled_prompts and all("Learned document " in text for text in sampled_prompts)
+    assert all(source not in text and instruction not in text for text in sampled_prompts)
+    assert any("Actual tool result" in text for text in sampled_prompts)
+    assert archive[-1]["content"] == prompt
 
 
 @pytest.mark.parametrize("stream_top_p", [None, 0.71])
