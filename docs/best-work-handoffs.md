@@ -2,7 +2,7 @@
 
 ## Choosing the number of passes
 
-With **Best Work** checked, Studio requests **two sequential inference passes
+With **Pro branches** checked, Studio requests **two sequential inference passes
 inside every branch per stage** by default. Each branch first produces an original
 draft, then reviews and revises it. With three or more passes, each refinement
 receives that branch's latest answer. A pass is a complete model generation, not
@@ -20,6 +20,8 @@ with one pass keeps its live streaming path. To set the startup default, use the
 `settings.best_work_passes` or override it for one request with
 `stream_best_work(controller, prompt, passes=1)`. The media controller exposes
 the same override as `stream_solve(..., best_work_enabled=True, best_work_passes=1)`.
+Multi-pass Best Work requires per-branch selector support; external adapters that
+only stream text can use `passes=1`, and requesting more passes fails explicitly.
 
 ## Routing, selection, and tools
 
@@ -103,6 +105,11 @@ counters. Missing counts appear as unavailable. Displaying a selected branch add
 Decode timing excludes prefill and tool waits. Wall throughput includes elapsed
 request time. Strata's authenticated status endpoint supplies generated-token
 counters when its stream omits them.
+
+The completed context indicator shows the **Last invocation**, which may be a
+comparison. It measures that invocation's actual prompt and generated tokens,
+not the saved conversation. Continuing the chat rebuilds context from the
+selected answer and original thinking; discarded comparison text is not retained.
 
 `last_best_work_metadata` retains the detailed Pro branch audit and records
 per-branch pass results and tournament matches. The final branch entries contain

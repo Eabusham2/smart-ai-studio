@@ -39,6 +39,16 @@ def _canonical_ast(value):
 def test_original_algorithm_bodies_match_pre_merge_version(path, name, expected):
     tree = ast.parse((Path(__file__).resolve().parents[2] / path).read_text(encoding="utf-8"))
     node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+    if name == 'stream_best_work_legacy':
+        # Approved one-line bugfix: preserve TranscriptTurn IDs and the shared
+        # recovery marker. Normalize only that exact copy expression so every
+        # other legacy handoff statement still matches the original hash.
+        assignment = next(stmt for stmt in node.body if isinstance(stmt, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == 'turns'
+                                  for target in stmt.targets))
+        corrected = ast.parse('turns = [turn.copy() for turn in (history or [])]').body[0]
+        assert _canonical_ast(assignment) == _canonical_ast(corrected)
+        assignment.value.elt = ast.parse('dict(turn)', mode='eval').body
     serialized = json.dumps(_canonical_ast(node.body), sort_keys=True, separators=(',', ':'))
     actual = hashlib.sha256(serialized.encode()).hexdigest()
     assert actual == expected

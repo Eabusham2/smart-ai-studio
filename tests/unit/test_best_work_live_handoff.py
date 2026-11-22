@@ -453,15 +453,25 @@ def test_failed_partial_refinement_stays_private_and_complete_original_survives(
     assert not any(event[0] in {"judge", "execute"} for event in events)
 
 
-def test_public_default_passes_remains_two_when_external_adapter_has_no_settings(monkeypatch):
-    seen = []
-    def handoff(controller, *args, **kwargs):
-        seen.append(controller.last_best_work_metadata['passes_requested'])
-        yield "delegated"
-    monkeypatch.setattr("core.best_work.stream_best_work_legacy", handoff)
-    ctrl = SimpleNamespace(app=SimpleNamespace(engine=SimpleNamespace()))
-    assert list(stream_best_work(ctrl, "request")) == ["delegated"]
-    assert seen == [2]
+def test_stream_only_adapter_cannot_silently_skip_default_best_work():
+    from core.best_work_selection import SelectionError
+
+    calls = []
+    def stream(prompt, history=None, cancel_event=None):
+        calls.append(prompt)
+        yield "Original draft"
+    engine = SimpleNamespace(stream_solve=stream)
+    ctrl = SimpleNamespace(app=SimpleNamespace(engine=engine))
+    displayed = []
+    with pytest.raises(SelectionError, match="per-branch candidate selection"):
+        for piece in stream_best_work(ctrl, "request"):
+            displayed.append(piece)
+    assert ctrl.last_best_work_metadata["passes_requested"] == 2
+    assert ctrl.last_best_work_metadata["passes_completed"] == 0
+    assert displayed == [] and calls == ["request"]
+    assert not hasattr(engine, "_best_work_select_candidates")
+    assert list(stream_best_work(ctrl, "request", passes=1)) == ["Original draft"]
+    assert ctrl.last_best_work_metadata["passes_completed"] == 1
 
 
 def test_tool_result_starts_a_fresh_stage_without_a_stale_fallback_draft():

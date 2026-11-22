@@ -1,6 +1,6 @@
 <div align="center">
 
-> **Current defaults — Hybrid + Pro branches + 2 Best Work passes:** The third learning choice, **hybrid**, combines original update behavior with persistent memory, validation and context retirement. **Pro branches** starts enabled, and **Best Work** starts at **two sequential passes**. The **legacy** and **managed** choices remain available with their separate saved states; selecting **1** pass retains the original single-pass workflow. These defaults supersede the earlier restoration defaults. See [Hybrid learning](docs/hybrid-learning.md).
+> **Current defaults — Hybrid + Pro branches + 2 Best Work passes:** The third learning choice, **hybrid**, combines original update behavior with persistent memory, validation and context retirement. **Pro branches** starts enabled, and **Best Work** starts at **two sequential passes per branch**. The **legacy** and **managed** choices remain available with their separate saved states; selecting **1** pass skips refinement. These defaults supersede the earlier restoration defaults. See [Hybrid learning](docs/hybrid-learning.md).
 
 > **Earlier restoration update:** The original learning algorithms and one-pass Best Work remain available through **Learning & saved memory… → Learning implementation → legacy** and **Branches → Best Work passes → 1**. The current defaults are Hybrid learning, enabled Pro branches and two Best Work passes. See [Original and managed implementations](docs/original-and-managed-learning.md) for the behavior and checkpoint separation.
 
@@ -214,13 +214,17 @@ The guide connects the desktop controls, reusable learned memory and online task
 | Study a long document or source directory | Use the panel's ingestion task, or the [online-learning CLI](docs/test-time-learning.md#read-a-complete-source) | Reads bounded segments, validates updates and saves resumable progress. |
 | Build reusable document memories | Use the [document adapter bank](docs/test-time-learning.md#save-and-retrieve-document-parameters) | Pins learned document generations and recalls relevant answers during solving. |
 | Practice without retaining that task's updates | Select **Temporary practice** | Uses a temporary request copy and restores the previous learned state afterwards. |
-| Refine an answer through multiple passes | Enable **Pro branches**; open **Branches → Best Work passes → Apply passes** | Best Work defaults to two sequential passes. Set **1** for the original single-pass behavior. |
+| Refine an answer through multiple passes | Enable **Pro branches**; open **Branches → Best Work passes → Apply passes** | Best Work defaults to two sequential passes inside each branch. Set **1** to skip refinement. |
 
-Each Best Work pass keeps the existing router and candidate selector. Only the final
-selected answer can dispatch an authorized tool; its real result starts a new stage.
-If a later refinement cannot fit before displaying output, the completed prior answer
-is retained in full. The progress card identifies the skipped refinement, and
-token/throughput figures reflect the actual generation.
+Best Work keeps the existing router and branch temperatures. Each branch completes
+its refinement passes first; the same model then compares that branch's original
+and final revised answers in a temporary context. A pairwise tournament selects one
+branch winner. Only that exact winner and its original thinking continue; revision
+thinking and comparison text are discarded. Only the overall winner can dispatch
+an authorized tool, whose real result starts a fresh routed stage. If a refinement
+cannot fit, the last completed draft remains eligible against the original. A
+comparison that cannot fit reports an error. Progress and token counts reflect the
+passes and comparisons that actually ran.
 See [Best Work, tool handoffs and telemetry](docs/best-work-handoffs.md).
 
 The new workflows coexist with ordinary streaming, Learn, RSI and both **Sleep EWC**
@@ -367,7 +371,7 @@ Test coverage and platform-specific verification may vary by branch and environm
 
 ## 📦 Multi-Platform Packaging
 
-**Best Work** runs two sequential inference passes by default, refining the selected draft through the existing router and verifier. Only the final selection displays an answer or executes its selected tool. If refinement cannot fit, the completed prior draft is returned with a clear status. Set **Best Work passes** in **Branches…** to change the count; **1** keeps the original single-pass behavior.
+**Best Work** runs two sequential inference passes inside each branch by default. After all refinements finish, the same model compares each original with its final revised answer, then selects one branch winner through a pairwise tournament. It continues with the exact chosen answer and that branch's original thinking, discarding revision and judging context. Only the overall winner displays or executes its tool. If refinement cannot fit, the last completed draft remains eligible against the original; comparison capacity errors are reported explicitly. Set **Best Work passes** in **Branches…** to change the count; **1** skips refinement, and a single branch still streams live. Pro routing and temperatures are preserved.
 
 Release packages and Best Work behavior are documented in
 [Best Work handoffs and packaging](docs/best-work-handoffs.md). Portable packages

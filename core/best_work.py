@@ -341,7 +341,7 @@ def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
         raise ValueError("Tool-call budget must be a nonnegative integer or None")
     engine = controller.app.engine
     original_prompt = str(prompt)
-    turns = [dict(turn) for turn in (history or [])]
+    turns = [turn.copy() for turn in (history or [])]
     if not any(turn.get("role") == "system" and turn.get("content") == BEST_WORK_GUIDE for turn in turns):
         turns.insert(0, {"role": "system", "content": BEST_WORK_GUIDE})
     executed = set()
@@ -445,7 +445,7 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
     cancellation and routing after actual tool results. Only candidate selection
     changes. Internal revisions and comparisons never call the public solve path.
     """
-    from core.best_work_selection import select_best_work_candidates
+    from core.best_work_selection import SelectionError, select_best_work_candidates
     from core.generation_metrics import RequestMetrics, observe_generations
     engine = controller.app.engine
     if passes is None:
@@ -519,7 +519,12 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
         elif event.get("kind") in {"executing", "selected"}:
             if event.get("kind") == "executing":
                 finish_single_stage()
+            choices = report.get("best_work", {}).get("branches", [])
+            chosen = event.get("winning_branch")
+            skipped = (type(chosen) is int and 0 <= chosen < len(choices)
+                       and bool(choices[chosen].get("refinement_skipped")))
             event = {"final": True,
+                     "refinement_skipped": skipped,
                      "pass_index": report.get("best_work", {}).get("selected_pass", 1), **event}
         if status_callback:
             status_callback({"stage": stage, "passes": passes, **event})
@@ -549,6 +554,13 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
     try:
         while True:
             chunk = context.run(next, iterator, end)
+            if (passes > 1 and (cancel_event is None or not cancel_event.is_set())
+                    and (not completed_stages or not completed_stages[-1].get("best_work"))):
+                # A stream-only adapter cannot expose/refine all its candidates.
+                # Never display its first draft while claiming multiple passes.
+                raise SelectionError(
+                    "Multi-pass Best Work requires an engine with per-branch candidate selection. "
+                    "Stream-only adapters can use passes=1.")
             if chunk is end:
                 # N=1, passes=1 preserves live streaming and needs no selection.
                 finish_single_stage()
@@ -558,10 +570,14 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
         if cancel_event is None or not cancel_event.is_set():
             raise
     finally:
-        context.run(iterator.close)
-        publish_report()
-        for name, value in previous.items():
-            if value is missing:
-                delattr(engine, name)
-            else:
-                setattr(engine, name, value)
+        try:
+            context.run(iterator.close)
+        finally:
+            try:
+                publish_report()
+            finally:
+                for name, value in previous.items():
+                    if value is missing:
+                        delattr(engine, name)
+                    else:
+                        setattr(engine, name, value)

@@ -726,6 +726,12 @@ def install_awake_auto_learning(cls) -> None:
         previous_routing = getattr(self, "_best_work_routing_decision", None)
         if getattr(self, "_best_work_raw_winner", False):
             self._best_work_routing_decision = (entropy, mode, int(branch_count))
+        # N=1 used the stream caller's sampling cutoff before Best Work needed
+        # the buffered selector. Preserve it for that branch and its revisions.
+        previous_top_p = getattr(self.settings, "search_top_p", None)
+        preserve_stream_top_p = int(branch_count) <= 1 and refine_single and previous_top_p is not None
+        if preserve_stream_top_p:
+            self.settings.search_top_p = top_p
         try:
             response, metadata = self.solve(
                 prompt,
@@ -736,6 +742,8 @@ def install_awake_auto_learning(cls) -> None:
                 **({"progress_callback": progress_callback} if progress_callback is not None else {}),
             )
         finally:
+            if preserve_stream_top_p:
+                self.settings.search_top_p = previous_top_p
             self._awake_stream_history_prepared = False
             self._best_work_routing_decision = previous_routing
 

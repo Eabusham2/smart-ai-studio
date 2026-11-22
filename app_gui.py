@@ -5545,7 +5545,10 @@ class SmartAIChatbotApp:
                         else:
                             value = f"🌿 Best Work · comparing branch winners · round {event.get('round', 1)}"
                     elif kind == "selected":
-                        best_work_ui["done"] = total
+                        best_work_ui["done"] = best_work_ui["total"] = total
+                        best_work_ui["pass_index"] = int(event.get("pass_index", best_work_ui["pass_index"]))
+                        best_work_ui["passes"] = int(event.get("passes", best_work_ui["passes"]))
+                        best_work_ui["refinement_skipped"] = bool(event.get("refinement_skipped", False))
                         value = f"🌿 Best Work {total}/{total} · selected branch #{event.get('winning_branch', 0) + 1}"
                     elif kind == "executing":
                         value = ((f"🌿 Best Work {best_work_ui['done']}/{best_work_ui['total']} · "
@@ -5731,10 +5734,12 @@ class SmartAIChatbotApp:
 
                 # Persist against the captured model, independent of when Tk
                 # drains this request's callbacks. Best Work has already removed
-                # revision/judging thoughts; retain its winning original thinking.
+                # revision/judging thoughts. Save its exact selected text: parsing
+                # display segments must not rewrite literal tags in tool arguments.
                 from core.gui_thinking import reasoning_segments, render_segments, transcript_payload
                 segments = reasoning_segments(full_ans, starts_in_thought=initial_thinking)
-                origin_history.append(transcript_payload(segments, preserve_thoughts=use_pro_branches))
+                origin_history.append({"role": "assistant", "content": full_ans} if use_pro_branches
+                                      else transcript_payload(segments))
 
                 def _finalize_ai_msg(dur=duration_s):
                     stream = self.chat_stream
@@ -6112,12 +6117,13 @@ assert glyph_res["invariants_passed"] == True
         modal.transient(self.root)
 
         meta = self.last_metadata or {}
+        model_tournament = meta.get("best_work", {}).get("method") == "model_tournament"
 
         # Header
         hdr = tk.Frame(modal, bg=self.C["bg_hud"])
         hdr.pack(fill="x", padx=16, pady=12)
 
-        tk.Label(hdr, text="🌿 Multi-Branch Search & RLVR Verification", font=_FONT_H2, bg=self.C["bg_hud"], fg=self.C["accent_green"]).pack(anchor="w")
+        tk.Label(hdr, text="🌿 Multi-Branch Search & " + ("Model Selection" if model_tournament else "RLVR Verification"), font=_FONT_H2, bg=self.C["bg_hud"], fg=self.C["accent_green"]).pack(anchor="w")
 
         pass_controls = tk.Frame(modal, bg=self.C["bg_hud"])
         pass_controls.pack(fill="x", padx=16, pady=(0, 8))
@@ -6186,7 +6192,7 @@ assert glyph_res["invariants_passed"] == True
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=6)
         tree.heading("idx", text="Branch #")
         tree.heading("temp", text="Temp T(i)")
-        tree.heading("status", text="RLVR Status")
+        tree.heading("status", text="Selection" if model_tournament else "RLVR Status")
         tree.heading("reward", text="Reward (R)")
         tree.heading("code_preview", text="Candidate Code Preview")
 
@@ -6223,7 +6229,8 @@ assert glyph_res["invariants_passed"] == True
             b_idx = b.get("index", 0)
             b_temp = b.get("temp", 0.20)
             passed = b.get("passed", False)
-            status_str = "✓ PASSED (Winner)" if (b_idx == win_idx and passed) else ("✓ PASSED" if passed else "✗ FAILED")
+            status_str = (("✓ SELECTED (Winner)" if b_idx == win_idx else "Not selected") if model_tournament
+                          else "✓ PASSED (Winner)" if (b_idx == win_idx and passed) else ("✓ PASSED" if passed else "✗ FAILED"))
             reward_val = b.get("reward", 1.0 if passed else 0.0)
             code_line = b.get("code", "").replace("\n", " ")[:60]
             tree.insert("", "end", iid=str(b_idx), values=(f"#{b_idx+1}", f"T={b_temp:.2f}", status_str, f"{reward_val:.1f}", code_line))
@@ -6236,7 +6243,10 @@ assert glyph_res["invariants_passed"] == True
                     b = branches[idx]
                     txt_trace.delete("1.0", "end")
                     trace_content = f"# Branch #{idx+1} [Temperature T={b.get('temp', 0.20):.2f}]\n"
-                    trace_content += f"# RLVR Sandbox Result: {'PASSED (Reward = 1.0)' if b.get('passed') else 'FAILED'}\n"
+                    if model_tournament:
+                        trace_content += f"# Model tournament: {'selected winner' if idx == win_idx else 'not selected'}; no sandbox assertions run.\n"
+                    else:
+                        trace_content += f"# RLVR Sandbox Result: {'PASSED (Reward = 1.0)' if b.get('passed') else 'FAILED'}\n"
                     if b.get("stderr"):
                         trace_content += f"# Stderr: {b.get('stderr')}\n"
                     trace_content += f"\n{b.get('candidate', '')}\n"

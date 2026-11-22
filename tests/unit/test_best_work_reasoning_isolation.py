@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from core.best_work import split_selected_action, stream_best_work
-from core.best_work_selection import SelectionError, retain_original_thinking
+from core.best_work_selection import SelectionError, _complete_original_prefix, retain_original_thinking
 from core.gui_thinking import _PAIRS
 from tests.unit.test_best_work_tournament import comparison, make_controller
 
@@ -75,6 +75,44 @@ class BestWorkReasoningIsolationTests(unittest.TestCase):
                                           "<think>Discard revision.</think>Final answer.")
         self.assertEqual(result, "<think>Actual original.</think>Final answer.")
 
+    def test_template_supplied_initial_marker_is_restored_without_rewriting_content(self):
+        for opening, closing in _PAIRS:
+            with self.subTest(opening=opening):
+                sampled = 'Keep `</analysis>` literal. Original thought.' + closing + '\nExact answer.'
+                canonical = _complete_original_prefix(sampled, starts_in_thought=True)
+                self.assertEqual(canonical, opening + sampled)
+                self.assertEqual(_complete_original_prefix(canonical, starts_in_thought=True), canonical)
+                self.assertEqual(_complete_original_prefix(sampled), sampled)
+
+    def test_implicit_original_winner_keeps_complete_thinking_after_tool_handoff(self):
+        action = '<tool_call>' + json.dumps({
+            'name': 'read_file', 'arguments': {'path': '<thinking>literal</thinking>'},
+        }) + '</tool_call>'
+        sampled = 'ORIGINAL_THOUGHT.</think>' + action
+        continuations, compared = [], []
+
+        def respond(_model, call):
+            if call['kind'] == 'compare':
+                compared.append(comparison(call['prompt']))
+                return 'DISCARD_JUDGE.</think>{"winner":"A"}'
+            if call['kind'] == 'refine':
+                return 'DISCARD_REVISION.</think>Revised answer.'
+            if 'ACTUAL selected file contents' in call['prompt']:
+                continuations.append(call['prompt'])
+                return 'AFTER_TOOL_THOUGHT.</think>Finished.'
+            return sampled
+
+        ctrl, model, _, actions = self.controller(respond)
+        self.implicit_template(model)
+        result = ''.join(stream_best_work(ctrl, 'Read the chosen file', passes=2))
+        self.assertEqual(compared[0]['candidates'][0]['text'], '<think>' + sampled)
+        self.assertEqual(actions, [('read_file', {'path': '<thinking>literal</thinking>'})])
+        self.assertEqual(len(continuations), 1)
+        self.assertIn('<think>' + sampled, continuations[0])
+        self.assertNotIn('DISCARD_', continuations[0])
+        self.assertNotIn('BEST_WORK_COMPARISON', continuations[0])
+        self.assertIn('<think>AFTER_TOOL_THOUGHT.</think>Finished.', result)
+
     def test_unclosed_implicit_revision_thinking_is_rejected(self):
         def respond(_model, call):
             if call["kind"] == "original":
@@ -91,7 +129,7 @@ class BestWorkReasoningIsolationTests(unittest.TestCase):
         self.assertEqual(model.context, "")
 
     def test_thinking_only_original_tool_cannot_become_a_branch_winner(self):
-        example = '<tool_call>{"name":"read_file","arguments":{"path":"thinking-only"}}</tool_call>'
+        example = '<tool_call>{"name":"read_file","arguments":{"path":"thinking-only </think> literal"}}</tool_call>'
 
         def respond(_model, call):
             self.assertEqual(call["kind"], "original")

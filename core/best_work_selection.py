@@ -10,7 +10,9 @@ import json
 
 from core.context_memory import ContextOverflow
 from core.generation_metrics import RequestMetrics, observe_generations
-from core.gui_thinking import ReasoningParser, reasoning_segments, starts_in_thinking
+from core.gui_thinking import (
+    _DELIMITER, _PAIRS, ReasoningParser, reasoning_segments, starts_in_thinking,
+)
 
 
 class SelectionError(RuntimeError):
@@ -35,6 +37,11 @@ def _segments(text, *, starts_in_thought=False):
             return (reasoning_segments(text[:start], starts_in_thought=starts_in_thought)
                     + [(False, text[start:end])]
                     + reasoning_segments(text[end:]))
+        # An implicit opening delimiter can make this an example inside
+        # unfinished thinking. Literal JSON strings cannot close that thought.
+        return (reasoning_segments(text[:start], starts_in_thought=starts_in_thought)
+                + [(True, text[start:end])]
+                + reasoning_segments(text[end:], starts_in_thought=True))
     return reasoning_segments(text, starts_in_thought=starts_in_thought)
 
 
@@ -43,6 +50,31 @@ def _answer(text, *, starts_in_thought=False):
     # and code-literal protection; never guess reasoning from ordinary prose.
     return "".join(value for thought, value in _segments(
         text, starts_in_thought=starts_in_thought) if not thought)
+
+
+def _complete_original_prefix(text, *, starts_in_thought=False):
+    """Retain a template-supplied opening tag when adopting sampled text.
+
+    Only supply the missing initial delimiter. Never rebuild the answer or
+    parse/rewrite literal tags inside a chosen tool's JSON arguments.
+    """
+    if not starts_in_thought:
+        return text
+    from core.best_work import _action_span
+    span = _action_span(text)
+    prefix = text[:span[0]] if span else text
+    parser = ReasoningParser()
+    openings = {closing.casefold(): opening for opening, closing in _PAIRS}
+    offset = 0
+    for match in _DELIMITER.finditer(prefix):
+        events = parser.feed(prefix[offset:match.end()])
+        offset = match.end()
+        for kind, _ in events:
+            if kind == "open":
+                return text
+            if kind == "close_unopened":
+                return openings[match.group().casefold()] + text
+    return text
 
 
 def retain_original_thinking(original, revised, *, starts_in_thought=False):
@@ -136,7 +168,8 @@ def select_best_work_candidates(engine, *, prompt, history, candidates, temperat
     for raw in candidates:
         detector = ToolBoundaryStopper()
         detector.feed(str(raw))
-        originals.append(detector.text)
+        originals.append(_complete_original_prefix(
+            detector.text, starts_in_thought=starts_in_thought))
     if not originals or any(not text.strip() for text in originals):
         raise SelectionError("Best Work received an empty branch candidate.")
     if any(not _answer(text, starts_in_thought=starts_in_thought).strip() for text in originals):

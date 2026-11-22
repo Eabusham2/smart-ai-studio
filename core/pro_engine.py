@@ -1422,7 +1422,7 @@ class ProReasoningEngine:
             initial_work = RequestMetrics()
             # Share weights, isolate working context. This includes losing
             # originals as well as every revision and temporary judge call.
-            with inference_cycle(self), inference_fork(self):
+            with inference_cycle(self, cancel_event=cancel_event), inference_fork(self):
                 with observe_generations(initial_work.update):
                     candidates = self.generate_parallel_branches(
                         prompt, branch_count=branch_count, history=history,

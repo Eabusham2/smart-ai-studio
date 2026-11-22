@@ -11,6 +11,7 @@ import logging
 import math
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.context_memory import ActiveChatHistory, ChatArchive
@@ -177,6 +178,36 @@ class LegacyAwakeOnlineConsolidator:
     def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
         total_chars = sum(len(m.get("content", "")) for m in messages)
         return max(1, total_chars // 4)
+
+    @contextmanager
+    def pause_updates_for_inference(self, cancel_event=None):
+        """Finish already-scheduled preparation before freezing its model.
+
+        Legacy MLX pruning queues a worker before returning retained history.
+        Merely acquiring the update lock can beat that worker and leave its
+        pruned facts unlearned throughout inference. Check the pending flag
+        while holding both locks in the updater's order, releasing the update
+        lock for pending work rather than waiting with it held.
+        """
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Best Work cancelled while awaiting context consolidation")
+            if not self._update_lock.acquire(timeout=0.05):
+                continue
+            try:
+                with self.lock:
+                    pending = self.is_consolidating
+                if not pending:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise InterruptedError("Best Work cancelled while awaiting context consolidation")
+                    yield
+                    return
+            finally:
+                self._update_lock.release()
+            if cancel_event is not None:
+                cancel_event.wait(0.05)
+            else:
+                time.sleep(0.05)
 
     def _run_shadow_consolidation(self, chunk: List[Dict[str, str]], backend=None) -> bool:
         # Best Work holds this same caller-side lock across its read-only

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -65,6 +66,25 @@ class MLXBackend(Backend):
 
 
 class InferenceForkTests(unittest.TestCase):
+    def legacy_preparation(self):
+        from core.legacy_online_consolidator import LegacyAwakeOnlineConsolidator
+        backend = Backend()
+        backend.is_mlx_available = True
+        backend.training_ready = lambda: True
+        backend.count_tokens = lambda rows: 100
+        def train(**kwargs):
+            self.assertEqual(kwargs['data'], [{'prompt': 'retired question', 'completion': 'retired answer'}])
+            backend.model.weights[0] += 1
+            return {}, 1.0
+        backend.train_mini_batch = train
+        engine = engine_for(backend, 'mlx')
+        service = LegacyAwakeOnlineConsolidator(backend, max_context=10)
+        engine.awake_consolidator = service
+        history = [{'role': 'user', 'content': 'retired question'},
+                   {'role': 'assistant', 'content': 'retired answer'}]
+        history += [{'role': 'user' if i % 2 == 0 else 'assistant', 'content': 'recent'} for i in range(4)]
+        return backend, engine, service, history
+
     def test_native_request_cannot_populate_canonical_cache(self):
         backend = Backend()
         engine = engine_for(backend)
@@ -187,6 +207,159 @@ class InferenceForkTests(unittest.TestCase):
         thread.join(1)
         self.assertFalse(thread.is_alive())
         self.assertTrue(finished.is_set())
+        self.assertEqual(backend.model.weights, [5.0])
+
+    def test_already_scheduled_legacy_preparation_finishes_before_inference(self):
+        backend, engine, service, history = self.legacy_preparation()
+        scheduled, allow_training, updated = threading.Event(), threading.Event(), threading.Event()
+        guarding, entered, finished = threading.Event(), threading.Event(), threading.Event()
+        errors = []
+        update = service._run_shadow_consolidation
+        guard = service.pause_updates_for_inference
+
+        def scheduled_update(chunk, selected_backend):
+            scheduled.set()
+            allow_training.wait(2)
+            try:
+                return update(chunk, selected_backend)
+            finally:
+                updated.set()
+
+        @contextmanager
+        def observed_guard(cancel_event=None):
+            guarding.set()
+            with guard(cancel_event):
+                yield
+
+        service._run_shadow_consolidation = scheduled_update
+        service.pause_updates_for_inference = observed_guard
+
+        def infer():
+            try:
+                with inference_cycle(engine):
+                    self.assertEqual(backend.model.weights, [5.0])
+                    self.assertFalse(service.is_consolidating)
+                    entered.set()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                finished.set()
+
+        cleanup = {'before_mb': 0, 'after_mb': 0, 'released_mb': 0}
+        with patch('core.legacy_online_consolidator.release_training_memory', return_value=cleanup):
+            retained, pruned = service.check_and_prune(history)
+            self.assertTrue(pruned)
+            self.assertEqual(retained, history[2:])
+            self.assertTrue(scheduled.wait(1))
+            thread = threading.Thread(target=infer, daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(guarding.wait(1))
+                self.assertFalse(entered.wait(0.05))
+                self.assertEqual(backend.model.weights, [4.0])
+            finally:
+                allow_training.set()
+                self.assertTrue(updated.wait(1))
+                self.assertTrue(finished.wait(1))
+                thread.join(1)
+        self.assertEqual(errors, [])
+        self.assertTrue(entered.is_set())
+        self.assertEqual(service.consolidation_count, 1)
+
+    def test_cancel_while_legacy_preparation_is_queued_or_running(self):
+        for phase in ('queued', 'running'):
+            with self.subTest(phase=phase):
+                backend, engine, service, history = self.legacy_preparation()
+                started, release, updated = threading.Event(), threading.Event(), threading.Event()
+                guarding, finished, cancelled = threading.Event(), threading.Event(), threading.Event()
+                errors, entered = [], []
+                update = service._run_shadow_consolidation
+                train = backend.train_mini_batch
+                guard = service.pause_updates_for_inference
+
+                def scheduled_update(chunk, selected_backend):
+                    if phase == 'queued':
+                        started.set()
+                        release.wait(2)
+                    try:
+                        return update(chunk, selected_backend)
+                    finally:
+                        updated.set()
+
+                def running_update(**kwargs):
+                    started.set()
+                    release.wait(2)
+                    return train(**kwargs)
+
+                @contextmanager
+                def observed_guard(cancel_event=None):
+                    guarding.set()
+                    with guard(cancel_event):
+                        yield
+
+                service._run_shadow_consolidation = scheduled_update
+                service.pause_updates_for_inference = observed_guard
+                if phase == 'running':
+                    backend.train_mini_batch = running_update
+
+                def infer():
+                    try:
+                        with inference_cycle(engine, cancel_event=cancelled):
+                            entered.append(True)
+                    except BaseException as error:
+                        errors.append(error)
+                    finally:
+                        finished.set()
+
+                cleanup = {'before_mb': 0, 'after_mb': 0, 'released_mb': 0}
+                with patch('core.legacy_online_consolidator.release_training_memory', return_value=cleanup):
+                    _, pruned = service.check_and_prune(history)
+                    self.assertTrue(pruned)
+                    self.assertTrue(started.wait(1))
+                    thread = threading.Thread(target=infer, daemon=True)
+                    thread.start()
+                    try:
+                        self.assertTrue(guarding.wait(1))
+                        cancelled.set()
+                        self.assertTrue(finished.wait(1))
+                        self.assertFalse(updated.is_set())
+                    finally:
+                        release.set()
+                        self.assertTrue(updated.wait(1))
+                        thread.join(1)
+                self.assertEqual(entered, [])
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], InterruptedError)
+                self.assertTrue(engine.memory_auto_recall)
+                self.assertNotIn('_best_work_inference_read_only', vars(engine))
+                self.assertEqual(backend.model.weights, [5.0])
+
+    def test_nested_cycle_does_not_wait_for_update_queued_during_outer_cycle(self):
+        backend, engine, service, history = self.legacy_preparation()
+        update = service._run_shadow_consolidation
+        scheduled, finished, cancelled = threading.Event(), threading.Event(), threading.Event()
+        def queued_update(chunk, selected_backend):
+            scheduled.set()
+            try:
+                return update(chunk, selected_backend)
+            finally:
+                finished.set()
+        service._run_shadow_consolidation = queued_update
+        timeout = threading.Timer(2, cancelled.set)
+        cleanup = {'before_mb': 0, 'after_mb': 0, 'released_mb': 0}
+        with patch('core.legacy_online_consolidator.release_training_memory', return_value=cleanup):
+            try:
+                timeout.start()
+                with inference_cycle(engine, cancel_event=cancelled):
+                    _, pruned = service.check_and_prune(history)
+                    self.assertTrue(pruned)
+                    self.assertTrue(scheduled.wait(1))
+                    with inference_cycle(engine, cancel_event=cancelled):
+                        self.assertEqual(backend.model.weights, [4.0])
+                        self.assertFalse(finished.is_set())
+            finally:
+                timeout.cancel()
+                self.assertTrue(finished.wait(1))
         self.assertEqual(backend.model.weights, [5.0])
 
     def test_awake_preparation_cannot_learn_internal_prompt(self):

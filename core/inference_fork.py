@@ -39,7 +39,7 @@ def _read_only(*_args, **_kwargs):
 
 
 @contextmanager
-def inference_cycle(engine):
+def inference_cycle(engine, cancel_event=None):
     """Freeze learning for one branch/refinement/selection cycle.
 
     Existing context consolidation runs BEFORE this guard. Its update lock
@@ -54,7 +54,13 @@ def inference_cycle(engine):
         backend = _backend(engine)
         service = getattr(engine, "awake_consolidator", None)
         update = getattr(service, "_update_lock", None)
-        if update is not None:
+        pause = getattr(service, "pause_updates_for_inference", None)
+        # A legacy worker may be scheduled without owning the update lock yet.
+        # Finish that preparation first. Nested cycles already own the guard;
+        # waiting for work queued during the outer cycle would deadlock.
+        if callable(pause) and not getattr(engine, "_best_work_inference_read_only", False):
+            stack.enter_context(pause(cancel_event=cancel_event))
+        elif update is not None:
             stack.enter_context(update)
         if backend is not None:
             from core.native_speed import uses_mlx_thread_owner
