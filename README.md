@@ -438,3 +438,11 @@ For commercial licensing agreements and enterprise pricing, contact: `licensing@
 <div align="center">
 <sub>Copyright © 2026 Smart AI Studio Contributors. All Rights Reserved.</sub>
 </div>
+
+## Search keywords (ignore)
+
+`local-llm`, `gguf`, `llama-cpp`, `hugging-face`, `model-import`, `model-offloading`,
+`mixture-of-experts`, `cpu-inference`, `cuda`, `metal`, `transformers`, `prompt-caching`,
+`token-streaming`, `conversation-history`, `persistent-memory`, `online-learning`, `test-time-learning`, `model-checkpoints`,
+`document-ingestion`, `document-adapters`, `model-evaluation`, `memory-monitoring`, `python`, `macos`,
+`windows`, `linux`, `portable-app`, `model-placement`, `speculative-decoding`, `context-management`
