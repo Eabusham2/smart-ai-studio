@@ -204,7 +204,15 @@ class AppUpdateTests(unittest.TestCase):
                 code = prepared.staged_root / fixture.code_relative
                 executable = code / ("runtime/python/python.exe" if target.startswith("Windows") else "runtime/python/bin/python3")
                 self.assertTrue(executable.is_file())
-                self.assertTrue(executable.stat().st_mode & stat.S_IXUSR)
+                # Every host checks every layout; only filesystems with POSIX
+                # execute bits can verify the restored Unix executable mode.
+                probe = Path(directory) / "mode-probe"
+                probe.touch()
+                probe.chmod(0o600)
+                without_execute = probe.stat().st_mode & stat.S_IXUSR
+                probe.chmod(0o700)
+                if not without_execute and probe.stat().st_mode & stat.S_IXUSR:
+                    self.assertTrue(executable.stat().st_mode & stat.S_IXUSR)
 
     def test_corrupt_archive_leaves_installed_data_and_no_staging_debris(self):
         fixture = self.fixture()
@@ -274,6 +282,10 @@ class AppUpdateTests(unittest.TestCase):
 
     def test_linux_case_distinct_module_names_remain_supported(self):
         root = Path(self.directory.name)
+        probe = root / "case-probe"
+        probe.touch()
+        if (root / "CASE-PROBE").exists():
+            self.skipTest("Temporary filesystem cannot store names differing only in case")
         archive = root / "case-distinct.zip"
         with zipfile.ZipFile(archive, "w") as zipped:
             zipped.writestr("SmartAI-Linux/core/Foo.py", "UPPER")
@@ -288,6 +300,7 @@ class AppUpdateTests(unittest.TestCase):
             [("SmartAI-Windows/../../outside", b"bad", None)],
             [("/absolute", b"bad", None)],
             [("SmartAI-Windows/path\\escape", b"bad", None)],
+            [("SmartAI-Windows/valid\x00hidden", b"bad", None)],
             [("SmartAI-Windows/runtime", b"../../outside", stat.S_IFLNK | 0o777)],
             [("SmartAI-Windows/core.py", b"one", None), ("SmartAI-Windows/CORE.py", b"two", None)],
         ]
@@ -297,14 +310,42 @@ class AppUpdateTests(unittest.TestCase):
                 with zipfile.ZipFile(archive, "w") as stream:
                     for name, body, mode in members:
                         info = zipfile.ZipInfo(name)
+                        # Keep the deliberately malformed bytes instead of
+                        # letting ZipInfo sanitize this fixture on Windows.
+                        info.filename = name
                         if mode:
                             info.external_attr = mode << 16
                         stream.writestr(info, body)
+                with zipfile.ZipFile(archive) as stream:
+                    self.assertEqual([entry.orig_filename for entry in stream.infolist()],
+                                     [name for name, _, _ in members])
                 destination = root / f"extract-{index}"
                 with self.assertRaises(updates.UpdateError):
                     updates.extract_update(archive, destination, "Windows-x86_64")
                 self.assertFalse(destination.exists())
         self.assertFalse((root / "outside").exists())
+
+    def test_archive_rejects_raw_names_after_windows_zip_normalization(self):
+        root = Path(self.directory.name)
+        for index, name in enumerate(("SmartAI-Windows/path\\escape", "SmartAI-Windows/valid\x00hidden")):
+            with self.subTest(name=name):
+                buffer = io.BytesIO()
+                with zipfile.ZipFile(buffer, "w") as stream:
+                    info = zipfile.ZipInfo(name)
+                    info.filename = name
+                    stream.writestr(info, b"bad")
+                # Simulate only the in-memory ZIP parser; restore os.sep before
+                # any filesystem operations or updater code runs.
+                with patch.object(zipfile.os, "sep", "\\"):
+                    parsed = zipfile.ZipFile(io.BytesIO(buffer.getvalue()))
+                self.addCleanup(parsed.close)
+                self.assertNotEqual(parsed.infolist()[0].filename, name)
+                self.assertEqual(parsed.infolist()[0].orig_filename, name)
+                destination = root / f"normalized-{index}"
+                with patch.object(updates.zipfile, "ZipFile", return_value=parsed):
+                    with self.assertRaises(updates.UpdateError):
+                        updates.extract_update(root / "unused.zip", destination, "Windows-x86_64")
+                self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":

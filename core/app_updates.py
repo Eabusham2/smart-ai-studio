@@ -431,7 +431,9 @@ def extract_update(archive: Path, destination: Path, target: str) -> Path:
             raise UpdateError("There is not enough free space to unpack this update.")
         paths = set()
         for member in members:
-            name = member.filename
+            # ZipInfo.filename has already normalized Windows separators and
+            # truncated NUL bytes; validate the original archived spelling.
+            name = member.orig_filename
             relative = PurePosixPath(name)
             mode = member.external_attr >> 16
             if (not name or "\\" in name or ":" in name or "\x00" in name

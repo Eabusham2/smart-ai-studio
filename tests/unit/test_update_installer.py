@@ -20,7 +20,7 @@ class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="smartai-install-test-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.install = self.root / "Smart AI's $(touch INJECTED)"
         self.stage = self.root / "incoming" / "Smart AI"
         self.clean_env = mock.patch.dict(os.environ, {}, clear=False)
