@@ -251,9 +251,26 @@ class GroundTruthVerifier:
                 stdout=res.stdout,
                 stderr=res.stderr
             )
+        except subprocess.TimeoutExpired:
+            exec_time = (time.perf_counter() - start_time) * 1000
+            logger.warning("Docker sandbox verification timed out; refusing host fallback.")
+            return VerificationResult(
+                passed=False,
+                verifier_type="docker_sandbox_error",
+                details=f"Docker sandbox timed out after {self.sandbox_timeout}s (isolation backend failed)",
+                execution_time_ms=exec_time,
+                stderr="TimeoutExpired"
+            )
         except Exception as e:
-            logger.warning(f"Docker sandbox verification failed ({e}), falling back to subprocess.")
-            return self._verify_in_subprocess(test_harness, start_time)
+            exec_time = (time.perf_counter() - start_time) * 1000
+            logger.warning(f"Docker sandbox verification failed ({e}); refusing host fallback.")
+            return VerificationResult(
+                passed=False,
+                verifier_type="docker_sandbox_error",
+                details=f"Docker isolation backend error: {str(e)}",
+                execution_time_ms=exec_time,
+                stderr=str(e)
+            )
 
     def verify_sympy_equivalence(
         self,
