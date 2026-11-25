@@ -33,11 +33,11 @@ import subprocess
 import sys
 import time
 import urllib.parse
-import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core.html_diagram_maker import HTMLDiagramBuilder
+from core.safe_http import UnsafeURLError, safe_urlopen
 from core.visual_maker import InteractiveVisualMaker
 
 
@@ -230,8 +230,11 @@ class AgentToolRegistry:
         
         try:
             url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json&no_html=1"
-            req = urllib.request.Request(url, headers={"User-Agent": "SmartAI/2.0 (macOS; arm64)"})
-            with urllib.request.urlopen(req, timeout=3.5) as resp:
+            with safe_urlopen(
+                url,
+                headers={"User-Agent": "SmartAI/2.0 (macOS; arm64)"},
+                timeout=3.5,
+            ) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 abstract = data.get("AbstractText", "")
                 heading = data.get("Heading", "")
@@ -242,6 +245,8 @@ class AgentToolRegistry:
                     if related:
                         out += "\n**Related Insights:**\n" + "\n".join(f"• {r}" for r in related[:4])
                     return True, out
+        except UnsafeURLError as exc:
+            return False, f"Blocked unsafe search endpoint: {exc}"
         except Exception:
             pass
 
@@ -255,12 +260,12 @@ class AgentToolRegistry:
     def _tool_web_fetch(self, url: str) -> Tuple[bool, str]:
         if not url:
             return False, "URL cannot be empty."
-        if not url.startswith(("http://", "https://")):
+        if not url.lower().startswith(("http://", "https://")):
             url = "https://" + url
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "SmartAI/2.0"})
-            with urllib.request.urlopen(req, timeout=4.0) as resp:
-                content_type = resp.headers.get_content_type()
+            with safe_urlopen(
+                url, headers={"User-Agent": "SmartAI/2.0"}, timeout=4.0,
+            ) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
                 
                 # Basic HTML tag stripping & markdown conversion
@@ -271,6 +276,8 @@ class AgentToolRegistry:
                 
                 excerpt = text[:2000] + ("..." if len(text) > 2000 else "")
                 return True, f"### 📄 Page Content: `{url}`\n\n{excerpt}"
+        except UnsafeURLError as exc:
+            return False, f"Blocked unsafe URL `{url}`: {exc}"
         except Exception as e:
             domain = urllib.parse.urlparse(url).netloc or url
             return False, (
@@ -292,7 +299,7 @@ class AgentToolRegistry:
         visited: List[str] = []
         crawled_content: List[Dict[str, str]] = []
 
-        is_direct_url = target.startswith(("http://", "https://"))
+        is_direct_url = target.lower().startswith(("http://", "https://"))
 
         if is_direct_url:
             queue = [(target, 0)]
@@ -306,8 +313,8 @@ class AgentToolRegistry:
                 visited.append(curr_url)
 
                 try:
-                    req = urllib.request.Request(curr_url, headers=headers)
-                    with urllib.request.urlopen(req, timeout=4.0) as resp:
+                    with safe_urlopen(curr_url, headers=headers, timeout=4.0) as resp:
+                        page_url = resp.geturl()
                         html = resp.read().decode("utf-8", errors="replace")
 
                         # Extract text
@@ -320,20 +327,22 @@ class AgentToolRegistry:
                         if depth < max_depth and len(visited) < max_pages:
                             links = re.findall(r'href=[\'"]([^\'"#]+)[\'"]', html, flags=re.IGNORECASE)
                             for link in links:
-                                full_link = urllib.parse.urljoin(curr_url, link)
+                                full_link = urllib.parse.urljoin(page_url, link)
                                 parsed_link = urllib.parse.urlparse(full_link)
                                 if parsed_link.scheme in ("http", "https") and parsed_link.netloc == base_domain:
                                     if full_link not in visited and full_link not in [q[0] for q in queue]:
                                         queue.append((full_link, depth + 1))
 
                         title_match = re.search(r"<title>(.*?)</title>", html, flags=re.IGNORECASE)
-                        title = title_match.group(1).strip() if title_match else curr_url
+                        title = title_match.group(1).strip() if title_match else page_url
                         crawled_content.append({
-                            "url": curr_url,
+                            "url": page_url,
                             "title": title,
                             "depth": depth,
                             "text": clean_text[:800]
                         })
+                except UnsafeURLError as exc:
+                    return False, f"Crawler blocked unsafe URL `{curr_url}`: {exc}"
                 except Exception:
                     continue
 

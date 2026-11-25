@@ -114,11 +114,40 @@ _SIDE_EFFECT_TOOLS = frozenset((
     "write_file", "edit_file", "run_terminal", "bash", "sh",
     "terminal", "python_sandbox", "python", "python_exec",
     "save_user_memory", "save_memory", "remember", "sql_query",
+    "web_fetch", "web_crawler",
 ))
+_NETWORK_SIDE_EFFECT_TOOLS = frozenset(("web_fetch", "web_crawler"))
 _ACTION_REQUEST = re.compile(
     r"\b(?:write|edit|change|fix|execute|run|install|create|save|"
     r"build|modify|update|delete|remove|implement|generate)\b", re.I
 )
+_NETWORK_ACTION_REQUEST = re.compile(
+    r"\b(?:fetch|crawl|retrieve|visit|open|read|inspect|download)\b", re.I
+)
+_NETWORK_ACTION_DENIAL = re.compile(
+    r"\b(?:do\s+not|don't|never|without)\s+"
+    r"(?:fetching|crawling|retrieving|visiting|opening|reading|inspecting|downloading|"
+    r"fetch|crawl|retrieve|visit|open|read|inspect|download)\b", re.I
+)
+_EXPLICIT_HTTP_URL = re.compile(r"https?://[^\s<>'\"`]+", re.I)
+
+
+def _network_url_is_authorized(name, args, user_prompt):
+    """Require the original request to name the model-selected URL exactly."""
+    if name.casefold() == "web_fetch":
+        target = args.get("url")
+    elif name.casefold() == "web_crawler":
+        target = args.get("query_or_url", args.get("url"))
+    else:
+        return False
+    if (not isinstance(target, str)
+            or not target.lower().startswith(("http://", "https://"))):
+        return False
+    prompt = str(user_prompt or "")
+    if (_NETWORK_ACTION_DENIAL.search(prompt)
+            or not _NETWORK_ACTION_REQUEST.search(prompt)):
+        return False
+    return target in (match.group(0) for match in _EXPLICIT_HTTP_URL.finditer(prompt))
 
 
 def _selected_text(answer, metadata):
@@ -192,7 +221,14 @@ def continue_selected_best_work(
             }
             if name not in available:
                 ok, result_text = False, "Unknown or unavailable tool"
-            elif name in _SIDE_EFFECT_TOOLS and not _ACTION_REQUEST.search(str(prompt or "")):
+            elif (name in _NETWORK_SIDE_EFFECT_TOOLS
+                  and not _network_url_is_authorized(name, args, prompt)):
+                ok, result_text = False, (
+                    "This network operation requires an explicit user request "
+                    "containing the exact HTTP(S) URL"
+                )
+            elif (name in _SIDE_EFFECT_TOOLS and name not in _NETWORK_SIDE_EFFECT_TOOLS
+                  and not _ACTION_REQUEST.search(str(prompt or ""))):
                 ok, result_text = False, "This operation requires an explicit user request"
             else:
                 ok, result_text = controller.app.tools.execute_tool(name, args)
@@ -251,7 +287,14 @@ def _execute_action(controller, action, user_prompt, executed):
                  if isinstance(row, dict)}
     if name not in available:
         return False, "Unknown or unavailable tool", False
-    if name in _SIDE_EFFECT_TOOLS and not _ACTION_REQUEST.search(user_prompt):
+    if (name in _NETWORK_SIDE_EFFECT_TOOLS
+            and not _network_url_is_authorized(name, args, user_prompt)):
+        return False, (
+            "This network operation requires an explicit user request containing "
+            "the exact HTTP(S) URL"
+        ), False
+    if (name in _SIDE_EFFECT_TOOLS and name not in _NETWORK_SIDE_EFFECT_TOOLS
+            and not _ACTION_REQUEST.search(user_prompt)):
         return False, "This operation requires an explicit user request", False
     ok, result = controller.app.tools.execute_tool(name, args)
     return bool(ok), str(result), False
