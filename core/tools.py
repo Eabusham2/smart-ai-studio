@@ -24,6 +24,7 @@ import csv
 import errno
 import json
 import math
+import operator
 import os
 import platform
 import re
@@ -39,6 +40,89 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core.html_diagram_maker import HTMLDiagramBuilder
 from core.visual_maker import InteractiveVisualMaker
+
+
+_MATH_BINARY_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_MATH_UNARY_OPERATORS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+
+
+def _parse_math_expression(expression: str, sympy: Any, symbols: Dict[str, Any]) -> Any:
+    """Build a SymPy expression from a non-executable arithmetic AST."""
+    functions = {
+        "Abs": sympy.Abs,
+        "Eq": sympy.Eq,
+        "Max": sympy.Max,
+        "Min": sympy.Min,
+        "abs": sympy.Abs,
+        "acos": sympy.acos,
+        "asin": sympy.asin,
+        "atan": sympy.atan,
+        "ceiling": sympy.ceiling,
+        "cos": sympy.cos,
+        "cosh": sympy.cosh,
+        "diff": sympy.diff,
+        "exp": sympy.exp,
+        "expand": sympy.expand,
+        "factor": sympy.factor,
+        "factorial": sympy.factorial,
+        "floor": sympy.floor,
+        "integrate": sympy.integrate,
+        "ln": sympy.log,
+        "log": sympy.log,
+        "simplify": sympy.simplify,
+        "sin": sympy.sin,
+        "sinh": sympy.sinh,
+        "sqrt": sympy.sqrt,
+        "tan": sympy.tan,
+        "tanh": sympy.tanh,
+    }
+    constants = {"E": sympy.E, "pi": sympy.pi}
+
+    def convert(node: ast.AST) -> Any:
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise ValueError("Only real numeric constants are allowed")
+            if isinstance(node.value, int):
+                return sympy.Integer(node.value)
+            return sympy.Float(repr(node.value))
+        if isinstance(node, ast.Name):
+            if node.id in symbols:
+                return symbols[node.id]
+            if node.id in constants:
+                return constants[node.id]
+            raise ValueError(f"Unsupported mathematical name: {node.id}")
+        if isinstance(node, ast.BinOp):
+            operation = _MATH_BINARY_OPERATORS.get(type(node.op))
+            if operation is None:
+                raise ValueError("Unsupported arithmetic operator")
+            return operation(convert(node.left), convert(node.right))
+        if isinstance(node, ast.UnaryOp):
+            operation = _MATH_UNARY_OPERATORS.get(type(node.op))
+            if operation is None:
+                raise ValueError("Unsupported unary operator")
+            return operation(convert(node.operand))
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in functions:
+                raise ValueError("Unsupported mathematical function")
+            if node.keywords:
+                raise ValueError("Keyword arguments are not allowed")
+            return functions[node.func.id](*(convert(arg) for arg in node.args))
+        raise ValueError(f"Unsupported mathematical syntax: {type(node).__name__}")
+
+    # Preserve SymPy's calculator convention without Python's XOR precedence.
+    parsed = ast.parse(expression.replace("^", "**"), mode="eval")
+    return convert(parsed.body)
 
 
 class AgentToolRegistry:
@@ -557,38 +641,37 @@ class AgentToolRegistry:
             return False, str(e)
 
     def _tool_math_calculate(self, expression: str) -> Tuple[bool, str]:
-        if not expression:
+        if not isinstance(expression, str) or not expression.strip():
             return False, "Math expression required."
         try:
             import sympy
             x, y, z, t, n = sympy.symbols("x y z t n")
+            symbols = {"x": x, "y": y, "z": z, "t": t, "n": n}
             
-            # Check for derivative or integral keywords
             expr_clean = expression.strip()
-            if expr_clean.lower().startswith("diff(") or "derivative" in expr_clean.lower():
-                parsed = sympy.sympify(re.sub(r"(?i)derivative of\s+", "", expr_clean))
-                free_vars = list(parsed.free_symbols)
+            lowered = expr_clean.lower()
+            if lowered.startswith("derivative of "):
+                source = re.sub(r"(?i)^derivative of\s+", "", expr_clean)
+                parsed = _parse_math_expression(source, sympy, symbols)
+                free_vars = sorted(parsed.free_symbols, key=str)
                 var = free_vars[0] if len(free_vars) == 1 else x
                 res = sympy.diff(parsed, var)
                 return True, f"### 📐 Calculus Result:\n$$\\frac{{d}}{{d{var}}} ({sympy.latex(parsed)}) = {sympy.latex(res)}$$\n\n**Plain Text:** `{res}`"
-            elif expr_clean.lower().startswith("integrate(") or "integral" in expr_clean.lower():
-                parsed = sympy.sympify(re.sub(r"(?i)integral of\s+", "", expr_clean))
-                free_vars = list(parsed.free_symbols)
+            if lowered.startswith("integral of "):
+                source = re.sub(r"(?i)^integral of\s+", "", expr_clean)
+                parsed = _parse_math_expression(source, sympy, symbols)
+                free_vars = sorted(parsed.free_symbols, key=str)
                 var = free_vars[0] if len(free_vars) == 1 else x
                 res = sympy.integrate(parsed, var)
                 return True, f"### 📐 Calculus Result:\n$$\\int ({sympy.latex(parsed)})\\,d{var} = {sympy.latex(res)} + C$$\n\n**Plain Text:** `{res}`"
-            else:
-                parsed = sympy.sympify(expr_clean)
-                simplified = sympy.simplify(parsed)
-                evaluated = parsed.evalf() if hasattr(parsed, "evalf") else simplified
-                return True, f"### 📐 Math Result for: `{expression}`\n\n• **Exact Value:** `{simplified}`\n• **Evaluated Decimal:** `{evaluated}`"
-        except Exception:
-            try:
-                # Safe basic Python arithmetic fallback
-                val = eval(expression, {"__builtins__": None, "math": math}, {})
-                return True, f"### 📐 Calculation Result:\n`{expression}` = **{val}**"
-            except Exception as e:
-                return False, f"Failed to parse mathematical expression: {str(e)}"
+            parsed = _parse_math_expression(expr_clean, sympy, symbols)
+            if lowered.startswith(("diff(", "integrate(")):
+                return True, f"### 📐 Calculus Result:\n**Plain Text:** `{parsed}`"
+            simplified = sympy.simplify(parsed)
+            evaluated = parsed.evalf() if hasattr(parsed, "evalf") else simplified
+            return True, f"### 📐 Math Result for: `{expression}`\n\n• **Exact Value:** `{simplified}`\n• **Evaluated Decimal:** `{evaluated}`"
+        except Exception as e:
+            return False, f"Failed to parse mathematical expression: {str(e)}"
 
     def _tool_system_monitor(self) -> Tuple[bool, str]:
         """Report measured process/owned-worker and host memory in binary units."""
