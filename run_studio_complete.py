@@ -9,11 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import psutil
 from config.paths import get_bundled_model_path
-try:
-    import resource
-    HAS_RESOURCE=True
-except ImportError:
-    resource=None; HAS_RESOURCE=False
+from core.swe_sandbox import HardenedSWESandbox, SandboxResult
 MLX_AVAILABLE=False
 try:
     import mlx.core as mx
@@ -74,46 +70,9 @@ CREATE TABLE IF NOT EXISTS episodic_interactions(id INTEGER PRIMARY KEY AUTOINCR
         if ids:
             with sqlite3.connect(self.db_path) as c: c.execute(f"UPDATE episodic_interactions SET consolidated=1 WHERE id IN ({','.join('?' for _ in ids)})",ids)
 
-@dataclass
-class SandboxResult:
-    passed:bool; execution_time_ms:float; output:str; error:Optional[str]=None; reward:float=0.0
-class POSIXHardenedSandbox:
-    def __init__(self,timeout_sec=4.0,max_memory_mb=512): self.timeout=timeout_sec; self.max_memory_mb=max_memory_mb
-    def _limits(self):
-        if HAS_RESOURCE and platform.system()!='Windows':
-            try:
-                m=self.max_memory_mb*1024*1024; resource.setrlimit(resource.RLIMIT_AS,(m,m)); resource.setrlimit(resource.RLIMIT_CPU,(max(1,int(self.timeout)+1),)*2); resource.setrlimit(resource.RLIMIT_NOFILE,(128,128))
-            except Exception: pass
-    def execute_python_code(self,code,tests):
-        t=time.perf_counter(); p=None
-        try:
-            with tempfile.NamedTemporaryFile('w',suffix='.py',delete=False,encoding='utf-8') as f: p=f.name; f.write(f"import sys, math, json, collections, itertools\n{code}\n{tests}\n")
-            r=subprocess.run([sys.executable,p],capture_output=True,text=True,timeout=self.timeout,preexec_fn=self._limits if HAS_RESOURCE and platform.system()!='Windows' else None)
-            return SandboxResult(r.returncode==0,(time.perf_counter()-t)*1000,r.stdout,None if r.returncode==0 else r.stderr[:240],1.0 if r.returncode==0 else 0.0)
-        except subprocess.TimeoutExpired: return SandboxResult(False,(time.perf_counter()-t)*1000,'','ProcessTimeout',0.0)
-        except Exception as e: return SandboxResult(False,(time.perf_counter()-t)*1000,'',str(e),0.0)
-        finally:
-            if p and os.path.exists(p): os.remove(p)
-    def verify_git_diff_patch(self,repo_structure,patch_text,test_cmd):
-        t=time.perf_counter(); d=tempfile.mkdtemp(prefix='swe_jail_')
-        try:
-            for rel,content in repo_structure.items(): p=os.path.join(d,rel); os.makedirs(os.path.dirname(p),exist_ok=True); open(p,'w',encoding='utf-8').write(content)
-            blocks=re.findall(r"```(?:diff|patch)?\s*([\s\S]*?)```",patch_text,re.I); patch=blocks[-1].strip() if blocks else patch_text.strip(); open(os.path.join(d,'task.patch'),'w').write(patch+'\n')
-            ap=subprocess.run(['patch','-p1','-i','task.patch'],cwd=d,capture_output=True,text=True,timeout=2)
-            if ap.returncode: return SandboxResult(False,(time.perf_counter()-t)*1000,ap.stdout,ap.stderr[:240],0.0)
-            env=dict(os.environ); env['PYTHONPATH']=d+(os.pathsep+env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
-            r=subprocess.run(test_cmd,shell=True,cwd=d,env=env,capture_output=True,text=True,timeout=self.timeout,preexec_fn=self._limits if HAS_RESOURCE and platform.system()!='Windows' else None)
-            return SandboxResult(r.returncode==0,(time.perf_counter()-t)*1000,r.stdout,None if r.returncode==0 else r.stderr[:240],1.0 if r.returncode==0 else 0.0)
-        except Exception as e: return SandboxResult(False,(time.perf_counter()-t)*1000,'',str(e),0.0)
-        finally: shutil.rmtree(d,ignore_errors=True)
-    @staticmethod
-    def evaluate_dsl_expression(expr):
-        m=re.search(r"\[([0-9,\s\-]+)\]\s*>>~fold\((\d+)\)\s*<#>scale\((\d+)\)",expr)
-        if m:
-            a=[int(x.strip()) for x in m.group(1).split(',') if x.strip()]; k=int(m.group(2))%len(a) if a else 0; s=int(m.group(3)); return [x*s for x in a[k:]+a[:k]]
-        m=re.search(r"\[([0-9,\s\-]+)\]\s*@fuse\s*\[([0-9,\s\-]+)\]",expr)
-        if m: return [x+y for x,y in zip([int(v) for v in m.group(1).split(',')],[int(v) for v in m.group(2).split(',')])]
-        return None
+class POSIXHardenedSandbox(HardenedSWESandbox):
+    """Benchmark compatibility name for the mandatory container sandbox."""
+
 class FastMCPDispatcher:
     def __init__(self,sandbox,kg): self.sandbox=sandbox; self.kg=kg
     def handle_json_rpc(self,request_json):

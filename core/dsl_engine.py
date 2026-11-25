@@ -15,7 +15,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from core.verifier import GroundTruthVerifier, VerificationResult, get_sandbox_preexec
+from core.verifier import GroundTruthVerifier
 
 
 def evaluate_tensorgraph_dsl(expr: str) -> List[Union[int, float]]:

@@ -1,70 +1,42 @@
-"""Large checked programs keep the same execution semantics on every platform."""
-import errno
+"""Large checked programs keep the same execution semantics in the container."""
 import subprocess
 import time
-from types import SimpleNamespace
 
 import pytest
 
+from core.container_sandbox import ContainerExecution
 from core.verifier import GroundTruthVerifier
 
 
-@pytest.mark.parametrize("windows", [False, True])
-def test_argument_limit_retries_unchanged_program_over_stdin(monkeypatch, windows):
+def test_large_program_reaches_container_unchanged(monkeypatch):
     calls = []
     program = "assert 2 + 2 == 4\n" * 10000
 
-    def run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        if len(calls) == 1:
-            error = OSError(errno.ENAMETOOLONG if windows else errno.E2BIG, "argument limit")
-            if windows:
-                error.winerror = 206
-            raise error
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    def run(source, **options):
+        calls.append((source, options))
+        return ContainerExecution(0, "", "", 1.0)
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("core.verifier.run_python_in_container", run)
     verifier = GroundTruthVerifier()
     result = verifier._verify_in_subprocess(program, time.perf_counter())
-    assert result.passed and len(calls) == 2
-    assert calls[0][0][-2:] == ["-c", program]
-    assert calls[1][0][-1] == "-" and calls[1][1]["input"] == program
-    assert {k: v for k, v in calls[1][1].items() if k != "input"} == calls[0][1]
+    assert result.passed and calls == [
+        (program, {"timeout": 4.0, "max_memory_mb": 512, "image": "python:3.10-slim"})
+    ]
 
 
-def test_checked_worker_preserves_lower_inherited_limit_and_bounds_candidate_input():
-    resource = pytest.importorskip("resource")
-    import sys
+def test_required_memory_mode_cannot_restore_host_execution(monkeypatch):
+    calls = []
 
-    name = "RLIMIT_DATA" if sys.platform == "darwin" else "RLIMIT_AS"
-    # On Darwin even a clean Python interpreter can reserve much more virtual
-    # DATA than it has resident. Choose a valid inherited native limit there.
-    inherited = 1 << 47 if sys.platform == "darwin" else 128 * 1048576
-    requested = inherited * 2
-    outer = """import resource, runpy, subprocess, sys
-kind = getattr(resource, sys.argv[1])
-hard = resource.getrlimit(kind)[1]
-cap = int(sys.argv[2]) if hard == resource.RLIM_INFINITY else min(int(sys.argv[2]), hard)
-resource.setrlimit(kind, (cap, cap))
-applied = resource.getrlimit(kind)
-assert all(value != resource.RLIM_INFINITY and value <= cap for value in applied)
-program = f"import resource; print(resource.getrlimit(resource.{sys.argv[1]}))"
-if sys.platform == "darwin":
-    run = runpy.run_path(sys.argv[4])["run_resident_task"]
-    outcome = run(program, int(sys.argv[3]), 5)
-else:
-    worker = runpy.run_path(sys.argv[4])["_LIMITED_PYTHON"]
-    outcome = subprocess.run([sys.executable, "-I", "-S", "-c", worker, sys.argv[1], sys.argv[3]],
-                             input=program, capture_output=True, text=True)
-assert outcome.returncode == 0, outcome.stderr
-assert outcome.stdout.strip() == str(applied), (outcome.stdout, applied)
-"""
-    from pathlib import Path
-    module = "resident_verifier.py" if sys.platform == "darwin" else "verifier.py"
-    worker_file = Path(__file__).resolve().parents[2] / "core" / module
-    result = subprocess.run([sys.executable, "-c", outer, name, str(inherited), str(requested), str(worker_file)],
-                            capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0, result.stderr
+    def run(source, **options):
+        calls.append((source, options))
+        return ContainerExecution(0, "", "", 1.0)
+
+    monkeypatch.setattr("core.verifier.run_python_in_container", run)
+    verifier = GroundTruthVerifier(max_memory_mb=96, required_memory_resource="resident")
+    result = verifier.verify_in_sandbox("def answer(): return 42", "assert answer() == 42")
+
+    assert result.passed is True
+    assert calls[0][1]["max_memory_mb"] == 96
 
 
 def test_checked_python_rejects_excess_memory_and_timeout():
@@ -73,7 +45,7 @@ def test_checked_python_rejects_excess_memory_and_timeout():
     cases = [{"args": [1], "expected": 1}]
     memory = PythonTaskVerifier({"function": "f", "cases": cases, "memory_mb": 96})
     assert memory("def f(n):\n    return len('a' * (384 * 1024 * 1024)) // (384 * 1024 * 1024)") == 0, memory.results
-    assert any(reason in memory.results[0]["reason"] for reason in ("MemoryError", "resident memory", "exited with code -")), memory.results
+    assert any(reason in memory.results[0]["reason"] for reason in ("MemoryError", "resident memory", "Container exited with code")), memory.results
     time_limited = PythonTaskVerifier({"function": "f", "cases": cases, "timeout_seconds": .25})
     assert time_limited("def f(n):\n    while n:\n        pass\n    return 1") == 0
     assert "timed out" in time_limited.results[0]["reason"]

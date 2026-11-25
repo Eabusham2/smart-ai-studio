@@ -121,6 +121,17 @@ _ACTION_REQUEST = re.compile(
 )
 
 
+def _execute_selected_tool(tools, name, args):
+    """Keep model-authored Python on the verifier's mandatory OS boundary."""
+    if name.casefold() in {"python_sandbox", "python", "python_exec"}:
+        return tools.execute_tool("dsl_evaluator", {
+            "dsl_type": "python",
+            "expression_or_code": args.get("code", ""),
+            "assertions": args.get("assertions"),
+        })
+    return tools.execute_tool(name, args)
+
+
 def _selected_text(answer, metadata):
     """Use the scorer's winning raw candidate to retain text and thinking."""
     candidates = list((metadata or {}).get("raw_branches") or ())
@@ -195,7 +206,7 @@ def continue_selected_best_work(
             elif name in _SIDE_EFFECT_TOOLS and not _ACTION_REQUEST.search(str(prompt or "")):
                 ok, result_text = False, "This operation requires an explicit user request"
             else:
-                ok, result_text = controller.app.tools.execute_tool(name, args)
+                ok, result_text = _execute_selected_tool(controller.app.tools, name, args)
                 result_text = str(result_text)
 
         if cancel_event is not None and cancel_event.is_set():
@@ -253,7 +264,7 @@ def _execute_action(controller, action, user_prompt, executed):
         return False, "Unknown or unavailable tool", False
     if name in _SIDE_EFFECT_TOOLS and not _ACTION_REQUEST.search(user_prompt):
         return False, "This operation requires an explicit user request", False
-    ok, result = controller.app.tools.execute_tool(name, args)
+    ok, result = _execute_selected_tool(controller.app.tools, name, args)
     return bool(ok), str(result), False
 
 

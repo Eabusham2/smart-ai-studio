@@ -38,7 +38,7 @@ Hope this helps!"""
         assertions = "assert multiply(3, 4) == 12\nassert multiply(-2, 5) == -10"
         res = self.verifier.verify_in_sandbox(code, assertions)
         self.assertTrue(res.passed)
-        self.assertEqual(res.verifier_type, "subprocess_sandbox")
+        self.assertEqual(res.verifier_type, "container_sandbox")
 
     def test_sandbox_execution_assertion_failure(self):
         code = "def multiply(x, y):\n    return x + y"  # bug intentionally

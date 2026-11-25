@@ -71,7 +71,7 @@ class TestPlatformCompatibility(unittest.TestCase):
         assertions = "assert is_positive(10) == True\nassert is_positive(-5) == False"
         res = verifier.verify_in_sandbox(code, assertions)
         self.assertTrue(res.passed)
-        self.assertEqual(res.verifier_type, "subprocess_sandbox")
+        self.assertEqual(res.verifier_type, "container_sandbox")
 
     def test_windows_and_posix_path_handling(self):
         settings = get_settings()

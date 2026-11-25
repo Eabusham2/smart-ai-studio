@@ -1,7 +1,7 @@
 """
 Deterministic Ground-Truth Verifier.
 Provides objective RLVR validation to prevent neural verifier hacking via:
-1. Subprocess/Docker Python sandbox execution against deterministic test assertions.
+1. Mandatory OS-container execution against deterministic test assertions.
 2. SymPy symbolic mathematics equivalence verification (with multi-point fallback).
 3. Code AST validation.
 4. Majority consensus voting fallback.
@@ -9,16 +9,15 @@ Provides objective RLVR validation to prevent neural verifier hacking via:
 
 import ast
 import collections
-import errno
 import logging
 import math
 import random
 import re
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+from core.container_sandbox import DEFAULT_SANDBOX_IMAGE, run_python_in_container
 
 logger = logging.getLogger(__name__)
 
@@ -33,75 +32,20 @@ class VerificationResult:
     stderr: Optional[str] = None
 
 
-def get_sandbox_preexec(max_memory_mb: int = 512):
-    """Applies POSIX virtual memory limits on Unix systems; no-op on Windows."""
-    if sys.platform != "win32":
-        try:
-            import resource
-            def preexec():
-                max_bytes = max_memory_mb * 1024 * 1024
-                try:
-                    import platform as _plat
-                    if hasattr(resource, "RLIMIT_AS") and _plat.system() != "Darwin":
-                        resource.setrlimit(resource.RLIMIT_AS, (max_bytes, max_bytes))
-                    if hasattr(resource, "RLIMIT_DATA"):
-                        resource.setrlimit(resource.RLIMIT_DATA, (max_bytes, max_bytes))
-                    if hasattr(resource, "RLIMIT_CORE"):
-                        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                except Exception as e:
-                    logger.debug(f"Could not set resource limits in preexec: {e}")
-            return preexec
-        except Exception as e:
-            logger.warning(f"Could not initialize sandbox resource preexec: {e}")
-            return None
-    return None
-
-
-def _limit_sandbox_resources(max_memory_mb: int = 512):
-    """Sets OS-level memory and execution resource bounds for subprocess sandboxing."""
-    preexec = get_sandbox_preexec(max_memory_mb)
-    if preexec:
-        preexec()
-
-
-# Only this trusted bootstrap executes before the kernel limit has been checked.
-# The candidate and its cases arrive on stdin after interpreter startup.
-_LIMITED_PYTHON = """import resource, sys
-kind = getattr(resource, sys.argv[1])
-budget = int(sys.argv[2])
-try:
-    inherited = resource.getrlimit(kind)
-    cap = min([budget] + [value for value in inherited if value != resource.RLIM_INFINITY])
-    if inherited != (cap, cap):
-        resource.setrlimit(kind, (cap, cap))
-    applied = resource.getrlimit(kind)
-    if any(value == resource.RLIM_INFINITY or value > cap for value in applied):
-        raise RuntimeError("kernel did not apply the memory cap")
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-except (OSError, ValueError, RuntimeError) as error:
-    print(f"Verifier memory setup failed ({sys.argv[1]}, requested {budget}, inherited {inherited}): {error}",
-          file=sys.stderr)
-    sys.exit(2)
-try:
-    exec(compile(sys.stdin.buffer.read(), "<checked task>", "exec"), {"__name__": "__main__"})
-except BaseException as error:
-    print(f"Verifier task failed: {type(error).__name__}", file=sys.stderr)
-    sys.exit(1)
-"""
-
-
 class GroundTruthVerifier:
     def __init__(
         self,
         sandbox_timeout: float = 4.0,
         max_memory_mb: int = 512,
-        use_docker: bool = False,
-        docker_image: str = "python:3.10-slim",
+        use_docker: bool = True,
+        docker_image: str = DEFAULT_SANDBOX_IMAGE,
         *, required_memory_resource: Optional[str] = None
     ):
         self.sandbox_timeout = sandbox_timeout
         self.max_memory_mb = max_memory_mb
-        self.use_docker = use_docker
+        # Retain the argument for API compatibility, but never allow callers to
+        # downgrade generated code to a host subprocess.
+        self.use_docker = True
         self.docker_image = docker_image
         self.required_memory_resource = required_memory_resource
 
@@ -138,7 +82,7 @@ class GroundTruthVerifier:
         test_assertions: str
     ) -> VerificationResult:
         """
-        Executes code + assertions inside an isolated Python subprocess or Docker container.
+        Executes code + assertions inside the mandatory OS container boundary.
         Enforces strict timeouts (default 4.0s) and memory caps (default 512MB).
         """
         start_time = time.perf_counter()
@@ -161,99 +105,47 @@ class GroundTruthVerifier:
 {test_assertions}
 """
 
-        if self.use_docker:
-            return self._verify_in_docker(test_harness, start_time)
-        else:
-            return self._verify_in_subprocess(test_harness, start_time)
+        return self._verify_in_docker(test_harness, start_time)
 
     def _verify_in_subprocess(self, test_harness: str, start_time: float) -> VerificationResult:
-        """Executes test harness in local isolated subprocess with memory and time caps."""
-        try:
-            options = dict(capture_output=True, text=True, timeout=self.sandbox_timeout)
-            if self.required_memory_resource == "resident":
-                from core.resident_verifier import run_resident_task
-                res = run_resident_task(test_harness, self.max_memory_mb * 1048576, self.sandbox_timeout)
-            elif self.required_memory_resource is not None:
-                # A process hosting Metal/other workers must not run Python hooks
-                # in its forked child. Start a minimal interpreter and install the
-                # mandatory limit there, before loading even the candidate source.
-                command = [sys.executable, "-I", "-S", "-c", _LIMITED_PYTHON,
-                           self.required_memory_resource, str(self.max_memory_mb * 1048576)]
-                res = subprocess.run(command, input=test_harness, **options)
-            else:
-                options["preexec_fn"] = get_sandbox_preexec(self.max_memory_mb)
-                try:
-                    res = subprocess.run([sys.executable, "-c", test_harness], **options)
-                except OSError as error:
-                    if error.errno != errno.E2BIG and getattr(error, "winerror", None) != 206:
-                        raise
-                    # Large user-declared case sets can exceed the OS argument limit.
-                    res = subprocess.run([sys.executable, "-"], input=test_harness, **options)
-            exec_time = (time.perf_counter() - start_time) * 1000
-            passed = (res.returncode == 0)
-
-            details = "All assertions passed successfully." if passed else f"Process exited with code {res.returncode}"
-            if not passed and self.required_memory_resource is not None:
-                diagnostic = next((line for line in reversed(res.stderr.splitlines())
-                                   if line.startswith(("Verifier memory setup failed", "Verifier task failed"))), "")
-                if diagnostic:
-                    details += " — " + diagnostic[:512]
-            return VerificationResult(
-                passed=passed,
-                verifier_type="subprocess_sandbox",
-                details=details,
-                execution_time_ms=exec_time,
-                stdout=res.stdout,
-                stderr=res.stderr
-            )
-        except subprocess.TimeoutExpired:
-            exec_time = (time.perf_counter() - start_time) * 1000
-            return VerificationResult(
-                passed=False,
-                verifier_type="subprocess_sandbox",
-                details=f"Execution timed out after {self.sandbox_timeout}s (max resource budget exceeded)",
-                execution_time_ms=exec_time,
-                stderr="TimeoutExpired"
-            )
-        except Exception as e:
-            exec_time = (time.perf_counter() - start_time) * 1000
-            return VerificationResult(
-                passed=False,
-                verifier_type="subprocess_sandbox",
-                details=f"Sandbox execution error: {str(e)}",
-                execution_time_ms=exec_time,
-                stderr=str(e)
-            )
+        """Compatibility entry point that retains the mandatory container boundary."""
+        return self._verify_in_docker(test_harness, start_time)
 
     def _verify_in_docker(self, test_harness: str, start_time: float) -> VerificationResult:
-        """Executes test harness in isolated Docker container with strict memory bounds."""
-        try:
-            res = subprocess.run(
-                [
-                    "docker", "run", "--rm",
-                    "--network", "none",
-                    "--memory", f"{self.max_memory_mb}m",
-                    "--cpus", "1.0",
-                    self.docker_image,
-                    "python", "-c", test_harness
-                ],
-                capture_output=True,
-                text=True,
-                timeout=self.sandbox_timeout
-            )
-            exec_time = (time.perf_counter() - start_time) * 1000
-            passed = (res.returncode == 0)
-            return VerificationResult(
-                passed=passed,
-                verifier_type="docker_sandbox",
-                details="Docker sandbox assertions passed" if passed else f"Docker exited with {res.returncode}",
-                execution_time_ms=exec_time,
-                stdout=res.stdout,
-                stderr=res.stderr
-            )
-        except Exception as e:
-            logger.warning(f"Docker sandbox verification failed ({e}), falling back to subprocess.")
-            return self._verify_in_subprocess(test_harness, start_time)
+        """Execute the harness in the shared fail-closed container policy."""
+        result = run_python_in_container(
+            test_harness,
+            timeout=self.sandbox_timeout,
+            max_memory_mb=self.max_memory_mb,
+            image=self.docker_image,
+        )
+        exec_time = (time.perf_counter() - start_time) * 1000
+        if result.error:
+            details = f"Sandbox unavailable: {result.error}"
+        elif result.timed_out:
+            details = f"Execution timed out after {self.sandbox_timeout}s (container removed)"
+        elif result.output_limited:
+            details = "Execution exceeded the sandbox output limit (container removed)"
+        elif result.returncode == 0:
+            details = "All assertions passed successfully."
+        elif result.returncode in (125, 126, 127):
+            diagnostic = (result.stderr or "container runtime error").strip()[-512:]
+            details = f"Sandbox unavailable: {diagnostic}"
+        else:
+            details = f"Container exited with code {result.returncode}"
+        return VerificationResult(
+            passed=(
+                result.returncode == 0
+                and not result.error
+                and not result.timed_out
+                and not result.output_limited
+            ),
+            verifier_type="container_sandbox",
+            details=details,
+            execution_time_ms=exec_time,
+            stdout=result.stdout,
+            stderr=result.stderr or result.error,
+        )
 
     def verify_sympy_equivalence(
         self,

@@ -118,9 +118,9 @@ try:
         prm_pruning_threshold: float = Field(default=0.40, description="Process reward model step cutoff")
 
         # Ground-Truth Sandbox Verification
-        sandbox_timeout_seconds: float = Field(default=4.0, description="Subprocess timeout cap in seconds")
-        use_docker_sandbox: bool = Field(default=False, description="Whether to route sandbox to Docker")
-        docker_image: str = Field(default="python:3.10-slim", description="Docker base image for sandbox")
+        sandbox_timeout_seconds: float = Field(default=4.0, description="Generated-code container timeout cap in seconds")
+        use_docker_sandbox: bool = Field(default=True, description="Legacy compatibility flag; generated code always requires the container sandbox")
+        docker_image: str = Field(default="python:3.10-slim", description="Preinstalled image for the mandatory generated-code sandbox")
 
         # Memory & Elastic Weight Consolidation (EWC)
         database_path: str = Field(default_factory=lambda: os.getenv("DATABASE_PATH", os.path.join(get_portable_data_dir(), "memory.db")), description="SQLite episodic memory database path")
@@ -187,7 +187,7 @@ except ImportError:
         prm_pruning_threshold: float = float(os.getenv("PRM_PRUNING_THRESHOLD", "0.40"))
 
         sandbox_timeout_seconds: float = float(os.getenv("SANDBOX_TIMEOUT_SECONDS", "4.0"))
-        use_docker_sandbox: bool = os.getenv("USE_DOCKER_SANDBOX", "false").lower() in ("1", "true", "yes")
+        use_docker_sandbox: bool = True
         docker_image: str = os.getenv("DOCKER_IMAGE", "python:3.10-slim")
 
         database_path: str = os.getenv("DATABASE_PATH", os.path.join(get_portable_data_dir(), "memory.db"))

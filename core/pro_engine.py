@@ -32,7 +32,7 @@ from core.mlx_engine import MLXReasoningBackend
 from core.online_consolidator import make_online_consolidator
 from core.platform import get_auto_context_window_size
 from core.speculative_engine import SpeculativeEngine
-from core.verifier import GroundTruthVerifier, VerificationResult, get_sandbox_preexec
+from core.verifier import GroundTruthVerifier
 
 
 def get_ladder_temperatures(

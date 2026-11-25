@@ -18,11 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, Union
 
-try:
-    import resource
-    HAS_RESOURCE = True
-except ImportError:
-    HAS_RESOURCE = False
+from core.swe_sandbox import HardenedSWESandbox, SandboxResult
 
 MLX_AVAILABLE = False
 try:
@@ -166,117 +162,8 @@ class RelationalKnowledgeGraph:
             c.execute(f"UPDATE episodic_interactions SET consolidated = 1 WHERE id IN ({placeholders})", ids)
             conn.commit()
 
-@dataclass
-class SandboxResult:
-    passed: bool
-    execution_time_ms: float
-    output: str
-    error: Optional[str] = None
-    reward: float = 0.0
-
-class POSIXHardenedSandbox:
-    def __init__(self, timeout_sec: float = 4.0, max_memory_mb: int = 512):
-        self.timeout = timeout_sec
-        self.max_memory_mb = max_memory_mb
-
-    def _apply_rlimits(self):
-        if HAS_RESOURCE and platform.system() != "Windows":
-            mem_bytes = self.max_memory_mb * 1024 * 1024
-            try:
-                resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-            except Exception:
-                pass
-            try:
-                cpu_sec = max(1, int(self.timeout) + 1)
-                resource.setrlimit(resource.RLIMIT_CPU, (cpu_sec, cpu_sec))
-            except Exception:
-                pass
-            try:
-                resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
-            except Exception:
-                pass
-
-    def execute_python_code(self, code: str, tests: str) -> SandboxResult:
-        full_script = f"# -*- coding: utf-8 -*-\nimport sys, math, json, collections, itertools\n\n{code}\n\n# UNIT TESTS\n{tests}\n"
-        t0 = time.perf_counter()
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tmp:
-            tmp.write(full_script)
-            tmp_path = tmp.name
-
-        try:
-            res = subprocess.run(
-                [sys.executable, tmp_path],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                preexec_fn=self._apply_rlimits if HAS_RESOURCE and platform.system() != "Windows" else None
-            )
-            dur_ms = (time.perf_counter() - t0) * 1000.0
-            if res.returncode == 0:
-                return SandboxResult(True, dur_ms, res.stdout, reward=1.0)
-            return SandboxResult(False, dur_ms, res.stdout, error=res.stderr[:240], reward=0.0)
-        except subprocess.TimeoutExpired:
-            return SandboxResult(False, (time.perf_counter() - t0) * 1000.0, "", error="ProcessTimeout", reward=0.0)
-        except Exception as e:
-            return SandboxResult(False, (time.perf_counter() - t0) * 1000.0, "", error=str(e), reward=0.0)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-    def verify_git_diff_patch(self, repo_structure: Dict[str, str], patch_text: str, test_cmd: str) -> SandboxResult:
-        t0 = time.perf_counter()
-        tmp_dir = tempfile.mkdtemp(prefix="swe_jail_")
-        try:
-            for rel_path, content in repo_structure.items():
-                p = os.path.join(tmp_dir, rel_path)
-                os.makedirs(os.path.dirname(p), exist_ok=True)
-                with open(p, "w", encoding="utf-8") as f:
-                    f.write(content)
-
-            patch_clean = re.findall(r"```(?:diff|patch)?\s*([\s\S]*?)```", patch_text, re.IGNORECASE)
-            clean_diff = patch_clean[-1].strip() if patch_clean else patch_text.strip()
-            patch_file = os.path.join(tmp_dir, "task.patch")
-            with open(patch_file, "w", encoding="utf-8") as f:
-                f.write(clean_diff + "\n")
-
-            subprocess.run(["patch", "-p1", "-i", "task.patch"], cwd=tmp_dir, capture_output=True, timeout=2.0)
-            proc = subprocess.run(
-                test_cmd,
-                shell=True,
-                cwd=tmp_dir,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                preexec_fn=self._apply_rlimits if HAS_RESOURCE and platform.system() != "Windows" else None
-            )
-            dur_ms = (time.perf_counter() - t0) * 1000.0
-            if proc.returncode == 0:
-                return SandboxResult(True, dur_ms, proc.stdout, reward=1.0)
-            return SandboxResult(False, dur_ms, proc.stdout, error=proc.stderr[:200], reward=0.0)
-        except Exception as e:
-            return SandboxResult(False, (time.perf_counter() - t0) * 1000.0, "", error=str(e), reward=0.0)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    @staticmethod
-    def evaluate_dsl_expression(expr: str) -> Optional[List[int]]:
-        expr = expr.strip()
-        m_fold_scale = re.search(r"\[([0-9,\s\-]+)\]\s*>>~fold\((\d+)\)\s*<#>scale\((\d+)\)", expr)
-        if m_fold_scale:
-            arr_str, fold_k, scale_s = m_fold_scale.groups()
-            arr = [int(x.strip()) for x in arr_str.split(",") if x.strip()]
-            k = int(fold_k) % len(arr) if arr else 0
-            s = int(scale_s)
-            folded = arr[k:] + arr[:k]
-            return [x * s for x in folded]
-
-        m_fuse = re.search(r"\[([0-9,\s\-]+)\]\s*@fuse\s*\[([0-9,\s\-]+)\]", expr)
-        if m_fuse:
-            a_str, b_str = m_fuse.groups()
-            arr_a = [int(x.strip()) for x in a_str.split(",") if x.strip()]
-            arr_b = [int(x.strip()) for x in b_str.split(",") if x.strip()]
-            return [x + y for x, y in zip(arr_a, arr_b)]
-        return None
+class POSIXHardenedSandbox(HardenedSWESandbox):
+    """Standalone compatibility name for the mandatory container sandbox."""
 
 class FastMCPDispatcher:
     def __init__(self, sandbox: POSIXHardenedSandbox, kg: RelationalKnowledgeGraph):
