@@ -134,12 +134,12 @@ class PlatformRouter:
                 dtype = torch.bfloat16 if (device == "cuda" or (device == "mps" and info["os_family"] == "macos")) else torch.float32
 
                 print(f"[*] Loading PyTorch Model from {model_path} on {device} ({dtype})...")
-                tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
                 model = AutoModelForCausalLM.from_pretrained(
                     model_path,
                     torch_dtype=dtype,
                     device_map="auto" if device == "cuda" else None,
-                    trust_remote_code=True
+                    trust_remote_code=False
                 )
                 if device == "mps":
                     model = model.to("mps")

@@ -42,7 +42,7 @@ def standalone_training_parent(identifier):
     else:
         raise RuntimeError("The selected Hugging Face parent has no Transformers model weights")
     snapshot = snapshot_download(repo_id=identifier, revision=info.sha, allow_patterns=[
-        *weights, "*.json", "*.jsonl", "*.py", "*.model", "*.txt", "*.tiktoken", "*.jinja", "*.vocab", "*.bpe",
+        *weights, "*.json", "*.jsonl", "*.model", "*.txt", "*.tiktoken", "*.jinja", "*.vocab", "*.bpe",
     ])
     return local_training_parent(snapshot)
 
@@ -63,7 +63,7 @@ def verify_parent(backend, trainer, path, native_tokens, state_root):
         value = next((language.get(field) for field in fields if language.get(field)), None)
         if not metadata[key] or value != metadata[key]:
             raise RuntimeError("HF training parent does not match selected GGUF " + key)
-    tokenizer = AutoTokenizer.from_pretrained(source, local_files_only=True, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(source, local_files_only=True, trust_remote_code=False)
     for text in ("A number: 42.\n", "prefix λ東京🧠", "def run(x):\n    return x + 1"):
         expected = list(tokenizer.encode(text, add_special_tokens=False))
         if not expected or list(native_tokens(text)) != expected:

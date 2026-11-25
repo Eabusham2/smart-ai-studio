@@ -1892,7 +1892,8 @@ class SmartAIChatbotApp:
         ).pack(anchor="w")
         tk.Label(
             body,
-            text="Fetch your chosen model. Automatic placement uses a compatible runtime and keeps its quantization.",
+            text=("Fetch model weights and metadata. Publisher Python and custom repository runtimes "
+                  "are not downloaded or executed."),
             wraplength=590,
             font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]
         ).pack(anchor="w", pady=(3, 10))
@@ -1916,7 +1917,7 @@ class SmartAIChatbotApp:
         runtime_choice.pack(fill="x")
 
         lbl_status = tk.Label(
-            body, text="Downloads into the normal Hugging Face cache and adds it to this model dropdown.",
+            body, text="Downloads non-executable artifacts into the Hugging Face cache and adds the model here.",
             font=_FONT_TINY, bg=self.C["bg_hud"], fg=self.C["text_muted"]
         )
         lbl_status.pack(anchor="w", pady=(7, 10))
@@ -2068,7 +2069,8 @@ class SmartAIChatbotApp:
             bg=self.C["bg_hud"], fg=self.C["accent_purple"]
         ).pack(anchor="w")
         tk.Label(
-            hdr, text="Add any local MLX model directory, GGUF/SafeTensors weights, or Hugging Face repository.",
+            hdr, text=("Add a compatible local MLX directory, GGUF/SafeTensors weights, or Hugging Face repository. "
+                       "Publisher code is refused."),
             font=_FONT_SMALL, bg=self.C["bg_hud"], fg=self.C["text_muted"]
         ).pack(anchor="w", pady=(2, 0))
 

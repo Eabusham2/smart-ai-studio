@@ -346,9 +346,9 @@ class ProReasoningEngine:
             try:
                 if original_cuda:
                     from transformers import AutoModelForCausalLM, AutoTokenizer
-                    tokenizer = AutoTokenizer.from_pretrained(target_path, trust_remote_code=True)
+                    tokenizer = AutoTokenizer.from_pretrained(target_path, trust_remote_code=False)
                     model = AutoModelForCausalLM.from_pretrained(
-                        target_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+                        target_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=False,
                     )
                     model.eval()
                     self.tokenizer, self.model = tokenizer, model

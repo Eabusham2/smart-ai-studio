@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from core.hf_downloader import download_model_from_hf
+from core.model_admission import is_executable_model_companion
 from core.model_policy import admit_local_model
 
 
@@ -23,6 +24,8 @@ def download_imported_model(
                 or PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts
                 or ":" in name or any(char in name for char in "*?[]")):
             return {"status": "error", "error": "The model selection contains an invalid artifact path."}
+        if is_executable_model_companion(name):
+            return {"status": "error", "error": "Executable repository companions are not permitted."}
     if not required or not set(required).issubset(allowed):
         return {"status": "error", "error": "The model selection has no complete, exact artifact list."}
     result = download_model_from_hf(

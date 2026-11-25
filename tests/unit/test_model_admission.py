@@ -49,6 +49,7 @@ def write_checkpoint(folder, *, config=None, media=None, metadata=None, dtype="F
 
 def test_ordinary_nonternary_gguf_is_accepted_from_its_real_header(tmp_path):
     path = write_gguf(tmp_path / "A-model-I-want-Q4.gguf")
+    (tmp_path / "publisher_tool.py").write_text("raise AssertionError('not a selected GGUF artifact')")
     allowed, reason, meta = admit_local_model(str(path))
     assert allowed, reason
     assert meta["model_path"] == str(path)
@@ -224,17 +225,21 @@ def test_local_media_pipeline_keeps_mixed_component_formats_and_nested_index(tmp
     assert admit_local_model(str(tmp_path))[0] is False
 
 
-def test_local_repository_mlx_requires_its_actual_loader(tmp_path):
+def test_local_repository_mlx_runtime_code_is_rejected(tmp_path):
     write_checkpoint(tmp_path, config={"model_type": "qwen_vl", "quantization": {
         "bits": 2, "group_size": 128, "quant_method": "prism_hadamard"}})
-    allowed, reason, _ = admit_local_model(str(tmp_path))
-    assert not allowed and "runtime/vision_artifact.py" in reason
     (tmp_path / "runtime").mkdir()
     (tmp_path / "runtime" / "vision_artifact.py").write_text("raise AssertionError('must never execute on inspection')")
+    allowed, reason, _ = admit_local_model(str(tmp_path))
+    assert not allowed and "Executable model repository companions" in reason
+
+
+def test_local_transformers_checkpoint_rejects_executable_companions(tmp_path):
+    write_checkpoint(tmp_path, config={"model_type": "llama"})
+    (tmp_path / "modeling_helper.py").write_text("raise AssertionError('must never execute')")
     allowed, reason, meta = admit_local_model(str(tmp_path))
-    assert allowed, reason
-    assert meta["controller_runtime"] == "mlx_repo_vlm"
-    assert "runtime/vision_artifact.py" in meta["companion_files"]
+    assert not allowed and meta["ok"] is False
+    assert "modeling_helper.py" in reason
 
 
 def test_config_alone_is_not_a_complete_checkpoint(tmp_path):
@@ -326,21 +331,19 @@ def test_hf_unique_projector_preserves_image_intent_and_exact_files(tmp_path, mo
     assert meta["download_required_files"] == ["chosen.gguf", "mmproj-chosen.gguf"]
 
 
-def test_hf_repository_mlx_fetches_its_pinned_runtime_sources_without_other_weights(tmp_path, monkeypatch):
+def test_hf_repository_mlx_runtime_code_is_rejected_before_weight_download(tmp_path, monkeypatch):
     calls = fake_hub(monkeypatch, tmp_path, [
         "model.safetensors", "unused-quant/model.safetensors", "runtime/vision_artifact.py",
         "runtime/helpers.py", "runtime/kernel.metal", "runtime/layout.json", "tokenizer.json",
     ], library="mlx", config={"model_type": "qwen_vl", "quantization": {
         "bits": 2, "group_size": 128, "quant_method": "prism_hadamard"}})
     allowed, reason, meta = admit_hf_model("owner/chosen")
-    assert allowed, reason
-    assert meta["controller_runtime"] == "mlx_repo_vlm"
-    assert {"runtime/vision_artifact.py", "runtime/helpers.py", "runtime/kernel.metal", "runtime/layout.json"} <= set(meta["download_required_files"])
-    assert "unused-quant/model.safetensors" not in meta["download_allow_patterns"]
+    assert not allowed and meta["ok"] is False
+    assert "publisher-provided runtime code" in reason
     assert calls == [("owner/chosen", "config.json", "a" * 40)]
 
 
-def test_published_prism_architecture_retains_runtime_and_hadamard_assets(tmp_path, monkeypatch):
+def test_published_prism_architecture_cannot_admit_its_runtime_code(tmp_path, monkeypatch):
     # The publisher puts the runtime marker in model_type, while its ordinary
     # quantization object remains affine. Inspect that structure, not its name.
     config = {"model_type": "prism_hadamard_qwen35", "text_config": {"model_type": "qwen3_5"},
@@ -351,34 +354,27 @@ def test_published_prism_architecture_retains_runtime_and_hadamard_assets(tmp_pa
         "hadamard.json", "files.json", "video_preprocessor_config.json",
     ], config=config, library="mlx")
     allowed, reason, meta = admit_hf_model("owner/chosen")
-    assert allowed, reason
-    assert meta["controller_runtime"] == "mlx_repo_vlm"
-    assert meta["input_modalities"] == ["image", "text"]
-    assert "prism_hadamard" in meta["precision"]
-    assert {"runtime/artifact.py", "runtime/vision_artifact.py", "runtime/codec.py", "hadamard.json", "files.json",
-            "video_preprocessor_config.json"} <= set(meta["download_required_files"])
+    assert not allowed and meta["ok"] is False
+    assert "publisher-provided runtime code" in reason
     assert calls == [("owner/chosen", "config.json", "a" * 40)]
     local = write_checkpoint(tmp_path / "local", config=config)
     (local / "runtime").mkdir()
     for name in ("artifact.py", "vision_artifact.py"):
         (local / "runtime" / name).write_text("raise AssertionError('inspection must not execute this')")
-    allowed, reason, _ = admit_local_model(str(local))
-    assert not allowed and "hadamard.json" in reason
     (local / "hadamard.json").write_text("{}")
     allowed, reason, meta = admit_local_model(str(local))
-    assert allowed, reason
-    assert meta["controller_runtime"] == "mlx_repo_vlm"
+    assert not allowed and meta["ok"] is False
+    assert "Executable model repository companions" in reason
 
 
-def test_hf_transformers_auto_map_keeps_same_revision_sibling_source(tmp_path, monkeypatch):
+def test_hf_transformers_auto_map_is_rejected_before_source_download(tmp_path, monkeypatch):
     calls = fake_hub(monkeypatch, tmp_path, [
         "model.safetensors", "modeling_custom.py", "configuration_custom.py", "helpers/attention.py",
         "unused-quant/model.safetensors",
     ], config={"model_type": "custom", "auto_map": {"AutoModelForCausalLM": "modeling_custom.Model"}})
     allowed, reason, meta = admit_hf_model("owner/chosen")
-    assert allowed, reason
-    assert {"modeling_custom.py", "configuration_custom.py", "helpers/attention.py"} <= set(meta["download_required_files"])
-    assert "unused-quant/model.safetensors" not in meta["download_allow_patterns"]
+    assert not allowed and meta["ok"] is False
+    assert "auto_map" in reason
     assert calls == [("owner/chosen", "config.json", "a" * 40)]
 
 
@@ -402,11 +398,13 @@ def test_hf_media_components_keep_bin_stage_and_nested_indexes_at_one_revision(t
     assert {name for _, name, _ in calls} == {"model_index.json", "transformer/diffusion_pytorch_model.safetensors.index.json"}
 
 
-def test_hf_runtime_companions_are_bounded_before_weight_download(tmp_path, monkeypatch):
+def test_hf_unreferenced_source_is_not_an_admitted_companion(tmp_path, monkeypatch):
     calls = fake_hub(monkeypatch, tmp_path, ["model.safetensors", "modeling_custom.py"],
-                     config={"model_type": "custom"}, sizes={"modeling_custom.py": 9 * 1024 * 1024})
-    allowed, reason, _ = admit_hf_model("owner/chosen")
-    assert not allowed and "bounded download limit" in reason
+                     config={"model_type": "llama"}, sizes={"modeling_custom.py": 9 * 1024 * 1024})
+    allowed, reason, meta = admit_hf_model("owner/chosen")
+    assert allowed, reason
+    assert "modeling_custom.py" not in meta["download_required_files"]
+    assert "modeling_custom.py" not in meta["download_allow_patterns"]
     assert calls == [("owner/chosen", "config.json", "a" * 40)]
 
 

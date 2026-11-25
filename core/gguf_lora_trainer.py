@@ -89,9 +89,9 @@ def _check_parent_nf4(source, device):
     target = torch.device("cuda", device) if type(device) is int else torch.device(device)
     if target.type not in getattr(bnb, "supported_torch_devices", {"cuda"}):
         raise ValueError(f"bitsandbytes does not support {target.type}")
-    config = AutoConfig.from_pretrained(source, local_files_only=True, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(source, local_files_only=True, trust_remote_code=False)
     with init_empty_weights(include_buffers=True):
-        skeleton = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+        skeleton = AutoModelForCausalLM.from_config(config, trust_remote_code=False)
     head = skeleton.get_output_embeddings()
     shapes = set()
     for module in skeleton.modules():
@@ -315,11 +315,11 @@ class GGUFLoRATrainer(LegacyCompletionTrainer):
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
             )
-        tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True, local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=False, local_files_only=True)
         if self._legacy_training:
             set_legacy_padding_token(tokenizer)
         base = AutoModelForCausalLM.from_pretrained(
-            source, low_cpu_mem_usage=True, trust_remote_code=True, local_files_only=True, **options,
+            source, low_cpu_mem_usage=True, trust_remote_code=False, local_files_only=True, **options,
         )
         base.config.use_cache = False
         if self.training_mode == "nf4":

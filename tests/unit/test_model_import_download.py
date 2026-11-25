@@ -53,6 +53,8 @@ def test_corrupt_download_never_becomes_a_registered_model(tmp_path, monkeypatch
     {"repo_revision": "main"}, {"repo_id": "someone/else"},
     {"download_required_files": ["../chosen.gguf"]},
     {"download_allow_patterns": ["*.gguf"]}, {"download_required_files": []},
+    {"download_required_files": ["runtime/model.py"],
+     "download_allow_patterns": ["runtime/model.py"]},
 ])
 def test_invalid_selection_cannot_start_a_download(change, monkeypatch):
     monkeypatch.setattr(imports, "download_model_from_hf", lambda *a, **k: pytest.fail("unverified download"))

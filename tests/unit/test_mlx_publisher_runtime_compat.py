@@ -6,20 +6,6 @@ from types import ModuleType
 import pytest
 
 from core.mlx_repo_config_compat import compatible_qwen35_configs
-from core.repository_runtime_imports import repository_runtime_imports
-
-
-def test_publisher_packed_module_wins_over_unrelated_runtime(tmp_path, monkeypatch):
-    (tmp_path / "runtime.py").write_text("class Packed: pass\n")
-    (tmp_path / "codec.py").write_text("def transcode(value): return value\n")
-    unrelated = ModuleType("runtime")
-    unrelated.Packed = object()
-    monkeypatch.setitem(sys.modules, "runtime", unrelated)
-    with repository_runtime_imports(tmp_path):
-        from runtime import Packed
-        assert Packed is not unrelated.Packed
-        assert Packed.__module__ == "runtime"
-    assert sys.modules["runtime"] is unrelated
 
 
 def test_mlx_vlm_050_nested_dicts_typed_before_model_initialization(monkeypatch):

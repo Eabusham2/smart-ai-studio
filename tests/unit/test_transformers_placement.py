@@ -132,6 +132,7 @@ def test_loader_preserves_weights_dtype_and_cleans_only_owned_offload(monkeypatc
     assert kwargs["device_map"] == "auto"
     assert kwargs["offload_state_dict"] and kwargs["low_cpu_mem_usage"]
     assert kwargs["max_memory"] == {"cpu": 4 * GIB}
+    assert kwargs["trust_remote_code"] is False
     directory = Path(kwargs["offload_folder"])
     assert directory.is_dir() and directory.parent == tmp_path / "state/runtime/transformers-offload"
     assert backend.memory_placement["disk_offload"]
@@ -139,6 +140,14 @@ def test_loader_preserves_weights_dtype_and_cleans_only_owned_offload(monkeypatc
     backend.unload_model()
     assert not directory.exists()
     assert (source / "model.safetensors").read_bytes() == b"selected checkpoint"
+
+
+def test_publisher_repository_runtime_is_refused_before_import(tmp_path):
+    backend = runtime.UniversalControllerBackend(
+        str(tmp_path), {"controller_runtime": "mlx_repo_vlm"},
+    )
+    with pytest.raises(RuntimeError, match="Publisher-provided model runtime code"):
+        backend.load_model()
 
 
 def test_failed_architecture_load_removes_private_partial_offload(monkeypatch, tmp_path):

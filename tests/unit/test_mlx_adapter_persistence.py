@@ -147,6 +147,19 @@ def test_native_source_uses_requested_revision_for_first_fetch(tmp_path, monkeyp
                           "allow_patterns": ["config.json", "w.safetensors"]}]
 
 
+def test_native_source_rejects_cached_repository_code(tmp_path, monkeypatch):
+    from core import mlx_engine as engine
+    source = tmp_path / "cached-model"
+    source.mkdir()
+    (source / "model.safetensors").write_bytes(b"weights")
+    (source / "modeling_custom.py").write_text("raise AssertionError('must not execute')")
+    monkeypatch.setattr(engine.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(engine.platform, "machine", lambda: "arm64")
+    backend = types.SimpleNamespace(model_path=str(source), model_info={})
+    with pytest.raises(RuntimeError, match="Executable repository companions"):
+        engine.MLXReasoningBackend._resolve_mlx_source(backend)
+
+
 @pytest.mark.parametrize("package", [False, True])
 def test_scoped_mlx_load_rejects_external_adapter_before_loading_base(restore_fixture, package):
     from pathlib import Path

@@ -177,7 +177,7 @@ class BitNetRebuildTrainer(LegacyCompletionTrainer):
             raise RuntimeError("No supported runtime is available for real BitNet BF16 fine-tuning")
 
         source = self.training_source or local_training_parent(self.base_model_id)
-        tokenizer = AutoTokenizer.from_pretrained(source, local_files_only=True, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(source, local_files_only=True, trust_remote_code=False)
         if self._legacy_training:
             set_legacy_padding_token(tokenizer)
 
@@ -197,7 +197,7 @@ class BitNetRebuildTrainer(LegacyCompletionTrainer):
             torch_dtype=dtype,
             device_map=device_map,
             low_cpu_mem_usage=True,
-            trust_remote_code=True,
+            trust_remote_code=False,
         )
         model.config.use_cache = False
         if hasattr(model, "gradient_checkpointing_enable"):

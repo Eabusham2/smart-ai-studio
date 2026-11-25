@@ -134,9 +134,9 @@ def test_legacy_cuda_dispatch_preserves_original_loader_and_handles(tmp_path, mo
         assert (result["status"], result["model"], result["backend"], result["path"]) == (
             "loaded", "Local causal model", "cuda", source)
         assert "runtime" not in result
-        token_loader.assert_called_once_with(source, trust_remote_code=True)
+        token_loader.assert_called_once_with(source, trust_remote_code=False)
         model_loader.assert_called_once_with(source, torch_dtype=torch_module.bfloat16, device_map="auto",
-                                             trust_remote_code=True)
+                                             trust_remote_code=False)
         model.eval.assert_called_once_with()
         assert engine.active_backend == active and engine.controller_backend is None
         assert engine.model is model and engine.tokenizer is tokenizer and engine.is_model_loaded

@@ -10,15 +10,12 @@ used only when model metadata requests a specialized controller_runtime.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import json
 import math
 import os
 import re
 import shutil
 import time
-import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Generator, List, Optional, Tuple
@@ -233,7 +230,9 @@ class UniversalControllerBackend:
         if self.runtime in ("jang_vlm", "jang-vlm"):
             return self._load_jang_vlm()
         if self.runtime in ("mlx_repo_vlm", "mlx-repo-vlm", "repo_mlx_vlm"):
-            return self._load_repo_mlx_vlm()
+            raise RuntimeError(
+                "Publisher-provided model runtime code is not supported in the Studio process."
+            )
         if self.runtime in ("transformers_auto", "transformers", "hf_transformers"):
             if self.model is not None or self._offload_directory:
                 self.unload_model()
@@ -295,66 +294,6 @@ class UniversalControllerBackend:
         self.is_mlx_available = self.is_loaded
         return self.is_loaded
 
-    def _load_repo_mlx_vlm(self) -> bool:
-        source = resolve_local_snapshot(self.model_path)
-        if not os.path.isdir(source):
-            raise RuntimeError("Specialized MLX-VLM runtime requires the downloaded model snapshot")
-
-        runtime_dir = Path(source) / str(self.model_info.get("runtime_dir") or "runtime")
-        module_name = str(self.model_info.get("runtime_module") or "vision_artifact")
-        loader_name = str(self.model_info.get("runtime_loader") or "load_vl_model")
-        chat_config_name = str(self.model_info.get("runtime_chat_config") or "chat_config")
-        module_file = runtime_dir / (module_name.replace(".", os.sep) + ".py")
-        if not module_file.is_file():
-            raise RuntimeError(f"Bundled runtime module not found: {module_file}")
-
-        unique_name = "_smart_ai_runtime_" + re.sub(r"[^a-zA-Z0-9_]", "_", module_name)
-        spec = importlib.util.spec_from_file_location(unique_name, module_file)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Could not import bundled runtime: {module_file}")
-        module = importlib.util.module_from_spec(spec)
-        from core.repository_runtime_imports import repository_runtime_imports
-        old_path = list(sys.path)
-        try:
-            sys.path.insert(0, str(runtime_dir))
-            # vision_artifact imports `Packed` from its sibling runtime.py,
-            # not from an unrelated installed module named `runtime`.
-            with repository_runtime_imports(runtime_dir):
-                spec.loader.exec_module(module)
-                loader = getattr(module, loader_name, None)
-                if not callable(loader):
-                    raise RuntimeError(f"Bundled runtime has no callable {loader_name}()")
-                if module_name == "vision_artifact":
-                    from core.mlx_repo_config_compat import compatible_qwen35_configs
-                    with compatible_qwen35_configs():
-                        loaded = loader(source)
-                else:
-                    loaded = loader(source)
-        finally:
-            sys.path[:] = old_path
-        if not isinstance(loaded, tuple) or len(loaded) < 2:
-            raise RuntimeError("Bundled runtime loader did not return model + processor")
-        self.model, self.processor = loaded[:2]
-        self.config = loaded[2] if len(loaded) > 2 else getattr(self.model, "config", None)
-        self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
-        self.runtime_module = module
-        self._chat_config = getattr(module, chat_config_name, None)
-
-        from mlx_vlm import generate
-        from mlx_vlm.prompt_utils import apply_chat_template
-        self._generator = generate
-        self._apply_chat_template = apply_chat_template
-        self.is_loaded = self.model is not None and self.processor is not None
-        self.is_mlx_available = self.is_loaded
-
-        # A repository runtime may opt into the existing real MLX trainer only if
-        # it actually exposes the required training methods. Never fake capability.
-        self.can_train = all(
-            callable(getattr(self, name, None))
-            for name in ("train_mini_batch", "compute_mlx_fisher")
-        )
-        return self.is_loaded
-
     def _load_transformers_auto(self) -> bool:
         import torch
         import transformers
@@ -380,11 +319,11 @@ class UniversalControllerBackend:
         processor = None
         if not self.direct_cuda_loaded:
             try:
-                processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True, **source_options)
+                processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=False, **source_options)
             except Exception:
                 processor = None
         if processor is None:
-            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options)
+            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=False, **source_options)
 
         # The original direct CUDA loader selected BF16 even for checkpoints
         # stored in FP32. Imported controllers use the checkpoint's native dtype.
@@ -417,7 +356,7 @@ class UniversalControllerBackend:
                     offload_folder=self._offload_directory,
                     offload_state_dict=True,
                     low_cpu_mem_usage=True,
-                    trust_remote_code=True, **source_options,
+                    trust_remote_code=False, **source_options,
                 )
                 break
             except Exception as exc:

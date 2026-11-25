@@ -561,24 +561,43 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             return None
+        from core.model_admission import is_executable_model_companion
+
+        def checked_source(source):
+            source = Path(source)
+            if source.is_dir():
+                executable = next((
+                    item for item in source.rglob("*")
+                    if item.is_file() and is_executable_model_companion(item.name)
+                ), None)
+                if executable is not None:
+                    raise RuntimeError(
+                        "Executable repository companions are not permitted: "
+                        + executable.relative_to(source).as_posix()
+                    )
+            return str(source.absolute())
+
         identifier = str(self.model_path)
         path = Path(identifier).expanduser()
         if path.exists():
-            return str(path.absolute())
+            return checked_source(path)
         revision = requested_revision(self.model_info)
         cached = cached_model_source(identifier, self.model_info)
         required = self.model_info.get("download_required_files") or []
+        if any(is_executable_model_companion(name) for name in required):
+            raise RuntimeError("Executable repository companions are not permitted")
         if cached.is_dir():
             if not revision and cached.parent.name == "snapshots":
                 revision = cached.name
             if any(cached.rglob("*.safetensors")) and all((cached / f).is_file() for f in required):
-                return str(cached)
+                return checked_source(cached)
         if os.getenv("OFFLINE", "0") == "1":
             raise RuntimeError("The selected MLX snapshot is not available locally in offline mode")
         from huggingface_hub import snapshot_download
         patterns = required or ["*.safetensors", "*.json", "*.jsonl", "*.txt", "*.model", "*.tiktoken",
-                                "*.jinja", "*.py", "*.metal", "*.toml", "*.yaml", "*.yml", "runtime/*"]
-        return str(snapshot_download(repo_id=identifier, revision=revision, allow_patterns=patterns))
+                                "*.jinja", "*.toml", "*.yaml", "*.yml"]
+        downloaded = snapshot_download(repo_id=identifier, revision=revision, allow_patterns=patterns)
+        return checked_source(downloaded)
 
     def load_model(self) -> bool:
         """Load native model weights with the model's required Apple-Silicon runtime."""
@@ -592,7 +611,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
             self.is_mlx_available = False
             return False
         runtime = resolve_controller_runtime(self.model_info, str(self.model_path or ""))
-        specialized_vlm = runtime in {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
+        if runtime == "mlx_repo_vlm":
+            self.last_error = "Publisher-provided model runtime code is not supported in the Studio process."
+            self.is_mlx_available = False
+            return False
+        specialized_vlm = runtime in {"mlx_vlm", "jang_vlm"}
         load_stamps = (_local_artifact_stamp(self.model_path), _local_artifact_stamp(self.adapter_path))
 
         try:

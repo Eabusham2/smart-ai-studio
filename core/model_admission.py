@@ -21,7 +21,16 @@ _MAX_JSON = 2 * 1024 * 1024
 _MAX_SAFE_HEADER = 32 * 1024 * 1024
 _MAX_INDEX_BYTES = 16 * 1024 * 1024
 _MAX_COMPANION_BYTES = 128 * 1024 * 1024
-_SOURCE_SUFFIXES = {".py", ".pyi", ".metal", ".c", ".cc", ".cpp", ".h", ".hpp", ".cu", ".cuh", ".m", ".mm"}
+_CODE_METADATA_NAMES = (
+    "tokenizer_config.json", "processor_config.json", "preprocessor_config.json",
+    "feature_extractor_config.json",
+)
+_EXECUTABLE_COMPANION_SUFFIXES = {
+    ".py", ".pyi", ".pyc", ".pyd", ".so", ".dylib", ".dll", ".exe",
+    ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1", ".command",
+    ".zip", ".whl", ".egg", ".jar", ".wasm",
+    ".metal", ".c", ".cc", ".cpp", ".h", ".hpp", ".cu", ".cuh", ".m", ".mm",
+}
 _METADATA_NAMES = {
     "config.json", "model_config.json", "model_index.json", "generation_config.json",
     "preprocessor_config.json", "video_preprocessor_config.json", "processor_config.json", "scheduler_config.json",
@@ -48,6 +57,29 @@ def _relative_name(value: Any) -> str:
     if path.is_absolute() or ".." in path.parts or ":" in path.parts[0]:
         raise ValueError("Model artifact names must stay inside the selected source.")
     return str(path)
+
+
+def _declares_repository_code(value: Any) -> bool:
+    """Return whether model metadata asks an Auto class to import repository code."""
+    if isinstance(value, dict):
+        if value.get("auto_map"):
+            return True
+        return any(_declares_repository_code(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_declares_repository_code(item) for item in value)
+    return False
+
+
+def _reject_repository_code(*documents: dict) -> None:
+    if any(_declares_repository_code(document) for document in documents):
+        raise ValueError(
+            "Models that declare publisher-provided Python through auto_map are not supported."
+        )
+
+
+def is_executable_model_companion(name: str) -> bool:
+    """Identify source, native modules, scripts, and executable code archives."""
+    return PurePosixPath(name).suffix.lower() in _EXECUTABLE_COMPANION_SUFFIXES
 
 
 def _is_projector(name: str) -> bool:
@@ -240,30 +272,19 @@ def _checkpoint_files(names: list[str], config: dict, indices: dict[str, dict], 
 
 
 def _companion_files(names: list[str], metadata: dict, model_index: dict, *, checkpoint: bool) -> list[str]:
-    """Keep exact, same-revision loader assets without allowing another weight set."""
+    """Keep declarative loader assets without admitting repository source code."""
+    if metadata.get("controller_runtime") == "mlx_repo_vlm" or metadata.get("runtime_required_files"):
+        raise ValueError(
+            "Models that require publisher-provided runtime code are not supported."
+        )
     directories = {".", *_components(model_index)}
     companions = []
     for name in names:
         path = PurePosixPath(name)
         if path.name in _METADATA_NAMES and (path.parent.as_posix() in directories or name.startswith("tokenizer/")):
             companions.append(name)
-        elif checkpoint and path.suffix.lower() in _SOURCE_SUFFIXES:
-            # Transformers auto_map and tokenizer code can import sibling source
-            # modules. Existing repository MLX runtimes also carry Metal sources.
-            companions.append(name)
-        elif checkpoint and name.startswith("runtime/") and path.suffix.lower() in {".json", ".txt", ".toml", ".yaml", ".yml"}:
-            companions.append(name)
-        elif checkpoint and metadata.get("controller_runtime") == "mlx_repo_vlm" and path.parent.as_posix() == "." and path.suffix == ".json":
-            companions.append(name)
     if checkpoint:
         companions.extend(_checkpoint_index_names(names, model_index))
-    if metadata.get("controller_runtime") == "mlx_repo_vlm" and "runtime/vision_artifact.py" not in names:
-        raise ValueError("This repository MLX model requires its bundled runtime/vision_artifact.py loader.")
-    for name in metadata.get("runtime_required_files") or ():
-        name = _relative_name(name)
-        if name not in names or PurePosixPath(name).suffix.lower() not in _SOURCE_SUFFIXES | {".json", ".txt", ".toml", ".yaml", ".yml"}:
-            raise ValueError(f"A declared runtime companion is missing or unsupported: {name}")
-        companions.append(name)
     return sorted(set(companions))
 
 
@@ -349,10 +370,23 @@ def admit_local_model(path: str, gguf_file: str | None = None) -> tuple[bool, st
         if files:
             meta = _gguf_metadata(root / files[0], group, root)
             return True, "Selected GGUF structure verified; runtime support and memory placement are checked when loading.", meta
+        executable_companions = [
+            name for name in names
+            if is_executable_model_companion(name)
+        ]
+        if executable_companions:
+            raise ValueError(
+                "Executable model repository companions are not supported: "
+                + ", ".join(executable_companions[:8])
+            )
         if selected.is_file() and selected.name not in {"config.json", "model_index.json"} and selected.suffix.lower() not in {".safetensors", ".npz", ".bin"}:
             raise ValueError("Choose a model directory, GGUF, or checkpoint weight file.")
         config = _read_json(root / "config.json") if (root / "config.json").is_file() else {}
         model_index = _read_json(root / "model_index.json") if (root / "model_index.json").is_file() else {}
+        code_metadata = [
+            _read_json(root / name) for name in _CODE_METADATA_NAMES if (root / name).is_file()
+        ]
+        _reject_repository_code(config, model_index, *code_metadata)
         index_names = _checkpoint_index_names(names, model_index)
         if sum((root / name).stat().st_size for name in index_names) > _MAX_INDEX_BYTES:
             raise ValueError("Checkpoint indexes exceed the aggregate inspection limit.")
@@ -405,7 +439,7 @@ def admit_hf_model(repo_id: str, gguf_file: str | None = None) -> tuple[bool, st
                   "pipeline_tag": pipeline, "requires_local_validation": True, **group}
         if files is None:
             return False, "Choose the exact GGUF filename; this repository contains multiple model artifacts.", {"ok": False, **common}
-        config, model_index, indices = {}, {}, {}
+        config, model_index, indices, code_metadata = {}, {}, {}, []
         inspected_bytes = 0
         def read_remote_object(name):
             nonlocal inspected_bytes
@@ -417,14 +451,16 @@ def admit_hf_model(repo_id: str, gguf_file: str | None = None) -> tuple[bool, st
                 raise ValueError("Checkpoint metadata exceeds the aggregate inspection limit.")
             local = hf_hub_download(repo_id=repo_id, filename=name, revision=revision)
             return _read_json(Path(local))
-        for name in (() if files else ("config.json", "model_index.json")):
+        for name in (() if files else ("config.json", "model_index.json", *_CODE_METADATA_NAMES)):
             if name not in rows:
                 continue
             value = read_remote_object(name)
+            code_metadata.append(value)
             if name == "config.json":
                 config = value
             elif name == "model_index.json":
                 model_index = value
+        _reject_repository_code(*code_metadata)
         if not files:
             indices = {name: read_remote_object(name) for name in _checkpoint_index_names(names, model_index)}
         if files:
@@ -445,8 +481,7 @@ def admit_hf_model(repo_id: str, gguf_file: str | None = None) -> tuple[bool, st
         companion_bytes = 0
         for name in metadata_files:
             size = getattr(rows[name], "size", None)
-            limit = 8 * 1024 * 1024 if PurePosixPath(name).suffix.lower() in _SOURCE_SUFFIXES else 64 * 1024 * 1024
-            if type(size) is not int or not 0 <= size <= limit:
+            if type(size) is not int or not 0 <= size <= 64 * 1024 * 1024:
                 raise ValueError(f"A model runtime/metadata companion exceeds the bounded download limit: {name}")
             companion_bytes += size
         if companion_bytes > _MAX_COMPANION_BYTES:
