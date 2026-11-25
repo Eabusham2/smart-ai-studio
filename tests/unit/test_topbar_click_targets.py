@@ -47,6 +47,7 @@ def test_all_header_buttons_are_topmost_and_click_events_invoke_commands(width):
         _resize_on_screen(root, width, 900)
         calls = []
         names = (
+            "btn_app_update",
             "btn_eval", "btn_load_unload", "btn_reset_reinstall", "btn_export_chat",
             "btn_branch_vis", "btn_memory_exp", "btn_sleep_panel", "btn_dsl_play",
             "btn_toggle_canvas", "btn_toggle_resources", "btn_zoom",
@@ -77,6 +78,13 @@ def test_all_header_buttons_are_topmost_and_click_events_invoke_commands(width):
         # The model selector is a Menubutton, not an ordinary action Button.
         selector = app.btn_model_menu
         _assert_click_target(root, selector)
+        first_action = app.btn_app_update
+        assert first_action.master is selector.master
+        assert first_action.winfo_y() <= selector.winfo_y()
+        assert first_action.winfo_x() == min(
+            widget.winfo_x() for widget in first_action.master.winfo_children()
+            if widget.winfo_ismapped() and widget.winfo_y() == first_action.winfo_y()
+        )
     finally:
         root.destroy()
 

@@ -410,6 +410,33 @@ administrator rights, Homebrew, or Xcode. The first assembly downloads the
 release parts; model weights are available offline afterward. See
 [No-admin macOS portable instructions](docs/macos-noadmin-portable.md).
 
+### In-app updates
+
+**↑ Update** is the first button at the top left of the desktop. Packaged releases
+check GitHub Releases quietly after startup and every six hours. The button changes
+to **↑ Update available** when a newer stable build is ready. Open it to see the
+installed build, release notes and download size, then choose **Update & Restart**.
+Downloads and verification run in the background; restart waits until generation,
+model operations, learning and queued prompts are finished.
+
+Updates keep the current platform and portable/Setup format. They verify the
+release's source commit, package receipt, file sizes and SHA-256 checksums before
+installing. This also detects new builds published under the same `latest` tag
+and avoids downgrading a newer installed build. Partially published releases are
+not installed.
+
+The app stays at its existing location. Chat and learning data, bundled models,
+custom user files and external data paths are preserved; model weights are moved
+locally rather than downloaded again. A previous-version backup remains beside
+the app. If the updated app fails to start, the helper restores the previous
+version. Updates require a writable installation folder and enough space for the
+download, unpacked app and retained backup.
+
+Install a release containing this updater once to enable it in an older app.
+Source checkouts continue to use Git for updates. A read-only app, including one
+running directly from a mounted disk image, must first be moved to a writable
+folder.
+
 
 Generate standalone release distribution bundles for macOS, Windows, and Linux:
 ```bash

@@ -131,6 +131,8 @@ def main(argv=None):
     env = dict(os.environ)
     env.pop('PYTHONHOME', None); env.pop('PYTHONPATH', None)
     env['PYTHONNOUSERSITE'] = '1'
+    # The updater must also wait for this parent to release the bundled runtime.
+    env['SMARTAI_BOOTSTRAP_PID'] = str(os.getpid())
     # Run the owned interpreter, not a machine/global Python discovered on PATH.
     return subprocess.call([str(python_path(runtime)), str(target), *args], cwd=str(root), env=env)
 

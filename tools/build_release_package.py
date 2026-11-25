@@ -18,6 +18,43 @@ import zipfile
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
+BUILD_RECORD = '.smartai-build.json'
+_USER_PATHS = {
+    'data', 'SmartAI_Data', 'preloaded_models', 'models', 'cache', 'caches',
+    '.cache', '.env', '.git', '__pycache__', '.pytest_cache',
+}
+
+
+def release_identity():
+    """Identify rolling releases by their actual build, not the reused tag."""
+    commit = os.environ.get('GITHUB_SHA', '').strip()
+    if not commit:
+        commit = subprocess.check_output(
+            ['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
+    if not re.fullmatch(r'[0-9a-fA-F]{40}', commit):
+        raise RuntimeError('A full source commit is required for release identity')
+    ref = os.environ.get('GITHUB_REF', '')
+    name = os.environ.get('GITHUB_REF_NAME', '') or ref.removeprefix('refs/tags/')
+    is_tag = os.environ.get('GITHUB_REF_TYPE') == 'tag' or ref.startswith('refs/tags/')
+    return {'schema': 1, 'repository': 'Eabusham2/smart-ai-studio',
+            'commit': commit.lower(), 'tag': name if is_tag and name.startswith('v') else 'latest'}
+
+
+def write_build_record(code, app, target, package_kind, identity):
+    """Stamp the exact package flavor while keeping user paths out of ownership."""
+    code, app = Path(code), Path(app)
+    if package_kind not in {'portable', 'setup'}:
+        raise ValueError('Unknown package kind')
+    managed = {p.name for p in code.iterdir() if p.name not in _USER_PATHS}
+    managed.add(BUILD_RECORD)
+    installed = {p.name for p in app.iterdir() if p.name not in _USER_PATHS}
+    if code == app:
+        installed.add(BUILD_RECORD)
+    record = dict(identity, target=target, package_kind=package_kind,
+                  managed_paths=sorted(managed), install_managed_paths=sorted(installed))
+    (code / BUILD_RECORD).write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
+    return record
+
 
 def sha(path):
     h=hashlib.sha256()
@@ -228,6 +265,7 @@ def package(target, output, *, prepare_only=False):
     from bootstrap_runtime import pip_install, fingerprint, python_path
     import build_app
     if target!=target_name():raise RuntimeError('Packages must be built on their matching native OS/architecture')
+    identity = release_identity()
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=True)
     build=output.parent/('package-work-'+target)
     if build.exists():shutil.rmtree(build)
@@ -281,6 +319,7 @@ def package(target, output, *, prepare_only=False):
     relocated=build/'relocated with spaces'/app.name
     relocated.parent.mkdir();shutil.move(str(app),str(relocated));app=relocated
     code=app/'Contents/Resources/app' if target.startswith('macOS') else app/'SmartAI.AppDir/usr/bin' if target.startswith('Linux') else app
+    write_build_record(code, app, target, 'portable', identity)
     smoke_app(code)
     if prepare_only:return app
     portable=output/f'SmartAI-{target}-portable.zip'
@@ -300,6 +339,7 @@ def package(target, output, *, prepare_only=False):
     # Setup is the same app and pinned Python, with packages installed on demand
     # into a user-owned directory, never into /Applications or system Python.
     shutil.rmtree(code/'runtime/python');shutil.copytree(base,code/'runtime/python',symlinks=False)
+    write_build_record(code, app, target, 'setup', identity)
     # The private Setup environment is intentionally empty: exercise its real
     # first-launch installation before certifying the non-portable format.
     setup_home=build/'clean setup home with spaces'
@@ -320,7 +360,7 @@ def package(target, output, *, prepare_only=False):
             shutil.rmtree(setup_home)
     setup=output/f'SmartAI-{target}-Setup.zip'
     archive_tree(app,setup);files+=split_large(setup)
-    receipt={'schema':1,'target':target,'commit':os.environ.get('GITHUB_SHA','local'),
+    receipt={'schema':1,'target':target,'commit':identity['commit'],
              'model_inference_run':False,'gui_smoke':'passed','setup_smoke':'passed',
              'dmg_smoke':'passed' if target.startswith('macOS') else 'not_applicable',
              'files':[{'name':p.name,'size':p.stat().st_size,'sha256':sha(p)} for p in files]}

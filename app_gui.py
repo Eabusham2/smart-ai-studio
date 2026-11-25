@@ -681,6 +681,7 @@ class SmartAIChatbotApp:
         self._update_model_action_buttons()
         self._update_input_lock_state()
         self._start_event_queue_polling()
+        self._app_update_ui.start()
 
     def _bind_model_memory(self, tab_id=None):
         """Bind tools, episodic recall and Sleep to one model and implementation.
@@ -1482,6 +1483,10 @@ class SmartAIChatbotApp:
         # Left Section: Brand + Speed/Param Badge + Model Selector Dropdown + Workspace Folder
         left_box = tk.Frame(self.hud_bar, bg=self.C["bg_hud"])
         left_box.pack(side="left", padx=4, pady=2)
+
+        from core.app_update_ui import AppUpdateUI
+        self._app_update_ui = AppUpdateUI(self)
+        self._app_update_ui.create_button(left_box, font=_FONT_TINY_BOLD)
 
         tk.Label(
             left_box, text="✦ Smart AI", font=_FONT_TITLE,
