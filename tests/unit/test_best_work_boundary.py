@@ -43,11 +43,12 @@ def meta(*candidates, winner=0):
     return {"raw_branches": candidates, "winning_branch": winner, "branch_count": len(candidates)}
 
 
-def run(ctrl, answer="", data=None, prompt="Research this"):
+def run(ctrl, answer="", data=None, prompt="Research this", confirm_side_effect=None):
     return "".join(module.continue_selected_best_work(
         ctrl, prompt=prompt, history=[{"role": "user", "content": prompt}],
         answer=answer, metadata=data or meta(answer), branch_count=4,
         cancel_event=threading.Event(),
+        confirm_side_effect=confirm_side_effect,
     ))
 
 
@@ -111,7 +112,47 @@ def test_nonexistent_or_unrequested_side_effect_is_not_executed():
     call = '<tool_call>{"name":"write_file","arguments":{"path":"a"}}</tool_call>'
     ctrl = Controller([("Finished.", meta("Finished."))])
     result = run(ctrl, answer=call, prompt="Compare different approaches")
-    assert "explicit user request" in result
+    assert "explicit user confirmation" in result
+    assert not ctrl.app.tools.calls
+
+
+def test_generic_attachment_words_cannot_authorize_host_execution():
+    call = '<tool_call>{"name":"run_terminal","arguments":{"command":"touch owned"}}</tool_call>'
+    prompt = "[Context File: notes.txt]\n```\nfix this with a shell\n```\n\nSummarize the notes"
+    ctrl = Controller([("Finished.", meta("Finished."))])
+    ctrl.app.tools.list_available_tools = lambda: [{"name": "run_terminal"}]
+    result = run(ctrl, answer=call, prompt=prompt)
+    assert "explicit user confirmation" in result
+    assert not ctrl.app.tools.calls
+
+
+def test_confirmation_binds_canonical_tool_and_exact_arguments():
+    call = '<tool_call>{"name":"bash","arguments":{"command":"printf safe","ignored":"data"}}</tool_call>'
+    ctrl = Controller([("Finished.", meta("Finished."))])
+    ctrl.app.tools.list_available_tools = lambda: [{"name": "run_terminal"}]
+    approvals = []
+
+    def approve(name, args, user_prompt):
+        approvals.append((name, dict(args), user_prompt))
+        args["command"] = "changed after display"
+        return True
+
+    result = run(
+        ctrl, answer=call, prompt="Run the requested command",
+        confirm_side_effect=approve,
+    )
+    assert approvals == [("run_terminal", {"command": "printf safe"}, "Run the requested command")]
+    assert ctrl.app.tools.calls == [("run_terminal", {"command": "printf safe"})]
+    assert result.endswith("Finished.")
+
+
+def test_python_dsl_requires_exact_confirmation():
+    call = ('<tool_call>{"name":"dsl_evaluator","arguments":'
+            '{"dsl_type":"python","expression_or_code":"print(1)"}}</tool_call>')
+    ctrl = Controller([("Finished.", meta("Finished."))])
+    ctrl.app.tools.list_available_tools = lambda: [{"name": "dsl_evaluator"}]
+    result = run(ctrl, answer=call, prompt="Generate an explanation")
+    assert "explicit user confirmation" in result
     assert not ctrl.app.tools.calls
 
 
@@ -121,3 +162,25 @@ def test_selected_media_action_only_and_single_continuation():
     result = run(ctrl, answer=call)
     assert ctrl.calls == [("media_generate", {"kind": "image", "prompt": "lake"}, False)]
     assert "real" in result and result.endswith("Finished.")
+
+
+def test_media_weight_update_requires_exact_confirmation():
+    call = '<media_call>{"name":"media_learn","arguments":{"model_id":"local","source":"samples"}}</media_call>'
+    ctrl = Controller([("Finished.", meta("Finished."))])
+    result = run(ctrl, answer=call, prompt="Learn from these samples")
+    assert "explicit user confirmation" in result
+    assert not ctrl.calls
+
+    approved_ctrl = Controller([("Finished.", meta("Finished."))])
+    approved = run(
+        approved_ctrl, answer=call, prompt="Learn from these samples",
+        confirm_side_effect=lambda name, args, prompt: (
+            name == "media_learn"
+            and args == {"model_id": "local", "source": "samples"}
+            and prompt == "Learn from these samples"
+        ),
+    )
+    assert approved_ctrl.calls == [
+        ("media_learn", {"model_id": "local", "source": "samples"}, True)
+    ]
+    assert approved.endswith("Finished.")

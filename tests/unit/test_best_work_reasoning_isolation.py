@@ -62,7 +62,14 @@ class BestWorkReasoningIsolationTests(unittest.TestCase):
 
         ctrl, _, _, actions = self.controller(respond)
         ctrl.app.tools.list_available_tools = lambda: [{"name": "write_file"}]
-        result = "".join(stream_best_work(ctrl, "Write the exact content to notes.txt", passes=2))
+        result = "".join(stream_best_work(
+            ctrl, "Write the exact content to notes.txt", passes=2,
+            confirm_side_effect=lambda name, args, prompt: (
+                name == "write_file"
+                and args == {"path": "notes.txt", "content": content}
+                and prompt == "Write the exact content to notes.txt"
+            ),
+        ))
         self.assertEqual(actions, [("write_file", {"path": "notes.txt", "content": content})])
         revised = matched[0]["candidates"][1]["text"]
         self.assertEqual(revised, "<think>Original rationale.</think>" + invocation)

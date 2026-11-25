@@ -107,18 +107,66 @@ _MEDIA_TOOLS = frozenset((
     "media_list_models", "media_generate", "media_review", "media_pro",
     "media_learn", "media_gather", "media_rsi", "media_inspect_url",
 ))
-_EXPLICIT_UPDATE = re.compile(
-    r"\b(?:learn|train|fine[- ]?tune|rsi|update weights)\b", re.I
-)
+_MEDIA_UPDATE_TOOLS = frozenset(("media_learn", "media_rsi"))
 _SIDE_EFFECT_TOOLS = frozenset((
-    "write_file", "edit_file", "run_terminal", "bash", "sh",
-    "terminal", "python_sandbox", "python", "python_exec",
-    "save_user_memory", "save_memory", "remember", "sql_query",
+    "write_file", "edit_file", "run_terminal", "python_sandbox",
+    "save_user_memory", "sql_query", "dsl_evaluator",
 ))
-_ACTION_REQUEST = re.compile(
-    r"\b(?:write|edit|change|fix|execute|run|install|create|save|"
-    r"build|modify|update|delete|remove|implement|generate)\b", re.I
-)
+_TOOL_ALIASES = {
+    "bash": "run_terminal",
+    "sh": "run_terminal",
+    "terminal": "run_terminal",
+    "python": "python_sandbox",
+    "python_exec": "python_sandbox",
+    "save_memory": "save_user_memory",
+    "remember": "save_user_memory",
+}
+_SIDE_EFFECT_ARGUMENT_DEFAULTS = {
+    "write_file": {"path": "", "content": ""},
+    "edit_file": {"path": "", "target": "", "replacement": ""},
+    "run_terminal": {"command": ""},
+    "python_sandbox": {"code": ""},
+    "save_user_memory": {"key": "", "value": ""},
+    "sql_query": {"query": ""},
+    "dsl_evaluator": {
+        "dsl_type": "tensorgraph",
+        "expression_or_code": "",
+        "assertions": None,
+    },
+}
+
+
+def _canonical_tool_request(name, args):
+    """Return the exact canonical tool payload that will reach its sink."""
+    requested = str(name or "").strip()
+    canonical = _TOOL_ALIASES.get(requested.casefold(), requested.casefold())
+    if canonical not in _SIDE_EFFECT_TOOLS:
+        return requested, args
+    defaults = _SIDE_EFFECT_ARGUMENT_DEFAULTS[canonical]
+    normalized = {key: args.get(key, default) for key, default in defaults.items()}
+    return canonical, normalized
+
+
+def _action_key(action):
+    _kind, name, args = action
+    name, args = _canonical_tool_request(name, args)
+    return name.casefold(), json.dumps(args, sort_keys=True, ensure_ascii=False)
+
+
+def _approve_side_effect(name, args, user_prompt, confirm_side_effect):
+    """Request a single-use capability for one canonical tool payload."""
+    if not callable(confirm_side_effect):
+        return False, "This operation requires explicit user confirmation for the exact tool and arguments"
+    # The callback may render this object but cannot mutate the payload that is
+    # dispatched after approval.
+    displayed_args = json.loads(json.dumps(args, ensure_ascii=False))
+    try:
+        approved = confirm_side_effect(name, displayed_args, str(user_prompt or ""))
+    except Exception:
+        return False, "The exact tool request could not be confirmed"
+    if approved is not True:
+        return False, "The exact tool request was not approved"
+    return True, ""
 
 
 def _selected_text(answer, metadata):
@@ -135,7 +183,7 @@ def _selected_text(answer, metadata):
 def continue_selected_best_work(
     controller, *, prompt, history, answer, metadata, branch_count,
     cancel_event=None, progress_callback=None, status_callback=None,
-    max_tool_calls=None,
+    max_tool_calls=None, authorization_prompt=None, confirm_side_effect=None,
 ):
     """Yield only chosen-branch output; execute at most one call per stage.
 
@@ -149,6 +197,9 @@ def continue_selected_best_work(
     turns = list(history or ())
     turns.insert(0, {"role": "system", "content": BEST_WORK_GUIDE})
     current_prompt = str(prompt or "")
+    authorization_prompt = str(
+        prompt if authorization_prompt is None else authorization_prompt
+    )
     controller.last_best_work_metadata = dict(metadata or {})
     executed = set()
     stage = 0
@@ -167,36 +218,22 @@ def continue_selected_best_work(
             return
 
         kind, name, args = request
-        key = (name.casefold(), json.dumps(args, sort_keys=True, ensure_ascii=False))
+        key = _action_key(request)
         if key in executed:
             yield "\nBest Work blocked a duplicate tool call.\n"
             return
-        executed.add(key)
         if cancel_event is not None and cancel_event.is_set():
             return
         if status_callback:
             status_callback("executing", name, stage + 1)
 
-        if kind == "media_call":
-            if name not in _MEDIA_TOOLS:
-                ok, result_text = False, "Unknown media operation"
-            else:
-                allow_update = bool(_EXPLICIT_UPDATE.search(str(prompt or "")))
-                result = controller.call(name, args, allow_update=allow_update)
-                ok = result.get("status") == "success"
-                result_text = json.dumps(result, ensure_ascii=False)
-        else:
-            available = {
-                row.get("name") for row in controller.app.tools.list_available_tools()
-                if isinstance(row, dict)
-            }
-            if name not in available:
-                ok, result_text = False, "Unknown or unavailable tool"
-            elif name in _SIDE_EFFECT_TOOLS and not _ACTION_REQUEST.search(str(prompt or "")):
-                ok, result_text = False, "This operation requires an explicit user request"
-            else:
-                ok, result_text = controller.app.tools.execute_tool(name, args)
-                result_text = str(result_text)
+        ok, result_text, repeated = _execute_action(
+            controller, request, authorization_prompt, executed,
+            confirm_side_effect=confirm_side_effect,
+        )
+        if repeated:
+            yield "\nBest Work blocked a duplicate tool call.\n"
+            return
 
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -234,8 +271,9 @@ def continue_selected_best_work(
     return
 
 
-def _execute_action(controller, action, user_prompt, executed):
+def _execute_action(controller, action, user_prompt, executed, *, confirm_side_effect=None):
     kind, name, args = action
+    name, args = _canonical_tool_request(name, args)
     key = (name.casefold(), json.dumps(args, sort_keys=True, ensure_ascii=False))
     if key in executed:
         return False, "Duplicate tool request blocked.", True
@@ -245,14 +283,26 @@ def _execute_action(controller, action, user_prompt, executed):
     if kind == "media_call":
         if name not in _MEDIA_TOOLS:
             return False, "Unknown media operation", False
-        value = controller.call(name, args, allow_update=bool(_EXPLICIT_UPDATE.search(user_prompt)))
+        allow_update = False
+        if name in _MEDIA_UPDATE_TOOLS:
+            approved, reason = _approve_side_effect(
+                name, args, user_prompt, confirm_side_effect,
+            )
+            if not approved:
+                return False, reason, False
+            allow_update = True
+        value = controller.call(name, args, allow_update=allow_update)
         return value.get("status") == "success", json.dumps(value, ensure_ascii=False), False
     available = {row.get("name") for row in controller.app.tools.list_available_tools()
                  if isinstance(row, dict)}
     if name not in available:
         return False, "Unknown or unavailable tool", False
-    if name in _SIDE_EFFECT_TOOLS and not _ACTION_REQUEST.search(user_prompt):
-        return False, "This operation requires an explicit user request", False
+    if name in _SIDE_EFFECT_TOOLS:
+        approved, reason = _approve_side_effect(
+            name, args, user_prompt, confirm_side_effect,
+        )
+        if not approved:
+            return False, reason, False
     ok, result = controller.app.tools.execute_tool(name, args)
     return bool(ok), str(result), False
 
@@ -329,7 +379,8 @@ def _selected_pass(engine, prompt, history, cancel_event, progress_callback, dec
 
 def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
                      progress_callback=None, status_callback=None, max_tool_calls=None,
-                     route_with_history=False, *, authorization_prompt=None):
+                     route_with_history=False, *, authorization_prompt=None,
+                     confirm_side_effect=None):
     """Use the existing stream/entropy/Pro pipeline at every real handoff.
 
     N=1 streams immediately; N>1 streams only the existing scorer's winner.
@@ -408,7 +459,9 @@ def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
             if cancel_event is not None and cancel_event.is_set():
                 return
             ok, result, repeated = _execute_action(
-                controller, action, original_prompt if authorization_prompt is None else str(authorization_prompt), executed)
+                controller, action,
+                original_prompt if authorization_prompt is None else str(authorization_prompt),
+                executed, confirm_side_effect=confirm_side_effect)
             yield f"\n⚙️ {action[1]} ({'complete' if ok else 'failed'}): {result}\n"
             if repeated or (cancel_event is not None and cancel_event.is_set()):
                 return
@@ -430,16 +483,20 @@ def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
 
 def stream_best_work(controller, prompt, history=None, cancel_event=None,
                      progress_callback=None, status_callback=None, max_tool_calls=None,
-                     route_with_history=False, passes=None):
+                     route_with_history=False, passes=None, *, authorization_prompt=None,
+                     confirm_side_effect=None):
     """Refine every routed branch before choosing an exact tournament winner."""
     yield from stream_best_work_sequential(
         controller, prompt, history, cancel_event, progress_callback,
-        status_callback, max_tool_calls, route_with_history, passes)
+        status_callback, max_tool_calls, route_with_history, passes,
+        authorization_prompt=authorization_prompt,
+        confirm_side_effect=confirm_side_effect)
 
 
 def stream_best_work_sequential(controller, prompt, history=None, cancel_event=None,
                      progress_callback=None, status_callback=None, max_tool_calls=None,
-                     route_with_history=False, passes=None):
+                     route_with_history=False, passes=None, *, authorization_prompt=None,
+                     confirm_side_effect=None):
     """Attach per-branch Best Work to the existing router and tool handoff.
 
     The legacy handoff still owns display, authorization, duplicate suppression,
@@ -460,9 +517,11 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
     controller.last_best_work_metadata = report
     if cancel_event is not None and cancel_event.is_set():
         return
-    # Document preparation may replace authorized instructions with a learned
-    # address. Keep the user's request only for authorization, not continuation.
-    authorization_prompt = str(prompt)
+    # Document preparation may replace the original request with a learned
+    # address. Keep the typed request as confirmation context, not continuation.
+    authorization_prompt = str(
+        prompt if authorization_prompt is None else authorization_prompt
+    )
     # Prepare original archived history before any copies, just as before.
     # Its learning is separate from the subsequent read-only inference cycle.
     if isinstance(history, (ChatArchive, ActiveChatHistory)):
@@ -553,7 +612,8 @@ def stream_best_work_sequential(controller, prompt, history=None, cancel_event=N
             yield from stream_best_work_legacy(
                 controller, prompt, history, cancel_event, progress_callback,
                 decision, max_tool_calls, route_with_history,
-                authorization_prompt=authorization_prompt)
+                authorization_prompt=authorization_prompt,
+                confirm_side_effect=confirm_side_effect)
 
     context = copy_context()
     iterator = measured_handoff()

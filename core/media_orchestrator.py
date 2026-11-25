@@ -702,13 +702,14 @@ class MediaController:
 
     def stream_solve(self, prompt, history=None, cancel_event=None, progress_callback=None,
                      best_work_enabled=False, status_callback=None, route_with_history=False,
-                     best_work_passes=None):
+                     best_work_passes=None, authorization_prompt=None,
+                     confirm_side_effect=None):
         with self.lock:
             self._depth += 1
             self.busy = True
             try:
                 # Best Work projects archives at its public entry point so it
-                # also retains the original request for tool authorization.
+                # also retains the typed request for side-effect confirmation.
                 from core.context_memory import ChatArchive
                 if not best_work_enabled and isinstance(history, ChatArchive):
                     from core.awake_auto_hook import prepare_awake_request
@@ -723,7 +724,9 @@ class MediaController:
                     yield from stream_best_work(self, prompt, history, cancel_event,
                                                 progress_callback, status_callback,
                                                 route_with_history=route_with_history,
-                                                passes=best_work_passes)
+                                                passes=best_work_passes,
+                                                authorization_prompt=authorization_prompt,
+                                                confirm_side_effect=confirm_side_effect)
                 else:
                     yield from self._stream_solve(prompt, history=history, cancel_event=cancel_event,
                                                   progress_callback=progress_callback)

@@ -5078,6 +5078,40 @@ class SmartAIChatbotApp:
                 if _owns_request():
                     callback()
             return post_ui(self, guarded, delay_ms=delay)
+
+        def _confirm_side_effect(tool_name, arguments, authorization_prompt):
+            # Only the text typed for this owned turn may reach the approval
+            # broker. Attachment text and model output remain display-only data.
+            if str(authorization_prompt) != str(user_prompt) or not _owns_request():
+                return False
+            completed = threading.Event()
+            decision = {"approved": False}
+            payload = json.dumps(arguments, ensure_ascii=False, sort_keys=True, indent=2)
+
+            def ask_user():
+                try:
+                    decision["approved"] = messagebox.askyesno(
+                        "Approve Best Work Tool",
+                        "Best Work requested this side-effecting operation for the current turn:\n\n"
+                        f"Tool: {tool_name}\nArguments:\n{payload}\n\n"
+                        "Approve this one operation?",
+                        parent=self.root,
+                    )
+                finally:
+                    completed.set()
+
+            if threading.current_thread() is threading.main_thread():
+                ask_user()
+            else:
+                _post(0, ask_user)
+            while not completed.wait(0.05):
+                if self.cancel_event.is_set() or not _owns_request():
+                    return False
+            return bool(
+                decision["approved"]
+                and not self.cancel_event.is_set()
+                and _owns_request()
+            )
         # Preserve historical routing. The GUI only enables/disables Pro;
         # neither a keyword heuristic nor a GUI count overrides the router.
         use_pro_branches = bool(use_pro_branches)
@@ -5635,7 +5669,9 @@ class SmartAIChatbotApp:
                 if use_pro_branches:
                     options.update(best_work_enabled=True, progress_callback=_branch_progress,
                                    status_callback=_decision, route_with_history=route_with_history,
-                                   best_work_passes=getattr(self.settings, "best_work_passes", 2))
+                                   best_work_passes=getattr(self.settings, "best_work_passes", 2),
+                                   authorization_prompt=user_prompt,
+                                   confirm_side_effect=_confirm_side_effect)
                 iterator = self.multimodal.stream_solve(full_msg,
                     history=curr_history, cancel_event=self.cancel_event, **options
                 )

@@ -295,7 +295,7 @@ def test_draft_cannot_authorize_a_final_side_effect():
                                ["explain"], ["No file was written."]])
     ctrl.app.tools.list_available_tools = lambda: [{"name": "write_file"}]
     rendered = "".join(stream_best_work(ctrl, "Describe an otter", passes=2))
-    assert "requires an explicit user request" in rendered
+    assert "requires explicit user confirmation" in rendered
     assert not any(row[0] == "execute" for row in events)
 
 
@@ -394,7 +394,7 @@ def test_capacity_fallback_uses_only_original_request_for_tool_authorization():
     ctrl, events = controller([["Write the file. " + write], _unfit_refinement, ["Final answer"], _unfit_refinement])
     ctrl.app.tools.list_available_tools = lambda: [{"name": "write_file"}]
     text = "".join(stream_best_work(ctrl, "Tell me about seals", passes=2))
-    assert "requires an explicit user request" in text
+    assert "requires explicit user confirmation" in text
     assert text.endswith("Final answer") and not any(event[0] == "execute" for event in events)
 
 

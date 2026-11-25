@@ -55,9 +55,11 @@ def test_original_algorithm_bodies_match_pre_merge_version(path, name, expected)
                         and isinstance(call.func, ast.Name) and call.func.id == '_execute_action')
         corrected = ast.parse(
             '_execute_action(controller, action, original_prompt if authorization_prompt is None '
-            'else str(authorization_prompt), executed)', mode='eval').body
+            'else str(authorization_prompt), executed, '
+            'confirm_side_effect=confirm_side_effect)', mode='eval').body
         assert _canonical_ast(dispatch) == _canonical_ast(corrected)
         dispatch.args[2] = ast.parse('original_prompt', mode='eval').body
+        dispatch.keywords = []
     serialized = json.dumps(_canonical_ast(node.body), sort_keys=True, separators=(',', ':'))
     actual = hashlib.sha256(serialized.encode()).hexdigest()
     assert actual == expected

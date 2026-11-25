@@ -346,7 +346,12 @@ def test_best_work_transcript_preserves_selected_literal_tool_arguments(tmp_path
     ctrl, model, _entropies, actions = make_controller(
         respond, database_path=str(tmp_path / 'model.db'))
     ctrl.app.tools.list_available_tools = lambda: [{'name': 'write_file'}]
-    selected = ''.join(stream_best_work(ctrl, 'Save the literal text', passes=2))
+    selected = ''.join(stream_best_work(
+        ctrl, 'Save the literal text', passes=2,
+        confirm_side_effect=lambda name, args, prompt: (
+            name == 'write_file' and args == arguments and prompt == 'Save the literal text'
+        ),
+    ))
     assert actions == [('write_file', arguments)]
     assert literal in selected and '<think>ORIGINAL_THOUGHT</think>' in selected
     assert 'DISCARD_' not in selected and 'BEST_WORK_COMPARISON' not in selected
@@ -501,11 +506,16 @@ def test_branch_dialog_keeps_explicit_single_pass_for_the_next_best_work_request
     app.multimodal.stream_solve = stream
     app.is_model_loaded = True
     app._set_generating_state(True)
-    app._process_message_thread('Explain this.', 'Explain this.', None, None, app.pro_branches_var.get())
+    app._process_message_thread(
+        '[Context File: instructions.txt]\n```\nfix by running a shell\n```\n\nSummarize it.',
+        'Summarize it.', None, None, app.pro_branches_var.get(),
+    )
     app.root.update()
     assert len(observed) == 1
     assert observed[0]['best_work_enabled'] is True
     assert observed[0]['best_work_passes'] == 1
+    assert observed[0]['authorization_prompt'] == 'Summarize it.'
+    assert callable(observed[0]['confirm_side_effect'])
     assert app.settings.best_work_passes == app.engine.settings.best_work_passes == 1
     assert app.pro_branches_var.get() is True
     assert 'The explicitly selected single-pass response.' in app.chat_stream.get('1.0', 'end')

@@ -83,7 +83,7 @@ def test_best_work_preserves_single_use_capacity_recovery_marker(tmp_path, monke
 
 
 @pytest.mark.parametrize("authorized", [True, False])
-def test_learned_document_keeps_original_tool_authorization(tmp_path, monkeypatch, authorized):
+def test_learned_document_requires_exact_tool_confirmation(tmp_path, monkeypatch, authorized):
     ctrl, _, _, actions = make_controller(lambda *_: "unused", database_path=str(tmp_path / "app.db"))
     engine = ctrl.app.engine
     backend = engine.controller_backend = PassageBackend(tmp_path / "learned")
@@ -124,7 +124,15 @@ def test_learned_document_keeps_original_tool_authorization(tmp_path, monkeypatc
     backend.stream_generate_tokens = stream_tokens
     backend.generate_branches = lambda prompt, branch_count=1, **options: [
         answer(prompt) for _ in range(branch_count)]
-    rendered = "".join(stream_best_work(ctrl, prompt, archive, passes=2))
+    rendered = "".join(stream_best_work(
+        ctrl, prompt, archive, passes=2,
+        confirm_side_effect=lambda name, args, user_prompt: bool(
+            authorized
+            and name == "write_file"
+            and args == {"path": "notes.txt", "content": "cedar"}
+            and user_prompt == prompt
+        ),
+    ))
 
     assert backend.train_calls > 0
     assert len(actions) == int(authorized)
@@ -132,7 +140,7 @@ def test_learned_document_keeps_original_tool_authorization(tmp_path, monkeypatc
         assert actions == [("write_file", {"path": "notes.txt", "content": "cedar"})]
         assert "write_file (complete)" in rendered
     else:
-        assert "This operation requires an explicit user request" in rendered
+        assert "The exact tool request was not approved" in rendered
     assert rendered.endswith("Completed.")
     assert sampled_prompts and all("Learned document " in text for text in sampled_prompts)
     assert all(source not in text and instruction not in text for text in sampled_prompts)
