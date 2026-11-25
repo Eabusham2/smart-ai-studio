@@ -3910,8 +3910,9 @@ class SmartAIChatbotApp:
                 elif model_type == "audio":
                     load_res = self.audio_engine.load_model(target_info)
                 else:
-                    # Image/video pipelines are lazy-loaded by their generation backend.
-                    load_res = {"status": "loaded", "backend": f"{model_type}-lazy"}
+                    # Keep pipeline allocation lazy, but bind readiness to the exact
+                    # admitted local snapshot that generation will consume.
+                    load_res = self.media_engine.load_model(target_info)
             except Exception as exc:
                 load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
@@ -3955,6 +3956,8 @@ class SmartAIChatbotApp:
                         f"⚡ **{label}**: `{target_info['name']}` is ready."
                         + (f"\n\n{migration_note}" if migration_note else "")
                         + (f"\n\n{self._active_memory_placement['message']}" if self._active_memory_placement.get("message") else "")
+                        + (f"\n\nSnapshot revision: `{load_res['revision']}`"
+                           if model_type in ("image", "video") and load_res.get("revision") else "")
                     )
                 elif load_res.get("status") == "cancelled":
                     self.is_model_loaded = False
@@ -4297,15 +4300,19 @@ class SmartAIChatbotApp:
                     text=f"○ Not Downloaded ({target_info['short_name']})", fg=self.C["accent_yellow"]
                 )
         else:
-            # Image/video runtimes load lazily at generation time. Cached means ready,
-            # never "loaded into Pro".
-            self.is_model_loaded = bool(cached)
+            # Image/video pipelines allocate lazily, but readiness still requires a
+            # complete local snapshot bound by the media engine.
+            load_res = (self.media_engine.load_model(target_info) if cached else
+                        {"status": "error", "error": "The admitted media snapshot is not cached."})
+            self.is_model_loaded = load_res.get("status") == "loaded"
             self.lbl_model_status.configure(
                 text=(
                     f"● Media Ready: {target_info['short_name']}"
+                    if self.is_model_loaded else
+                    f"⚠ Media snapshot invalid ({target_info['short_name']})"
                     if cached else f"○ Not Downloaded ({target_info['short_name']})"
                 ),
-                fg=self.C["accent_green"] if cached else self.C["accent_yellow"],
+                fg=self.C["accent_green"] if self.is_model_loaded else self.C["accent_yellow"],
             )
 
         self._sync_memory_watchdog(target_info)
@@ -5194,6 +5201,7 @@ class SmartAIChatbotApp:
                         )
                     if media_res.get("status") == "success":
                         path = str(media_res.get("path") or output_path)
+                        revision = str(media_res.get("revision") or "")
                         _post(
                             0,
                             lambda vid=visual_id, kind=active_type:
@@ -5201,8 +5209,9 @@ class SmartAIChatbotApp:
                                     vid, True, f"✓ {kind.title()} complete"
                                 ),
                         )
-                        _post(0, lambda p=path, kind=active_type: self._append_ai_message(
+                        _post(0, lambda p=path, kind=active_type, rev=revision: self._append_ai_message(
                             f"✓ **{kind.title()} generated**: `{p}`"
+                            + (f"\n\nSnapshot revision: `{rev}`" if rev else "")
                         ))
                     else:
                         error = str(media_res.get("error") or f"{active_type.title()} generation failed.")

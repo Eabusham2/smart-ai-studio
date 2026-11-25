@@ -9,9 +9,11 @@ from __future__ import annotations
 import gc
 import os
 import platform
+import re
 import shutil
 import subprocess
 import time
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Optional
 
 
@@ -19,6 +21,9 @@ class MediaGenerationEngine:
     def __init__(self) -> None:
         self.active_pipeline = None
         self.active_repo_id = ""
+        self.active_model_path = ""
+        self.active_revision = ""
+        self._active_model_key = None
 
     @staticmethod
     def _torch_device():
@@ -32,6 +37,9 @@ class MediaGenerationEngine:
     def unload_model(self) -> None:
         self.active_pipeline = None
         self.active_repo_id = ""
+        self.active_model_path = ""
+        self.active_revision = ""
+        self._active_model_key = None
         gc.collect()
         try:
             import torch
@@ -42,14 +50,125 @@ class MediaGenerationEngine:
         except Exception:
             pass
 
-    def _load_pipeline(self, repo_id: str):
+    @staticmethod
+    def _model_key(model_info: Dict[str, Any]):
+        model_path = str(model_info.get("model_path") or "").strip()
+        if model_path:
+            model_path = os.path.abspath(os.path.expanduser(model_path))
+        return (
+            str(model_info.get("repo_id") or "").strip(),
+            str(model_info.get("source_revision") or "").strip(),
+            str(model_info.get("repo_revision") or "").strip(),
+            model_path,
+        )
+
+    @staticmethod
+    def _admitted_snapshot(model_info: Dict[str, Any]):
+        """Validate and return the exact local snapshot accepted during admission."""
+        model_path = str(model_info.get("model_path") or "").strip()
+        if not model_path:
+            raise ValueError("The admitted media snapshot is missing. Reinstall and verify this model before generation.")
+        root = Path(model_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError("The admitted media snapshot directory is unavailable. Reinstall this model before generation.")
+
+        repo_id = str(model_info.get("repo_id") or "").strip()
+        source_repo_id = str(model_info.get("source_repo_id") or "").strip()
+        source_revision = str(model_info.get("source_revision") or "").strip()
+        repo_revision = str(model_info.get("repo_revision") or "").strip()
+        remote_admission = (
+            model_info.get("source_origin") == "hf_fetch"
+            or model_info.get("source_kind") == "hf_fetch"
+            or bool(source_revision or repo_revision or model_info.get("download_required_files"))
+        )
+        if remote_admission:
+            revision = source_revision or repo_revision
+            if not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
+                raise ValueError("The admitted media snapshot has no immutable repository revision. Reinstall and verify it.")
+            if source_revision and repo_revision and source_revision.lower() != repo_revision.lower():
+                raise ValueError("The admitted media snapshot has conflicting repository revisions. Reinstall and verify it.")
+            if source_repo_id and (not repo_id or source_repo_id != repo_id):
+                raise ValueError("The admitted media snapshot does not match the selected repository.")
+
+            required = model_info.get("download_required_files")
+            if not isinstance(required, (list, tuple)) or not required:
+                raise ValueError("The admitted media snapshot has no complete artifact manifest. Reinstall and verify it.")
+            for name in required:
+                if (not isinstance(name, str) or not name or "\\" in name
+                        or PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts
+                        or ":" in name or any(char in name for char in "*?[]")):
+                    raise ValueError("The admitted media snapshot contains an invalid artifact path.")
+                artifact = root.joinpath(*PurePosixPath(name).parts)
+                if not artifact.is_file() or artifact.stat().st_size <= 0:
+                    raise ValueError(f"The admitted media snapshot is incomplete: {name}")
+            return str(root), revision.lower()
+
+        return str(root), ""
+
+    def _resolve_snapshot(self, model_info: Dict[str, Any]):
+        key = self._model_key(model_info)
+        if self._active_model_key == key and self.active_model_path:
+            if model_info.get("model_path"):
+                path, revision = self._admitted_snapshot(model_info)
+                if path != self.active_model_path:
+                    raise ValueError("The selected media snapshot changed after it was prepared.")
+                return path, revision
+            if os.path.isdir(self.active_model_path):
+                return self.active_model_path, self.active_revision
+
+        if model_info.get("model_path"):
+            return self._admitted_snapshot(model_info)
+        if (model_info.get("source_origin") == "hf_fetch"
+                or model_info.get("source_kind") == "hf_fetch"
+                or any(model_info.get(key) for key in (
+                    "source_revision", "repo_revision", "download_required_files", "requires_local_validation",
+                ))):
+            raise ValueError("The admitted media snapshot is missing. Reinstall and verify this model before generation.")
+
+        # Older bundled presets did not persist admission metadata. Preserve their
+        # cached behavior without allowing generation to resolve a moving network ref.
+        repo_id = str(model_info.get("repo_id") or "").strip()
+        if not repo_id:
+            raise ValueError("Media model has no repository ID or local snapshot.")
+        from huggingface_hub import snapshot_download
+        snapshot = Path(snapshot_download(repo_id=repo_id, local_files_only=True)).resolve()
+        if not snapshot.is_dir():
+            raise ValueError("The cached media snapshot is unavailable. Install the model before generation.")
+        revision = snapshot.name.lower() if re.fullmatch(r"[0-9a-fA-F]{40}", snapshot.name) else ""
+        return str(snapshot), revision
+
+    def _activate_snapshot(self, model_info: Dict[str, Any], model_path: str, revision: str) -> None:
+        self.active_repo_id = str(model_info.get("repo_id") or "").strip()
+        self.active_model_path = model_path
+        self.active_revision = revision
+        self._active_model_key = self._model_key(model_info)
+
+    def load_model(self, model_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare a lazy media model while binding it to one local snapshot."""
+        try:
+            model_path, revision = self._resolve_snapshot(model_info)
+            self._activate_snapshot(model_info, model_path, revision)
+            return {
+                "status": "loaded",
+                "backend": f"{str(model_info.get('model_type') or 'media')}-lazy",
+                "model_path": model_path,
+                "revision": revision,
+            }
+        except Exception as exc:
+            self.unload_model()
+            return {"status": "error", "error": str(exc)}
+
+    def _load_pipeline(
+        self, model_info: Dict[str, Any], model_path: str, revision: str,
+    ):
         import torch
         from diffusers import DiffusionPipeline
 
         device = self._torch_device()
         dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
-        kwargs = {"torch_dtype": dtype, "low_cpu_mem_usage": True}
-        pipe = DiffusionPipeline.from_pretrained(repo_id, **kwargs)
+        kwargs = {"torch_dtype": dtype, "low_cpu_mem_usage": True, "local_files_only": True}
+        pipe = DiffusionPipeline.from_pretrained(model_path, **kwargs)
+        repo_id = str(model_info.get("repo_id") or "").strip()
         from core.media_learning import apply_saved_media_adapter
         apply_saved_media_adapter(pipe, repo_id)
 
@@ -72,7 +191,7 @@ class MediaGenerationEngine:
                 pass
 
         self.active_pipeline = pipe
-        self.active_repo_id = repo_id
+        self._activate_snapshot(model_info, model_path, revision)
         return pipe
 
     def generate_image(
@@ -94,10 +213,12 @@ class MediaGenerationEngine:
         )
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         steps = int(model_info.get("inference_steps", 4) or 4)
+        revision = ""
 
         try:
             if progress_callback:
                 progress_callback(0.03, "Preparing image pipeline")
+            model_path, revision = self._resolve_snapshot(model_info)
             backend_hint = str(model_info.get("image_backend") or "diffusers").lower()
             if backend_hint == "mflux":
                 exe = shutil.which("mflux-generate-flux2")
@@ -109,7 +230,7 @@ class MediaGenerationEngine:
                     }
                 cmd = [
                     exe,
-                    "--model", repo_id,
+                    "--model", model_path,
                     "--prompt", prompt,
                     "--steps", str(max(1, steps)),
                     "--seed", str(int(model_info.get("seed", 42) or 42)),
@@ -135,7 +256,9 @@ class MediaGenerationEngine:
                     cmd.extend(["--lora-paths", lora_files[-1], "--lora-scales", "1.0"])
                 if progress_callback:
                     progress_callback(0.12, "Rendering image")
-                run = subprocess.run(cmd, capture_output=True, text=True)
+                offline_env = os.environ.copy()
+                offline_env.update(HF_HUB_OFFLINE="1", DIFFUSERS_OFFLINE="1")
+                run = subprocess.run(cmd, capture_output=True, text=True, env=offline_env)
                 if run.returncode != 0:
                     return {
                         "status": "error",
@@ -150,9 +273,10 @@ class MediaGenerationEngine:
                     }
                 if progress_callback:
                     progress_callback(1.0, "Image complete")
-                return {"status": "success", "path": output_path, "repo_id": repo_id}
+                return {"status": "success", "path": output_path, "repo_id": repo_id,
+                        "revision": revision, "model_path": model_path}
 
-            pipe = self._load_pipeline(repo_id)
+            pipe = self._load_pipeline(model_info, model_path, revision)
             if progress_callback:
                 progress_callback(0.12, "Model ready")
 
@@ -181,9 +305,11 @@ class MediaGenerationEngine:
                 return {"status": "error", "error": "Image pipeline did not write the output file."}
             if progress_callback:
                 progress_callback(1.0, "Image complete")
-            return {"status": "success", "path": output_path, "repo_id": repo_id}
+            return {"status": "success", "path": output_path, "repo_id": repo_id,
+                    "revision": revision, "model_path": model_path}
         except Exception as exc:
-            return {"status": "error", "error": str(exc), "repo_id": repo_id}
+            return {"status": "error", "error": str(exc), "repo_id": repo_id,
+                    "revision": revision}
         finally:
             self.unload_model()
 
@@ -207,12 +333,14 @@ class MediaGenerationEngine:
         )
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         steps = int(model_info.get("inference_steps", 30) or 30)
+        revision = ""
 
         try:
             if progress_callback:
                 progress_callback(0.03, "Preparing video pipeline")
+            model_path, revision = self._resolve_snapshot(model_info)
             from diffusers.utils import export_to_video
-            pipe = self._load_pipeline(repo_id)
+            pipe = self._load_pipeline(model_info, model_path, revision)
             if progress_callback:
                 progress_callback(0.12, "Model ready")
 
@@ -245,8 +373,10 @@ class MediaGenerationEngine:
                 return {"status": "error", "error": "Video pipeline did not write the output file."}
             if progress_callback:
                 progress_callback(1.0, "Video complete")
-            return {"status": "success", "path": output_path, "repo_id": repo_id}
+            return {"status": "success", "path": output_path, "repo_id": repo_id,
+                    "revision": revision, "model_path": model_path}
         except Exception as exc:
-            return {"status": "error", "error": str(exc), "repo_id": repo_id}
+            return {"status": "error", "error": str(exc), "repo_id": repo_id,
+                    "revision": revision}
         finally:
             self.unload_model()

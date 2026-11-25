@@ -406,6 +406,8 @@ class MediaController:
         if actual.parent != directory or not actual.is_file() or actual.stat().st_size == 0:
             raise RuntimeError("Media backend did not write a valid artifact in the output directory")
         record = {"artifact_id": aid, "kind": kind, "model_id": mid, "repo_id": info["repo_id"], "prompt": prompt, "path": str(actual)}
+        if result.get("revision"):
+            record["revision"] = str(result["revision"])
         self.artifacts[aid] = record
         return {"status": "success", **record, "weights_updated": False}
 
