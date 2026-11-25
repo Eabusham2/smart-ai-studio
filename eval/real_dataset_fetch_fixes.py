@@ -7,10 +7,75 @@ policy, checkpointing, or evaluation order.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
-import pickle
 import zlib
 from typing import Any, Dict, List
+
+
+_MAX_IO_JSON_BYTES = 8 * 1024 * 1024
+_MAX_IO_COMPRESSED_BYTES = 8 * 1024 * 1024
+_MAX_IO_BASE64_CHARS = 4 * ((_MAX_IO_COMPRESSED_BYTES + 2) // 3)
+_MAX_IO_CASES = 10_000
+_MAX_IO_VALUE_BYTES = 1024 * 1024
+
+
+def _utf8_size(value: str, limit: int):
+    if len(value) > limit:
+        return None
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+    return size if size <= limit else None
+
+
+def _decompress_json(value: str):
+    """Decode bounded base64(zlib(JSON)) without legacy object deserialization."""
+    if len(value) > _MAX_IO_BASE64_CHARS:
+        return None
+    try:
+        compressed = base64.b64decode(value.encode("ascii"), validate=True)
+        if len(compressed) > _MAX_IO_COMPRESSED_BYTES:
+            return None
+
+        decompressor = zlib.decompressobj()
+        decoded = decompressor.decompress(compressed, _MAX_IO_JSON_BYTES + 1)
+        if len(decoded) > _MAX_IO_JSON_BYTES or decompressor.unconsumed_tail:
+            return None
+        decoded += decompressor.flush(_MAX_IO_JSON_BYTES + 1 - len(decoded))
+        if (
+            len(decoded) > _MAX_IO_JSON_BYTES
+            or not decompressor.eof
+            or decompressor.unused_data
+        ):
+            return None
+        return json.loads(decoded.decode("utf-8"))
+    except (
+        UnicodeEncodeError,
+        UnicodeDecodeError,
+        binascii.Error,
+        json.JSONDecodeError,
+        zlib.error,
+    ):
+        return None
+
+
+def _parse_json_cases(raw):
+    """Accept already-parsed JSON or bounded textual/compressed JSON only."""
+    if isinstance(raw, (dict, list)):
+        return raw
+    if not isinstance(raw, str) or len(raw) > _MAX_IO_BASE64_CHARS:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if _utf8_size(value, _MAX_IO_JSON_BYTES) is not None:
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    return _decompress_json(value)
 
 
 def _conversation_text(value: Any) -> str:
@@ -216,30 +281,33 @@ def install(real_module) -> None:
         return real_module._cached(cache_dir, "bfcl_v3_single_call_200", build)
 
     def normalize_io_cases(raw):
-        value = real_module._as_json(raw)
-        if isinstance(value, str):
-            try:
-                value = json.loads(
-                    pickle.loads(
-                        zlib.decompress(base64.b64decode(value.encode("utf-8")))
-                    )
-                )
-            except Exception:
-                return []
+        value = _parse_json_cases(raw)
         if isinstance(value, dict):
             value = [value]
         pairs = []
-        if isinstance(value, list):
-            for case in value:
-                case = real_module._as_json(case)
-                if not isinstance(case, dict):
-                    continue
-                if str(case.get("testtype", "stdin")).lower() not in ("stdin", ""):
-                    continue
-                inp = case.get("input", case.get("stdin"))
-                out = case.get("output", case.get("stdout"))
-                if inp is not None and out is not None:
-                    pairs.append((str(inp), str(out)))
+        total_bytes = 0
+        if not isinstance(value, list) or len(value) > _MAX_IO_CASES:
+            return pairs
+        for case in value:
+            if not isinstance(case, dict):
+                return []
+            test_type = case.get("testtype", "stdin")
+            if not isinstance(test_type, str) or len(test_type) > 32:
+                return []
+            if test_type.casefold() not in ("stdin", ""):
+                continue
+            inp = case.get("input", case.get("stdin"))
+            out = case.get("output", case.get("stdout"))
+            if not isinstance(inp, str) or not isinstance(out, str):
+                return []
+            inp_bytes = _utf8_size(inp, _MAX_IO_VALUE_BYTES)
+            out_bytes = _utf8_size(out, _MAX_IO_VALUE_BYTES)
+            if inp_bytes is None or out_bytes is None:
+                return []
+            total_bytes += inp_bytes + out_bytes
+            if total_bytes > _MAX_IO_JSON_BYTES:
+                return []
+            pairs.append((inp, out))
         return pairs
 
     real_module._load_humaneval = load_humaneval
