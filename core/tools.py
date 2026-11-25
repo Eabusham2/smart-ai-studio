@@ -41,6 +41,18 @@ from core.html_diagram_maker import HTMLDiagramBuilder
 from core.visual_maker import InteractiveVisualMaker
 
 
+_WEB_RESPONSE_MAX_BYTES = 1024 * 1024
+_WEB_READ_CHUNK_BYTES = 64 * 1024
+_WEB_CRAWL_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+_WEB_CRAWL_MAX_PAGES = 8
+_WEB_CRAWL_MAX_DEPTH = 3
+_WEB_ALLOWED_CONTENT_TYPES = frozenset(("text/html", "application/xhtml+xml", "text/plain"))
+
+
+class _WebResponseRejected(ValueError):
+    """Raised when a remote response exceeds the web tools' safety boundary."""
+
+
 class AgentToolRegistry:
     """Registry managing execution of built-in agent tools and external MCP servers."""
 
@@ -77,7 +89,7 @@ class AgentToolRegistry:
         return [
             {"name": "web_search", "description": "Searches the web for up-to-date information, news, or technical documentation.", "parameters": {"query": "string"}},
             {"name": "web_fetch", "description": "Fetches a URL and extracts its text/markdown content.", "parameters": {"url": "string"}},
-            {"name": "web_crawler", "description": "Recursively crawls web pages or searches topics to extract structured documentation, code examples, and technical knowledge.", "parameters": {"query_or_url": "string", "max_pages": "optional int", "max_depth": "optional int"}},
+            {"name": "web_crawler", "description": "Recursively crawls web pages or searches topics to extract structured documentation, code examples, and technical knowledge.", "parameters": {"query_or_url": "string", "max_pages": "optional int (1-8)", "max_depth": "optional int (0-3)"}},
             {"name": "read_file", "description": "Reads text contents of a file from the workspace.", "parameters": {"path": "string", "start_line": "optional int", "end_line": "optional int"}},
             {"name": "write_file", "description": "Writes or overwrites a file in the workspace.", "parameters": {"path": "string", "content": "string"}},
             {"name": "edit_file", "description": "Replaces target content with replacement text in a file.", "parameters": {"path": "string", "target": "string", "replacement": "string"}},
@@ -121,7 +133,7 @@ class AgentToolRegistry:
                 return self._tool_web_fetch(args.get("url", ""))
             elif tool in ("web_crawler", "crawler", "crawl"):
                 target = args.get("query_or_url", args.get("url", args.get("query", "")))
-                return self._tool_web_crawler(target, int(args.get("max_pages", 4)), int(args.get("max_depth", 2)))
+                return self._tool_web_crawler(target, args.get("max_pages", 4), args.get("max_depth", 2))
             elif tool == "read_file":
                 return self._tool_read_file(args.get("path", ""), args.get("start_line"), args.get("end_line"))
             elif tool == "write_file":
@@ -252,16 +264,61 @@ class AgentToolRegistry:
             f"• Try a more specific search term or check your network connection."
         )
 
+    @staticmethod
+    def _read_web_text_response(response, max_bytes: int) -> Tuple[str, int]:
+        """Read an identity-encoded text response without crossing the supplied byte budget."""
+        content_type = str(response.headers.get_content_type() or "").lower()
+        if content_type not in _WEB_ALLOWED_CONTENT_TYPES:
+            raise _WebResponseRejected("The response content type is not supported.")
+
+        content_encoding = str(
+            response.headers.get("Content-Encoding", "identity") or "identity"
+        ).strip().lower()
+        if content_encoding != "identity":
+            raise _WebResponseRejected("Compressed responses are not accepted.")
+
+        get_all = getattr(response.headers, "get_all", None)
+        length_headers = get_all("Content-Length", []) if get_all else []
+        if not length_headers:
+            content_length = response.headers.get("Content-Length")
+            length_headers = [content_length] if content_length is not None else []
+
+        lengths = []
+        try:
+            for header in length_headers:
+                lengths.extend(int(value.strip()) for value in str(header).split(",") if value.strip())
+        except (OverflowError, TypeError, ValueError):
+            raise _WebResponseRejected("The response has an invalid Content-Length.")
+        if any(length < 0 for length in lengths) or len(set(lengths)) > 1:
+            raise _WebResponseRejected("The response has an invalid Content-Length.")
+        if lengths and lengths[0] > max_bytes:
+            raise _WebResponseRejected("The response exceeds the web content byte limit.")
+
+        chunks = []
+        bytes_read = 0
+        while bytes_read <= max_bytes:
+            chunk = response.read(min(_WEB_READ_CHUNK_BYTES, max_bytes + 1 - bytes_read))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            bytes_read += len(chunk)
+        if bytes_read > max_bytes:
+            raise _WebResponseRejected("The response exceeds the web content byte limit.")
+
+        return b"".join(chunks).decode("utf-8", errors="replace"), bytes_read
+
     def _tool_web_fetch(self, url: str) -> Tuple[bool, str]:
         if not url:
             return False, "URL cannot be empty."
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "SmartAI/2.0"})
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "SmartAI/2.0",
+                "Accept-Encoding": "identity",
+            })
             with urllib.request.urlopen(req, timeout=4.0) as resp:
-                content_type = resp.headers.get_content_type()
-                html = resp.read().decode("utf-8", errors="replace")
+                html, _ = self._read_web_text_response(resp, _WEB_RESPONSE_MAX_BYTES)
                 
                 # Basic HTML tag stripping & markdown conversion
                 text = re.sub(r"<script.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
@@ -271,6 +328,12 @@ class AgentToolRegistry:
                 
                 excerpt = text[:2000] + ("..." if len(text) > 2000 else "")
                 return True, f"### 📄 Page Content: `{url}`\n\n{excerpt}"
+        except _WebResponseRejected as e:
+            return False, (
+                f"### ⚠️ Failed to fetch: `{url}`\n\n"
+                f"• **Error**: {e}\n"
+                f"• **Suggestion**: Use an uncompressed HTML or plain-text page within the size limit."
+            )
         except Exception as e:
             domain = urllib.parse.urlparse(url).netloc or url
             return False, (
@@ -288,19 +351,35 @@ class AgentToolRegistry:
         if not query_or_url or not query_or_url.strip():
             return False, "Crawler query or URL cannot be empty."
 
+        try:
+            max_pages = int(max_pages)
+            max_depth = int(max_depth)
+        except (OverflowError, TypeError, ValueError):
+            return False, "Crawler max_pages and max_depth must be integers."
+        if not 1 <= max_pages <= _WEB_CRAWL_MAX_PAGES:
+            return False, f"Crawler max_pages must be between 1 and {_WEB_CRAWL_MAX_PAGES}."
+        if not 0 <= max_depth <= _WEB_CRAWL_MAX_DEPTH:
+            return False, f"Crawler max_depth must be between 0 and {_WEB_CRAWL_MAX_DEPTH}."
+
         target = query_or_url.strip()
         visited: List[str] = []
         crawled_content: List[Dict[str, str]] = []
+        remaining_bytes = _WEB_CRAWL_MAX_TOTAL_BYTES
 
         is_direct_url = target.startswith(("http://", "https://"))
 
         if is_direct_url:
             queue = [(target, 0)]
+            queued = {target}
             base_domain = urllib.parse.urlparse(target).netloc
-            headers = {"User-Agent": "SmartAI-Crawler/2.0 (macOS; arm64)"}
+            headers = {
+                "User-Agent": "SmartAI-Crawler/2.0 (macOS; arm64)",
+                "Accept-Encoding": "identity",
+            }
 
-            while queue and len(visited) < max_pages:
+            while queue and len(visited) < max_pages and remaining_bytes > 0:
                 curr_url, depth = queue.pop(0)
+                queued.discard(curr_url)
                 if curr_url in visited or depth > max_depth:
                     continue
                 visited.append(curr_url)
@@ -308,7 +387,10 @@ class AgentToolRegistry:
                 try:
                     req = urllib.request.Request(curr_url, headers=headers)
                     with urllib.request.urlopen(req, timeout=4.0) as resp:
-                        html = resp.read().decode("utf-8", errors="replace")
+                        html, bytes_read = self._read_web_text_response(
+                            resp, min(_WEB_RESPONSE_MAX_BYTES, remaining_bytes)
+                        )
+                        remaining_bytes -= bytes_read
 
                         # Extract text
                         clean_text = re.sub(r"<script.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
@@ -320,11 +402,14 @@ class AgentToolRegistry:
                         if depth < max_depth and len(visited) < max_pages:
                             links = re.findall(r'href=[\'"]([^\'"#]+)[\'"]', html, flags=re.IGNORECASE)
                             for link in links:
+                                if len(visited) + len(queue) >= max_pages:
+                                    break
                                 full_link = urllib.parse.urljoin(curr_url, link)
                                 parsed_link = urllib.parse.urlparse(full_link)
                                 if parsed_link.scheme in ("http", "https") and parsed_link.netloc == base_domain:
-                                    if full_link not in visited and full_link not in [q[0] for q in queue]:
+                                    if full_link not in visited and full_link not in queued:
                                         queue.append((full_link, depth + 1))
+                                        queued.add(full_link)
 
                         title_match = re.search(r"<title>(.*?)</title>", html, flags=re.IGNORECASE)
                         title = title_match.group(1).strip() if title_match else curr_url
@@ -334,6 +419,12 @@ class AgentToolRegistry:
                             "depth": depth,
                             "text": clean_text[:800]
                         })
+                except _WebResponseRejected as e:
+                    return False, (
+                        f"### ⚠️ Crawler stopped: `{curr_url}`\n\n"
+                        f"• **Error**: {e}\n"
+                        f"• **Pages Crawled**: {len(crawled_content)}"
+                    )
                 except Exception:
                     continue
 
