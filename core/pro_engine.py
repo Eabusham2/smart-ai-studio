@@ -536,7 +536,8 @@ class ProReasoningEngine:
                         "model": model_name,
                         "backend": "bitnet",
                         "path": target_path,
-                        "error": "Official bitnet.cpp runtime/model could not be prepared for this BitNet checkpoint.",
+                        "error": getattr(self.bitnet_backend, "last_error", "")
+                        or "Official bitnet.cpp runtime/model could not be prepared for this BitNet checkpoint.",
                         **migration_details(),
                     }
 

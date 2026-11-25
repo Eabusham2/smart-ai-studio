@@ -21,8 +21,18 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
 from config.paths import get_portable_data_dir
+from core.native_runtime_pinning import (
+    ensure_pinned_checkout,
+    require_full_commit,
+    validate_runtime_receipt,
+    verify_pinned_checkout,
+    write_runtime_receipt,
+)
 
 
+BITNET_REPO = "https://github.com/microsoft/BitNet.git"
+# Deliberately no network default: a trusted packager/operator selects the reviewed commit.
+BITNET_COMMIT_ENV = "SMARTAI_BITNET_COMMIT"
 _SUPPORTED_REPOS = {
     "microsoft/BitNet-b1.58-2B-4T",
     "1bitLLM/bitnet_b1_58-large",
@@ -87,30 +97,58 @@ class BitNetCppReasoningBackend:
         self.is_loaded = False
         self._process: Optional[subprocess.Popen] = None
         self._base_url: Optional[str] = None
+        self.last_error = ""
 
     def _root(self) -> Path:
         return Path(get_portable_data_dir()) / "bitnet_cpp_runtime"
 
-    def _candidate_servers(self) -> List[Path]:
-        out: List[Path] = []
+    @staticmethod
+    def _explicit_server() -> Optional[Path]:
         for env_name in ("SMARTAI_BITNET_SERVER", "BITNET_SERVER"):
             value = os.getenv(env_name, "").strip()
             if value:
-                out.append(Path(value))
-        root = self._root()
-        source = root / "BitNet"
-        out += [
+                candidate = Path(value)
+                if candidate.is_file():
+                    return candidate
+        return None
+
+    @staticmethod
+    def _managed_servers(source: Path) -> List[Path]:
+        return [
             source / "build/bin/llama-server",
             source / "build/bin/Release/llama-server.exe",
-            Path.cwd() / "BitNet/build/bin/llama-server",
-            Path.cwd() / "BitNet/build/bin/Release/llama-server.exe",
         ]
-        return out
 
     def find_server(self) -> Optional[Path]:
-        for candidate in self._candidate_servers():
-            if candidate.is_file():
-                return candidate
+        explicit = self._explicit_server()
+        if explicit is not None:
+            return explicit
+
+        git = shutil.which("git")
+        root = self._root()
+        source = root / "BitNet"
+        command = self._setup_command(root)
+        if not git or command is None:
+            return None
+        try:
+            commit = require_full_commit(os.getenv(BITNET_COMMIT_ENV, ""), BITNET_COMMIT_ENV)
+            verify_pinned_checkout(git, source, commit, recursive=True)
+        except RuntimeError:
+            return None
+        server = next((path for path in self._managed_servers(source) if path.is_file()), None)
+        if server is None:
+            return None
+        receipt = source / "build" / "smartai-runtime.json"
+        build_inputs = {"python": sys.executable, "setup_command": command}
+        if validate_runtime_receipt(
+            receipt,
+            source / "build",
+            BITNET_REPO,
+            commit,
+            {"llama-server": server},
+            build_inputs,
+        ):
+            return server
         return None
 
     def _resolve_model_file(self) -> Optional[str]:
@@ -146,44 +184,89 @@ class BitNetCppReasoningBackend:
             return "microsoft/BitNet-b1.58-2B-4T"
         return repo
 
-    def _prepare_official_runtime(self) -> Optional[Path]:
-        existing = self.find_server()
-        if existing is not None:
-            return existing
-
-        git = shutil.which("git")
-        if not git:
-            return None
-        root = self._root()
-        source = root / "BitNet"
-        root.mkdir(parents=True, exist_ok=True)
-        if not (source / ".git").exists():
-            proc = subprocess.run(
-                [git, "clone", "--depth", "1", "https://github.com/microsoft/BitNet.git", str(source)],
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode != 0:
-                return None
-
-        # setup_env.py owns BitNet's model-specific code generation and build.
+    def _setup_command(self, root: Path) -> Optional[List[str]]:
         repo_id = self._runtime_repo_id()
         if not repo_id and self.original_model_path in _SUPPORTED_REPOS:
             repo_id = self.original_model_path
         if repo_id not in _SUPPORTED_REPOS:
             return None
-        models_dir = root / "models"
-        command = [
+        return [
             sys.executable,
             "setup_env.py",
             "--hf-repo", repo_id,
-            "--model-dir", str(models_dir),
+            "--model-dir", str(root / "models"),
             "--quant-type", "i2_s",
         ]
+
+    def _prepare_official_runtime(self) -> Optional[Path]:
+        explicit = self._explicit_server()
+        if explicit is not None:
+            return explicit
+
+        root = self._root()
+        command = self._setup_command(root)
+        if command is None:
+            return None
+
+        git = shutil.which("git")
+        if not git:
+            self.last_error = "BitNet runtime preparation requires Git or an explicit SMARTAI_BITNET_SERVER."
+            return None
+        source = root / "BitNet"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            approved = require_full_commit(os.getenv(BITNET_COMMIT_ENV, ""), BITNET_COMMIT_ENV)
+            commit = ensure_pinned_checkout(
+                git,
+                source,
+                BITNET_REPO,
+                approved,
+                recursive=True,
+            )
+        except RuntimeError as exc:
+            self.last_error = str(exc)
+            return None
+
+        build_inputs = {"python": sys.executable, "setup_command": command}
+        receipt = source / "build" / "smartai-runtime.json"
+        existing = next((path for path in self._managed_servers(source) if path.is_file()), None)
+        if existing is not None and validate_runtime_receipt(
+            receipt,
+            source / "build",
+            BITNET_REPO,
+            commit,
+            {"llama-server": existing},
+            build_inputs,
+        ):
+            return existing
+
+        # Never incrementally reuse an executable produced without a matching receipt.
+        if (source / "build").exists():
+            shutil.rmtree(source / "build")
+
+        # setup_env.py owns BitNet's model-specific code generation and build.
         proc = subprocess.run(command, cwd=str(source), capture_output=True, text=True)
         if proc.returncode != 0:
+            self.last_error = (proc.stderr or proc.stdout or "BitNet setup failed").strip()
             return None
-        return self.find_server()
+        try:
+            verify_pinned_checkout(git, source, commit, recursive=True)
+            server = next((path for path in self._managed_servers(source) if path.is_file()), None)
+            if server is None:
+                self.last_error = "BitNet setup completed but llama-server was not found."
+                return None
+            write_runtime_receipt(
+                receipt,
+                source / "build",
+                BITNET_REPO,
+                commit,
+                {"llama-server": server},
+                build_inputs,
+            )
+            return server
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.last_error = str(exc)
+            return None
 
     @staticmethod
     def _free_port() -> int:

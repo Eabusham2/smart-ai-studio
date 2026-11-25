@@ -16,9 +16,18 @@ from pathlib import Path
 from typing import Any, Generator, List, Optional
 
 from config.paths import get_portable_data_dir
+from core.native_runtime_pinning import (
+    ensure_pinned_checkout,
+    require_full_commit,
+    validate_runtime_receipt,
+    verify_pinned_checkout,
+    write_runtime_receipt,
+)
 
 
 BITNET_REPO = "https://github.com/microsoft/BitNet.git"
+# Deliberately no network default: a trusted packager/operator selects the reviewed commit.
+BITNET_COMMIT_ENV = "SMARTAI_BITNET_COMMIT"
 
 
 class BitNetReasoningBackend:
@@ -83,11 +92,6 @@ class BitNetReasoningBackend:
 
     def _ensure_runtime(self, model_file: Path) -> Path:
         root = self._runtime_root()
-        cli = self._find_cli(root) if root.exists() else None
-        if cli is not None:
-            self.runtime_root = root
-            return cli
-
         git = shutil.which("git")
         if not git:
             raise RuntimeError(
@@ -95,29 +99,46 @@ class BitNetReasoningBackend:
                 "BITNET_CPP_DIR to an existing bitnet.cpp checkout."
             )
 
-        if not (root / ".git").exists():
-            root.parent.mkdir(parents=True, exist_ok=True)
-            proc = subprocess.run(
-                [git, "clone", "--recursive", "--depth", "1", BITNET_REPO, str(root)],
-                capture_output=True,
-                text=True,
+        try:
+            approved = require_full_commit(os.getenv(BITNET_COMMIT_ENV, ""), BITNET_COMMIT_ENV)
+            commit = ensure_pinned_checkout(
+                git,
+                root,
+                BITNET_REPO,
+                approved,
+                recursive=True,
             )
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    "Could not clone microsoft/BitNet: "
-                    + (proc.stderr or proc.stdout or "git clone failed").strip()
-                )
+        except RuntimeError as exc:
+            raise RuntimeError(f"Could not prepare pinned microsoft/BitNet source: {exc}") from exc
 
         model_dir = model_file.parent
         quant_type = "tl1" if "tl1" in model_file.name.lower() else "i2_s"
         setup = root / "setup_env.py"
+        command = [
+            sys.executable,
+            str(setup),
+            "--model-dir", str(model_dir),
+            "--quant-type", quant_type,
+        ]
+        build_inputs = {"python": sys.executable, "setup_command": command}
+        receipt = root / "build" / "smartai-runtime.json"
+        cli = self._find_cli(root)
+        if cli is not None and validate_runtime_receipt(
+            receipt,
+            root / "build",
+            BITNET_REPO,
+            commit,
+            {"llama-cli": cli},
+            build_inputs,
+        ):
+            self.runtime_root = root
+            return cli
+
+        if (root / "build").exists():
+            shutil.rmtree(root / "build")
+
         proc = subprocess.run(
-            [
-                sys.executable,
-                str(setup),
-                "--model-dir", str(model_dir),
-                "--quant-type", quant_type,
-            ],
+            command,
             cwd=str(root),
             capture_output=True,
             text=True,
@@ -128,9 +149,18 @@ class BitNetReasoningBackend:
                 + (proc.stderr or proc.stdout or "setup_env.py failed").strip()
             )
 
+        verify_pinned_checkout(git, root, commit, recursive=True)
         cli = self._find_cli(root)
         if cli is None:
             raise RuntimeError("bitnet.cpp setup completed but llama-cli was not found")
+        write_runtime_receipt(
+            receipt,
+            root / "build",
+            BITNET_REPO,
+            commit,
+            {"llama-cli": cli},
+            build_inputs,
+        )
         self.runtime_root = root
         return cli
 

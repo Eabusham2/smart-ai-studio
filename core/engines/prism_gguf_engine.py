@@ -21,10 +21,18 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from config.paths import get_portable_data_dir
 from core.engines.gguf_engine import GGUFReasoningBackend
+from core.native_runtime_pinning import (
+    ensure_pinned_checkout,
+    require_full_commit,
+    validate_runtime_receipt,
+    verify_pinned_checkout,
+    write_runtime_receipt,
+)
 
 
 PRISM_REPO = "https://github.com/PrismML-Eng/llama.cpp.git"
-PRISM_REF = os.getenv("SMARTAI_PRISM_LLAMA_REF", "prism").strip() or "prism"
+# Deliberately no network default: a trusted packager/operator selects the reviewed commit.
+PRISM_COMMIT_ENV = "SMARTAI_PRISM_LLAMA_COMMIT"
 
 
 def _lib_names(base: str) -> Tuple[str, ...]:
@@ -35,11 +43,11 @@ def _lib_names(base: str) -> Tuple[str, ...]:
     return (f"lib{base}.so",)
 
 
-def _find_library_dir(root: Path, base: str) -> Optional[Path]:
+def _find_library(root: Path, base: str) -> Optional[Path]:
     names = set(_lib_names(base))
-    for path in root.rglob("*"):
+    for path in sorted(root.rglob("*")):
         if path.is_file() and path.name in names:
-            return path.parent
+            return path
     return None
 
 
@@ -55,32 +63,47 @@ def ensure_prism_native_runtime() -> Tuple[str, str]:
     build = base / "build"
     base.mkdir(parents=True, exist_ok=True)
 
-    llama_dir = _find_library_dir(build, "llama") if build.exists() else None
-    mtmd_dir = _find_library_dir(build, "mtmd") if build.exists() else None
-    if llama_dir and mtmd_dir:
-        return str(llama_dir), str(mtmd_dir)
-
     git = shutil.which("git")
-    cmake = shutil.which("cmake")
-    if not git or not cmake:
+    if not git:
         raise RuntimeError(
             "Prism Bonsai GGUF requires the PrismML llama.cpp native runtime. "
-            "Install git + cmake, or set SMARTAI_PRISM_LLAMA_LIB_PATH and "
+            "Install git, or set SMARTAI_PRISM_LLAMA_LIB_PATH and "
             "SMARTAI_PRISM_MTMD_LIB_PATH to an existing Prism build."
         )
 
-    if not (source / ".git").exists():
-        source.parent.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(
-            [git, "clone", "--depth", "1", "-b", PRISM_REF, PRISM_REPO, str(source)],
-            capture_output=True,
-            text=True,
+    try:
+        approved = require_full_commit(os.getenv(PRISM_COMMIT_ENV, ""), PRISM_COMMIT_ENV)
+        commit = ensure_pinned_checkout(
+            git,
+            source,
+            PRISM_REPO,
+            approved,
         )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "Could not clone PrismML llama.cpp: "
-                + (proc.stderr or proc.stdout or "git clone failed").strip()
-            )
+    except RuntimeError as exc:
+        raise RuntimeError(f"Could not prepare pinned PrismML llama.cpp source: {exc}") from exc
+
+    llama_library = _find_library(build, "llama") if build.exists() else None
+    mtmd_library = _find_library(build, "mtmd") if build.exists() else None
+    receipt = build / "smartai-runtime.json"
+    if llama_library and mtmd_library and validate_runtime_receipt(
+        receipt,
+        build,
+        PRISM_REPO,
+        commit,
+        {"llama": llama_library, "mtmd": mtmd_library},
+    ):
+        return str(llama_library.parent), str(mtmd_library.parent)
+
+    # Old branch builds and incomplete builds are caches, never trusted inputs.
+    if build.exists():
+        shutil.rmtree(build)
+
+    cmake = shutil.which("cmake")
+    if not cmake:
+        raise RuntimeError(
+            "Prism Bonsai GGUF requires CMake to build its pinned native runtime, or explicit "
+            "SMARTAI_PRISM_LLAMA_LIB_PATH and SMARTAI_PRISM_MTMD_LIB_PATH overrides."
+        )
 
     configure = [
         cmake, "-S", str(source), "-B", str(build),
@@ -115,11 +138,20 @@ def ensure_prism_native_runtime() -> Tuple[str, str]:
             + (proc.stderr or proc.stdout or "cmake build failed").strip()
         )
 
-    llama_dir = _find_library_dir(build, "llama")
-    mtmd_dir = _find_library_dir(build, "mtmd")
-    if not llama_dir or not mtmd_dir:
+    verify_pinned_checkout(git, source, commit)
+    llama_library = _find_library(build, "llama")
+    mtmd_library = _find_library(build, "mtmd")
+    if not llama_library or not mtmd_library:
         raise RuntimeError("PrismML build completed but libllama/libmtmd could not be located")
-    return str(llama_dir), str(mtmd_dir)
+    write_runtime_receipt(
+        receipt,
+        build,
+        PRISM_REPO,
+        commit,
+        {"llama": llama_library, "mtmd": mtmd_library},
+        {"configure_command": configure, "build_command": command},
+    )
+    return str(llama_library.parent), str(mtmd_library.parent)
 
 
 class _PrismModelProxy:
