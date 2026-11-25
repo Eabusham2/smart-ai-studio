@@ -15,6 +15,12 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from core.workspace_paths import (
+    WorkspacePathError,
+    canonical_workspace,
+    resolve_workspace_path,
+)
+
 
 class InteractiveVisualMaker:
     """Generates standalone, responsive interactive HTML5 and SVG artifacts."""
@@ -62,7 +68,16 @@ class InteractiveVisualMaker:
     }
 
     def __init__(self, workspace_dir: Optional[str] = None):
-        self.workspace_dir = os.path.abspath(workspace_dir or os.getcwd())
+        self.workspace_dir: Optional[str] = None
+        self.set_workspace_dir(workspace_dir)
+
+    def set_workspace_dir(self, workspace_dir: Optional[str]) -> bool:
+        try:
+            self.workspace_dir = canonical_workspace(workspace_dir)
+            return True
+        except WorkspacePathError:
+            self.workspace_dir = None
+            return False
 
     def create_visualization(
         self,
@@ -86,8 +101,15 @@ class InteractiveVisualMaker:
         html_filename = f"{base_name}.html"
         svg_filename = f"{base_name}.svg"
 
-        html_path = os.path.join(self.workspace_dir, html_filename)
-        svg_path = os.path.join(self.workspace_dir, svg_filename)
+        try:
+            html_path = resolve_workspace_path(
+                self.workspace_dir, html_filename, for_creation=True, basename_only=True
+            )
+            svg_path = resolve_workspace_path(
+                self.workspace_dir, svg_filename, for_creation=True, basename_only=True
+            )
+        except WorkspacePathError as exc:
+            return False, str(exc), "", ""
 
         # Parse or default the data spec
         spec = self._parse_data_spec(visual_type, data_or_spec)

@@ -19,7 +19,7 @@ def verify_all_tool_outputs():
     print("=" * 80)
 
     db_path = "memory.db"
-    tools = AgentToolRegistry(db_path=db_path)
+    tools = AgentToolRegistry(db_path=db_path, workspace_dir=os.getcwd())
     db = EpisodicMemoryDB(db_path=db_path)
     settings = Settings(database_path=db_path, use_mock=True)
     engine = ProReasoningEngine(settings=settings)

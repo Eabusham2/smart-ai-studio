@@ -10,9 +10,14 @@ Generates standalone, interactive HTML5 + SVG diagrams with:
 """
 
 import json
-import os
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+from core.workspace_paths import (
+    WorkspacePathError,
+    canonical_workspace,
+    resolve_workspace_path,
+)
 
 
 class HTMLDiagramBuilder:
@@ -73,7 +78,16 @@ class HTMLDiagramBuilder:
     }
 
     def __init__(self, workspace_dir: Optional[str] = None):
-        self.workspace_dir = os.path.abspath(workspace_dir or os.getcwd())
+        self.workspace_dir: Optional[str] = None
+        self.set_workspace_dir(workspace_dir)
+
+    def set_workspace_dir(self, workspace_dir: Optional[str]) -> bool:
+        try:
+            self.workspace_dir = canonical_workspace(workspace_dir)
+            return True
+        except WorkspacePathError:
+            self.workspace_dir = None
+            return False
 
     def create_diagram(
         self,
@@ -96,7 +110,12 @@ class HTMLDiagramBuilder:
         if not base_name.endswith(".html"):
             base_name = f"{base_name}.html"
 
-        html_path = os.path.join(self.workspace_dir, base_name)
+        try:
+            html_path = resolve_workspace_path(
+                self.workspace_dir, base_name, for_creation=True, basename_only=True
+            )
+        except WorkspacePathError as exc:
+            return False, str(exc), ""
 
         # Parse / default nodes and edges
         node_list, edge_list = self._sanitize_graph_data(diagram_type, nodes, edges)

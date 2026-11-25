@@ -39,6 +39,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core.html_diagram_maker import HTMLDiagramBuilder
 from core.visual_maker import InteractiveVisualMaker
+from core.workspace_paths import (
+    WorkspacePathError,
+    canonical_workspace,
+    resolve_workspace_path,
+)
 
 
 class AgentToolRegistry:
@@ -47,10 +52,11 @@ class AgentToolRegistry:
     def __init__(self, db_path: str = "memory.db", workspace_dir: Optional[str] = None,
                  *, owned_processes_provider=None):
         self.db_path = os.path.abspath(db_path)
-        self.workspace_dir = os.path.abspath(workspace_dir or os.getcwd())
+        self.workspace_dir: Optional[str] = None
         self.owned_processes_provider = owned_processes_provider
-        self.visual_maker = InteractiveVisualMaker(workspace_dir=self.workspace_dir)
-        self.diagram_builder = HTMLDiagramBuilder(workspace_dir=self.workspace_dir)
+        self.visual_maker = InteractiveVisualMaker()
+        self.diagram_builder = HTMLDiagramBuilder()
+        self.set_workspace_dir(workspace_dir)
         self.mcp_servers: Dict[str, Dict[str, Any]] = {
             "filesystem": {"status": "connected", "tools": ["read_file", "write_file", "edit_file", "list_dir", "file_search", "grep_search"]},
             "system_terminal": {"status": "connected", "tools": ["run_terminal", "system_monitor", "process_list", "git_status_diff"]},
@@ -59,18 +65,42 @@ class AgentToolRegistry:
             "compute_engine": {"status": "connected", "tools": ["python_sandbox", "math_calculate", "json_csv_analyzer", "ast_lint_checker", "interactive_visual_maker", "html_diagram_builder"]},
         }
 
-    def set_workspace_dir(self, new_path: str) -> bool:
+    def set_workspace_dir(self, new_path: Optional[str]) -> bool:
         """Dynamically updates the workspace directory for all file, code, and terminal tools."""
-        if new_path and os.path.exists(new_path):
-            self.workspace_dir = os.path.abspath(new_path)
-            self.visual_maker.workspace_dir = self.workspace_dir
-            self.diagram_builder.workspace_dir = self.workspace_dir
+        if new_path is None or not str(new_path).strip():
+            self.workspace_dir = None
+            self.visual_maker.set_workspace_dir(None)
+            self.diagram_builder.set_workspace_dir(None)
             return True
-        return False
+        try:
+            workspace = canonical_workspace(new_path)
+        except WorkspacePathError:
+            self.workspace_dir = None
+            self.visual_maker.set_workspace_dir(None)
+            self.diagram_builder.set_workspace_dir(None)
+            return False
+        self.workspace_dir = workspace
+        self.visual_maker.set_workspace_dir(workspace)
+        self.diagram_builder.set_workspace_dir(workspace)
+        return True
 
-    def get_workspace_dir(self) -> str:
+    def get_workspace_dir(self) -> Optional[str]:
         """Returns the current active workspace directory."""
         return self.workspace_dir
+
+    def _resolve_workspace_path(
+        self,
+        requested_path: str,
+        *,
+        for_creation: bool = False,
+        basename_only: bool = False,
+    ) -> str:
+        return resolve_workspace_path(
+            self.workspace_dir,
+            requested_path,
+            for_creation=for_creation,
+            basename_only=basename_only,
+        )
 
     def list_available_tools(self) -> List[Dict[str, Any]]:
         """Returns schemas of all registered tools for model context prompting."""
@@ -363,7 +393,10 @@ class AgentToolRegistry:
     def _tool_read_file(self, file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> Tuple[bool, str]:
         if not file_path:
             return False, "File path required."
-        full_path = os.path.abspath(os.path.join(self.workspace_dir, file_path)) if not os.path.isabs(file_path) else file_path
+        try:
+            full_path = self._resolve_workspace_path(file_path)
+        except WorkspacePathError as exc:
+            return False, str(exc)
         if not os.path.exists(full_path):
             return False, f"File not found: `{file_path}`"
         
@@ -389,18 +422,23 @@ class AgentToolRegistry:
         if not file_path:
             return False, "File path required."
         try:
-            full_path = os.path.abspath(os.path.join(self.workspace_dir, file_path)) if not os.path.isabs(file_path) else file_path
+            full_path = self._resolve_workspace_path(file_path, for_creation=True)
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
             return True, f"✓ Successfully wrote {len(content)} characters ({len(content.splitlines())} lines) to `{file_path}`"
+        except WorkspacePathError as exc:
+            return False, str(exc)
         except Exception as e:
             return False, f"Error writing file `{file_path}`: {str(e)}"
 
     def _tool_edit_file(self, file_path: str, target: str, replacement: str) -> Tuple[bool, str]:
         if not file_path or not target:
             return False, "Both file path and target string are required."
-        full_path = os.path.abspath(os.path.join(self.workspace_dir, file_path)) if not os.path.isabs(file_path) else file_path
+        try:
+            full_path = self._resolve_workspace_path(file_path, for_creation=True)
+        except WorkspacePathError as exc:
+            return False, str(exc)
         if not os.path.exists(full_path):
             return False, f"File not found: `{file_path}`"
         
@@ -419,7 +457,10 @@ class AgentToolRegistry:
             return False, f"Error editing file `{file_path}`: {str(e)}"
 
     def _tool_list_dir(self, dir_path: str = ".") -> Tuple[bool, str]:
-        full_path = os.path.abspath(os.path.join(self.workspace_dir, dir_path)) if not os.path.isabs(dir_path) else dir_path
+        try:
+            full_path = self._resolve_workspace_path(dir_path)
+        except WorkspacePathError as exc:
+            return False, str(exc)
         if not os.path.exists(full_path):
             return False, f"Directory not found: `{dir_path}`"
         
@@ -428,7 +469,11 @@ class AgentToolRegistry:
             for item in sorted(os.listdir(full_path)):
                 if item.startswith(".") and item not in (".env",):
                     continue
-                item_p = os.path.join(full_path, item)
+                item_rel = os.path.relpath(os.path.join(full_path, item), self.workspace_dir)
+                try:
+                    item_p = self._resolve_workspace_path(item_rel)
+                except WorkspacePathError:
+                    continue
                 is_d = os.path.isdir(item_p)
                 size = os.path.getsize(item_p) if not is_d else 0
                 size_str = f"{size} B" if size < 1024 else f"{size/1024:.1f} KB"
@@ -440,15 +485,23 @@ class AgentToolRegistry:
 
     def _tool_file_search(self, pattern: str = "*", content_query: Optional[str] = None) -> Tuple[bool, str]:
         import fnmatch
+        try:
+            workspace = self._resolve_workspace_path(".")
+        except WorkspacePathError as exc:
+            return False, str(exc)
         matches = []
-        for root, dirs, files in os.walk(self.workspace_dir):
+        for root, dirs, files in os.walk(workspace):
             dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "venv", "node_modules", "dist", "build")]
             for filename in files:
                 if fnmatch.fnmatch(filename, pattern):
-                    rel_p = os.path.relpath(os.path.join(root, filename), self.workspace_dir)
+                    rel_p = os.path.relpath(os.path.join(root, filename), workspace)
+                    try:
+                        matched_path = self._resolve_workspace_path(rel_p)
+                    except WorkspacePathError:
+                        continue
                     if content_query:
                         try:
-                            with open(os.path.join(root, filename), "r", encoding="utf-8", errors="ignore") as f:
+                            with open(matched_path, "r", encoding="utf-8", errors="ignore") as f:
                                 if content_query.lower() in f.read().lower():
                                     matches.append(rel_p)
                         except Exception:
@@ -465,6 +518,10 @@ class AgentToolRegistry:
     def _tool_run_terminal(self, command: str) -> Tuple[bool, str]:
         if not command:
             return False, "Command required."
+        try:
+            workspace = self._resolve_workspace_path(".")
+        except WorkspacePathError as exc:
+            return False, str(exc)
         
         # Security: Disallow sudo, root elevation, and dangerous system commands
         forbidden_patterns = [r"\bsudo\b", r"\bsu\b", r"\bdoas\b", r"\bdscl\b", r"\bcsrutil\b", r"\bnvram\b", r"rm\s+-rf\s+/(?:\s|$)", r"chmod\s+777\s+/"]
@@ -477,7 +534,7 @@ class AgentToolRegistry:
             res = subprocess.run(
                 command,
                 shell=True,
-                cwd=self.workspace_dir,
+                cwd=workspace,
                 capture_output=True,
                 text=True,
                 timeout=10.0
@@ -498,6 +555,10 @@ class AgentToolRegistry:
         if not isinstance(code, str) or not code.strip():
             return False, "Python code required."
         try:
+            workspace = self._resolve_workspace_path(".")
+        except WorkspacePathError as exc:
+            return False, str(exc)
+        try:
             # Remove only a complete outer Python fence. Keep its lines (and
             # leading blank lines) so traceback locations match the Canvas.
             lines = code.splitlines(keepends=True)
@@ -513,7 +574,7 @@ class AgentToolRegistry:
             
             start_t = time.perf_counter()
             options = dict(
-                cwd=self.workspace_dir,
+                cwd=workspace,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -603,12 +664,12 @@ class AgentToolRegistry:
                 "OS": f"{platform.system()} {platform.release()} ({platform.machine()})",
                 "Python": sys.version.split()[0],
                 "Platform": "Apple Silicon (Metal Unified Memory / MLX)" if (platform.system() == "Darwin" and platform.machine() == "arm64") else "Standard Architecture",
-                "Workspace": self.workspace_dir,
+                "Workspace": self.workspace_dir or "None selected",
                 "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             
             # Disk space
-            total, used, free = shutil.disk_usage(self.workspace_dir)
+            total, used, free = shutil.disk_usage(self.workspace_dir or os.getcwd())
             disk_str = f"{used / (1024**3):.1f} GiB used / {total / (1024**3):.1f} GiB total ({free / (1024**3):.1f} GiB free)"
             
             out = "### 📊 System Hardware & Telemetry Profile\n\n"
@@ -665,7 +726,10 @@ class AgentToolRegistry:
             return False, f"SQL Query Error: {str(e)}"
 
     def _tool_json_csv_analyzer(self, file_path: str) -> Tuple[bool, str]:
-        full_path = os.path.abspath(os.path.join(self.workspace_dir, file_path)) if not os.path.isabs(file_path) else file_path
+        try:
+            full_path = self._resolve_workspace_path(file_path)
+        except WorkspacePathError as exc:
+            return False, str(exc)
         if not os.path.exists(full_path):
             return False, f"File not found: `{file_path}`"
         
@@ -756,7 +820,10 @@ class AgentToolRegistry:
     def _tool_grep_search(self, query: str, search_path: str = ".") -> Tuple[bool, str]:
         if not query:
             return False, "Search query required."
-        full_path = os.path.abspath(os.path.join(self.workspace_dir, search_path)) if not os.path.isabs(search_path) else search_path
+        try:
+            full_path = self._resolve_workspace_path(search_path)
+        except WorkspacePathError as exc:
+            return False, str(exc)
         if not os.path.exists(full_path):
             return False, f"Path not found: `{search_path}`"
         
@@ -767,12 +834,12 @@ class AgentToolRegistry:
                 dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "venv", "node_modules", "dist", "build", "consolidated_slow_lora")]
                 for fname in files:
                     if fname.endswith((".py", ".md", ".json", ".txt", ".sh", ".bat", ".command", ".toml", ".yaml", ".yml")):
-                        fpath = os.path.join(root, fname)
+                        rel = os.path.relpath(os.path.join(root, fname), self.workspace_dir)
                         try:
+                            fpath = self._resolve_workspace_path(rel)
                             with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                                 for line_idx, line in enumerate(f, 1):
                                     if pattern.search(line):
-                                        rel = os.path.relpath(fpath, self.workspace_dir)
                                         matches.append(f"`{rel}:{line_idx}`: {line.strip()[:100]}")
                                         if len(matches) >= 30:
                                             break
@@ -790,9 +857,10 @@ class AgentToolRegistry:
 
     def _tool_git_status_diff(self) -> Tuple[bool, str]:
         try:
-            res_status = subprocess.run(["git", "status", "--short"], cwd=self.workspace_dir, capture_output=True, text=True, timeout=4.0)
-            res_branch = subprocess.run(["git", "branch", "--show-current"], cwd=self.workspace_dir, capture_output=True, text=True, timeout=4.0)
-            res_log = subprocess.run(["git", "log", "-n", "3", "--oneline"], cwd=self.workspace_dir, capture_output=True, text=True, timeout=4.0)
+            workspace = self._resolve_workspace_path(".")
+            res_status = subprocess.run(["git", "status", "--short"], cwd=workspace, capture_output=True, text=True, timeout=4.0)
+            res_branch = subprocess.run(["git", "branch", "--show-current"], cwd=workspace, capture_output=True, text=True, timeout=4.0)
+            res_log = subprocess.run(["git", "log", "-n", "3", "--oneline"], cwd=workspace, capture_output=True, text=True, timeout=4.0)
             
             branch = res_branch.stdout.strip() or "main"
             status = res_status.stdout.strip() or "Working tree clean (no modified files)"
@@ -804,6 +872,8 @@ class AgentToolRegistry:
                 f"**Working Tree Status:**\n```\n{status}\n```"
             )
             return True, out
+        except WorkspacePathError as exc:
+            return False, str(exc)
         except Exception as e:
             return False, f"Git status error: {str(e)}"
 
@@ -814,7 +884,10 @@ class AgentToolRegistry:
         target_code = code
         filename = path or "inline_code.py"
         if path:
-            full_path = os.path.abspath(os.path.join(self.workspace_dir, path)) if not os.path.isabs(path) else path
+            try:
+                full_path = self._resolve_workspace_path(path)
+            except WorkspacePathError as exc:
+                return False, str(exc)
             if not os.path.exists(full_path):
                 return False, f"File not found: `{path}`"
             with open(full_path, "r", encoding="utf-8", errors="replace") as f:
@@ -935,8 +1008,10 @@ class AgentToolRegistry:
         clean_name = filename or f"generated_visual_{int(time.time())}.svg"
         if not clean_name.endswith((".png", ".svg", ".jpg")):
             clean_name += f".{format}"
-
-        full_path = os.path.join(self.workspace_dir, clean_name)
+        try:
+            full_path = self._resolve_workspace_path(clean_name, for_creation=True, basename_only=True)
+        except WorkspacePathError as exc:
+            return False, str(exc)
 
         # High-res SVG vector diagram & art rendering
         prompt_title = prompt[:45].strip()
@@ -986,7 +1061,15 @@ class AgentToolRegistry:
         clean_name = filename or f"diffusion_{int(time.time())}.png"
         if not clean_name.endswith((".png", ".jpg", ".webp", ".svg")):
             clean_name += ".png"
-        full_path = os.path.join(self.workspace_dir, clean_name)
+        try:
+            full_path = self._resolve_workspace_path(clean_name, for_creation=True, basename_only=True)
+            svg_name = self._resolve_workspace_path(
+                os.path.splitext(clean_name)[0] + ".svg",
+                for_creation=True,
+                basename_only=True,
+            )
+        except WorkspacePathError as exc:
+            return False, str(exc)
 
         # Generate output artifact metadata
         res = (
@@ -1002,7 +1085,6 @@ class AgentToolRegistry:
         )
 
         # Write high-res visual artifact placeholder SVG if direct image file doesn't exist
-        svg_name = full_path.rsplit(".", 1)[0] + ".svg"
         prompt_title = prompt[:40].strip()
         svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
@@ -1042,7 +1124,10 @@ class AgentToolRegistry:
             return False, "Video generation prompt required."
 
         clean_name = filename or f"video_{int(time.time())}.mp4"
-        full_path = os.path.join(self.workspace_dir, clean_name)
+        try:
+            full_path = self._resolve_workspace_path(clean_name, for_creation=True, basename_only=True)
+        except WorkspacePathError as exc:
+            return False, str(exc)
 
         res = (
             f"### 🎬 High-Res Motion Video Synthesized\n\n"
@@ -1067,7 +1152,12 @@ class AgentToolRegistry:
             return False, "Image editing instructions prompt required."
 
         clean_name = filename or f"edited_image_{int(time.time())}.png"
-        full_path = os.path.join(self.workspace_dir, clean_name)
+        try:
+            full_path = self._resolve_workspace_path(clean_name, for_creation=True, basename_only=True)
+            if image_path:
+                self._resolve_workspace_path(image_path, for_creation=True)
+        except WorkspacePathError as exc:
+            return False, str(exc)
 
         src_info = f"`{image_path}`" if image_path else "Current active canvas image"
         res = (
@@ -1082,7 +1172,10 @@ class AgentToolRegistry:
 
     def _tool_render_bezier_art(self, filename: str = "bezier_artwork.svg") -> Tuple[bool, str]:
         """Renders mathematical cubic/quadratic Bezier spline vector art canvas."""
-        full_path = os.path.join(self.workspace_dir, filename)
+        try:
+            full_path = self._resolve_workspace_path(filename, for_creation=True, basename_only=True)
+        except WorkspacePathError as exc:
+            return False, str(exc)
         svg_art = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600">
   <rect width="100%" height="100%" fill="#070a0f" />
   <g stroke-linecap="round" opacity="0.85">
@@ -1103,7 +1196,10 @@ class AgentToolRegistry:
     def _tool_export_chat_history(self, filename: Optional[str] = None) -> Tuple[bool, str]:
         """Exports episodic conversation memory to a readable Markdown document."""
         export_file = filename or f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-        full_path = os.path.join(self.workspace_dir, export_file)
+        try:
+            full_path = self._resolve_workspace_path(export_file, for_creation=True, basename_only=True)
+        except WorkspacePathError as exc:
+            return False, str(exc)
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row

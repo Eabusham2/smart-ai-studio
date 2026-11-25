@@ -29,7 +29,7 @@ class TestLiveAIDemonstration(unittest.TestCase):
         cls.engine = ProReasoningEngine(settings=cls.settings)
         cls.db_fd, cls.db_path = tempfile.mkstemp(suffix=".db")
         cls.db = EpisodicMemoryDB(db_path=cls.db_path)
-        cls.tools = AgentToolRegistry(db_path=cls.db_path)
+        cls.tools = AgentToolRegistry(db_path=cls.db_path, workspace_dir=os.getcwd())
 
     @classmethod
     def tearDownClass(cls):
