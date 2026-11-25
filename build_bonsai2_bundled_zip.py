@@ -14,18 +14,18 @@ import os
 import stat
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
-
-from huggingface_hub import HfApi, hf_hub_url
 
 
 MODEL_REPOS = (
     "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
     "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG",
 )
+HF_BASE_URL = "https://huggingface.co"
 DEFAULT_PART_BYTES = 1_900_000_000  # safely below GitHub's 2 GiB per-release-asset cap
 REMOTE_RANGE_BYTES = 512 * 1024 * 1024  # bound each HF transfer; resume large files by byte range
 
@@ -148,20 +148,34 @@ def _zip_local_tree(zf: zipfile.ZipFile, root: Path):
                 dst.write(chunk)
 
 
-def _repo_files(api: HfApi, repo_id: str):
-    info = api.model_info(repo_id, files_metadata=True)
+def _repo_files(repo_id: str):
+    encoded_repo = urllib.parse.quote(repo_id, safe="/")
+    url = f"{HF_BASE_URL}/api/models/{encoded_repo}?blobs=true"
+    with urllib.request.urlopen(_request(url), timeout=60) as response:
+        info = json.load(response)
+
     files = []
-    for sibling in info.siblings or []:
-        name = getattr(sibling, "rfilename", None)
+    for sibling in info.get("siblings") or []:
+        name = sibling.get("rfilename")
         if not name:
             continue
         files.append(
             {
                 "name": name,
-                "size": int(getattr(sibling, "size", 0) or 0),
+                "size": int(sibling.get("size") or 0),
             }
         )
-    return str(info.sha or "main"), files
+    return str(info.get("sha") or "main"), files
+
+
+def _hf_hub_url(repo_id: str, filename: str, revision: str) -> str:
+    encoded_repo = urllib.parse.quote(repo_id, safe="/")
+    encoded_revision = urllib.parse.quote(revision, safe="")
+    encoded_filename = urllib.parse.quote(filename, safe="/")
+    return (
+        f"{HF_BASE_URL}/{encoded_repo}/resolve/"
+        f"{encoded_revision}/{encoded_filename}"
+    )
 
 
 def _request(url: str, *, start: Optional[int] = None, end: Optional[int] = None):
@@ -233,7 +247,7 @@ def _stream_remote_file(
     if expected_size > 0:
         zi.file_size = expected_size
 
-    url = hf_hub_url(repo_id=repo_id, filename=filename, revision=revision)
+    url = _hf_hub_url(repo_id=repo_id, filename=filename, revision=revision)
     print(f"[bundle] {repo_id}: {filename}")
     written = 0
 
@@ -351,11 +365,10 @@ def main():
     if not app_bundle.is_dir():
         raise SystemExit(f"Missing macOS app bundle: {app_bundle}")
 
-    api = HfApi()
     repo_manifest = []
     repo_file_sets = []
     for repo_id in MODEL_REPOS:
-        revision, files = _repo_files(api, repo_id)
+        revision, files = _repo_files(repo_id)
         repo_file_sets.append((repo_id, revision, files))
         repo_manifest.append(
             {

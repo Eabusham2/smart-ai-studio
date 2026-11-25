@@ -1,4 +1,10 @@
+import io
+import json
+import os
 from pathlib import Path
+from unittest.mock import patch
+
+from build_bonsai2_bundled_zip import _hf_hub_url, _repo_files
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,3 +67,51 @@ def test_release_workflow_streams_oversized_macos_bundle():
     # as one impossible >2 GiB GitHub release asset.
     release_tail = workflow.split("- name: Publish or Update GitHub Release", 1)[1]
     assert "dist/SmartAI-macOS-arm64.zip" not in release_tail
+
+
+def test_release_bundler_avoids_third_party_install_with_tokens():
+    workflow = _src(".github/workflows/ci-build-release.yml")
+    bundler = _src("build_bonsai2_bundled_zip.py")
+    release_job = workflow.split("  build-and-release:", 1)[1]
+
+    assert "pip install" not in release_job
+    assert "huggingface_hub" not in bundler
+
+
+def test_release_hf_metadata_preserves_authenticated_snapshot_downloads():
+    response = io.BytesIO(
+        json.dumps(
+            {
+                "sha": "a" * 40,
+                "siblings": [
+                    {"rfilename": "config.json", "size": 42},
+                    {"rfilename": "weights/model weights.safetensors", "size": 1024},
+                ],
+            }
+        ).encode("utf-8")
+    )
+    with (
+        patch.dict(os.environ, {"HF_TOKEN": "test-token"}),
+        patch(
+            "build_bonsai2_bundled_zip.urllib.request.urlopen",
+            return_value=response,
+        ) as urlopen,
+    ):
+        revision, files = _repo_files("owner/model")
+
+    request = urlopen.call_args.args[0]
+    assert request.full_url == "https://huggingface.co/api/models/owner/model?blobs=true"
+    assert request.get_header("Authorization") == "Bearer test-token"
+    assert revision == "a" * 40
+    assert files == [
+        {"name": "config.json", "size": 42},
+        {"name": "weights/model weights.safetensors", "size": 1024},
+    ]
+    assert _hf_hub_url(
+        "owner/model",
+        "weights/model weights.safetensors",
+        "refs/pr/1",
+    ) == (
+        "https://huggingface.co/owner/model/resolve/"
+        "refs%2Fpr%2F1/weights/model%20weights.safetensors"
+    )
