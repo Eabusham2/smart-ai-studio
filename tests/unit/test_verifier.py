@@ -2,7 +2,11 @@
 Unit tests for Deterministic Ground-Truth Verifier.
 """
 
+import subprocess
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from core.verifier import GroundTruthVerifier, VerificationResult
 
 
@@ -53,6 +57,39 @@ Hope this helps!"""
         res = short_verifier.verify_in_sandbox(infinite_loop_code, assertions)
         self.assertFalse(res.passed)
         self.assertIn("timed out", res.details.lower())
+
+    def test_docker_backend_errors_fail_closed(self):
+        verifier = GroundTruthVerifier(sandbox_timeout=0.5, use_docker=True)
+        errors = (
+            (FileNotFoundError("docker unavailable"), "backend error"),
+            (subprocess.TimeoutExpired(["docker", "run"], 0.5), "timed out"),
+        )
+
+        for error, expected_details in errors:
+            with self.subTest(error=type(error).__name__):
+                with patch("core.verifier.subprocess.run", side_effect=error), \
+                        patch.object(verifier, "_verify_in_subprocess") as host_verifier:
+                    res = verifier.verify_in_sandbox("assert True", "assert True")
+
+                self.assertFalse(res.passed)
+                self.assertEqual(res.verifier_type, "docker_sandbox_error")
+                self.assertIn(expected_details, res.details.lower())
+                host_verifier.assert_not_called()
+
+    def test_docker_success_keeps_container_backend(self):
+        verifier = GroundTruthVerifier(use_docker=True)
+        completed = SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with patch("core.verifier.subprocess.run", return_value=completed) as docker_run, \
+                patch.object(verifier, "_verify_in_subprocess") as host_verifier:
+            res = verifier.verify_in_sandbox("assert True", "assert True")
+
+        command = docker_run.call_args.args[0]
+        self.assertTrue(res.passed)
+        self.assertEqual(res.verifier_type, "docker_sandbox")
+        self.assertEqual(command[:3], ["docker", "run", "--rm"])
+        self.assertEqual(command[3:5], ["--network", "none"])
+        host_verifier.assert_not_called()
 
     def test_sympy_equivalence(self):
         # 2*x + 3*x == 5*x
