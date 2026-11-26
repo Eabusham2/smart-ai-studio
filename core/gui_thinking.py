@@ -26,6 +26,7 @@ class ReasoningParser:
     def __init__(self, starts_in_thought=False):
         self.thinking = bool(starts_in_thought)
         self._initial_open = self.thinking
+        self.saw_reasoning_marker = False
         self._buffer = ""
         self._fence = None
         self._inline = False
@@ -83,10 +84,12 @@ class ReasoningParser:
             elif self._fence is not None or self._inline:
                 emit(raw)
             elif token in _OPEN:
+                self.saw_reasoning_marker = True
                 if not self.thinking:
                     self.thinking = True
                     events.append(("open", ""))
             elif token in _CLOSE:
+                self.saw_reasoning_marker = True
                 if self.thinking:
                     self.thinking = False
                     events.append(("close", ""))
@@ -98,10 +101,15 @@ class ReasoningParser:
         return events
 
 
-def reasoning_segments(text, *, starts_in_thought=False):
+def reasoning_segments(text, *, starts_in_thought=False, unmarked_as_answer=False):
     """Return interleaved (is_thought, text) segments for replay and storage."""
     parser = ReasoningParser(starts_in_thought)
     events = parser.feed(text, final=True)
+    if unmarked_as_answer and starts_in_thought and not parser.saw_reasoning_marker:
+        # A template hint is provisional: a runtime may emit an ordinary
+        # answer with no reasoning delimiters. Do not hide that entire reply.
+        # Internal candidate parsing retains its strict default instead.
+        return [(False, text)] if text else []
     controls = [kind for kind, _ in events if kind in {"open", "close_unopened"}]
     # Some tokenizers include the opening tag in the prompt, not the output.
     # The parser's code-literal protection also applies to this inference.
@@ -122,6 +130,13 @@ def reasoning_segments(text, *, starts_in_thought=False):
     return segments
 
 
+def completed_display_segments(text, *, starts_in_thought=False):
+    """Separate completed chat replies without creating empty thought panels."""
+    return [(is_thought, value) for is_thought, value in reasoning_segments(
+        text, starts_in_thought=starts_in_thought, unmarked_as_answer=True)
+        if not is_thought or value.strip()]
+
+
 def starts_in_thinking(engine, info=None):
     """Inspect the selected template's assistant prefix, never its model name."""
     info = info or {}
@@ -131,18 +146,24 @@ def starts_in_thinking(engine, info=None):
     name = {"mlx": "mlx_backend", "controller": "controller_backend",
             "gguf": "gguf_backend", "bitnet": "bitnet_backend"}.get(active_backend)
     owner = getattr(engine, name, None) if name else (engine if active_backend in {"torch", "cuda"} else None)
-    loader = getattr(owner, "_vlm_loader", None) or owner
+    vlm_loader = getattr(owner, "_vlm_loader", None)
+    loader = vlm_loader or owner
     prepare_vlm = getattr(loader, "_mlx_prompt", None)
-    if callable(prepare_vlm):
+    runtime = str(getattr(loader, "runtime", "") or "").lower()
+    if callable(prepare_vlm) and (vlm_loader is not None or runtime.startswith("mlx")
+                                  or runtime in {"jang_vlm", "jang-vlm", "repo_mlx_vlm"}):
         try:
-            # Bonsai 2's MLX/VLM path owns its processor template separately
-            # from the tokenizer. Ask that exact text-only formatting path.
-            prefix = prepare_vlm("", 0)
-            if isinstance(prefix, str) and prefix.rstrip().casefold().endswith(tuple(_OPEN)):
-                return True
+            # Probe the same chat packing and VLM formatting path that will
+            # actually run. A closed prefix is definitive, not a reason to
+            # fall back to a different tokenizer's default open prefix.
+            formatter = getattr(engine, "_format_prompt_with_history", None)
+            packed = formatter("Thinking prefix probe", []) if callable(formatter) else ""
+            prefix = prepare_vlm(packed, 0)
+            return isinstance(prefix, str) and prefix.rstrip().casefold().endswith(tuple(_OPEN))
         except Exception:
             import logging
             logging.getLogger(__name__).debug("VLM reasoning prefix unavailable", exc_info=True)
+            return False
     tokenizer = getattr(owner, "tokenizer", None)
     template = getattr(tokenizer, "apply_chat_template", None)
     if not callable(template):

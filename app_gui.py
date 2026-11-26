@@ -5798,8 +5798,8 @@ class SmartAIChatbotApp:
                 # drains this request's callbacks. Best Work has already removed
                 # revision/judging thoughts. Save its exact selected text: parsing
                 # display segments must not rewrite literal tags in tool arguments.
-                from core.gui_thinking import reasoning_segments, render_segments, transcript_payload
-                segments = reasoning_segments(full_ans, starts_in_thought=initial_thinking)
+                from core.gui_thinking import completed_display_segments, render_segments, transcript_payload
+                segments = completed_display_segments(full_ans, starts_in_thought=initial_thinking)
                 origin_history.append({"role": "assistant", "content": full_ans} if use_pro_branches
                                       else transcript_payload(segments))
 

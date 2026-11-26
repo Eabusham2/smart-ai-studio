@@ -49,11 +49,30 @@ def install(cls) -> None:
 
         if tok is not None and hasattr(tok, "apply_chat_template"):
             try:
-                return tok.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
+                runtime = str(getattr(selected, "runtime", "") or "").lower()
+                vlm_chat = (getattr(selected, "_vlm_loader", None) is not None
+                            or runtime.startswith("mlx")
+                            or runtime in {"jang_vlm", "jang-vlm", "repo_mlx_vlm"})
+                options = {"tokenize": False, "add_generation_prompt": True}
+                # The built-in Bonsai 2.5 desktop chat is a reasoning chat.
+                # mlx-vlm's helper otherwise defaults to disabling thinking.
+                if vlm_chat and (getattr(selected, "model_info", None) or {}).get("bonsai25_mtp"):
+                    options["enable_thinking"] = True
+                try:
+                    rendered = tok.apply_chat_template(messages, **options)
+                except TypeError:
+                    if "enable_thinking" not in options:
+                        raise
+                    options.pop("enable_thinking")
+                    rendered = tok.apply_chat_template(messages, **options)
+                if vlm_chat and isinstance(rendered, str):
+                    # The tokenizer has already rendered the entire history.
+                    # Without this marker the VLM runtime wraps that chat as
+                    # one user message, replacing its assistant/thinking
+                    # prefix with a second (usually non-thinking) template.
+                    from core.local_api_engine import FormattedPrompt
+                    return FormattedPrompt(rendered)
+                return rendered
             except Exception:
                 pass
 

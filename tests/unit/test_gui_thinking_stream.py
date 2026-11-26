@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.gui_thinking import (
-    ReasoningParser, ThinkingStream, clear_display_state, reasoning_segments,
+    ReasoningParser, ThinkingStream, clear_display_state, completed_display_segments, reasoning_segments,
     render_segments, starts_in_thinking, transcript_payload, transcript_segments,
 )
 from tests.unit.test_best_work_chat_ui import work_app
@@ -48,6 +48,38 @@ def test_prompt_owned_opening_and_unterminated_reasoning_are_retained():
     assert reasoning_segments("ordinary answer <") == [(False, "ordinary answer <")]
 
 
+@pytest.mark.parametrize("raw", ["Hello! This is the answer.", "Use `<think>` literally.", "Code:\n```xml\n<think>example</think>\n```"])
+def test_completed_reply_without_reasoning_markers_is_not_hidden_by_template_hint(raw):
+    segments = completed_display_segments(raw, starts_in_thought=True)
+    assert segments == [(False, raw)]
+    assert transcript_payload(segments) == {"role": "assistant", "content": raw}
+    # Candidate/tool parsing and interrupted reasoning retain their strict semantics.
+    assert reasoning_segments(raw, starts_in_thought=True) == [(True, raw)]
+
+
+def test_completed_display_preserves_real_thoughts_but_omits_empty_ones():
+    assert completed_display_segments("reason</think>answer", starts_in_thought=True) == [(True, "reason"), (False, "answer")]
+    assert completed_display_segments("<think>reason</think>answer") == [(True, "reason"), (False, "answer")]
+    assert completed_display_segments("\n</think>answer", starts_in_thought=True) == [(False, "answer")]
+    assert completed_display_segments("<think>\n</think>answer") == [(False, "answer")]
+    assert completed_display_segments("<think>unfinished reasoning") == [(True, "unfinished reasoning")]
+
+
+def test_completed_unmarked_reply_is_visible_and_provisional_thought_is_removed(ui):
+    app, stream, _scroll = ui
+    renderer = ThinkingStream(app, starts_in_thought=True)
+    renderer.feed("")
+    renderer.feed("Hello! ", .1)
+    renderer.feed("This is the answer.", .2)
+    renderer.feed("", .3, final=True)
+    # Same final replacement used by the real chat request.
+    stream.delete("1.0", "end")
+    render_segments(app, completed_display_segments("Hello! This is the answer.", starts_in_thought=True),
+                    existing_ids=renderer.ids)
+    assert visible(stream) == "Hello! This is the answer."
+    assert not app.thinking_cache and not app.thinking_meta and not app.thinking_expanded
+
+
 def test_reasoning_prefix_comes_from_selected_native_and_vlm_templates():
     tokenizer = SimpleNamespace(apply_chat_template=lambda *_a, **_k: "assistant\n<think>\n")
     engine = SimpleNamespace(active_backend="mlx", mlx_backend=SimpleNamespace(tokenizer=tokenizer))
@@ -57,11 +89,57 @@ def test_reasoning_prefix_comes_from_selected_native_and_vlm_templates():
     engine.mlx_backend._vlm_loader = SimpleNamespace(_mlx_prompt=lambda text, images: "assistant<think>\n")
     assert starts_in_thinking(engine)
     assert not starts_in_thinking(engine, {"starts_in_thinking": False})
+    tokenizer.apply_chat_template = lambda *_a, **_k: "assistant\n<think>\n"
+    engine.mlx_backend._vlm_loader._mlx_prompt = lambda text, images: "assistant<think>\n</think>\n"
+    assert not starts_in_thinking(engine)  # actual VLM prefix overrides tokenizer default
     # Another loaded/previous backend must not influence the selected model.
     engine.active_backend = "gguf"
     engine.gguf_backend = SimpleNamespace()
     engine.tokenizer = SimpleNamespace(apply_chat_template=lambda *_a, **_k: "<think>")
     assert not starts_in_thinking(engine)
+
+
+@pytest.mark.parametrize("crack", [False, True])
+def test_bonsai_vlm_chat_is_formatted_once_with_reasoning_enabled(crack):
+    from config.bonsai_models import bonsai_model_info
+    from core.controller_runtime import UniversalControllerBackend
+    from core.full_context_hardening import install
+
+    calls = []
+    class Engine:
+        pass
+    install(Engine)
+    engine = Engine()
+    info = bonsai_model_info(crack=crack)
+    loader = UniversalControllerBackend("unused", info)
+    loader.runtime = "mlx_repo_vlm"
+    def render(messages, **kwargs):
+        calls.append((messages, kwargs))
+        return "packed history\nassistant\n<think>\n" if kwargs.get("enable_thinking") else "packed history\nassistant\n<think>\n</think>\n"
+    def double_wrap(*args, **kwargs):
+        pytest.fail("A fully templated desktop chat was wrapped a second time")
+    loader.tokenizer = SimpleNamespace(apply_chat_template=render)
+    loader._apply_chat_template = double_wrap
+    engine.active_backend = "mlx"
+    engine.mlx_backend = SimpleNamespace(tokenizer=loader.tokenizer, _vlm_loader=loader, model_info=info)
+
+    history = [{"role": "system", "content": "Follow instructions."}, {"role": "user", "content": "Earlier question"}, {"role": "assistant", "content": "Earlier reply"}]
+    packed = engine._format_prompt_with_history("Current question", history)
+    assert packed.endswith("<think>\n")
+    assert calls[-1] == (history + [{"role": "user", "content": "Current question"}],
+                         {"tokenize": False, "add_generation_prompt": True, "enable_thinking": True})
+    assert loader._mlx_prompt(packed, 0) is packed
+    assert starts_in_thinking(engine)
+
+    raw = "Reasoning is visible.</think>Final answer is visible."
+    parser = ReasoningParser(starts_in_thinking(engine))
+    events = [event for part in ("Reasoning is ", "visible.</thi", "nk>Final answer is visible.")
+              for event in parser.feed(part)]
+    assert ("thought", "Reasoning is ") in events
+    assert ("close", "") in events
+    assert ("text", "Final answer is visible.") in events
+    assert completed_display_segments(raw, starts_in_thought=True) == [
+        (True, "Reasoning is visible."), (False, "Final answer is visible.")]
 
 
 def test_fenced_example_with_unbalanced_inline_backtick_remains_visible():
