@@ -222,7 +222,7 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.reuse_green != 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: ${{ inputs.full_tests && 45 || 35 }}
     strategy:
       fail-fast: false
       # The current Mac media stack requires Python 3.11+. Keep 3.10 coverage

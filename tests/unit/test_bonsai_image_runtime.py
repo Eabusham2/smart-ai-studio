@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,9 +16,14 @@ from core import bonsai_image_runtime as runtime
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="The Mac image adapter uses POSIX runtime/process isolation.")
 
 
-def test_runtime_install_uses_its_private_python_and_exact_publisher_sources(tmp_path, monkeypatch):
-    directory = tmp_path / "app data with spaces" / "native image"
+@pytest.fixture
+def publisher_host(monkeypatch):
     monkeypatch.setattr(runtime, "_require_platform", lambda: None)
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(executable=sys.executable, version_info=(3, 11, 0)))
+
+
+def test_runtime_install_uses_its_private_python_and_exact_publisher_sources(tmp_path, monkeypatch, publisher_host):
+    directory = tmp_path / "app data with spaces" / "native image"
     monkeypatch.setattr(runtime, "_runtime_directory", lambda: directory)
     monkeypatch.setenv("PYTHONHOME", "/parent/python")
     monkeypatch.setenv("PYTHONPATH", "/parent/site-packages")
@@ -54,20 +60,18 @@ def test_runtime_install_uses_its_private_python_and_exact_publisher_sources(tmp
     assert calls == []
 
 
-def test_runtime_never_replaces_an_unrecognized_directory(tmp_path, monkeypatch):
+def test_runtime_never_replaces_an_unrecognized_directory(tmp_path, monkeypatch, publisher_host):
     directory = tmp_path / "existing files"
     directory.mkdir()
     original = directory / "keep.txt"
     original.write_text("user data")
-    monkeypatch.setattr(runtime, "_require_platform", lambda: None)
     monkeypatch.setattr(runtime, "_runtime_directory", lambda: directory)
     with pytest.raises(RuntimeError, match="unrecognized files"):
         runtime.ensure_bonsai_image_runtime()
     assert original.read_text() == "user data"
 
 
-def test_failed_native_probe_never_marks_runtime_ready(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime, "_require_platform", lambda: None)
+def test_failed_native_probe_never_marks_runtime_ready(tmp_path, monkeypatch, publisher_host):
     monkeypatch.setattr(runtime, "_runtime_directory", lambda: tmp_path / "private")
 
     def command(argv, **_options):

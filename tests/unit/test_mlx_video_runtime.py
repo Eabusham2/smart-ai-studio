@@ -52,6 +52,7 @@ def selection(tmp_path, monkeypatch):
 def test_private_setup_is_pinned_reusable_and_probe_failure_is_not_ready(tmp_path, monkeypatch, kind):
     directory = tmp_path / "private runtime with spaces"
     monkeypatch.setattr(runtime, "_require_platform", lambda: None)
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(executable=sys.executable, version_info=(3, 11, 0)))
     monkeypatch.setattr(runtime, "_runtime_directory", lambda value: directory)
     monkeypatch.setenv("PYTHONPATH", "/unrelated/parent/site-packages")
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "shared cache"))
