@@ -224,9 +224,9 @@ def test_python_child_keeps_interpreter_arguments_and_installs_transfer_policy(t
     assert "install_hf_transfer_policy" in command[3]
     assert command[-4:] == ["module", "trainer.cli", "--model", "owner/model"]
     executable = tmp_path / "mflux-generate"
-    executable.write_text("#!" + sys.executable + "\nprint('entry')\n")
+    executable.write_text("#!/usr/bin/env python3\nprint('entry')\n", encoding="utf-8")
     wrapped = hf_subprocess_command([str(executable), "--path", "/cached/model"])
-    assert wrapped[0] == sys.executable
+    assert wrapped[:3] == ["/usr/bin/env", "python3", "-c"]
     assert wrapped[-4:] == ["script", str(executable), "--path", "/cached/model"]
 
 

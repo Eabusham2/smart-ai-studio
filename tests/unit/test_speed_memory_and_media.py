@@ -86,7 +86,7 @@ def test_every_builtin_media_choice_has_an_exact_download_or_runtime_reason():
     from config.bonsai_models import bonsai_model_info
     from config.media_models import apply_builtin_media_catalog
 
-    module = ast.parse((Path(__file__).parents[2] / "app_gui.py").read_text())
+    module = ast.parse((Path(__file__).parents[2] / "app_gui.py").read_text(encoding="utf-8"))
     cls = next(node for node in module.body if isinstance(node, ast.ClassDef)
                and node.name == "SmartAIChatbotApp")
     init = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")

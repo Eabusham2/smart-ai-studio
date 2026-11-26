@@ -2,8 +2,10 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
+from unittest.mock import patch
 
 import pytest
 
@@ -47,9 +49,13 @@ def fixture_bundle(tmp_path, target="Linux-x86_64"):
 def test_embed_exact_runtime_and_discover_after_app_relocation(tmp_path, monkeypatch, target, system, machine):
     code, source, data = fixture_bundle(tmp_path, target)
     monkeypatch.setenv("SMARTAI_NATIVE_RUNTIME_DIR", str(source))
-    destination = embed_native_runtime(code, target)
+    with patch.object(Path, "chmod", autospec=True, side_effect=Path.chmod) as chmod:
+        destination = embed_native_runtime(code, target)
     assert destination == code / "runtime/native"
-    assert (destination / "llama-server").stat().st_mode & 0o111
+    executable = destination / "llama-server"
+    chmod.assert_any_call(executable, 0o755)
+    if os.name == "posix":
+        assert executable.stat().st_mode & 0o111
     for name in native.BUNDLE_FILES:
         assert (source / name).read_bytes() == (destination / name).read_bytes()
     moved = tmp_path / "moved app"

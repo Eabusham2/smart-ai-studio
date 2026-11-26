@@ -77,8 +77,9 @@ def test_wan_command_uses_both_exact_t2v_q4_experts_and_full_vae(selection, tmp_
     argv = runtime._generation_command("/native/sd-cli", files, "a river at sunset", selection,
                                        options, tmp_path / "frames.avi", tmp_path / "preview.avi")
     assert argv[1:3] == ["-M", "vid_gen"]
-    assert argv[argv.index("--diffusion-model") + 1].endswith(runtime.LOW_NOISE_FILE)
-    assert argv[argv.index("--high-noise-diffusion-model") + 1].endswith(runtime.HIGH_NOISE_FILE)
+    model_path = Path(selection["model_path"])
+    assert Path(argv[argv.index("--diffusion-model") + 1]) == model_path / runtime.LOW_NOISE_FILE
+    assert Path(argv[argv.index("--high-noise-diffusion-model") + 1]) == model_path / runtime.HIGH_NOISE_FILE
     assert argv[argv.index("--t5xxl") + 1] == selection["component_files"]["t5xxl"][0]
     assert argv[argv.index("--vae") + 1] == selection["component_files"]["vae"][0]
     assert argv[argv.index("--high-noise-steps") + 1] == "-1"

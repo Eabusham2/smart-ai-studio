@@ -327,7 +327,7 @@ def test_qwen_attachment_remains_a_file_through_the_gui_queue(tmp_path):
     # reference must survive queueing as a path, never become a text attachment.
     source = tmp_path / 'reference.png'
     Image.new('RGB', (16, 16), 'red').save(source)
-    module = ast.parse((Path(__file__).parents[2] / 'app_gui.py').read_text())
+    module = ast.parse((Path(__file__).parents[2] / 'app_gui.py').read_text(encoding='utf-8'))
     cls = next(node for node in module.body if isinstance(node, ast.ClassDef)
                and node.name == 'SmartAIChatbotApp')
     selected = [node for node in cls.body if isinstance(node, ast.FunctionDef)

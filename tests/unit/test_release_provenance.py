@@ -120,7 +120,8 @@ def run_release_gate(tmp_path, *, tag='latest', fault=None):
     elif fault == 'excess_assets':
         manifest['assets'] = expected + [{**expected[0], 'name': f'extra-{i}.zip'} for i in range(20)]
     (tmp_path / 'release-assets.json').write_text(json.dumps(manifest))
-    (tmp_path / 'smartai-release-notes.md').write_text('Verified release notes\n')
+    # The Ubuntu publication job writes LF and Node preserves the file's bytes.
+    (tmp_path / 'smartai-release-notes.md').write_bytes(b'Verified release notes\n')
     harness = r'''
 const p = require('./fixture.json');
 const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, sha: p.sha,
