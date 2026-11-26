@@ -7,6 +7,7 @@ speculative acceleration configuration, and fallback defaults.
 
 import os
 from config.paths import get_portable_data_dir
+from config.bonsai_models import BONSAI_MLX_REPO, BONSAI_GGUF_REPO, bonsai_registry_preset
 import platform
 import sys
 from dataclasses import dataclass, field
@@ -75,21 +76,22 @@ try:
         kv_bits: int = Field(default=16, description="Legacy compatibility setting; MLX runtime enforces native/full-precision KV cache")
 
         # Hardware & Model Configuration (Dedicated 27B Qwen3.8 Architectures)
-        base_model_path: str = Field(default="orcarouter/Qwen3.8-27B-Uncensored-MLX", description="Path/ID for 27B Uncensored MLX model")
-        mlx_model_path: str = Field(default="orcarouter/Qwen3.8-27B-Uncensored-MLX", description="Path/ID for Apple MLX 27B 2-bit uncensored model")
+        base_model_path: str = Field(default=BONSAI_MLX_REPO, description="Path/ID for the main Bonsai 2.5 27B MLX model")
+        mlx_model_path: str = Field(default=BONSAI_MLX_REPO, description="Path/ID for Apple MLX Bonsai 2.5 27B with MTP")
         lora_adapter_path: Optional[str] = Field(default=None, description="Path to consolidated Slow-LoRA adapter")
         small_model_path: str = Field(default="h34v7/Ternary-Qwen3.5-3.8B-mlx", description="Model checkpoint ID")
         flash_model_path: str = Field(default="Qwen/Qwen-3.8B-Flash-Next-1.58bit", description="Qwen 3.8 Flash Next 1.58-bit model checkpoint")
         ternary_qwen_3_8b_path: str = Field(default="h34v7/Ternary-Qwen3.5-3.8B-mlx", description="Ternary Qwen 3.8B Fast checkpoint")
         ternary_qwen_27b_path: str = Field(default="jayPark777/Qwen3.8-27B-Axon-MLQT", description="Ternary Qwen 27B Axon MLQT {-1,0,+1} checkpoint")
-        gguf_model_path: str = Field(default="jayPark777/Qwen3.8-27B-Axon-MLQT", description="GGUF / Ternary Qwen 27B Axon MLQT checkpoint")
+        gguf_model_path: str = Field(default=BONSAI_GGUF_REPO, description="GGUF Bonsai 2.5 27B with embedded MTP")
         flash_qwen_7b_path: str = Field(default="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", description="Flash Next Qwen 7B Coder checkpoint")
         vision_model_path: str = Field(default="mlx-community/nanoLLaVA-1.5-mlx", description="Uncensored Multimodal Vision checkpoint")
         vision_mmproj_path: Optional[str] = Field(default=None, description="GGUF vision clip projector path")
         auto_download: bool = Field(default=True, description="Automatically stream missing weights from Hugging Face")
 
-        # Drafting requires an explicitly selected, hash-verified native build.
-        speculative_mode: str = Field(default="auto", description="Native drafting: none, auto, lookup, mtp, dflash2; MLX drafting remains disabled")
+        # Bonsai 2.5 uses its publisher MTP runtime; older native drafts need
+        # their explicitly selected, hash-verified patched build.
+        speculative_mode: str = Field(default="auto", description="Drafting: none/auto/mtp for Bonsai 2.5 MLX and GGUF; lookup/dflash2 require their matching native runtime")
         speculative_tokens: int = Field(default=4, description="Number of draft tokens K to speculate ahead")
         speculative_server_path: Optional[str] = Field(default=None, description="Local patched native server; no automatic runtime or target substitution")
         draft_model_path: Optional[str] = Field(default=None, description="Path to secondary draft model or DFlash drafter")
@@ -146,14 +148,14 @@ except ImportError:
         small_model: bool = os.getenv("SMALL_MODEL", "false").lower() in ("1", "true", "yes")
         kv_bits: int = int(os.getenv("KV_BITS", "16"))
 
-        base_model_path: str = os.getenv("BASE_MODEL_PATH", "orcarouter/Qwen3.8-27B-Uncensored-MLX")
-        mlx_model_path: str = os.getenv("MLX_MODEL_PATH", "orcarouter/Qwen3.8-27B-Uncensored-MLX")
+        base_model_path: str = os.getenv("BASE_MODEL_PATH", BONSAI_MLX_REPO)
+        mlx_model_path: str = os.getenv("MLX_MODEL_PATH", BONSAI_MLX_REPO)
         lora_adapter_path: Optional[str] = os.getenv("LORA_ADAPTER_PATH", None)
         small_model_path: str = os.getenv("SMALL_MODEL_PATH", "h34v7/Ternary-Qwen3.5-3.8B-mlx")
         flash_model_path: str = os.getenv("FLASH_MODEL_PATH", "Qwen/Qwen-3.8B-Flash-Next-1.58bit")
         ternary_qwen_3_8b_path: str = os.getenv("TERNARY_QWEN_3_8B_PATH", "h34v7/Ternary-Qwen3.5-3.8B-mlx")
         ternary_qwen_27b_path: str = os.getenv("TERNARY_QWEN_27B_PATH", "jayPark777/Qwen3.8-27B-Axon-MLQT")
-        gguf_model_path: str = os.getenv("GGUF_MODEL_PATH", "jayPark777/Qwen3.8-27B-Axon-MLQT")
+        gguf_model_path: str = os.getenv("GGUF_MODEL_PATH", BONSAI_GGUF_REPO)
         flash_qwen_7b_path: str = os.getenv("FLASH_QWEN_7B_PATH", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
         vision_model_path: str = os.getenv("VISION_MODEL_PATH", "mlx-community/nanoLLaVA-1.5-mlx")
         vision_mmproj_path: Optional[str] = os.getenv("VISION_MMPROJ_PATH", None)
@@ -200,48 +202,8 @@ except ImportError:
 
 # Comprehensive Multi-Backend Model Registry Presets
 MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
-    "model_1": {
-        "id": "model_1",
-        "key": "bonsai2_27b_ternary_multimodal",
-        "name": "Bonsai 2 27B Ternary Multimodal",
-        "short_name": "Bonsai 2 27B Ternary",
-        "tag": "👁️ Bonsai 2 27B Ternary",
-        "type": "multimodal_ternary",
-        "input_modalities": ["text", "image", "video"],
-        "base_params": "27.36B",
-        "raw_params": 27_360_000_000,
-        "precision": "True ternary g128 (~1.72 bpw representation) + retained vision tower",
-        "runtime_family": "bonsai2_hadamard",
-        "max_context": 262_144,
-        "vram": "~8.6 GB MLX / ~6.6-7.9 GB GGUF + vision",
-        "accent": "#38bdf8",
-        "artifacts": {
-            "mlx": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
-            "gguf": "prism-ml/Ternary-Bonsai-2-27B-gguf"
-        },
-        "default_repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
-    },
-    "model_2": {
-        "id": "model_2",
-        "key": "bonsai2_27b_ternary_crack",
-        "name": "Bonsai 2 27B Ternary CRACK (Abliterated/Uncensored)",
-        "short_name": "Bonsai 2 27B CRACK",
-        "tag": "🔓 Bonsai 2 27B CRACK",
-        "type": "multimodal_ternary",
-        "input_modalities": ["text", "image", "video"],
-        "base_params": "27.36B",
-        "raw_params": 27_360_000_000,
-        "precision": "Ternary Bonsai 2 + weight-level CRACK abliteration; vision/video preserved",
-        "runtime_family": "bonsai2_hadamard",
-        "max_context": 262_144,
-        "vram": "~8.2 GB MLX / ~6.6 GB GGUF + Q8 vision",
-        "accent": "#f43f5e",
-        "artifacts": {
-            "mlx": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG",
-            "gguf": "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF"
-        },
-        "default_repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG"
-    },
+    "model_1": bonsai_registry_preset(),
+    "model_2": bonsai_registry_preset(crack=True),
     "model_3": {
         "id": "model_3",
         "key": "realvisxl_v5_image_gen",

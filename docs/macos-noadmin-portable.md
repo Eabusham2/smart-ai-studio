@@ -10,38 +10,37 @@ Unzip the kit to a user-owned folder, then double-click its
 `/bin/bash "<kit-folder>/Install-and-Launch-SmartAI-NoAdmin.command"`.
 The helper uses the system `curl`, `osascript`, `shasum`, and `ditto` to fetch,
 verify, and assemble the **existing** split Mac release ZIP. GitHub limits a
-single asset to 2 GiB, so this option shares the standard archive's signed-off
-model parts rather than doubling the ~18 GB model-bearing release storage.
+single asset to 2 GiB, so this option shares the standard archive's verified
+parts rather than uploading a duplicate application archive.
 
 The assembled archive contains a fully populated `SmartAI.app`, a bundled
-Python 3.11 runtime with dependencies already installed, and **both** model
-snapshots in `Contents/Resources/app/preloaded_models/`:
-
-1. `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` (Bonsai 2, Qwen3.8-based)
-2. `dealignai/Bonsai-2-27B-CRACK-Ternary-JANG` (CRACK, Qwen3.8-based)
+Python 3.11 runtime with dependencies already installed. **It contains no
+pretrained model weights.** The default tabs are Bonsai 2.5 and Bonsai 2.5 CRACK;
+choose Download in the app to fetch the selected pinned model and its MTP head.
+See [model sources](bonsai25-models.md).
 
 The app extracts into `~/Applications/SmartAI-Portable/<release-sha>/SmartAI.app`
 and starts as the ordinary user. No `/Applications` write permission, `sudo`,
 Homebrew, Xcode, system Python or additional dependency installation is needed.
-The first kit run downloads the shared release parts from GitHub; **once the
-complete app has been assembled, neither model is downloaded at app launch**,
-and subsequent launches work offline. The parts are SHA-256 checked before the
-ZIP is assembled, the assembled ZIP is checked again, and both model directories
-and the embedded Python readiness marker are validated before moving the app
+The first kit run downloads the shared release parts from GitHub. The app does
+not download a model merely because it starts. After you download a model in
+Studio, that model can be loaded offline. The parts are SHA-256 checked before the
+ZIP is assembled, the assembled ZIP is checked again, and the explicit empty
+model manifest and embedded Python readiness marker are validated before moving the app
 into place. Existing versioned installs are left untouched.
 
-**Storage:** Plan for at least 55 GB free space while downloading, assembling,
-and extracting this large archive. On a Mac with limited unified memory,
-loading both 27B models at once may not be possible; they remain available as
-separate model choices.
+**Storage:** Keep room for the archive parts, assembled ZIP, extracted app, and
+any previous installation you retain. Model downloads need additional space;
+only download the presets you intend to use. Studio switches between resident
+models rather than loading both 27B presets together.
 
 **macOS security:** The app is not notarized. If macOS displays a security
 warning, verify the source and use its ordinary user-level Open controls.
 The portable workflow does not disable Gatekeeper or require admin privileges.
 
-**CI proof:** `tests/unit/test_macos_noadmin_portable.py` checks the exact two
-models and immutable revisions, ZIP script permissions, manifest integrity,
-and an offline, synthetic, model-free install on an Apple Silicon GitHub runner.
-The release workflow only publishes the kit after the existing full CI matrix,
-relocated application smoke tests, and the verified full model-bundled ZIP pass.
+**CI proof:** The packaging tests check ZIP script permissions, manifest integrity,
+explicit model-free installation, and an offline synthetic install on an Apple
+Silicon GitHub runner. The release workflow publishes the kit only after the
+focused regression/native gates, relocated application smoke tests, and the
+verified model-free ZIP pass. The full regression matrix remains a manual option.
 Actual pretrained-model inference is not executed in the release builder.

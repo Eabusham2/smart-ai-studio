@@ -9,14 +9,19 @@ def _src(path: str) -> str:
 
 
 def test_bonsai_non_mlx_artifacts_are_exact_ternary_and_prism_only():
+    from config.bonsai_models import bonsai_model_info
     app = _src("app_gui.py")
-    assert '"repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf"' in app
-    assert '"gguf_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-PTQ1_0.gguf"' in app
-    assert '"repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG" if is_apple_silicon else "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF"' in app
-    assert '"gguf_file": None if is_apple_silicon else "Bonsai-2-27B-PTQ1_0-CRACK.gguf"' in app
-    assert app.count('"prism_llama_fork": not is_apple_silicon') >= 2
-    assert app.count('"mmproj_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"') >= 2
-    assert app.count('"gguf_training_base_model_id": None if is_apple_silicon else "Qwen/Qwen3.8-27B"') >= 2
+    assert '"model_1": bonsai_model_info(is_apple_silicon=is_apple_silicon)' in app
+    assert '"model_2": bonsai_model_info(crack=True, is_apple_silicon=is_apple_silicon)' in app
+    for crack in (False, True):
+        mlx = bonsai_model_info(crack=crack)
+        gguf = bonsai_model_info(crack=crack, is_apple_silicon=False)
+        assert mlx["repo_id"] != gguf["repo_id"]
+        assert mlx["gguf_file"] is None
+        assert gguf["gguf_file"].endswith("PTQ1_0-mtp.gguf")
+        assert gguf["prism_llama_fork"] and gguf["ternary"]
+        assert gguf["mmproj_file"] == "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"
+        assert gguf["gguf_training_base_model_id"] == "Qwen/Qwen3.8-27B"
 
 
 def test_prism_runtime_isolated_from_universal_gguf():

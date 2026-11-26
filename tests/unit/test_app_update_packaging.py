@@ -139,8 +139,10 @@ class UpdatePackagingTests(unittest.TestCase):
              patch.object(builder.subprocess, 'check_output', side_effect=check_output), \
              patch.object(builder.subprocess, 'run', side_effect=run), \
              patch.object(builder, 'smoke_app', side_effect=smoke), \
+             patch.object(builder, 'smoke_bonsai_runtime') as native_smoke, \
              patch.object(builder, 'verified_dmg', side_effect=dmg):
             result = builder.package(target, output, prepare_only=prepare_only)
+            native_smoke.assert_called_once()
         return output, result, smoke_kinds
 
     def test_each_platform_archives_its_own_portable_and_setup_identity(self):
@@ -160,8 +162,9 @@ class UpdatePackagingTests(unittest.TestCase):
                         self.assertIn('requirements.lock.txt', record['managed_paths'])
                 receipt = json.loads((output / f'SmartAI-{target}.receipt.json').read_text())
                 self.assertEqual(receipt['commit'], COMMIT)
+                self.assertEqual(receipt['bonsai_native_smoke'], 'passed')
                 if target.startswith('macOS'):
-                    # This exact portable app is later reused for the model bundle.
+                    # This exact portable app is reused for the model-free Mac installers.
                     with tarfile.open(output / 'SmartAI.app.tar.gz') as archive:
                         stamp = archive.extractfile('SmartAI.app/Contents/Resources/app/' + builder.BUILD_RECORD)
                         self.assertEqual(json.load(stamp)['package_kind'], 'portable')

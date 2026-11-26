@@ -87,13 +87,27 @@ def apply_loaded_options(engine, options=None):
         cache_dir = selected["cache_dir"]
         if selected["persistent_cache"] and not cache_dir:
             cache_dir = str(Path(get_portable_data_dir()) / "prompt_state")
+        speculation = None
+        configure_draft = getattr(backend, "configure_speculation", None)
+        if (getattr(engine, "active_backend", None) == "mlx"
+                and getattr(backend, "model", None) is not None and callable(configure_draft)):
+            speculation = configure_draft(
+                mode=selected["speculative_mode"] if selected["enabled"] else "none",
+                max_draft_tokens=selected["max_draft_tokens"],
+                # This preference belongs to the legacy native verifier.
+                # MLX uses the selected pack's verified MTP sidecar.
+                draft_model_path=None,
+            )
         result = hook(**{key: selected[key] for key in _BOOL_KEYS}, cache_dir=cache_dir)
         configured = [key for key in ("prompt_reuse", "branch_prefill", "tokenizer_memo",
                                       "persistent_cache", "metal_warmup")
                       if isinstance(result, dict) and result.get(key) is True]
+        if isinstance(speculation, dict) and speculation.get("mode") == "mtp":
+            configured = [key for key in configured if key not in {"prompt_reuse", "branch_prefill", "persistent_cache"}]
+            configured.append("native_mtp")
         return {"status": "configured", "message": "Prompt speedups configured for the loaded runtime.",
                 "configured_speedups": configured, "benchmark_required": False,
-                "backend": result}
+                "backend": result, "speculation": speculation}
     if getattr(backend, "runtime", None) == "prism_speculative":
         telemetry = backend.get_speculative_telemetry()
         mode = telemetry.get("mode", "none")

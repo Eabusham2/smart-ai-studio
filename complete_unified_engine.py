@@ -40,7 +40,7 @@ except ImportError:
 @dataclass
 class EngineSettings:
     total_ram_gb: float = field(default_factory=lambda: psutil.virtual_memory().total / (1024 ** 3))
-    mlx_model_path: str = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
+    mlx_model_path: str = "prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit"
     max_kv_tokens: int = 4096
     h2o_sink_tokens: int = 4
     h2o_heavy_tokens: int = 1024
@@ -569,12 +569,24 @@ class UnifiedMasterEngine:
     def _initialize_runtime(self):
         if MLX_AVAILABLE:
             try:
-                self.model, self.tokenizer = load(self.settings.mlx_model_path, model_config={})
+                if "Ternary-Bonsai-2.5-27B-mlx-2bit" in self.settings.mlx_model_path:
+                    from core.mlx_engine import MLXReasoningBackend
+                    from config.bonsai_models import bonsai_model_info
+                    backend = MLXReasoningBackend(self.settings.mlx_model_path, model_info=bonsai_model_info())
+                    if not backend.load_model():
+                        raise RuntimeError(backend.last_error)
+                    self._runtime_backend = backend
+                    self.model, self.tokenizer = backend.get_training_model(), backend.tokenizer
+                else:
+                    self.model, self.tokenizer = load(self.settings.mlx_model_path, model_config={})
                 self.moe_manager = MoEDualBufferManager(self.model, self.settings)
             except Exception:
                 pass
 
     def generate(self, prompt: str, max_tokens: int = 128) -> str:
+        backend = getattr(self, "_runtime_backend", None)
+        if backend is not None:
+            return "".join(backend.stream_generate_tokens(prompt, max_tokens=max_tokens, temperature=0.0, top_p=1.0))
         if not MLX_AVAILABLE or self.model is None or self.tokenizer is None:
             return f"[Engine Offline Output for: {prompt[:40]}]"
         tokens = self.tokenizer.encode(prompt)

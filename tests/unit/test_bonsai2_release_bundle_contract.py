@@ -28,26 +28,23 @@ def test_bonsai2_release_bundle_contains_both_mlx_repositories():
     assert "_validate_range_response(response, range_start, expected_size)" in bundler
 
 
-def test_app_prefers_packaged_bonsai2_snapshots_when_present():
+def test_app_selects_bonsai25_and_retains_legacy_bundle_lookup_support():
+    from config.bonsai_models import BONSAI_MLX_REPO, CRACK_MLX_REPO, bonsai_model_info
     app = _src("app_gui.py")
     paths = _src("config/paths.py")
     cache = _src("core/hf_downloader.py")
 
     assert "get_bundled_model_path" in app
-    assert (
-        'get_bundled_model_path("prism-ml/Ternary-Bonsai-2-27B-mlx-2bit") '
-        "if is_apple_silicon else None"
-    ) in app
-    assert (
-        'get_bundled_model_path("dealignai/Bonsai-2-27B-CRACK-Ternary-JANG") '
-        "if is_apple_silicon else None"
-    ) in app
+    assert "bonsai_model_info(is_apple_silicon=is_apple_silicon)" in app
+    assert "bonsai_model_info(crack=True, is_apple_silicon=is_apple_silicon)" in app
+    assert bonsai_model_info()["repo_id"] == BONSAI_MLX_REPO
+    assert bonsai_model_info(crack=True)["repo_id"] == CRACK_MLX_REPO
     assert '"preloaded_models"' in paths
     assert "if get_bundled_model_path(repo_id):" in cache
 
     eval_runtime = _src("run_studio_complete.py")
     assert "from config.paths import get_bundled_model_path" in eval_runtime
-    assert '"prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"' in eval_runtime
+    assert f'"{BONSAI_MLX_REPO}"' in eval_runtime
     assert "get_bundled_model_path(" in eval_runtime
 
 
@@ -60,7 +57,9 @@ def test_release_workflow_streams_oversized_macos_bundle():
     assert '--archive-name SmartAI-macOS-arm64.zip' in workflow
     assert 'RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}' in workflow
     assert '--upload-tag "$RELEASE_TAG"' in workflow
-    assert "timeout-minutes: 180" in workflow
+    assert "--no-models" in workflow
+    assert "HF_TOKEN:" not in workflow
+    assert "timeout-minutes: 45" in workflow
     assert 'bundle_release = os.getenv("SMARTAI_MODEL_BUNDLE_RELEASE", "0") == "1"' in build
 
     # The giant logical zip is streamed to release parts instead of being uploaded

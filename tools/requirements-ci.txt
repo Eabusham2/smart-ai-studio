@@ -1,0 +1,11 @@
+# Model-free regression runner. Full app dependencies belong to package builds
+# and the opt-in full_tests matrix, not the normal unit-test gate.
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+numpy>=1.24.0
+psutil>=5.9.0
+PyYAML>=6.0
+pydantic-settings>=2.0.0
+Pillow>=10.0.0
+sympy>=1.12
+huggingface_hub>=0.20.0

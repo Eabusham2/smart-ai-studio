@@ -219,9 +219,10 @@ def test_all_python_lanes_still_run_and_release_requires_verified_native_job():
     source = WORKFLOW.read_text(encoding="utf-8")
     python_job = source.split("\n  test:\n", 1)[1].split("\n  native-build:\n", 1)[0]
     assert "native_reuse" not in python_job
-    assert "os: [ubuntu-latest, macos-latest, windows-latest]" in python_job
-    assert "python-version: ['3.10', '3.11']" in python_job
-    assert "python -m pytest -v" in python_job
+    assert '"os":["ubuntu-latest","macos-latest","windows-latest"]' in python_job
+    assert '"python-version":["3.10","3.11"]' in python_job
+    assert "inputs.full_tests" in python_job
+    assert "python tools/run_ci_tests.py regression" in python_job
     assert "needs: [preflight, test, mlx-learning, native-build, reuse-native, package]" in source
     assert "needs.mlx-learning.result == 'success'" in source
     assert "(needs.native-build.result == 'success' || needs.reuse-native.result == 'success')" in source

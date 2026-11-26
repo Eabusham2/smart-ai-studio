@@ -2,7 +2,27 @@
 
 Studio includes nine execution optimizations, with capability checks at the point where each optimization is used. Open **Speedups…** in the top bar to configure them. The selected target, full prompt/history, cache precision, temperature, top-p, and reasoning-temperature ladder remain authoritative.
 
-The tests for this change use synthetic tokenizers, cache arrays, HTTP responses, process handles, and a tiny integer-only C++ fixture. CI also compiles the actual patched native server on Linux CPU and macOS Metal. **These checks do not load or run a neural model and do not establish measured model-output parity or a speed gain on a particular GPU.** The implementation enforces the invariants below and falls back or refuses unsupported configurations; throughput depends on workload, cache hits, memory, and draft acceptance.
+The tests use synthetic tokenizers, cache arrays, HTTP responses, process handles, tiny synthetic neural fixtures, and an integer-only C++ fixture. CI also checks the patched native server on Linux CPU and macOS Metal and launches the pinned Bonsai 2.5 publisher executable with `--help`. **These checks do not load pretrained model weights and do not establish measured target-model output parity or a speed gain on a particular GPU.** Unsupported configurations report incompatibility; throughput depends on workload, cache hits, memory, and draft acceptance.
+
+## Bonsai 2.5 defaults
+
+The default main and CRACK presets are now [Bonsai 2.5 with MTP v2](bonsai25-models.md).
+MLX attaches the verified publisher head; GGUF uses the combined PTQ1_0-MTP
+artifact and a checksum-pinned publisher executable downloaded on first load.
+**auto** selects MTP, **mtp** selects it explicitly, and **none** turns it off.
+The multimodal processor/projector stays available for desktop media requests.
+
+MLX MTP pauses exact prompt-state reuse, shared branch prefill, and persistent
+prompt snapshots because the existing snapshots do not include draft/recurrent
+state. Exact tokenizer memoization and supported lifecycle/memory controls remain
+active. Turning MTP off restores the compatible ordinary cache paths. The nine
+controls below are capabilities, not nine optimizations stacked on every model.
+
+The original Bonsai 2 PQ2_0 path retains its separate strict patched verifier.
+Its lookup/DFlash heads and target-row arithmetic contract do not apply to the
+Bonsai 2.5 publisher runtime. New MTP output is target-verified; no claim of
+bit-identical sampling across those two runtimes or a fixed speed increase is
+made. Incompatible old draft/server choices produce an explicit error.
 
 ## What is included
 
@@ -15,14 +35,14 @@ The tests for this change use synthetic tokenizers, cache arrays, HTTP responses
 | 5 | Persistent prompt state | Opt-in, supported native MLX-LM cache classes | Local safetensors plus checksummed JSON, exact artifact/tokenizer/adapter/runtime identity, atomic publication and bounded eviction. Unsupported or corrupt state is a cache miss. |
 | 6 | GPU runtime warmup | Opt-in MLX GPU, at idle request boundaries | A tiny deterministic GPU primitive under the existing runtime lock. No model invocation, token generation or random-state consumption; no background loop. |
 | 7 | Prompt lookup speculation | Explicit patched native runtime, supported Bonsai GGUF | The native ngram-simple proposer suggests tokens; the original target sampler must reproduce every accepted token. |
-| 8 | Multi-token prediction (MTP) | Explicit combined Bonsai PQ2_0-MTP-Q8_0 target export | Uses the embedded MTP head through the real native draft-mtp protocol. Same selected target file with drafting Off is the comparison baseline. |
+| 8 | Multi-token prediction (MTP) | Bonsai 2.5 MLX sidecar and combined MTP GGUF; original Bonsai 2 PQ2_0-MTP-Q8_0 on its separate runtime | Uses the actual compatible head and target verification. The selected target with drafting Off is the comparison baseline; runtime-specific exactness boundaries differ. |
 | 9 | DFlash2 | Explicit original Bonsai PQ2_0 target plus its matching Q8_0 draft | Uses the real noncausal draft-dflash protocol. The target verifier uses the exact row policy described below; the separate draft remains batched. |
 
-The first four are enabled by default when supported. Persistent caching and GPU warmup are opt-in. Native drafting defaults to **none** and requires an explicitly selected patched server. Lookup, MTP and DFlash2 are alternative native modes; they are not stacked together. Auto chooses among the already selected compatible target/head artifacts.
+The first four are enabled by default when supported, subject to the MLX MTP cache restriction above. Persistent caching and GPU warmup are opt-in. Drafting defaults to **auto**; a saved **none** preference is preserved. Lookup, MTP and DFlash2 are alternative modes. Auto chooses a method supported by the selected model and runtime.
 
-The default Bonsai MLX model is not replaced. Its multimodal processor remains in place. The optional native drafting path is **text only** and rejects a vision projector rather than silently losing image support. The newer PTQ1_0 export, CRACK/abliterated exports, and arbitrary renamed GGUF files are not interchangeable with the pinned PQ2_0/head artifacts.
+The older strict native drafting path is **text only** and rejects a vision projector. Its pinned PQ2_0/head files are not interchangeable with the new Bonsai 2.5 PTQ1_0/CRACK artifacts or arbitrary renamed files. The new 2.5 native path separately supports the pinned official projector.
 
-## TensorFold-inspired target verification
+## Original Bonsai 2 TensorFold-inspired target verification
 
 TensorFold's frozen Python implementation is the source inspiration: commit [`cb2ebf0540f42604e2759b2ddef497861e928248`](https://github.com/ashhart/TensorFold/tree/cb2ebf0540f42604e2759b2ddef497861e928248), particularly its row-exact Qwen kernels, exact sampling, and [ternary Bonsai recipe](https://github.com/ashhart/TensorFold/blob/cb2ebf0540f42604e2759b2ddef497861e928248/docs/recipes/ternary-bonsai-2.md). Draft acceptance alone does not solve batch-dependent floating-point changes. TensorFold addresses arithmetic order, attention reductions, recurrent state and sampling together.
 
@@ -54,7 +74,11 @@ Model/tokenizer replacement, adapter changes, in-place training, unload and pres
 
 GPU warmup runs a small deterministic primitive after idle when the runtime is available. It does not keep idle clocks high continuously, precompile model kernels, reserve a model or promise lower latency. Busy/missing-GPU/pressure/failure cases skip it.
 
-## Using the native runtime
+## Using the original Bonsai 2 patched native runtime
+
+Bonsai 2.5 uses its managed publisher executable instead; see the
+[new runtime instructions](bonsai25-models.md#runtime-and-speedups). The steps
+below preserve the original exactness-verified PQ2_0 implementation.
 
 ### Released builds
 
@@ -102,10 +126,10 @@ Publisher documentation: [original target](https://huggingface.co/prism-ml/Terna
 
 ## Validation and release gate
 
-The full Python suite runs with `SMARTAI_TEST_OFFLINE=1`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` and `RUN_REAL_WEIGHTS_EVAL=0`. It covers tokenization identity, checkpoint boundaries, branch isolation, state corruption, exact context handling, cancellation before and during requests, owned-server teardown/retry, genuine native usage counters, preference persistence and GUI busy guards. External DNS and network connections are blocked inside the test process; synthetic localhost services remain available. A separate gate builds the patched native source on Linux CPU and macOS Metal without starting a model server.
+The focused Python release gate runs with `SMARTAI_TEST_OFFLINE=1`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` and `RUN_REAL_WEIGHTS_EVAL=0`. It covers tokenization identity, checkpoint boundaries, branch isolation, state corruption, exact context handling, cancellation before and during requests, owned-server teardown/retry, genuine native usage counters, preference persistence and GUI busy guards. External DNS and network connections are blocked inside the test process; synthetic localhost services remain available. The full six-lane suite remains available with `workflow_dispatch` → `full_tests`. A separate gate builds or verifies reused patched native artifacts on Linux CPU and macOS Metal without starting a model server.
 
 The Python tests include small randomly initialized neural fixtures: a tiny GPT-2 for CPU/disk placement, a synthetic learning network, and synthetic LoRA layers. These quick fixtures remain enabled; the tests do not load or run the target Bonsai or other pretrained models. Their results do not establish target-model throughput or numerical equivalence.
 
-Release packaging reuses the exact successful PR's native build artifacts, validates their receipts against the packaged patch code, and verifies every uploaded runtime/application asset before moving the rolling `latest` tag. The existing macOS application release separately bundles its preset model files; packaging those files does not perform inference. The native build/test jobs download source only and do not download model weights.
+Release packaging reuses compatible successful native build artifacts, validates their receipts against the packaged patch code, and verifies every uploaded runtime/application asset before moving the rolling `latest` tag. All application releases are model-free: no preset weights are downloaded or bundled by CI. Publisher-runtime smoke checks download only the small executable archive and invoke help; model weights are fetched only when selected in the app.
 
 No real-model throughput, GPU kernel execution or numerical equivalence benchmark is claimed by this change. Unavailable acceptance/speed/entropy counters stay unavailable in the app. Cancellation cannot silently restart a request, and failed native shutdown retains the owner and model-file registration for a visible retry.

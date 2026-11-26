@@ -238,6 +238,46 @@ def smoke_app(code, *, setup_home=None):
                    env=env, check=True)
 
 
+def smoke_bonsai_runtime(code, cache_dir):
+    """Verify each native OS can install and start the pinned MTP executable.
+
+    Only the small publisher runtime is downloaded; --help exits before loading
+    weights. The temporary CI cache is outside the package and never ships.
+    """
+    from bootstrap_runtime import python_path
+    code = Path(code).resolve()
+    env = dict(os.environ, PYTHONNOUSERSITE='1', SMARTAI_DATA_DIR=str(cache_dir),
+               SMARTAI_BONSAI_NATIVE_VARIANT='cpu', HF_HUB_OFFLINE='1',
+               TRANSFORMERS_OFFLINE='1', RUN_REAL_WEIGHTS_EVAL='0')
+    for key in ('PYTHONHOME', 'PYTHONPATH', 'SMARTAI_BONSAI_SERVER'):
+        env.pop(key, None)
+    script = '''
+from pathlib import Path
+import subprocess
+from core.bonsai_native_runtime import ensure_bonsai_server, RELEASE
+from core.engines.bonsai25_engine import Bonsai25ReasoningBackend, PUBLISHER_CONTRACT
+from core.speculative_runtime import SpeculativePlan
+server = ensure_bonsai_server()
+backend = Bonsai25ReasoningBackend('no-model-weights.gguf', server_path=server,
+                                  n_ctx=4096, n_gpu_layers=0, max_draft_tokens=2,
+                                  mmproj_path='no-projector-weights.gguf')
+backend._plan = SpeculativePlan('mtp', 'mtp', '0'*64, None, 2,
+                                runtime_contract=PUBLISHER_CONTRACT)
+result = subprocess.run(backend._build_command(8711) + ['--help'],
+                        env=backend._runtime_env(), capture_output=True,
+                        text=True, timeout=30)
+help_text = result.stdout + result.stderr
+required = ('--spec-type', 'draft-mtp', '--spec-draft-n-max',
+            '--spec-draft-n-min', '--spec-draft-p-min', '--jinja', '--mmproj')
+if result.returncode or not all(flag in help_text for flag in required):
+    raise RuntimeError('Pinned Bonsai MTP runtime did not start: ' + help_text[-2000:])
+assert ensure_bonsai_server() == server, 'Verified runtime cache could not be reopened'
+print('BONSAI_NATIVE_SMOKE', RELEASE, 'passed; no model weights loaded')
+'''
+    subprocess.run([str(python_path(code / 'runtime/python')), '-c', script],
+                   cwd=code, env=env, check=True, timeout=300)
+
+
 def verified_dmg(app, destination):
     """Package the .app directory itself, then test it from the mounted image."""
     app, destination = Path(app), Path(destination)
@@ -321,6 +361,7 @@ def package(target, output, *, prepare_only=False):
     code=app/'Contents/Resources/app' if target.startswith('macOS') else app/'SmartAI.AppDir/usr/bin' if target.startswith('Linux') else app
     write_build_record(code, app, target, 'portable', identity)
     smoke_app(code)
+    smoke_bonsai_runtime(code, build / 'bonsai-runtime-smoke')
     if prepare_only:return app
     portable=output/f'SmartAI-{target}-portable.zip'
     archive_tree(app,portable)
@@ -329,8 +370,8 @@ def package(target, output, *, prepare_only=False):
         linux_tar=output/'SmartAI-Linux-x86_64.tar.gz'
         archive_tree(app,linux_tar,'tar');files+=split_large(linux_tar)
     if target=='macOS-arm64':
-        # Publisher combines these exact, tested app bytes with the existing
-        # model bundles. Keep that packaging step separate from model inference.
+        # The Mac installers reuse these exact tested app/runtime bytes. No
+        # model snapshots are downloaded or appended by release packaging.
         archive_tree(app,output/'SmartAI.app.tar.gz','tar')
     if target.startswith('macOS'):
         dmg=output/f'SmartAI-{target}.dmg'
@@ -362,6 +403,7 @@ def package(target, output, *, prepare_only=False):
     archive_tree(app,setup);files+=split_large(setup)
     receipt={'schema':1,'target':target,'commit':identity['commit'],
              'model_inference_run':False,'gui_smoke':'passed','setup_smoke':'passed',
+             'bonsai_native_smoke':'passed',
              'dmg_smoke':'passed' if target.startswith('macOS') else 'not_applicable',
              'files':[{'name':p.name,'size':p.stat().st_size,'sha256':sha(p)} for p in files]}
     (output/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')

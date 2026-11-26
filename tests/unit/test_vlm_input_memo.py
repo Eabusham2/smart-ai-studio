@@ -212,6 +212,9 @@ def test_qwen3vl_processor_and_real_tokenizer_reuse_exact_native_inputs(native_t
     processor.image_processor = processor.video_processor = None
     processor.image_token, processor.video_token = "<|image_pad|>", "<|video_pad|>"
     processor.image_token_id, processor.video_token_id = 98, 99
+    # __new__ bypasses ProcessorMixin.__init__, which initializes these modality
+    # ID lists in the publisher-pinned Transformers 5.5 processor contract.
+    processor.image_ids, processor.video_ids, processor.audio_ids = [98], [99], []
 
     class NoCopyDecoder:
         def __deepcopy__(self, memo):

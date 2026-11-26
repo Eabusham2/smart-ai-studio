@@ -427,6 +427,10 @@ def install_gui_eval_panel(module=None) -> None:
                 pass
 
     def _start_eval(self):
+        from core.local_api_ui import api_serving
+        if api_serving(self):
+            messagebox.showinfo("API Server", "Stop the API server before starting evaluation.")
+            return
         if _eval_alive(self):
             return
         if getattr(self, "_model_load_in_progress", False):

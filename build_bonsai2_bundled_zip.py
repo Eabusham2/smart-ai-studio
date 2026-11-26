@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build the macOS release ZIP with both Bonsai-2 MLX snapshots without needing >14 GB free disk.
+"""Stream the macOS release ZIP into GitHub-sized archive parts.
 
 The logical archive is streamed into sub-2-GiB parts. In CI, each completed part can
-be uploaded to the target GitHub Release immediately and deleted locally.
+be uploaded to the target GitHub Release immediately and deleted locally. CI uses
+--no-models; legacy two-model bundling is available only when explicitly invoked.
 """
 
 from __future__ import annotations
@@ -357,6 +358,8 @@ def main():
     parser.add_argument("--archive-name", default="SmartAI-macOS-arm64.zip")
     parser.add_argument("--part-bytes", type=int, default=DEFAULT_PART_BYTES)
     parser.add_argument("--upload-tag", default=None)
+    parser.add_argument("--no-models", action="store_true",
+                        help="Package only the tested app/runtime; never contact Hugging Face")
     args = parser.parse_args()
 
     app_bundle = Path(args.app_bundle).resolve()
@@ -367,7 +370,7 @@ def main():
 
     repo_manifest = []
     repo_file_sets = []
-    for repo_id in MODEL_REPOS:
+    for repo_id in (() if args.no_models else MODEL_REPOS):
         revision, files = _repo_files(repo_id)
         repo_file_sets.append((repo_id, revision, files))
         repo_manifest.append(
@@ -399,6 +402,7 @@ def main():
                 "format": 1,
                 "models": repo_manifest,
                 "layout": "preloaded_models/<owner--repo>/",
+                "model_downloads": "on-demand" if args.no_models else "bundled",
             }
             zf.writestr(
                 "SmartAI.app/Contents/Resources/app/preloaded_models/manifest.json",
@@ -426,6 +430,7 @@ def main():
         "part_limit": args.part_bytes,
         "parts": writer.parts,
         "models": repo_manifest,
+        "model_downloads": "on-demand" if args.no_models else "bundled",
     }
     manifest_path = out_dir / manifest_name
     manifest_path.write_text(

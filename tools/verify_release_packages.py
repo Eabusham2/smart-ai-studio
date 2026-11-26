@@ -13,6 +13,8 @@ def verify(root, commit):
             raise RuntimeError('Package receipt does not describe the tested commit: '+target)
         if record.get('setup_smoke') != 'passed':
             raise RuntimeError('Setup first launch was not verified: '+target)
+        if record.get('bonsai_native_smoke') != 'passed':
+            raise RuntimeError('Bonsai MTP runtime launch was not verified: '+target)
         if target.startswith('macOS') and record.get('dmg_smoke') != 'passed':
             raise RuntimeError('Mounted DMG launch was not verified: '+target)
         files=record.get('files')

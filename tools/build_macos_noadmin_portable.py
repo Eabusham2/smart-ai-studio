@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Create the separate user-space macOS portable release option.
 
-The full macOS ZIP already embeds tested dependencies plus both Bonsai-2 MLX
-snapshots. GitHub caps each release asset below 2 GiB, so the no-admin kit
-reuses its authenticated multipart files instead of uploading 18 GiB twice.
+The full macOS ZIP embeds the tested app and dependencies. Models are downloaded
+on demand by the app in current releases; legacy model-bearing bundles remain
+supported. The kit reuses the archive's checksum-pinned multipart files.
 After assembly, the full app runs locally/offline from ~/Applications without
 any package-manager, Python, root, or installer privileges.
 """
@@ -35,7 +35,10 @@ def verify_manifest(data):
     if not isinstance(data, dict) or data.get('archive_name') != ARCHIVE:
         raise ValueError('Portable kit requires the model-bundled macOS ZIP')
     models = data.get('models')
-    if not isinstance(models, list) or {x.get('repo_id') for x in models if isinstance(x, dict)} != REPOS or len(models) != 2:
+    model_free = data.get('model_downloads') == 'on-demand'
+    if model_free and models != []:
+        raise ValueError('An on-demand model bundle must not contain model snapshots')
+    if not model_free and (not isinstance(models, list) or {x.get('repo_id') for x in models if isinstance(x, dict)} != REPOS or len(models) != 2):
         raise ValueError('The macOS bundle must contain both original Bonsai 2 model repositories')
     for item in models:
         if not re.fullmatch(r'[0-9a-f]{40}', str(item.get('revision', ''))):
@@ -72,7 +75,8 @@ LAUNCHER_TEMPLATE = r'''#!/bin/bash
 set -euo pipefail
 
 # No administrator rights, Homebrew, Xcode or system Python are used here.
-# The verified archive contains an embedded Python environment and BOTH models.
+# The verified archive contains an embedded Python environment and dependencies.
+BUNDLED_MODELS="__BUNDLED_MODELS__"
 if [ "$(/usr/bin/uname -s)" != "Darwin" ] || [ "$(/usr/bin/uname -m)" != "arm64" ]; then
   echo "This package requires an Apple Silicon Mac running macOS." >&2
   exit 1
@@ -88,16 +92,18 @@ APP="$APP_DIR/SmartAI.app"
 CODE="$APP/Contents/Resources/app"
 
 check_app() {
-  [ -x "$CODE/runtime/python/bin/python3" ] && \
-  [ -f "$CODE/runtime/python/.smartai-deps-ready" ] && \
-  [ -f "$CODE/preloaded_models/prism-ml--Ternary-Bonsai-2-27B-mlx-2bit/config.json" ] && \
-  [ -f "$CODE/preloaded_models/dealignai--Bonsai-2-27B-CRACK-Ternary-JANG/config.json" ] && \
-  /usr/bin/find "$CODE/preloaded_models/prism-ml--Ternary-Bonsai-2-27B-mlx-2bit" -name '*.safetensors' -type f -print -quit | /usr/bin/grep -q . && \
-  /usr/bin/find "$CODE/preloaded_models/dealignai--Bonsai-2-27B-CRACK-Ternary-JANG" -name '*.safetensors' -type f -print -quit | /usr/bin/grep -q .
+  local code="${1:-$CODE}"
+  [ -x "$code/runtime/python/bin/python3" ] && \
+  [ -f "$code/runtime/python/.smartai-deps-ready" ] || return 1
+  if [ "$BUNDLED_MODELS" != "1" ]; then return 0; fi
+  [ -f "$code/preloaded_models/prism-ml--Ternary-Bonsai-2-27B-mlx-2bit/config.json" ] && \
+  [ -f "$code/preloaded_models/dealignai--Bonsai-2-27B-CRACK-Ternary-JANG/config.json" ] && \
+  /usr/bin/find "$code/preloaded_models/prism-ml--Ternary-Bonsai-2-27B-mlx-2bit" -name '*.safetensors' -type f -print -quit | /usr/bin/grep -q . && \
+  /usr/bin/find "$code/preloaded_models/dealignai--Bonsai-2-27B-CRACK-Ternary-JANG" -name '*.safetensors' -type f -print -quit | /usr/bin/grep -q .
 }
 
 if check_app; then
-  echo "Verified installed Smart AI Studio, including both preloaded Bonsai models: $APP"
+  echo "Verified installed Smart AI Studio and embedded runtime: $APP"
   if [ "${SMARTAI_PORTABLE_INSTALL_ONLY:-0}" != "1" ]; then /usr/bin/open "$APP"; fi
   exit 0
 fi
@@ -119,9 +125,14 @@ function run(args) {
   const text = $.NSString.alloc.initWithDataEncoding(bytes, $.NSUTF8StringEncoding).js;
   const manifest = JSON.parse(text);
   if (manifest.archive_name !== '__ARCHIVE__' || !Array.isArray(manifest.parts) || !manifest.parts.length) throw Error('Invalid archive manifest');
-  if (manifest.models.length !== 2) throw Error('Both Bonsai models must be included');
-  const expected = new Set(['prism-ml/Ternary-Bonsai-2-27B-mlx-2bit', 'dealignai/Bonsai-2-27B-CRACK-Ternary-JANG']);
-  if (manifest.models.some(m => !expected.delete(m.repo_id)) || expected.size) throw Error('Unexpected Bonsai models');
+  if (!Array.isArray(manifest.models)) throw Error('Invalid model policy');
+  if ('__BUNDLED_MODELS__' === '0') {
+    if (manifest.model_downloads !== 'on-demand' || manifest.models.length) throw Error('Model-free app manifest required');
+  } else {
+    if (manifest.models.length !== 2) throw Error('Both Bonsai models must be included');
+    const expected = new Set(['prism-ml/Ternary-Bonsai-2-27B-mlx-2bit', 'dealignai/Bonsai-2-27B-CRACK-Ternary-JANG']);
+    if (manifest.models.some(m => !expected.delete(m.repo_id)) || expected.size) throw Error('Unexpected Bonsai models');
+  }
   return manifest.parts.map((p, i) => {
     const name = '__ARCHIVE__.part' + String(i).padStart(3,'0');
     if (p.name !== name || !/^[a-f0-9]{64}$/.test(p.sha256) || !Number.isSafeInteger(p.size) || p.size <= 0 || p.size >= 2147483648) throw Error('Invalid model part metadata');
@@ -139,10 +150,10 @@ while IFS=' ' read -r hash size name; do
   fi
   if [ "$valid" != "1" ]; then
     if [ "${SMARTAI_PORTABLE_OFFLINE:-0}" = "1" ]; then
-      echo "Offline mode: missing or corrupt model part $name. Download the release parts first." >&2
+      echo "Offline mode: missing or corrupt app part $name. Download the release parts first." >&2
       exit 1
     fi
-    echo "Downloading verified model-bundle part $name ($size bytes)..."
+    echo "Downloading verified app archive part $name ($size bytes)..."
     temp="$part.download"
     /bin/rm -f "$temp"
     /usr/bin/curl --fail --location --silent --show-error --retry 5 \
@@ -150,14 +161,14 @@ while IFS=' ' read -r hash size name; do
       "https://github.com/__REPO__/releases/download/__TAG__/$name"
     if [ "$(/usr/bin/stat -f%z "$temp")" != "$size" ] || \
        ! /bin/echo "$hash  $temp" | /usr/bin/shasum -a 256 -c - >/dev/null 2>&1; then
-      echo "The downloaded model part failed integrity verification: $name" >&2
+      echo "The downloaded app part failed integrity verification: $name" >&2
       exit 1
     fi
     /bin/mv "$temp" "$part"
   fi
 done < "$LIST"
 
-# Model files are already IN this verified archive: no model downloads on launch.
+# The installer fetches only release assets, never model repositories.
 /bin/cp "$MANIFEST" "$CACHE/__MANIFEST__"
 /bin/cp "$ASSEMBLER" "$CACHE/__ASSEMBLER__"
 (
@@ -172,15 +183,10 @@ cleanup() {
 }
 trap 'cleanup; /bin/rm -f "$LIST"' EXIT
 /usr/bin/ditto -x -k "$CACHE/__ARCHIVE__" "$STAGING"
-if [ ! -x "$STAGING/SmartAI.app/Contents/Resources/app/runtime/python/bin/python3" ] || \
-   [ ! -f "$STAGING/SmartAI.app/Contents/Resources/app/runtime/python/.smartai-deps-ready" ] || \
-   [ ! -f "$STAGING/SmartAI.app/Contents/Resources/app/preloaded_models/prism-ml--Ternary-Bonsai-2-27B-mlx-2bit/config.json" ] || \
-   [ ! -f "$STAGING/SmartAI.app/Contents/Resources/app/preloaded_models/dealignai--Bonsai-2-27B-CRACK-Ternary-JANG/config.json" ]; then
-  echo "Extracted app lacks the runtime or a Bonsai model. No installation was performed." >&2
+if ! check_app "$STAGING/SmartAI.app/Contents/Resources/app"; then
+  echo "Extracted app lacks required runtime or bundle files. No installation was performed." >&2
   exit 1
 fi
-/usr/bin/find "$STAGING/SmartAI.app/Contents/Resources/app/preloaded_models/prism-ml--Ternary-Bonsai-2-27B-mlx-2bit" -name '*.safetensors' -type f -print -quit | /usr/bin/grep -q .
-/usr/bin/find "$STAGING/SmartAI.app/Contents/Resources/app/preloaded_models/dealignai--Bonsai-2-27B-CRACK-Ternary-JANG" -name '*.safetensors' -type f -print -quit | /usr/bin/grep -q .
 /bin/mv "$STAGING" "$APP_DIR"
 trap '/bin/rm -f "$LIST"' EXIT
 if ! check_app; then
@@ -188,7 +194,7 @@ if ! check_app; then
   exit 1
 fi
 
-echo "Portable Smart AI Studio installed with BOTH Bonsai models at $APP"
+echo "Portable Smart AI Studio installed at $APP"
 echo "No administrator permission or dependency installation was used."
 if [ "${SMARTAI_PORTABLE_INSTALL_ONLY:-0}" != "1" ]; then
   /usr/bin/open "$APP"
@@ -196,7 +202,29 @@ fi
 '''
 
 
-def make_readme(repo, tag, commit, size, count):
+def make_readme(repo, tag, commit, size, count, *, model_free=False):
+    if model_free:
+        return f'''SMART AI STUDIO — NO-ADMIN PORTABLE MAC (APPLE SILICON)
+
+RELEASE: {repo} / {tag} / {commit}
+
+Unzip this kit, then open Install-and-Launch-SmartAI-NoAdmin.command (or run it
+with /bin/bash). It downloads {count} checksum-pinned app archive parts
+({size / 1e9:.1f} GB combined), verifies and extracts SmartAI.app to
+~/Applications/SmartAI-Portable/{commit[:12]}/SmartAI.app.
+
+Python and application dependencies are included. No administrator permission,
+Homebrew, Xcode, or system Python is needed. No model weights are included or
+downloaded by this installer. Select and download a model inside Smart AI Studio
+when you are ready to use it. A downloaded model can then be used offline.
+
+For an offline app installation, download the release parts to the cache first
+and run with SMARTAI_PORTABLE_OFFLINE=1. Allow enough free space for the parts,
+assembled ZIP, extracted app, and any models you choose to download later.
+
+The app is unsigned. Use normal Finder Open/Privacy & Security approval if
+macOS asks; do not disable Gatekeeper. No system settings are changed.
+'''
     return f'''SMART AI STUDIO — NO-ADMIN PORTABLE MAC (APPLE SILICON)
 
 This is an additional portable release option. It does NOT modify your system
@@ -253,6 +281,7 @@ def build(manifest_file, assembler_file, output_dir, *, repo, tag, commit):
     for key, value in {
         'MANIFEST': MANIFEST, 'ASSEMBLER': ASSEMBLER, 'ARCHIVE': ARCHIVE,
         'REPO': repo, 'TAG': tag, 'SHA': commit[:12],
+        'BUNDLED_MODELS': '0' if data.get('model_downloads') == 'on-demand' else '1',
     }.items():
         text = text.replace(f'__{key}__', value)
     if '__' in text:  # Fail closed for unrendered template values.
@@ -264,7 +293,8 @@ def build(manifest_file, assembler_file, output_dir, *, repo, tag, commit):
         LAUNCHER: (text.encode('utf-8'), 0o755),
         MANIFEST: (Path(manifest_file).read_bytes(), 0o644),
         ASSEMBLER: (assembler, 0o755),
-        README: (make_readme(repo, tag, commit, data['archive_size'], len(data['parts'])).encode('utf-8'), 0o644),
+        README: (make_readme(repo, tag, commit, data['archive_size'], len(data['parts']),
+                             model_free=data.get('model_downloads') == 'on-demand').encode('utf-8'), 0o644),
     }
     with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for name, (blob, mode) in content.items():

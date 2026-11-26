@@ -41,14 +41,41 @@ Media commands documented there include:
 
 The project document is the authoritative reference for implementation details; this README remains the quick-start/project overview.
 
+### Bonsai 2.5 with MTP
+
+The main **Bonsai** and **CRACK** tabs now select Bonsai 2.5 27B. Apple Silicon
+uses the MLX 2-bit artifacts with the separate official MTP v2 head; Windows and
+Linux use the combined PTQ1_0-MTP GGUF files. CRACK uses the standalone
+AtomicChat-derived uncensored weights, with the same original MTP head retained.
+Downloads use pinned publisher revisions, and native GGUF/projector and MLX MTP
+head identities are checked before use. See the
+[model sources and runtime guide](docs/bonsai25-models.md).
+
+Release packages include the app and runtime dependencies. **Model weights are
+downloaded only when you choose Download in the app.** CI and release packaging
+no longer predownload either preset.
+
+### Use the loaded model in other programs
+
+Load a text model, then open **API Server → Start**. The default address is
+`http://127.0.0.1:1234/v1` and the model ID is `smart-ai-studio`. The server exposes
+OpenAI Chat Completions and Responses, plus Anthropic Messages, including live
+streaming and client tool calls. It uses the resident model and reserves it until
+you stop serving. Configure Codex, Claude Code, Hermes or another compatible
+client using the [local API setup guide](docs/local-model-api.md).
+
 ### Lossless execution speedups
 
 Open **Speedups…** for exact prompt-state reuse, shared branch prefill, tokenizer
-memoization, opt-in persistent caching and GPU runtime warmup. Compatible native
-Bonsai GGUF artifacts can also use prompt lookup, MTP or DFlash2 through the
-patched, receipt-verified server. The TensorFold-inspired target-row policy keeps
-verification arithmetic aligned with serial decoding and preserves sampler and
-recurrent rollback state. Unsupported paths recompute or report incompatibility.
+memoization, opt-in persistent caching and GPU runtime warmup. Bonsai 2.5 defaults
+to its publisher's target-verified MTP on MLX and GGUF. MLX prompt-state reuse and
+shared branch prefill pause while MTP is active because their snapshots do not
+include draft state; tokenizer memoization remains available. Turning MTP off
+restores the ordinary compatible cache paths.
+
+The original Bonsai 2 PQ2_0 artifacts retain their separate patched native
+lookup/MTP/DFlash2 path and TensorFold-inspired target-row policy. Its matching
+draft heads are not applied to Bonsai 2.5. Unsupported paths report incompatibility.
 
 See **[the nine speedups and compatibility guide](docs/ternary-speedups.md)** for
 defaults, exactness boundaries, released native runtimes and source-only build
@@ -57,9 +84,9 @@ not claim measured hardware output parity or a throughput gain.
 
 ### Desktop controls, chat and model memory
 
-The **Eval**, **Context Limit**, **Auto speed** and **Speedups…** controls are
+The **Eval**, **Context Limit**, **Auto speed**, **Speedups…** and **API Server** controls are
 installed when the desktop starts, including the packaged Mac launcher. **Eval**
-is visible for normal Bonsai 2 before and after loading. Starting an evaluation
+is visible for normal Bonsai 2.5 before and after loading. Starting an evaluation
 first unloads chat; a failed unload shows **Retry unload** and prevents a second
 model from starting. A control that fails to initialize produces a visible
 notice and a diagnostic in the app data folder's `logs/gui-extensions.log`.
@@ -75,7 +102,7 @@ learning implementation has its own episodic database and saved state. Earlier
 unscoped records remain available under **Memory → Earlier shared history…** as
 read-only history. Standalone Legacy Sleep requires an unloaded chat model and a
 compatible Transformers training base; use Managed or Hybrid Sleep for the
-bundled packed models' native training path.
+compatible packed models' native training path.
 
 Thinking sections expand while reasoning arrives, can be collapsed immediately,
 and collapse once reasoning finishes. Their toggle remains available to reopen
@@ -256,7 +283,8 @@ optional, separately managed Strata engine:
 
 | Model Tab | Parameter Scale | Quantization / Precision | VRAM Footprint | Primary Specialization |
 | :--- | :---: | :---: | :---: | :--- |
-| **✦ Ternary Bonsai** | `27.4B Base` | `1.58-Bit BitLinear (2-bit MLX)` | `~5.8 GB` | Complex reasoning, multi-step math, and software architecture |
+| **✦ Ternary Bonsai 2.5** | `27.36B` | `Ternary MLX 2-bit / PTQ1_0 GGUF + MTP v2` | `~8.6 GB MLX + 0.27 GB head; ~6.23 GB GGUF; runtime/KV/vision extra` | Reasoning, coding and desktop vision |
+| **🔓 Bonsai 2.5 CRACK** | `27.36B` | `Standalone uncensored ternary weights + original MTP v2` | `Same artifact class; runtime and context add memory` | Uncensored reasoning and coding |
 | **⚡ Qwen 3.8 Flash Next** | `3.8B Base` | `1.58-Bit / 4-bit KV Cache` | `~1.8 GB` | High-throughput sub-second coding and concise query answering |
 | **🔓 Dolphin Vision 2.9** | `7.0B Base` | `Abliterated Multimodal Vision` | `~4.8 GB` | Uncensored multimodal comprehension, image analysis, and vector art |
 | **Strata Gyro-S** | `~125B MoE + 51B n-gram` | `Gyro APR trellis; nonternary` | `Automatic GPU / RAM / SSD placement` | Large text-model inference; no weight training |
@@ -363,7 +391,19 @@ memory fit or format support for a larger custom ternary checkpoint.
 
 ## 🧪 Testing
 
-Run the repository test suite with:
+Run the compact release regression gate with a working desktop display
+(`xvfb-run -a` on a headless Linux machine):
+
+```bash
+python3 -m pip install -r tools/requirements-ci.txt
+python3 tools/run_ci_tests.py regression --report desktop-tests.xml
+```
+
+Normal CI runs this focused gate, small real MLX CPU/Metal fixtures, and all
+three platform packaging checks. The full six-lane regression matrix and extended
+MLX tests remain available through Actions → Run workflow → **full_tests**.
+No CI job downloads the Bonsai model weights. To run the full repository suite
+in an environment with the development dependencies installed:
 ```bash
 python3 -m pytest tests/ -v
 ```
@@ -392,22 +432,22 @@ shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256 &&
   /bin/bash Install-SmartAI-macOS-Full.command
 ```
 
-The helper verifies a commit-pinned kit, downloads and checks every model/archive
-part, assembles the complete app with its embedded runtime and both Bonsai 2
-models, installs `/Applications/SmartAI.app`, removes its own redundant downloads,
+The helper verifies a commit-pinned kit, downloads and checks every app archive
+part, assembles the app with its embedded runtime, installs
+`/Applications/SmartAI.app`, removes its own redundant downloads,
 and opens the app. It preserves chat/learning data and keeps the previous app as
 a dated backup. It requests an administrator password only when the Applications
-folder requires one. Allow at least 55 GB free for a fresh download and extraction.
+folder requires one. Allow room for the downloaded parts, extracted app, retained
+backup, and any model weights you later choose to download in Studio.
 After a failed attempt, completed downloads remain available for retry. The
 installer needs no Homebrew, Xcode or system Python. To install elsewhere, set
 `SMARTAI_FULL_TARGET` to an absolute path ending in `/SmartAI.app`.
 
 **Apple Silicon no-admin portable:** The release also provides
 `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip`. It assembles the existing
-SHA256-verified split Mac ZIP (which includes bundled Python/dependencies and
-both original Bonsai 2 MLX model snapshots) into `~/Applications` without
+SHA256-verified split Mac ZIP (which includes bundled Python/dependencies) into `~/Applications` without
 administrator rights, Homebrew, or Xcode. The first assembly downloads the
-release parts; model weights are available offline afterward. See
+release parts; download the selected model in the app before using it offline. See
 [No-admin macOS portable instructions](docs/macos-noadmin-portable.md).
 
 ### In-app updates

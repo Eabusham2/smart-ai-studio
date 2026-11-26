@@ -89,14 +89,14 @@ def _bonsai2_runtime(info: Dict[str, Any], model_path: str) -> str:
 register_runtime_family("bonsai2_hadamard", _bonsai2_runtime)
 
 
-def resolve_local_snapshot(identifier: str) -> str:
+def resolve_local_snapshot(identifier: str, revision: Optional[str] = None) -> str:
     """Resolve a local path or an already-downloaded HF snapshot without networking."""
     value = os.path.abspath(os.path.expanduser(identifier)) if os.path.exists(os.path.expanduser(identifier)) else identifier
     if os.path.exists(value):
         return value
     try:
         from huggingface_hub import snapshot_download
-        return snapshot_download(repo_id=identifier, local_files_only=True)
+        return snapshot_download(repo_id=identifier, revision=revision, local_files_only=True)
     except Exception:
         return identifier
 
@@ -104,7 +104,7 @@ def resolve_local_snapshot(identifier: str) -> str:
 def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
     """Resolve exact pinned GGUF language/projector artifacts, failing closed for built-ins."""
     info = model_info or {}
-    root = resolve_local_snapshot(identifier)
+    root = resolve_local_snapshot(identifier, info.get("repo_revision"))
     explicit_model = str(info.get("gguf_file") or "").strip()
     explicit_mmproj = str(info.get("mmproj_file") or "").strip()
     mmproj_repo_id = str(info.get("mmproj_repo_id") or "").strip()
@@ -172,7 +172,7 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
         if not mmproj_repo_id:
             projector_root = str(info.get("path") or (Path(root).parent if os.path.isfile(root) else root))
         else:
-            projector_root = resolve_local_snapshot(projector_root_id)
+            projector_root = resolve_local_snapshot(projector_root_id, info.get("mmproj_repo_revision"))
         if os.path.isfile(projector_root):
             candidate = Path(projector_root)
             if candidate.name == PurePosixPath(explicit_mmproj).name:
@@ -275,10 +275,12 @@ class UniversalControllerBackend:
             from vmlx_engine.utils.jang_loader import load_jang_vlm_model
         except ImportError as exc:
             raise RuntimeError(
-                "This CRACK JANG-Hadamard model requires the compatible vMLX "
+                "This older CRACK JANG-Hadamard model requires the compatible vMLX "
                 "loader (vmlx >= 1.6.84 on Python 3.11+ / Apple Silicon). "
-                "The stock MLX and older generic JANG loader cannot safely "
-                "execute this mixed packed checkpoint."
+                "That loader requires a separate environment because its mlx-vlm<0.6 "
+                "dependency conflicts with Bonsai 2.5 MTP. Select the Bonsai 2.5 CRACK "
+                "preset in this release, or use the older checkpoint in its compatible "
+                "vMLX installation. Generic MLX/JANG loaders cannot safely execute it."
             ) from exc
         source = resolve_local_snapshot(self.model_path)
         loaded = load_jang_vlm_model(source)
@@ -695,6 +697,8 @@ class UniversalControllerBackend:
         return str(value or "")
 
     def _mlx_prompt(self, prompt: str, image_count: int = 0) -> str:
+        if getattr(prompt, "_smartai_formatted_chat", False):
+            return prompt
         if not callable(self._apply_chat_template):
             return prompt
         kwargs = {}

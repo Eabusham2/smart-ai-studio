@@ -55,4 +55,6 @@ def test_native_learning_lanes_fail_on_errors_and_require_both_devices():
     assert all(not step.get("continue-on-error") for step in mlx["steps"])
     commands = "\n".join(step.get("run", "") for step in mlx["steps"])
     assert "assert mx.metal.is_available()" in commands
-    assert "test_mlx_packed_terminal.py" in commands
+    assert "python tools/run_ci_tests.py native" in commands
+    from tools.run_ci_tests import selected_tests
+    assert "tests/unit/test_mlx_packed_terminal.py" in selected_tests("native")

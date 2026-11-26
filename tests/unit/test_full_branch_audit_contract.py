@@ -264,11 +264,11 @@ def test_non_mlx_phase3b_updates_the_selected_production_adapter(tmp_path, monke
             assert actual_path == export
 
 
-def test_standalone_eval_keeps_bonsai2_while_app_eval_uses_selected_model():
+def test_standalone_eval_keeps_bonsai25_while_app_eval_uses_selected_model():
     runtime = _src("run_studio_complete.py")
     report = _src("eval/_master_4000_base.py")
     bridge = _src("eval/app_cross_platform_bridge.py")
-    bonsai = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+    bonsai = "prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit"
     assert "get_bundled_model_path(" in runtime
     assert f'"{bonsai}"' in runtime
     assert f'"{bonsai}"' in report

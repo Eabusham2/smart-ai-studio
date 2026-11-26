@@ -9,16 +9,14 @@ def _src(path: str) -> str:
 
 
 def test_bonsai_gguf_presets_pin_prism_ternary_and_training_lineage():
+    from config.bonsai_models import bonsai_model_info
     app = _src("app_gui.py")
-    assert '"Ternary-Bonsai-2-27B-PTQ1_0.gguf"' in app
-    assert '"Bonsai-2-27B-PTQ1_0-CRACK.gguf"' in app
-    assert app.count('"prism_llama_fork": not is_apple_silicon') >= 2
-    assert app.count(
-        '"gguf_training_base_model_id": None if is_apple_silicon else "Qwen/Qwen3.8-27B"'
-    ) >= 2
-    assert app.count(
-        '"mmproj_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"'
-    ) >= 2
+    for crack in (False, True):
+        info = bonsai_model_info(crack=crack, is_apple_silicon=False)
+        assert info["gguf_file"].endswith("PTQ1_0-mtp.gguf")
+        assert info["prism_llama_fork"]
+        assert info["gguf_training_base_model_id"] == "Qwen/Qwen3.8-27B"
+        assert info["mmproj_file"] == "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"
     assert "allow_patterns=primary_patterns" in app
     assert "required_files=primary_required" in app
 
@@ -133,4 +131,9 @@ def test_custom_metadata_drives_gguf_bitnet_and_multimodal_routing():
 
     assert "supports_media_input" in runtime
     assert "review_media_input" in runtime
-    assert '"input_modalities": ["text", "image", "video"]' in app
+    from config.bonsai_models import bonsai_model_info
+    assert "bonsai_model_info(" in app
+    for apple in (False, True):
+        for crack in (False, True):
+            info = bonsai_model_info(is_apple_silicon=apple, crack=crack)
+            assert info["input_modalities"] == ["text", "image", "video"]

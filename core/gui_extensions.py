@@ -20,6 +20,7 @@ EXTENSIONS = (
     ("Eval", "core.gui_eval_panel", "install_gui_eval_panel", "_eval_panel_installed"),
     ("Auto speed", "core.gui_speed_tuning", "install_gui_speed_tuning", "_speed_tuning_ui_installed"),
     ("Speedups", "core.gui_lossless_speedups", "install_gui_lossless_speedups", "_lossless_speedups_ui_installed"),
+    ("Local API", "core.local_api_ui", "install_local_api_ui", "_local_api_ui_installed"),
 )
 
 

@@ -111,11 +111,14 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
     def __init__(
         self,
-        model_path="orcarouter/Qwen3.8-27B-Uncensored-MLX",
+        model_path="prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit",
         adapter_path=None,
         model_info: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(model_path=model_path, adapter_path=adapter_path)
+        from config.bonsai_models import BONSAI_MLX_REPO, CRACK_MLX_REPO, bonsai_model_info
+        if model_info is None and str(model_path) in {BONSAI_MLX_REPO, CRACK_MLX_REPO}:
+            model_info = bonsai_model_info(crack=str(model_path) == CRACK_MLX_REPO)
         self.model_info = dict(model_info or {})
         self.kv_cache_manager = None
         self.max_stateful_kv_tokens = compute_auto_kv_budget()
@@ -129,6 +132,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.processor = None
         self._vlm_runtime = None
         self._vlm_loader = None
+        from core.mlx_mtp import MLXMTP
+        self._mtp = MLXMTP()
+        self._mtp_source = None
         self._speed_prefill_step_size = None
         self._speed_profile_context = None
         self.last_error = ""
@@ -324,6 +330,13 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 **self._metal_warmup.telemetry()}
 
     def _vlm_reuse_kwargs(self, prepared_prompt, prefill_kwargs, *, branches=False):
+        if getattr(getattr(self, "_mtp", None), "head", None) is not None:
+            # The existing APC snapshots omit draft hidden/recurrent state.
+            # Keep tokenizer memoization, but request a complete native prefill.
+            self._vlm_prefixes.clear()
+            self.last_prompt_reused_tokens = 0
+            self.last_prompt_reuse_reason = "MTP owns the target/draft prefill state"
+            return {}
         enabled = self._lossless_speedups["prompt_reuse"] or (
             branches and self._lossless_speedups["branch_prefill"])
         kwargs = self._vlm_prefixes.request_kwargs(
@@ -576,9 +589,20 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         if os.getenv("OFFLINE", "0") == "1":
             raise RuntimeError("The selected MLX snapshot is not available locally in offline mode")
         from huggingface_hub import snapshot_download
-        patterns = required or ["*.safetensors", "*.json", "*.jsonl", "*.txt", "*.model", "*.tiktoken",
+        patterns = (list(required) + ["runtime/*", "mtp/*", "LICENSE", "NOTICE.txt"]) if required else ["*.safetensors", "*.json", "*.jsonl", "*.txt", "*.model", "*.tiktoken",
                                 "*.jinja", "*.py", "*.metal", "*.toml", "*.yaml", "*.yml", "runtime/*"]
         return str(snapshot_download(repo_id=identifier, revision=revision, allow_patterns=patterns))
+
+    def configure_speculation(self, mode="auto", max_draft_tokens=None, draft_model_path=None):
+        if draft_model_path:
+            raise ValueError("Bonsai MLX MTP uses its verified sidecar, not an external drafter")
+        result = self._mtp.configure(self.model, self._mtp_source, self.model_info,
+                                     mode=mode, max_draft_tokens=max_draft_tokens)
+        self._vlm_prefixes.clear()
+        return result
+
+    def get_speculative_telemetry(self):
+        return self._mtp.telemetry()
 
     def load_model(self) -> bool:
         """Load native model weights with the model's required Apple-Silicon runtime."""
@@ -612,6 +636,11 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 self.processor = loader.processor
                 self.tokenizer = loader.tokenizer
                 self._vlm_runtime = runtime
+                self._mtp_source = source
+                self.configure_speculation(
+                    mode=self.model_info.get("speculative_mode", "auto"),
+                    max_draft_tokens=self.model_info.get("max_draft_tokens"),
+                )
             else:
                 import mlx_lm
                 self.model, self.tokenizer = mlx_lm.load(
@@ -666,6 +695,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         from core.native_speed import runtime_lock
         with runtime_lock(self):
             self.invalidate_prompt_reuse("unload")
+            self._mtp.clear()
+            self._mtp_source = None
             loader = self._vlm_loader
             if loader is not None:
                 unload = getattr(loader, "unload_model", None)
@@ -762,6 +793,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return self._run_training_method("train_mini_batch", adapters, data, **kwargs)
 
     def _prepare_vlm_prompt(self, prompt: str, num_images: int = 0) -> str:
+        if getattr(prompt, "_smartai_formatted_chat", False):
+            return prompt
         if self._vlm_loader is not None:
             try:
                 return self._vlm_loader._mlx_prompt(prompt, num_images)
@@ -888,6 +921,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                         **prefill_kwargs,
                         **prepared_inputs,
                         **self._vlm_reuse_kwargs(prepared_prompt, prefill_kwargs, branches=True),
+                        **(self._mtp.generation_kwargs() if getattr(self, "_mtp", None) is not None else {}),
                     )
 
                 try:
@@ -1045,6 +1079,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     **prefill_kwargs,
                     **prepared_inputs,
                     **self._vlm_reuse_kwargs(prepared_prompt, prefill_kwargs),
+                    **(self._mtp.generation_kwargs() if getattr(self, "_mtp", None) is not None else {}),
                 )
 
             try:

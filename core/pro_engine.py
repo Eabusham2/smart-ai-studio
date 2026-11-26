@@ -229,9 +229,21 @@ class ProReasoningEngine:
             # Preset artifact mapping
             for preset_id, preset in MODEL_PRESETS.items():
                 if preset["name"] == model_name or preset["short_name"] == model_name or preset["key"] == model_name:
-                    target_path = model_path or preset.get("default_repo_id", self.settings.mlx_model_path)
+                    if preset.get("bonsai25_mtp"):
+                        from config.bonsai_models import bonsai_model_info
+                        selection = str(model_path or info.get("model_path") or info.get("repo_id") or "").lower()
+                        apple = platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+                        if "mlx" in selection or "gguf" in selection:
+                            use_mlx = "mlx" in selection
+                        else:
+                            use_mlx = backend == "mlx" or (backend != "gguf" and apple)
+                        selected_preset = bonsai_model_info(crack=preset_id == "model_2", is_apple_silicon=use_mlx)
+                        target_path = model_path or info.get("model_path") or info.get("repo_id") or selected_preset["repo_id"]
+                        info = {**preset, **selected_preset, **info}
+                    else:
+                        target_path = model_path or preset.get("default_repo_id", self.settings.mlx_model_path)
+                        info = {**preset, **info}
                     mmproj_path = preset.get("mmproj")
-                    info = {**preset, **info}
                     if info.get("input_modalities"):
                         self.active_input_modalities = {
                             str(value).lower() for value in info.get("input_modalities") or ["text"]
@@ -419,7 +431,11 @@ class ProReasoningEngine:
                         model_path=target_path,
                         adapter_path=(info.get("legacy_adapter_path") or self.lora_adapter_path)
                         if getattr(getattr(self, "learning_scope", None), "kind", "model") == "model" else None,
-                        model_info=info,
+                        model_info={**info,
+                            "speculative_mode": getattr(self, "lossless_speed_options", {}).get("speculative_mode", "auto")
+                            if getattr(self, "lossless_speed_options", {}).get("enabled", True) else "none",
+                            "max_draft_tokens": getattr(self, "lossless_speed_options", {}).get("max_draft_tokens"),
+                        },
                     )
                     self.mlx_backend.learning_scope = getattr(self, "learning_scope", None)
                     self.mlx_backend.learning_implementation = getattr(self.settings, "learning_implementation", "legacy")
@@ -471,6 +487,21 @@ class ProReasoningEngine:
                             "runtime_receipt_path": info.get("speculative_runtime_receipt_path") or speed_options.get("speculative_runtime_receipt_path"),
                             "max_draft_tokens": info.get("max_draft_tokens", speed_options.get("max_draft_tokens")),
                         }
+                    if info.get("bonsai25_mtp"):
+                        from core.engines.bonsai25_engine import Bonsai25ReasoningBackend
+                        gguf_cls = Bonsai25ReasoningBackend
+                        # Saved server/draft/receipt paths belong to the older
+                        # strict verifier. Bonsai 2.5 owns its publisher runtime
+                        # and embedded MTP head; its dedicated server override
+                        # is resolved by ensure_bonsai_server on model load.
+                        server_path = None
+                        native_options = {
+                            "server_path": None,
+                            "model_sha256": info.get("gguf_sha256"),
+                            "mode": speed_options.get("speculative_mode", "auto")
+                            if speed_options.get("enabled", True) else "none",
+                            "max_draft_tokens": speed_options.get("max_draft_tokens"),
+                        }
                     self.gguf_backend = gguf_cls(
                         model_path=target_path,
                         mmproj_path=mmproj_path,
@@ -485,7 +516,7 @@ class ProReasoningEngine:
                     self.gguf_backend.learning_scope = getattr(self, "learning_scope", None)
                     self.gguf_backend.learning_implementation = getattr(self.settings, "learning_implementation", "legacy")
                     loading_backend = self.gguf_backend
-                    load_options = {"cancelled": load_cancelled} if server_path else {}
+                    load_options = {"cancelled": load_cancelled} if server_path or info.get("bonsai25_mtp") else {}
                     if self.gguf_backend.load_model(**load_options):
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
                             self.awake_consolidator.engine = self.gguf_backend
@@ -499,7 +530,7 @@ class ProReasoningEngine:
                             **migration_details(loaded=True),
                         }
                     return {
-                        "status": "cancelled" if server_path and load_cancelled() and getattr(self.gguf_backend, "_process", None) is None else "error",
+                        "status": "cancelled" if (server_path or info.get("bonsai25_mtp")) and load_cancelled() and getattr(self.gguf_backend, "_process", None) is None else "error",
                         "model": model_name, "backend": "gguf", "path": target_path,
                         "error": getattr(self.gguf_backend, "last_error", "") or "The native runtime could not load this GGUF model.",
                         **migration_details(),

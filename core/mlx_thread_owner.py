@@ -44,17 +44,26 @@ def _bind_mlx_generation_streams():
     # mlx-vlm may have been imported by startup initialization too. Never
     # import it eagerly for a plain MLX-LM checkpoint.
     import sys
-    vlm = sys.modules.get("mlx_vlm.generate")
-    if vlm is not None:
-        modules.append(vlm)
+    # mlx-vlm 0.6.3 split the former module into generate.{common,ar,dispatch}
+    # and speculative.*. Each imports the stream into its own globals. Updating
+    # only the public re-export leaves the actual target/draft code on the old
+    # thread's stream, including after a model unload and reload.
+    modules.extend(module for name, module in list(sys.modules.items())
+                   if module is not None and (name == "mlx_vlm.generate"
+                       or name.startswith(("mlx_vlm.generate.", "mlx_vlm.speculative."))))
     factory = getattr(mx, "new_thread_local_stream", None)
     if not callable(factory):
         factory = getattr(mx, "new_stream", None)
+    replacements = {}
     for module in modules:
-        if hasattr(module, "generation_stream"):
+        if "generation_stream" in vars(module):
             if not callable(factory):
                 raise RuntimeError("MLX generation-stream factory unavailable")
-            module.generation_stream = factory(mx.default_device())
+            # Preserve alias sharing and distinct target/draft stream groups.
+            previous = id(module.generation_stream)
+            if previous not in replacements:
+                replacements[previous] = factory(mx.default_device())
+            module.generation_stream = replacements[previous]
 
 
 class MLXThreadOwner:
@@ -226,6 +235,7 @@ def install_mlx_thread_ownership(cls):
         "invalidate_prompt_reuse", "inject_lora_adapters", "compute_mlx_fisher",
         "train_mini_batch", "review_media_input", "get_memory_breakdown",
         "prompt_reuse_telemetry", "_prepare_vlm_prompt", "get_training_model",
+        "configure_speculation", "get_speculative_telemetry",
     ):
         original = getattr(cls, name, None)
         if not callable(original):

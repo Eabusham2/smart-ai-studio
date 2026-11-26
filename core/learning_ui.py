@@ -131,6 +131,10 @@ def show_online_learning(app):
 
     def start(operation, *, changed_scope=False, changed_implementation=False):
         nonlocal running
+        from core.local_api_ui import api_serving
+        if api_serving(app):
+            messagebox.showinfo("API Server", "Stop the API server before changing learned weights or memory.", parent=modal)
+            return
         worker = getattr(app, "_generation_worker", None)
         evaluation = getattr(app, "_eval_proc", None)
         if (running or app.is_generating or getattr(app, "_model_load_in_progress", False)

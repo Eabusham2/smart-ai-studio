@@ -103,6 +103,11 @@ def install_gui_generation_cap(module=None) -> None:
             )
 
     def _apply_context(self, event=None):
+        from core.local_api_ui import api_serving
+        if api_serving(self):
+            self.generation_cap_var.set(str(_current_context(self)))
+            _set_reason(self, "Stop the local API server before changing Context.")
+            return "break" if event is not None else None
         engine = getattr(self, "engine", None)
         is_strata = _strata_selected(self)
         if is_strata:

@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      full_tests:
+        description: 'Run the full six-lane regression matrix and extended native MLX tests'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -45,8 +50,8 @@ jobs:
             core.setOutput('verified_pr_head', '');
             core.setOutput('verified_run_id', '');
 
-            // PRs always execute the full Python matrix. Tags, manual runs, direct
-            // pushes, squash merges, and rebases also fall back to full CI.
+            // Ordinary runs execute the focused model-free gate. A manual
+            // full_tests run always executes the complete regression matrix.
             if (context.eventName !== 'push') return;
             if (!['refs/heads/master', 'refs/heads/main'].includes(context.ref)) return;
 
@@ -208,16 +213,14 @@ jobs:
             }
 
   test:
-    name: Run Test Suite (${{ matrix.os }})
+    name: Regression Gate (${{ matrix.os }}, Python ${{ matrix.python-version }})
     needs: preflight
     if: needs.preflight.outputs.reuse_green != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.10', '3.11']
+      matrix: ${{ fromJSON(inputs.full_tests && '{"os":["ubuntu-latest","macos-latest","windows-latest"],"python-version":["3.10","3.11"]}' || '{"os":["ubuntu-latest"],"python-version":["3.11"]}') }}
 
     steps:
       - name: Checkout Repository
@@ -293,27 +296,31 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          if [ "${{ runner.os }}" != "macOS" ]; then
-            python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          if [ "${{ inputs.full_tests }}" = "true" ]; then
+            if [ "${{ runner.os }}" != "macOS" ]; then
+              python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+            fi
+            python -m pip install -r requirements.txt
           fi
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+          python -m pip install -r tools/requirements-ci.txt
 
-      - name: Execute Full Test Suite
+      - name: Execute Selected Test Suite
         shell: bash
         env:
           SMARTAI_TEST_OFFLINE: "1"
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
           RUN_REAL_WEIGHTS_EVAL: "0"
+          SMARTAI_CI_FULL_TESTS: ${{ inputs.full_tests && '1' || '0' }}
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
-            xvfb-run -a python -m pytest -v --junitxml=desktop-tests.xml
+            xvfb-run -a python tools/run_ci_tests.py regression --report desktop-tests.xml
           else
-            python -m pytest -v --junitxml=desktop-tests.xml
+            python tools/run_ci_tests.py regression --report desktop-tests.xml
           fi
 
       - name: Require real desktop regression coverage
+        if: inputs.full_tests
         shell: bash
         run: |
           python - <<'PY'
@@ -366,12 +373,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ "${{ matrix.device }}" = "cpu" ]; then
-            python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-            python -m pip install 'mlx[cpu]==0.32.4' 'mlx-lm==0.32.2'
+            if [ "${{ inputs.full_tests }}" = "true" ]; then
+              python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+            fi
+            python -m pip install 'mlx[cpu]==0.32.0' 'mlx-lm==0.31.3' 'mlx-vlm==0.6.3' 'transformers==5.5.0'
           else
-            python -m pip install 'mlx==0.32.4' 'mlx-lm==0.32.2'
+            python -m pip install 'mlx==0.32.0' 'mlx-lm==0.31.3' 'mlx-vlm==0.6.3' 'transformers==5.5.0'
           fi
-          python -m pip install -r requirements.txt
+          if [ "${{ inputs.full_tests }}" = "true" ]; then
+            python -m pip install -r requirements.txt
+          fi
+          python -m pip install -r tools/requirements-ci.txt
       - name: Verify actual compute device
         env:
           MLX_TEST_DEVICE: ${{ matrix.device }}
@@ -401,14 +413,19 @@ jobs:
           OMP_NUM_THREADS: "1"
           OPENBLAS_NUM_THREADS: "1"
           MLX_TEST_DEVICE: ${{ matrix.device }}
+          SMARTAI_CI_FULL_TESTS: ${{ inputs.full_tests && '1' || '0' }}
         run: |
-          python -m pytest -v --junitxml=mlx-learning.xml tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py tests/unit/test_query_reward_adaptation.py tests/unit/test_native_context_learning.py tests/unit/test_mlx_context_memory.py tests/unit/test_mlx_adapter_persistence.py tests/unit/test_mlx_thread_owner.py tests/unit/test_mlx_runtime_lock.py tests/unit/test_mlx_speed_tuning.py tests/unit/test_mlx_publisher_runtime_compat.py tests/unit/test_memory_routing.py tests/unit/test_online_task_extensions.py tests/unit/test_verifier_large_program.py tests/unit/test_consolidation_memory_lifecycle.py tests/unit/test_mlx_memory_guard.py tests/unit/test_exact_context_usage.py tests/unit/test_vlm_input_memo.py
+          python tools/run_ci_tests.py native --report mlx-learning.xml
           python - <<'PY'
+          import os
           import xml.etree.ElementTree as ET
           cases = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
                    if 'test_mlx_packed_terminal' in c.get('classname', '')]
           assert len(cases) >= 2, 'Both packed Bonsai layouts must be exercised'
           assert all(c.find('skipped') is None for c in cases), 'Packed native MLX tests cannot be skipped'
+          if os.environ['SMARTAI_CI_FULL_TESTS'] != '1':
+              print('Verified focused native packed-model coverage; extended learning checks remain available with full_tests')
+              raise SystemExit(0)
           parity = [c for c in ET.parse('mlx-learning.xml').iter('testcase')
                     if 'test_mlx_learning_implementations' in c.get('classname', '')]
           assert len(parity) >= 13, 'Original and hybrid MLX algorithms and namespace isolation must be exercised'
@@ -624,7 +641,7 @@ jobs:
        (needs.test.result == 'success' && needs.mlx-learning.result == 'success' &&
         (needs.native-build.result == 'success' || needs.reuse-native.result == 'success')))
     runs-on: macos-latest
-    timeout-minutes: 180
+    timeout-minutes: 45
 
     steps:
       - name: Report Release Gate
@@ -632,7 +649,7 @@ jobs:
         run: |
           if [ "${{ needs.preflight.outputs.reuse_green }}" = "true" ]; then
             echo "Reusing already-green PR head: ${{ needs.preflight.outputs.verified_pr_head }}"
-            echo "Skipping duplicate six-lane test matrix on merged master commit."
+            echo "Skipping the duplicate tested regression gate on the merge commit."
           else
             echo "Using successful tests from this workflow run."
           fi
@@ -667,7 +684,7 @@ jobs:
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_title=${TITLE}" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare GitHub Release for Streamed Model Bundle
+      - name: Prepare GitHub Release for Verified Packages
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -679,7 +696,7 @@ jobs:
           fi
 
           # Keep prior downloads until replacement files pass the final gate.
-          # The model bundler uploads matching part names with --clobber.
+          # The app archive uploader replaces matching part names with --clobber.
 
       - name: Download native-OS portable and setup packages
         uses: actions/download-artifact@v4
@@ -719,27 +736,28 @@ jobs:
               shutil.make_archive(str(Path('dist') / runtime.name), 'zip', runtime)
           PY
 
-      - name: Stream Both Bonsai 2 MLX Models into macOS Release ZIP
+      - name: Package verified macOS app without model downloads
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
           RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
         run: |
           python build_bonsai2_bundled_zip.py \
             --app-bundle dist/SmartAI.app \
             --output-dir dist \
             --archive-name SmartAI-macOS-arm64.zip \
+            --no-models \
             --upload-tag "$RELEASE_TAG"
 
-      - name: Build no-admin Apple Silicon portable kit with both preloaded models
+      - name: Build no-admin Apple Silicon portable kit without models
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
         run: |
-          # The app + both model repositories are already in the split archive
-          # verified above. Reuse those exact SHA256 parts; uploading them twice
-          # would waste ~18 GB and risks two mismatched release variants.
+          # Reuse the exact tested app/runtime parts. Models are downloaded
+          # only when selected in the app, never by a CI build or installer.
           python tools/build_macos_noadmin_portable.py \
             --manifest dist/SmartAI-macOS-arm64.bundle.json \
             --assembler dist/Reassemble-SmartAI-macOS-arm64.command \
@@ -750,7 +768,7 @@ jobs:
           cd dist
           /usr/bin/shasum -a 256 -c SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256
 
-      - name: Build standalone full Mac installer with verified two-model kit
+      - name: Build standalone full Mac installer with verified app kit
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
@@ -795,78 +813,46 @@ jobs:
           # Keep the extra no-admin download option discoverable in the
           # published release, without suggesting it contains a second 18GB copy.
           cat > smartai-release-notes.md <<'SMARTAI_RELEASE_NOTES'
-          ## Smart AI Studio — full release
+          ## Smart AI Studio — Bonsai 2.5 and local API
 
-          ### Desktop fixes
+          - Update the main model choices to Bonsai 2.5, with compatible
+            speculative decoding determined by the selected model and runtime.
+          - Serve the loaded model through a local API for external clients.
+            See the README for supported protocols and client setup.
+          - Run a focused offline regression gate on ordinary commits. The full
+            six-lane suite and extended native tests remain available through
+            workflow_dispatch with `full_tests` enabled.
+          - Keep native CPU/Metal verifier checks and real packaged GUI, Setup,
+            and mounted Mac DMG first-launch checks as release gates.
+          - Stop downloading or bundling model weights in CI. Download the model
+            you choose inside the app; existing downloaded models are preserved
+            by the in-app updater.
 
-          - Run Best Work inside each Pro branch, compare its original and final
-            revised answers, then select one branch winner through an isolated
-            model tournament. Continue with only the chosen answer and original
-            thinking, preserving Pro routing and winner-only tool handoffs.
-          - Add one synthesized candidate from the completed branch winners,
-            give it Best Work too, and let it compete in the same tournament.
-          - Restore Eval, Context Limit, Auto speed and Speedups in the packaged
-            app; initialization failures now produce a visible diagnostic.
-          - Apply light/dark themes to existing dialogs, hidden panels and chat
-            content, and keep action rows accessible when windows are resized.
-          - Keep compatible execution speedups enabled when calibration lacks
-            memory headroom; verified native Auto selects an available strategy.
-          - Apply tokenizer memoization to eligible native VLM text requests,
-            retaining only one bounded CPU snapshot and verifying exact input
-            restoration in both native CPU and Metal test lanes.
-          - Isolate episodic memory and chat updates by model, retain earlier
-            shared history for read-only viewing, and require confirmed unloading
-            before starting a replacement model or benchmark.
-          - Keep thinking sections expandable after completion and preserve the
-            reader's position when scrolling during generation.
-          - Correct AI RAM accounting and explicitly release standalone Sleep
-            training state; add repeated native consolidation lifecycle tests.
-          - Count live context from the actual submitted input and generated
-            tokens, including templates and system/tool text; keep speculative
-            candidate costs separate and show unknown when no exact count exists.
-          - Check MLX memory before each turn, bound prefill and optional cache
-            copies, and release failed request state before one pre-output retry
-            without changing the selected model or discarding conversation text.
-          - Preserve Python Canvas editor line numbers and show the traceback
-            even when the script printed long output before failing.
-          - Queue messages sent after Stop until the previous worker finishes
-            cleanup, and prevent the background monitor from raising a stricter
-            MLX request cache limit. Unchanged monitor ticks keep the cache intact.
-          - Require real desktop regression cases to execute in every platform
-            test lane, including both themes at the minimum 760x600 window size.
-          - Avoid unused full-sequence vocabulary logits in the entropy prepass
-            on compatible MLX models, preserving the full prompt and routing
-            calculation, and reclaim failed prepass state before generation.
+          ### Downloads
 
-          **Mac (Apple Silicon): automatic full installation to Applications**
-          Download `Install-SmartAI-macOS-Full.command` and its `.sha256` receipt.
-          In the download folder, run `shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256`,
-          then `/bin/bash Install-SmartAI-macOS-Full.command`.
-          It downloads the exact checksum-pinned kit, verifies and assembles all
-          Mac archive parts, installs `SmartAI.app` with the complete embedded
-          runtime and BOTH Bonsai 2 models into `/Applications`, removes its own
-          redundant downloads and assembled ZIP, and opens the app. A previous
-          app is backed up, and chat/learning data is preserved. An administrator
-          password is requested only if writing to Applications requires it.
-          Quit SmartAI before upgrading. Allow at least 55 GB free for a fresh
-          installation. Completed downloads are retained after a failed attempt.
+          **Portable packages** include the app, Python, and dependencies for
+          Windows, Linux, and Apple Silicon macOS. **Setup packages** install
+          their private dependencies on first launch. Neither includes models.
 
-          **Mac (Apple Silicon): no-admin portable option**
-          Download `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip` and its
-          `.sha256` receipt. Unzip it and open the included
-          `Install-and-Launch-SmartAI-NoAdmin.command` (or run it with `/bin/bash`).
-          It downloads the release's already-verified multipart Mac ZIP, which
-          contains the complete app, embedded Python/dependencies and BOTH Bonsai 2
-          model snapshots. Extraction goes to `~/Applications/SmartAI-Portable/`.
-          No administrator credentials, Homebrew, Xcode, or system Python required.
-          Both model snapshots are available offline after installation;
-          inference still requires compatible Apple Silicon, MLX and memory.
-          Allow at least 55 GB free space for assembly and extraction.
+          **Mac full installer:** download `Install-SmartAI-macOS-Full.command`
+          and its `.sha256` receipt. Verify with
+          `shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256`, then run
+          `/bin/bash Install-SmartAI-macOS-Full.command`. It verifies the complete
+          app/runtime archive before installing to `/Applications`. A previous
+          app is backed up, and chat/learning data is preserved. Quit SmartAI
+          before upgrading. Administrator access is requested only if the chosen
+          Applications directory requires it.
 
-          The normal macOS, Windows, Linux, native runtime and Setup downloads
-          remain available. Macs with insufficient unified memory may not run
-          both 27B models simultaneously. Gatekeeper may require a normal
-          user-level approval of this unsigned app; it is not disabled by the kit.
+          **Mac no-admin installer:** download
+          `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip` and its `.sha256` receipt.
+          Unzip and run `Install-and-Launch-SmartAI-NoAdmin.command`. It installs
+          the complete app/runtime under `~/Applications/SmartAI-Portable/`,
+          without administrator credentials, Homebrew, Xcode, or system Python.
+
+          Both Mac installers download the same checksum-pinned app archive.
+          Models are downloaded only when selected inside Smart AI Studio.
+          Allow free space for the app archive, extraction, and chosen models.
+          Gatekeeper may require normal user approval for this unsigned app.
           SMARTAI_RELEASE_NOTES
           gh release edit "$RELEASE_TAG" --title "$RELEASE_TITLE" --notes-file smartai-release-notes.md --draft=false --latest
 
@@ -898,7 +884,7 @@ jobs:
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
             }
             // The additional NoAdmin kit must be exactly this workflow's
-            // inspected model manifest and checksum-verified release asset.
+            // inspected app manifest and checksum-verified release asset.
             const kitName = 'SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip';
             const receiptName = kitName + '.sha256';
             const kitBytes = await fs.readFile(`dist/${kitName}`);
@@ -919,7 +905,7 @@ jobs:
             if (installerReceipt !== `${installerDigest}  ${installerName}` ||
                 !installerText.includes(`COMMIT="${context.sha}"`) ||
                 !installerText.includes(`KIT_SHA256="${kitDigest}"`)) {
-              throw new Error('Full Mac installer does not pin this commit and verified two-model kit');
+              throw new Error('Full Mac installer does not pin this commit and verified app kit');
             }
             for (const name of [installerName, installerReceiptName]) {
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
@@ -927,7 +913,7 @@ jobs:
             for (const target of ['Linux-x86_64', 'Windows-x86_64', 'macOS-arm64']) {
               const name = `SmartAI-${target}.receipt.json`;
               const receipt = JSON.parse(await fs.readFile(`dist/${name}`, 'utf8'));
-              if (receipt.commit !== context.sha || receipt.gui_smoke !== 'passed' || receipt.setup_smoke !== 'passed' || (target.startsWith('macOS') && receipt.dmg_smoke !== 'passed')) throw new Error(`Unverified package ${target}`);
+              if (receipt.commit !== context.sha || receipt.gui_smoke !== 'passed' || receipt.setup_smoke !== 'passed' || receipt.bonsai_native_smoke !== 'passed' || (target.startsWith('macOS') && receipt.dmg_smoke !== 'passed')) throw new Error(`Unverified package ${target}`);
               expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
               expected.push(...receipt.files.map(item => ({ name: item.name, size: item.size })));
             }

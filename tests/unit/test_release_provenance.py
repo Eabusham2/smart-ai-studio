@@ -59,7 +59,7 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
             path.write_bytes(b"native-tested-package")
             files.append({"name":path.name,"size":path.stat().st_size})
         (dist/f"SmartAI-{target}.receipt.json").write_text(json.dumps({
-            "commit":SHA,"gui_smoke":"passed","setup_smoke":"passed","dmg_smoke":"passed","files":files}),encoding="utf-8")
+            "commit":SHA,"gui_smoke":"passed","setup_smoke":"passed","dmg_smoke":"passed","bonsai_native_smoke":"passed","files":files}),encoding="utf-8")
     assets = [*manifest["parts"], *({"name": path.name, "size": path.stat().st_size} for path in dist.iterdir())]
     for index, asset in enumerate(assets):
         asset.update(id=index + 1, state="uploaded")
@@ -73,6 +73,12 @@ def run_release_gate(tmp_path, *, tag="latest", fault=None):
         assets = [item for item in assets if item["name"] != "SmartAI-Windows-x86_64-portable.zip"]
     elif fault == "missing_native":
         assets = [item for item in assets if item["name"] != "SmartAI-native-cpu-Linux-X64.zip"]
+    elif fault == "unverified_bonsai_runtime":
+        path = dist / "SmartAI-Windows-x86_64.receipt.json"
+        receipt = json.loads(path.read_text())
+        receipt.pop("bonsai_native_smoke")
+        path.write_text(json.dumps(receipt))
+        next(item for item in assets if item["name"] == path.name)["size"] = path.stat().st_size
     elif fault == "missing_noadmin_kit":
         assets = [item for item in assets if item["name"] != "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip"]
     elif fault == "missing_noadmin_receipt":
@@ -170,7 +176,7 @@ def test_successful_release_removes_only_obsolete_packages_and_moves_exact_rolli
     assert order.index("assets") < order.index("delete") < order.index("update") < order.index("getRef")
 
 
-@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "missing_noadmin_kit", "missing_noadmin_receipt", "bad_noadmin_receipt", "missing_full_installer", "missing_full_receipt", "bad_full_receipt", "wrong_full_commit", "wrong_full_kit", "wrong_size", "upload_in_progress", "duplicate_part"])
+@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "unverified_bonsai_runtime", "missing_noadmin_kit", "missing_noadmin_receipt", "bad_noadmin_receipt", "missing_full_installer", "missing_full_receipt", "bad_full_receipt", "wrong_full_commit", "wrong_full_kit", "wrong_size", "upload_in_progress", "duplicate_part"])
 def test_incomplete_replacement_neither_deletes_legacy_download_nor_moves_tag(tmp_path, fault):
     result = run_release_gate(tmp_path, fault=fault)
     assert result["error"]
@@ -197,7 +203,8 @@ def test_tag_readback_must_confirm_the_exact_packaged_sha(tmp_path):
 
 def test_provenance_gate_runs_after_all_uploads_and_missing_package_is_fatal():
     source = WORKFLOW.read_text(encoding="utf-8")
-    assert source.index("- name: Stream Both Bonsai") < source.index("- name: Build no-admin Apple Silicon portable kit") < source.index("- name: Publish or Update GitHub Release")
+    assert source.index("- name: Package verified macOS app without model downloads") < source.index("- name: Build no-admin Apple Silicon portable kit") < source.index("- name: Publish or Update GitHub Release")
+    assert "--no-models" in source
     assert all(target in source for target in ("Linux-x86_64", "Windows-x86_64", "macOS-arm64"))
     assert "SmartAI-native-" in source
     assert "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip" in source

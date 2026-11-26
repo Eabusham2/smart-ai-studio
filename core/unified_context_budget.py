@@ -62,6 +62,11 @@ def install(cls) -> None:
             raise RuntimeError("Context budget must be positive")
 
         remaining = int(context_budget) - int(prompt_tokens)
+        # External clients explicitly own their output budget. Desktop prompts
+        # have no marker and retain the existing all-remaining-context policy.
+        api_limit = getattr(prompt, "_smartai_api_max_tokens", None)
+        if type(api_limit) is int and api_limit > 0:
+            remaining = min(remaining, api_limit)
         self.last_model_context_limit = physical
         self.last_context_budget_tokens = int(context_budget)
         self.last_effective_max_tokens = max(0, int(remaining))

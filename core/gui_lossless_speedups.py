@@ -231,12 +231,14 @@ def install_gui_lossless_speedups(module=None) -> None:
 
         path_row(*_PATH_FIELDS[0])
         label("Leave the cache folder blank to use Studio's app data folder.")
-        label("Native target-verified drafting", bold_text=True)
-        label("For supported text models with compatible local artifacts. Lookup drafts from the prompt; "
-              "MTP and DFlash2 require a compatible draft model or head. Auto selects an available native method.")
+        label("Target-verified drafting", bold_text=True)
+        label("Bonsai 2.5 Auto uses its MTP head on MLX or GGUF. Its GGUF runtime is downloaded on first load. "
+              "Choose none to turn MTP off. Lookup and DFlash2 remain available for their older matching targets.")
+        label("While MLX MTP is active, prompt-state reuse and shared branch prefill pause; tokenizer memoization "
+              "remains available. Native server/receipt/draft fields below are for the older patched GGUF path.")
         mode_row = tk.Frame(content, bg=self.C["bg_hud"])
         mode_row.pack(fill="x", pady=(0, 8))
-        mode_label = tk.Label(mode_row, text="Native mode", font=font, bg=self.C["bg_hud"], fg=self.C["text_main"])
+        mode_label = tk.Label(mode_row, text="Drafting mode", font=font, bg=self.C["bg_hud"], fg=self.C["text_main"])
         mode_label.pack(side="left", padx=(0, 10))
         mode = tk.OptionMenu(mode_row, variables["speculative_mode"], *_MODES)
         mode.configure(**button_style(self))

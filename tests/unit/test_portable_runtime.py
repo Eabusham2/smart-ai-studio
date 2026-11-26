@@ -87,8 +87,16 @@ def test_receipts_reject_wrong_commit_missing_file_and_corruption(tmp_path):
             p=tmp_path/f'SmartAI-{target}-{suffix}';p.write_bytes(b'package')
             files.append({'name':p.name,'size':7,'sha256':hashlib.sha256(b'package').hexdigest()})
         (tmp_path/f'SmartAI-{target}.receipt.json').write_text(json.dumps({
-            'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed','setup_smoke':'passed','dmg_smoke':'passed','files':files}))
+            'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed','setup_smoke':'passed','dmg_smoke':'passed','bonsai_native_smoke':'passed','files':files}))
     verifier.verify(tmp_path,'a'*40)
+    receipt_path = tmp_path / 'SmartAI-Windows-x86_64.receipt.json'
+    receipt = json.loads(receipt_path.read_text())
+    receipt.pop('bonsai_native_smoke')
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(RuntimeError, match='Bonsai MTP runtime launch'):
+        verifier.verify(tmp_path, 'a'*40)
+    receipt['bonsai_native_smoke'] = 'passed'
+    receipt_path.write_text(json.dumps(receipt))
     with pytest.raises(RuntimeError):verifier.verify(tmp_path,'b'*40)
     (tmp_path/'SmartAI-Windows-x86_64-portable.zip').write_bytes(b'changed')
     with pytest.raises(RuntimeError,match='hash mismatch'):verifier.verify(tmp_path,'a'*40)

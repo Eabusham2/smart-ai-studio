@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config.paths import get_bundled_model_path, get_custom_models_file, get_portable_data_dir, inspect_mlx_model_folder, terminate_existing_app_instances
 from config.settings import Settings, get_settings
+from config.bonsai_models import bonsai_model_info
 from config.strata_models import STRATA_PRESETS, get_strata_preset
 from core.context_memory import ChatArchive, completed_groups
 from core.training_memory import backend_label
@@ -320,54 +321,8 @@ class SmartAIChatbotApp:
         is_apple_silicon = platform.system() == "Darwin" and platform.machine().lower() in ("arm64", "aarch64")
         # Text presets are strictly verified true-ternary. A plain low-bit quant is not enough.
         self.models_config = {
-            "model_1": {
-                "name": "Bonsai 2 27B Ternary Multimodal",
-                "short_name": "Bonsai 2 27B Ternary",
-                "repo_id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit" if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
-                "model_path": get_bundled_model_path("prism-ml/Ternary-Bonsai-2-27B-mlx-2bit") if is_apple_silicon else None,
-                "gguf_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
-                "gguf_preference": None if is_apple_silicon else "PTQ1_0",
-                "mmproj_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
-                "mmproj_repo_id": None if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
-                "gguf_training_base_model_id": None if is_apple_silicon else "Qwen/Qwen3.8-27B",
-                "prism_llama_fork": not is_apple_silicon,
-                "model_type": "text",
-                "input_modalities": ["text", "image", "video"],
-                "ternary": True,
-                "precision": "True ternary g128 (~1.72 bpw representation) + retained vision tower",
-                "runtime_family": "bonsai2_hadamard",
-                "raw_params": 27_360_000_000,
-                "base_params": "27.36B",
-                "est_speed": "⚡ Native ternary multimodal",
-                "max_context": 262_144,
-                "vram": "~8.6 GB MLX / ~6.6-7.9 GB GGUF + vision",
-                "tag": "👁️ Bonsai 2 27B Ternary",
-                "accent": self.C["accent_cyan"]
-            },
-            "model_2": {
-                "name": "Bonsai 2 27B Ternary CRACK (Abliterated/Uncensored)",
-                "short_name": "Bonsai 2 27B CRACK",
-                "repo_id": "dealignai/Bonsai-2-27B-CRACK-Ternary-JANG" if is_apple_silicon else "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF",
-                "model_path": get_bundled_model_path("dealignai/Bonsai-2-27B-CRACK-Ternary-JANG") if is_apple_silicon else None,
-                "gguf_file": None if is_apple_silicon else "Bonsai-2-27B-PTQ1_0-CRACK.gguf",
-                "gguf_preference": None if is_apple_silicon else "PTQ1_0",
-                "mmproj_file": None if is_apple_silicon else "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
-                "mmproj_repo_id": None if is_apple_silicon else "prism-ml/Ternary-Bonsai-2-27B-gguf",
-                "gguf_training_base_model_id": None if is_apple_silicon else "Qwen/Qwen3.8-27B",
-                "prism_llama_fork": not is_apple_silicon,
-                "model_type": "text",
-                "input_modalities": ["text", "image", "video"],
-                "ternary": True,
-                "precision": "Ternary Bonsai 2 + weight-level CRACK abliteration; vision/video preserved",
-                "runtime_family": "bonsai2_hadamard",
-                "raw_params": 27_360_000_000,
-                "base_params": "27.36B",
-                "est_speed": "⚡ Ternary multimodal uncensored",
-                "max_context": 262_144,
-                "vram": "~8.2 GB MLX / ~6.6 GB GGUF + Q8 vision",
-                "tag": "🔓 Bonsai 2 27B CRACK",
-                "accent": "#f43f5e"
-            },
+            "model_1": bonsai_model_info(is_apple_silicon=is_apple_silicon),
+            "model_2": bonsai_model_info(crack=True, is_apple_silicon=is_apple_silicon),
             "model_3": {
                 "name": "RealVisXL V5.0 (High-Res Photoreal Uncensored)",
                 "short_name": "RealVisXL V5.0 (SDXL)",
@@ -1624,6 +1579,10 @@ class SmartAIChatbotApp:
             command=self._on_toggle_load_unload
         )
         self.btn_load_unload.pack(side="left", padx=2)
+
+        from core.local_api_ui import LocalAPIUI
+        self._local_api_ui = LocalAPIUI(self)
+        self._local_api_ui.create_button(right_box, font=_FONT_TINY_BOLD)
 
         # Dedicated Grab / Reset & Re-grab Button
         self.btn_reset_reinstall = tk.Button(
@@ -3496,6 +3455,7 @@ class SmartAIChatbotApp:
                     cancel_event=self.cancel_event,
                     allow_patterns=primary_patterns,
                     required_files=primary_required,
+                    revision=target_info.get("repo_revision"),
                 )
                 if res.get("status") != "success":
                     err = res.get("error", "Unknown error")
@@ -3509,6 +3469,7 @@ class SmartAIChatbotApp:
                         cancel_event=self.cancel_event,
                         allow_patterns=[mmproj_file],
                         required_files=[mmproj_file],
+                        revision=target_info.get("mmproj_repo_revision"),
                     )
                     if projector_res.get("status") != "success":
                         err = projector_res.get("error", "Unknown projector download error")
@@ -3520,6 +3481,8 @@ class SmartAIChatbotApp:
                     repo_id,
                     progress_callback=_progress,
                     cancel_event=self.cancel_event,
+                    revision=target_info.get("repo_revision"),
+                    required_files=target_info.get("download_required_files"),
                 )
                 if res.get("status") != "success":
                     err = res.get("error", "Unknown error")
@@ -6615,6 +6578,10 @@ assert glyph_res["invariants_passed"] == True
         btn_trigger.pack(side="left")
 
         def _run_daemon():
+            from core.local_api_ui import api_serving
+            if api_serving(self):
+                txt_cons_log.insert("end", "\nStop the API server before starting Sleep.\n")
+                return
             if (self.active_tab_id != tab_id
                     or getattr(getattr(self, "db", None), "db_path", database_path) != database_path):
                 txt_cons_log.insert("end", "\nSelected model changed; reopen Sleep for that model.\n")
@@ -6800,6 +6767,10 @@ assert glyph_res["invariants_passed"] == True
         btn_trigger.pack(side="left")
 
         def _run_sleep():
+            from core.local_api_ui import api_serving
+            if api_serving(self):
+                txt_cons_log.insert("end", "\nStop the API server before starting Sleep.\n")
+                return
             if any(getattr(self, flag, False) for flag in (
                     "_model_unload_in_progress", "_model_unload_pending",
                     "_strata_unload_pending", "_native_unload_pending")):

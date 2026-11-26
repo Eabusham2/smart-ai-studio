@@ -15,11 +15,12 @@ INSTALLER = "Install-SmartAI-macOS-Full.command"
 TEMPLATE = r'''#!/bin/bash
 set -euo pipefail
 
-# Full Apple Silicon install: bundled runtime + BOTH Bonsai 2 models.
+# Full Apple Silicon install with the bundled app runtime and dependencies.
 # This file pins the exact kit digest; a changing rolling release fails closed.
 COMMIT="__COMMIT__"
 KIT_SHA256="__KIT_SHA256__"
 KIT_NAME="__KIT__"
+BUNDLED_MODELS="__BUNDLED_MODELS__"
 URL="https://github.com/__REPO__/releases/download/__TAG__"
 TARGET="${SMARTAI_FULL_TARGET:-/Applications/SmartAI.app}"
 CACHE_ROOT="${SMARTAI_FULL_CACHE:-$HOME/Library/Caches/SmartAI/Full-__SHORT_SHA__}"
@@ -49,6 +50,7 @@ check_app() {
   [ -f "$code/app_gui.py" ] && [ -f "$code/launch_studio.sh" ] &&
   [ -x "$code/runtime/python/bin/python3" ] &&
   [ -f "$code/runtime/python/.smartai-deps-ready" ] || return 1
+  if [ "$BUNDLED_MODELS" != "1" ]; then return 0; fi
   for model in prism-ml--Ternary-Bonsai-2-27B-mlx-2bit dealignai--Bonsai-2-27B-CRACK-Ternary-JANG; do
     [ -f "$code/preloaded_models/$model/config.json" ] || return 1
     /usr/bin/find "$code/preloaded_models/$model" -name '*.safetensors' -type f -size +0c -print -quit |
@@ -62,7 +64,7 @@ app_running() {
 }
 
 if check_app "$TARGET" && [ -f "$TARGET/$STAMP" ] && [ "$(/bin/cat "$TARGET/$STAMP")" = "$COMMIT" ]; then
-  echo "This release and both Bonsai 2 models are already installed: $TARGET"
+  echo "This release and its runtime are already installed: $TARGET"
   if app_running; then
     echo "SmartAI is already running; its active chat and learning work is preserved."
   elif [ "${SMARTAI_FULL_INSTALL_ONLY:-0}" != 1 ]; then
@@ -126,14 +128,14 @@ if ! verify_kit; then
   /bin/mv "$KIT_PATH.download" "$KIT_PATH"
 fi
 /usr/bin/ditto -x -k "$KIT_PATH" "$WORK/kit"
-echo "Downloading, checking and assembling the app with both Bonsai 2 models..."
+echo "Downloading, checking and assembling the app and embedded runtime..."
 SMARTAI_PORTABLE_CACHE="$DOWNLOADS" \
 SMARTAI_PORTABLE_DEST="$WORK/staging" \
 SMARTAI_PORTABLE_OFFLINE="${SMARTAI_FULL_OFFLINE:-0}" \
 SMARTAI_PORTABLE_INSTALL_ONLY=1 \
   /bin/bash "$WORK/kit/__LAUNCHER__"
 SOURCE="$WORK/staging/__SHORT_SHA__/SmartAI.app"
-check_app "$SOURCE" || fail "The assembled app is missing its launcher, embedded runtime or a model."
+check_app "$SOURCE" || fail "The assembled app is missing its launcher or required bundle files."
 printf '%s\n' "$COMMIT" > "$SOURCE/$STAMP"
 
 # All downloads and verification finish before requesting permission to write
@@ -180,7 +182,11 @@ echo "Removing the verified archive, split parts and temporary installer files..
 [ "$(/bin/cat "$DOWNLOADS/.full-installer-owner")" = "$COMMIT" ]
 /bin/rm -rf "$DOWNLOADS"
 echo "Installed: $TARGET"
-echo "Both Bonsai 2 model snapshots and the full runtime are installed."
+if [ "$BUNDLED_MODELS" = "1" ]; then
+  echo "Both Bonsai 2 model snapshots and the full runtime are installed."
+else
+  echo "The app and full runtime are installed. Download your chosen model inside Smart AI Studio."
+fi
 if [ -n "$BACKUP" ]; then echo "Previous app backup: $BACKUP"; fi
 if [ "${SMARTAI_FULL_INSTALL_ONLY:-0}" != 1 ]; then /usr/bin/open "$TARGET"; fi
 '''
@@ -194,9 +200,10 @@ def build(kit_path, output_dir, *, repo, tag, commit):
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("Missing exact tested commit SHA")
     kit_path = Path(kit_path)
-    verify(kit_path, repo=repo, tag=tag, commit=commit)
+    manifest = verify(kit_path, repo=repo, tag=tag, commit=commit)
     values = {"COMMIT": commit, "SHORT_SHA": commit[:12], "REPO": repo,
               "TAG": tag, "KIT": KIT, "LAUNCHER": LAUNCHER,
+              "BUNDLED_MODELS": "0" if manifest.get("model_downloads") == "on-demand" else "1",
               "KIT_SHA256": hashlib.sha256(kit_path.read_bytes()).hexdigest()}
     script = TEMPLATE
     for key, value in values.items():

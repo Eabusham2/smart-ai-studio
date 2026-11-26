@@ -104,6 +104,9 @@ def speed_tuning_active(app: Any) -> bool:
 
 
 def speed_busy_reason(app: Any) -> str:
+    from core.local_api_ui import api_serving
+    if api_serving(app):
+        return "Stop the API server before tuning the model."
     if speed_tuning_active(app):
         return "Speed tuning is running. Cancel it or wait for it to finish."
     if getattr(app, "_model_load_in_progress", False):

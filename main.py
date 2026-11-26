@@ -156,8 +156,8 @@ def main():
     overrides = {"database_path": args.db_path, "auto_download": args.auto_download}
     if args.live:
         overrides["live_mode"] = True
-        overrides["base_model_path"] = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
-        overrides["mlx_model_path"] = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
+        overrides["base_model_path"] = "prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit"
+        overrides["mlx_model_path"] = "prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit"
         overrides["kv_bits"] = args.kv_bits
     if args.mlx:
         overrides["backend"] = "mlx"

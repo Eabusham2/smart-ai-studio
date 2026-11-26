@@ -52,6 +52,34 @@ def test_import_time_mlx_generation_streams_rebound_on_owner(fake_stream_package
         owner.shutdown()
 
 
+def test_split_vlm_target_and_draft_stream_aliases_rebound_on_reload(fake_stream_packages, monkeypatch):
+    _, public = fake_stream_packages
+    modules = {}
+    target_stream, draft_stream = public.generation_stream, object()
+    for name in ("mlx_vlm.generate.common", "mlx_vlm.generate.ar", "mlx_vlm.generate.dispatch",
+                 "mlx_vlm.speculative.common", "mlx_vlm.speculative.mtp"):
+        module = ModuleType(name)
+        module.generation_stream = draft_stream if "speculative" in name else target_stream
+        modules[name] = module
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(sys.modules["mlx.core"], "new_thread_local_stream",
+                        lambda device: SimpleNamespace(device=device, thread=threading.get_ident()))
+    for _ in range(2):
+        owner = MLXThreadOwner()
+        try:
+            thread = owner.call(threading.get_ident)
+            target = modules["mlx_vlm.generate.common"].generation_stream
+            draft = modules["mlx_vlm.speculative.common"].generation_stream
+            assert public.generation_stream is target
+            assert modules["mlx_vlm.generate.ar"].generation_stream is target
+            assert modules["mlx_vlm.generate.dispatch"].generation_stream is target
+            assert modules["mlx_vlm.speculative.mtp"].generation_stream is draft
+            assert target is not draft
+            assert target.thread == draft.thread == thread
+        finally:
+            owner.shutdown()
+
+
 def test_load_stream_pro_tune_unload_on_same_thread_and_stream_close_on_owner(fake_stream_packages):
     lm, vlm = fake_stream_packages
 

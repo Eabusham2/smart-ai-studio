@@ -9,11 +9,12 @@ def _src(path: str) -> str:
 
 
 def test_bonsai_presets_are_pinned_to_prism_runtime_only():
-    app = _src("app_gui.py")
-    assert app.count('"prism_llama_fork": not is_apple_silicon') == 2
-    assert '"Ternary-Bonsai-2-27B-PTQ1_0.gguf"' in app
-    assert '"Bonsai-2-27B-PTQ1_0-CRACK.gguf"' in app
-    assert app.count('"Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"') >= 2
+    from config.bonsai_models import bonsai_model_info
+    for crack in (False, True):
+        info = bonsai_model_info(crack=crack, is_apple_silicon=False)
+        assert info["prism_llama_fork"] and info["bonsai25_mtp"]
+        assert info["gguf_file"].endswith("PTQ1_0-mtp.gguf")
+        assert info["mmproj_file"] == "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"
 
     pro = _src("core/pro_engine.py")
     assert "PrismGGUFReasoningBackend" in pro

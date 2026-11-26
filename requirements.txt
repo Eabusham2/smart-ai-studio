@@ -1,8 +1,11 @@
 torch>=2.2.0
-transformers>=4.40.0
+transformers==5.5.0
 accelerate>=0.28.0
 peft>=0.10.0
 bitsandbytes>=0.46.0
+numpy>=2.0
+tokenizers>=0.21
+jinja2>=3.1
 sympy>=1.12
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
@@ -17,18 +20,21 @@ sentencepiece>=0.2.0
 imageio-ffmpeg>=0.5.1
 imageio>=2.35.0
 diffusers>=0.35.0
-mlx-audio>=0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
-mlx-vlm; sys_platform == "darwin" and platform_machine == "arm64"
+mlx==0.32.0; sys_platform == "darwin" and platform_machine == "arm64"
+mlx-lm==0.31.3; sys_platform == "darwin" and platform_machine == "arm64"
+mlx-audio==0.4.6; sys_platform == "darwin" and platform_machine == "arm64"
+mlx-vlm==0.6.3; sys_platform == "darwin" and platform_machine == "arm64"
 jang[vlm]>=2.5.18; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.11"
-vmlx>=1.6.84; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.11"
-turboquant-mlx-full; sys_platform == "darwin" and platform_machine == "arm64"
+# Legacy JANG-Hadamard imports can use vmlx in a separate compatible environment.
+# Its mlx-vlm<0.6 constraint conflicts with the Bonsai 2.5 MTP runtime above.
+turboquant-mlx-full==0.28.1; sys_platform == "darwin" and platform_machine == "arm64"
 mflux; sys_platform == "darwin" and platform_machine == "arm64"
 llama-cpp-python>=0.3.0
 pytest>=7.0.0
 swebench==5.0.2
 
 # Optional Engine Acceleration Backends:
-# Apple Silicon MLX: mlx>=0.16.0, mlx-lm>=0.18.0
+# Apple Silicon MLX: publisher-compatible stack is pinned above.
 # GGUF / Llama.cpp: llama-cpp-python>=0.2.70
 # BitNet 1.58-bit: bitnet>=0.1.0
 

@@ -175,6 +175,9 @@ class AppUpdateUI:
 
     def _application_busy(self):
         app = self.app
+        from core.local_api_ui import api_serving
+        if api_serving(app):
+            return True
         engine = getattr(app, "engine", None)
         return bool(
             any(getattr(app, flag, False) for flag in (
