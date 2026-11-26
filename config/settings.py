@@ -8,6 +8,7 @@ speculative acceleration configuration, and fallback defaults.
 import os
 from config.paths import get_portable_data_dir
 from config.bonsai_models import BONSAI_MLX_REPO, BONSAI_GGUF_REPO, bonsai_registry_preset
+from config.media_models import apply_builtin_media_catalog
 import platform
 import sys
 from dataclasses import dataclass, field
@@ -264,18 +265,17 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
     "model_6": {
         "id": "model_6",
         "key": "ideogram_instant_sdxl",
-        "name": "Ideogram Instant Uncensored (16GB RAM Turbo)",
-        "short_name": "Ideogram Instant (16GB)",
-        "tag": "✨ Ideogram Instant NSFW",
-        "type": "image_diffusion_turbo",
-        "base_params": "3.5B Turbo",
-        "raw_params": 3_500_000_000,
-        "precision": "4-Step Instant Diffusion",
+        "name": "RealVisXL V5.0 (SDXL FP16)",
+        "short_name": "RealVisXL V5.0 (FP16)",
+        "tag": "📸 RealVisXL V5.0 (FP16)",
+        "type": "image_diffusion",
+        "base_params": "SDXL",
+        "precision": "FP16 SafeTensors",
         "max_context": 2_048,
-        "vram": "~3.8 GB / 16 GB",
+        "vram": "Depends on runtime and image size",
         "accent": "#eab308",
         "artifacts": {
-            "torch": "stabilityai/sdxl-turbo",
+            "torch": "SG161222/RealVisXL_V5.0",
             "diffusers": "SG161222/RealVisXL_V5.0"
         },
         "default_repo_id": "SG161222/RealVisXL_V5.0"
@@ -338,6 +338,8 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "default_repo_id": "pipenetwork/MiniMax-H3-MLX-4bit"
     }
 }
+
+apply_builtin_media_catalog(MODEL_PRESETS)
 
 # Strata packs are explicit choices; existing default models remain unchanged.
 from config.strata_models import STRATA_PRESETS, get_strata_preset

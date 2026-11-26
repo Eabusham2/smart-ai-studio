@@ -11,12 +11,22 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 REGRESSION = (
+    "test_gui_media_playback.py",
     "test_desktop_app.py",
     "test_best_work_tournament.py",
     "test_best_work_synthesis.py",
     "test_best_work_boundary.py",
     "test_best_work_reasoning_isolation.py",
     "test_model_admission.py",
+    "test_gui_model_import.py",
+    "test_hf_downloader_cache.py",
+    "test_media_generation.py",
+    "test_bonsai_image_runtime.py",
+    "test_media_orchestrator.py",
+    "test_speed_memory_and_media.py",
+    "test_audio_generation_preview.py",
+    "test_stable_audio_runtime.py",
+    "test_gui_media.py",
     "test_native_speculation.py",
     "test_native_exactness_patch.py",
     "test_native_ci_reuse.py",
@@ -33,6 +43,7 @@ REGRESSION = (
     "test_release_provenance.py",
     "test_learning_release_gate.py",
     "test_macos_full_installer.py",
+    "test_macos_dependency_bundle.py",
     "test_ci_selection.py",
 )
 NATIVE = (
@@ -73,7 +84,10 @@ def selected_tests(suite, full=False):
 
 def verify_desktop_report(report):
     cases = list(ET.parse(report).iter("testcase"))
-    names = ("test_chatbot_ui_initialization", "test_dual_model_tab_switching")
+    names = ("test_chatbot_ui_initialization", "test_dual_model_tab_switching",
+             "test_large_media_preview_expands_and_saves_original",
+             "test_generated_video_plays_seeks_and_closes_decoder",
+             "test_media_transcript_uses_real_preview_without_tool_dialogue")
     for name in names:
         matched = [case for case in cases if case.get("name") == name]
         if not matched or any(case.find("skipped") is not None for case in matched):

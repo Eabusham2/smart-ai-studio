@@ -23,6 +23,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Generator, List, Optional, Tuple
 from core.training_memory import release_training_memory
+from core.hf_transfer import run_hf_operation
 
 
 _RUNTIME_FAMILY_RESOLVERS: Dict[str, Any] = {}
@@ -163,7 +164,7 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
     else:
         raise RuntimeError(
             f"GGUF repository is not downloaded locally: {identifier}. "
-            "Use Grab/Install before loading."
+            "Use Install before loading."
         )
 
     mmproj: Optional[Path] = None
@@ -255,7 +256,7 @@ class UniversalControllerBackend:
         from mlx_vlm.prompt_utils import apply_chat_template
 
         source = resolve_local_snapshot(self.model_path)
-        loaded = load(source)
+        loaded = run_hf_operation(lambda: load(source))
         if not isinstance(loaded, tuple) or len(loaded) < 2:
             raise RuntimeError("mlx-vlm loader did not return model + processor")
         self.model, self.processor = loaded[:2]
@@ -283,7 +284,7 @@ class UniversalControllerBackend:
                 "vMLX installation. Generic MLX/JANG loaders cannot safely execute it."
             ) from exc
         source = resolve_local_snapshot(self.model_path)
-        loaded = load_jang_vlm_model(source)
+        loaded = run_hf_operation(lambda: load_jang_vlm_model(source))
         if not isinstance(loaded, tuple) or len(loaded) < 2:
             raise RuntimeError("JANG VLM loader did not return model + processor")
         self.model, self.processor = loaded[:2]
@@ -329,9 +330,9 @@ class UniversalControllerBackend:
                 if module_name == "vision_artifact":
                     from core.mlx_repo_config_compat import compatible_qwen35_configs
                     with compatible_qwen35_configs():
-                        loaded = loader(source)
+                        loaded = run_hf_operation(lambda: loader(source))
                 else:
-                    loaded = loader(source)
+                    loaded = run_hf_operation(lambda: loader(source))
         finally:
             sys.path[:] = old_path
         if not isinstance(loaded, tuple) or len(loaded) < 2:
@@ -382,11 +383,11 @@ class UniversalControllerBackend:
         processor = None
         if not self.direct_cuda_loaded:
             try:
-                processor = transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True, **source_options)
+                processor = run_hf_operation(lambda: transformers.AutoProcessor.from_pretrained(source, trust_remote_code=True, **source_options))
             except Exception:
                 processor = None
         if processor is None:
-            processor = transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options)
+            processor = run_hf_operation(lambda: transformers.AutoTokenizer.from_pretrained(source, trust_remote_code=True, **source_options))
 
         # The original direct CUDA loader selected BF16 even for checkpoints
         # stored in FP32. Imported controllers use the checkpoint's native dtype.
@@ -411,7 +412,7 @@ class UniversalControllerBackend:
             if cls is None:
                 continue
             try:
-                model = cls.from_pretrained(
+                model = run_hf_operation(lambda: cls.from_pretrained(
                     source,
                     torch_dtype=dtype,
                     device_map="auto",
@@ -420,7 +421,7 @@ class UniversalControllerBackend:
                     offload_state_dict=True,
                     low_cpu_mem_usage=True,
                     trust_remote_code=True, **source_options,
-                )
+                ))
                 break
             except Exception as exc:
                 errors.append(f"{class_name}: {exc}")

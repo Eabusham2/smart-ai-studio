@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from pathlib import Path
 
 
 def _embed_runtime(code_dir):
@@ -115,6 +116,31 @@ echo "Dependencies installed. Launch SmartAI.app or Launch_SmartAI_macOS.command
         os.chmod(path, 0o755)
 
 
+def _build_macos_native_launcher(executable, runtime):
+    """Embed the selected CPython without giving the GUI Python's app identity."""
+    if platform.system() != "Darwin":
+        raise RuntimeError("The native Mac application launcher must be built on macOS.")
+    runtime = Path(runtime)
+    headers = list(runtime.glob("include/python*/Python.h"))
+    if len(headers) != 1:
+        raise RuntimeError("The packaged Python must contain one matching set of embedding headers.")
+    include = headers[0].parent
+    library = "lib" + include.name + ".dylib"
+    if not (runtime / "lib" / library).is_file():
+        raise RuntimeError("The packaged Python is missing its embedding library: " + library)
+    source = Path(__file__).resolve().parent / "packaging/macos_launcher.c"
+    subprocess.run([
+        "xcrun", "--sdk", "macosx", "clang", "-O2", "-Wall", "-Wextra", "-Werror",
+        "-mmacosx-version-min=12.0", "-I", str(include),
+        '-DSMARTAI_PYTHON_LIBRARY="' + library + '"', str(source),
+        "-framework", "CoreFoundation", "-o", str(executable),
+    ], check=True)
+    with open(executable, "rb") as handle:
+        if handle.read(4) not in {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"}:
+            raise RuntimeError("The Mac launcher compiler did not produce a native executable.")
+    os.chmod(executable, 0o755)
+
+
 def create_macos_bundle(dist_dir: str, app_name: str):
     """Creates a native macOS .app bundle and compiles a .dmg disk image installer."""
     print(f"[*] Assembling macOS {app_name}.app Application Bundle...")
@@ -124,8 +150,13 @@ def create_macos_bundle(dist_dir: str, app_name: str):
     resources_dir = os.path.join(contents_dir, "Resources")
     app_code_dir = os.path.join(resources_dir, "app")
 
-    # 1. Compile native macOS Mach-O executable applet via osacompile if available
-    if shutil.which("osacompile"):
+    # A release's GUI must remain in a native .app executable. An AppleScript
+    # applet that backgrounds bare Python loses the Dock/menu application name.
+    native_launcher = bool(os.getenv("SMARTAI_EMBEDDED_RUNTIME"))
+    if native_launcher and os.path.exists(app_bundle):
+        shutil.rmtree(app_bundle)
+    # Retain the source-only launcher for bundles without a packaged runtime.
+    if not native_launcher and shutil.which("osacompile"):
         applescript = f"""
 on run
     set myPath to POSIX path of (path to me)
@@ -160,6 +191,9 @@ end run
 
     _embed_runtime(app_code_dir)
     _write_macos_runtime_scripts(app_code_dir)
+    if native_launcher:
+        _build_macos_native_launcher(os.path.join(macos_dir, "applet"),
+                                     os.path.join(app_code_dir, "runtime", "python"))
 
     if os.path.exists("AppIcon.icns"):
         shutil.copy2("AppIcon.icns", os.path.join(resources_dir, "AppIcon.icns"))
@@ -173,7 +207,7 @@ end run
     <key>CFBundleDevelopmentRegion</key>
     <string>English</string>
     <key>CFBundleDisplayName</key>
-    <string>Smart AI</string>
+    <string>Smart AI Studio</string>
     <key>CFBundleExecutable</key>
     <string>applet</string>
     <key>CFBundleIconFile</key>
@@ -183,7 +217,8 @@ end run
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>{app_name}</string>
+    <string>Smart AI Studio</string>
+    {'<key>SmartAINativeLauncher</key><integer>1</integer>' if native_launcher else ''}
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>

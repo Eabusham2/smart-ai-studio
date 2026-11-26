@@ -40,6 +40,7 @@ class Widget:
         self.options = {"state": "normal", **kwargs}
         self.value = str(kwargs.get("value", ""))
         self.alive = True
+        self.visible = False
         self.protocols = {}
         self.bindings = {}
 
@@ -95,6 +96,11 @@ class Widget:
 
     def pack(self, *_args, **_kwargs):
         self._ui()
+        self.visible = True
+
+    def pack_forget(self):
+        self._ui()
+        self.visible = False
 
     title = geometry = resizable = minsize = transient = grab_set = focus_set = pack
 
@@ -321,11 +327,11 @@ def test_download_cancel_wins_over_queued_success_and_restores_buttons(gui, tmp_
     meta = setup_transfer(gui, tmp_path)
     original = dict(meta)
     gui._on_download_hf_model()
-    assert gui.btn_reset_reinstall.cget("text") == "Cancel download"
+    assert gui.btn_load_unload.cget("text") == "Cancel download"
     if cancel_after_worker:
         run_worker(gui)
-    gui.btn_reset_reinstall.options["command"]()
-    assert gui.btn_reset_reinstall.cget("state") == "disabled"
+    gui.btn_load_unload.options["command"]()
+    assert gui.btn_load_unload.cget("state") == "disabled"
     if not cancel_after_worker:
         run_worker(gui)
     drain(gui)
@@ -333,20 +339,20 @@ def test_download_cancel_wins_over_queued_success_and_restores_buttons(gui, tmp_
     gui._save_custom_models.assert_not_called()
     gui._on_download_hf_completed.assert_not_called()
     assert not gui._hf_download_events and not gui._hf_download_in_progress
-    assert gui.btn_reset_reinstall.cget("state") == "normal"
-    assert gui.btn_reset_reinstall.cget("text") == "📥 Grab"
+    assert gui.btn_load_unload.cget("state") == "normal"
+    assert gui.btn_load_unload.cget("text") == "⬇️ Install"
 
 
 def test_switching_tabs_restores_button_state_while_other_download_is_pending(gui, tmp_path):
     setup_transfer(gui, tmp_path)
     gui._on_download_hf_model()
     event = gui._hf_download_events["custom_chosen"]
-    gui.btn_reset_reinstall.options["command"]()
+    gui.btn_load_unload.options["command"]()
     gui.active_tab_id = "model_1"
     gui._update_model_action_buttons()
     assert event.is_set()
-    assert gui.btn_reset_reinstall.cget("state") == "normal"
-    assert gui.btn_reset_reinstall.cget("text") != "Cancelling…"
+    assert gui.btn_load_unload.cget("state") == "normal"
+    assert gui.btn_load_unload.cget("text") != "Cancelling…"
 
 
 def test_cache_hint_requires_the_exact_chosen_group_not_another_cached_quant(gui, tmp_path):
@@ -359,6 +365,69 @@ def test_cache_hint_requires_the_exact_chosen_group_not_another_cached_quant(gui
     (tmp_path / meta["gguf_files"][1]).write_bytes(b"second shard")
     assert gui._model_is_cached(meta) is True
     gui.env["is_model_cached_locally"].assert_not_called()
+
+
+@pytest.mark.parametrize("repo", ["SG161222/RealVisXL_V5.0", "mlx-community/flux2-klein-4b-4bit",
+                                  "Wan-AI/Wan2.1-T2V-1.3B-Diffusers", "mlx-community/stable-audio-3-small-music"])
+def test_media_install_changes_to_load_and_stays_cached_after_restart(gui, tmp_path, monkeypatch, repo):
+    from config.media_models import media_download_metadata
+    info = {"name": "Selected media", "short_name": "Selected media", "repo_id": repo,
+            **media_download_metadata(repo)}
+    gui.models_config["media"] = info
+    gui.active_tab_id = "media"
+    snapshot = tmp_path / info["repo_revision"]
+    monkeypatch.setattr("core.controller_runtime.resolve_local_snapshot", lambda repo_id, revision: str(snapshot))
+    gui._update_model_action_buttons()
+    assert gui.btn_load_unload.cget("text") == "⬇️ Install"
+    assert not gui.btn_reset_reinstall.visible
+    def complete(repo_id, **kwargs):
+        assert repo_id == repo and kwargs["revision"] == info["repo_revision"]
+        assert kwargs["allow_patterns"] == kwargs["required_files"] == info["download_required_files"]
+        for name in kwargs["required_files"]:
+            path = snapshot / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"complete pinned cache fixture")
+        return {"status": "success", "local_dir": str(snapshot)}
+    gui.env["download_model_from_hf"].side_effect = complete
+    gui.btn_load_unload.invoke()
+    assert gui.btn_load_unload.cget("text") == "Cancel download"
+    assert not gui.btn_reset_reinstall.visible
+    run_worker(gui)
+    drain(gui)
+    assert gui.btn_load_unload.cget("text") == "⚡ Load"
+    assert gui.btn_reset_reinstall.visible
+    restarted = {"repo_id": repo, **media_download_metadata(repo)}
+    assert not restarted.get("path") and gui._model_is_cached(restarted)
+    (snapshot / info["download_required_files"][-1]).write_bytes(b"")
+    assert not gui._model_is_cached(restarted)
+
+
+def test_single_install_action_uses_the_responsive_layout_visibility_api(gui):
+    gui._responsive_toolbar_set_visible = Mock()
+    gui.env["is_model_cached_locally"].return_value = False
+    gui.models_config["model_1"] = {"repo_id": "owner/model", "short_name": "Model"}
+    gui._update_model_action_buttons()
+    gui._responsive_toolbar_set_visible.assert_called_once_with(gui.btn_reset_reinstall, False, before=None)
+    assert gui.btn_load_unload.cget("text") == "⬇️ Install"
+    gui.is_model_loaded = True
+    gui._update_model_action_buttons()
+    assert gui.btn_load_unload.cget("text") == "⏏ Unload"
+
+
+def test_single_action_can_cancel_runtime_setup_then_restores_load(gui):
+    gui._model_load_in_progress = True
+    gui._model_loading_tab_id = gui.active_tab_id
+    gui._model_load_cancel_event = threading.Event()
+    gui._update_model_action_buttons()
+    assert gui.btn_load_unload.cget("text") == "Cancel setup"
+    assert not gui.btn_reset_reinstall.visible
+    gui.btn_load_unload.invoke()
+    assert gui._model_load_cancel_event.is_set()
+    assert gui.btn_load_unload.cget("state") == "disabled"
+    gui._model_load_in_progress = False
+    gui._update_model_action_buttons()
+    assert gui.btn_load_unload.cget("text") == "⚡ Load"
+    assert gui.btn_load_unload.cget("state") == "normal"
 
 
 def test_reset_keeps_files_and_entry_when_unload_fails(gui, tmp_path):

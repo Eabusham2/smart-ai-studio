@@ -75,3 +75,96 @@ def test_prism_memory_provider_returns_only_its_live_owned_worker():
     assert backend.owned_process_ids() == []
     backend._worker = SimpleNamespace(pid=True, poll=lambda: None)
     assert backend.owned_process_ids() == []
+
+
+def test_every_builtin_media_choice_has_an_exact_download_or_runtime_reason():
+    """Exercise the real GUI catalog without importing Tk or neural runtimes."""
+    import ast
+    from pathlib import Path, PurePosixPath
+    import re
+
+    from config.bonsai_models import bonsai_model_info
+    from config.media_models import apply_builtin_media_catalog
+
+    module = ast.parse((Path(__file__).parents[2] / "app_gui.py").read_text())
+    cls = next(node for node in module.body if isinstance(node, ast.ClassDef)
+               and node.name == "SmartAIChatbotApp")
+    init = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+    catalog = next(node.value for node in init.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Attribute) and target.attr == "models_config"
+                           for target in node.targets))
+    for apple in (True, False):
+        models = eval(compile(ast.Expression(catalog), "builtin-media", "eval"), {
+            "bonsai_model_info": bonsai_model_info, "is_apple_silicon": apple,
+        })
+        original_repos = {key: value["repo_id"] for key, value in models.items()}
+        apply_builtin_media_catalog(models)
+        assert original_repos == {key: value["repo_id"] for key, value in models.items()}
+        for field in ("name", "short_name", "precision", "raw_params", "base_params", "vram", "est_speed"):
+            assert models["model_3"][field] == models["model_6"][field]
+        assert models["model_6"]["raw_params"] is None
+        assert "AIO" not in models["model_5"]["name"]
+        assert models["model_5"]["raw_params"] is None
+        assert models["model_9"]["raw_params"] == 33_000_000_000
+        assert "AfterMidnight" not in models["model_9"]["name"]
+        assert "separate" in models["model_9"]["precision"]
+        for info in models.values():
+            if info.get("model_type") not in {"image", "video", "audio"}:
+                continue
+            assert info["builtin_media_preset"]
+            required = info.get("download_required_files", [])
+            reason = info.get("download_unavailable_reason", "")
+            assert bool(required) != bool(reason), info["repo_id"]
+            if reason:
+                assert "download_allow_patterns" not in info
+                assert info["est_speed"] == "Publisher runtime setup required"
+                assert info["vram"] == "Memory requirements not verified"
+                continue
+            assert re.fullmatch(r"[0-9a-f]{40}", info["repo_revision"])
+            assert required == info["download_allow_patterns"]
+            assert len(required) == len(set(required))
+            assert info["download_bytes"] > 0
+            assert any(name.endswith(".safetensors") for name in required)
+            for name in required:
+                assert not PurePosixPath(name).is_absolute()
+                assert ".." not in PurePosixPath(name).parts
+                assert not any(char in name for char in "*?[]\\")
+
+
+def test_realvis_legacy_slot_selects_one_complete_fp16_pipeline():
+    from config.media_models import REALVIS_REPO, media_download_metadata
+    from config.settings import MODEL_PRESETS
+
+    info = MODEL_PRESETS["model_6"]
+    assert info["default_repo_id"] == REALVIS_REPO
+    assert set(info["artifacts"].values()) == {REALVIS_REPO}
+    assert "Ideogram" not in info["name"] and "Turbo" not in info["name"]
+    assert info["diffusers_variant"] == "fp16"
+    assert info["inference_steps"] >= 30
+    selected = set(info["download_required_files"])
+    assert {name for name in selected if name.endswith(".safetensors")} == {
+        "text_encoder/model.fp16.safetensors", "text_encoder_2/model.fp16.safetensors",
+        "unet/diffusion_pytorch_model.fp16.safetensors", "vae/diffusion_pytorch_model.fp16.safetensors",
+    }
+    for component in ("text_encoder", "text_encoder_2", "unet", "vae"):
+        assert f"{component}/config.json" in selected
+    for tokenizer in ("tokenizer", "tokenizer_2"):
+        assert {f"{tokenizer}/{name}" for name in ("vocab.json", "merges.txt", "tokenizer_config.json")} <= selected
+    assert {"model_index.json", "scheduler/scheduler_config.json"} <= selected
+    assert info["download_bytes"] < 7_000_000_000
+    first = media_download_metadata(REALVIS_REPO)
+    first["download_required_files"].clear()
+    assert media_download_metadata(REALVIS_REPO)["download_required_files"]
+
+
+def test_supported_audio_keeps_its_text_conditioner_and_gated_access_route():
+    from config.media_models import media_download_metadata
+
+    for owner in ("mlx-community", "stabilityai"):
+        for variant in ("music", "sfx"):
+            info = media_download_metadata(f"{owner}/stable-audio-3-small-{variant}")
+            assert not info.get("download_unavailable_reason")
+            assert {"model.safetensors", "model_config.json", "t5gemma-b-b-ul2/model.safetensors",
+                    "t5gemma-b-b-ul2/config.json", "t5gemma-b-b-ul2/tokenizer.model"} <= set(info["download_required_files"])
+            assert bool(info.get("requires_hf_auth")) == (owner == "stabilityai")
+    assert media_download_metadata("user/a-different-selected-model") == {}

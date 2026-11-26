@@ -29,7 +29,8 @@ def standalone_training_parent(identifier):
                       for name in ("OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"))
         if offline or path.exists() or path.is_absolute() or str(identifier).startswith((".", "~")):
             raise
-    from huggingface_hub import HfApi, snapshot_download
+    from huggingface_hub import HfApi
+    from core.hf_transfer import snapshot_download
 
     info = HfApi().model_info(identifier)
     files = {entry.rfilename for entry in info.siblings}

@@ -39,6 +39,32 @@ _TYPE_NAMES = {
     42: "Q2_0", 143: "PTQ1_0", 144: "TQ2_T", 145: "TQK6", 146: "TQK7",
     147: "TQP5", 148: "TQP6", 149: "TQP7",
 }
+_DIFFUSION_PIPELINES = {"text-to-image", "image-to-image", "image-to-video", "text-to-video", "video-to-video"}
+_DIFFUSION_ARCHITECTURES = {
+    "flux", "flux2", "sd1", "sd2", "sdxl", "sd3", "stable-diffusion", "stable_diffusion",
+    "wan", "wan2", "wan2.1", "wan2.2", "qwen_image", "z_image", "ltx_video",
+    "fluxtransformer2dmodel", "flux2transformer2dmodel", "wantransformer3dmodel",
+    "qwenimagetransformer2dmodel", "unet2dconditionmodel", "sd3transformer2dmodel",
+    "fluxpipeline", "flux2kleinpipeline", "stablediffusionpipeline", "stablediffusionxlpipeline",
+    "stablediffusion3pipeline", "wanpipeline", "qwenimagepipeline", "cogvideoxpipeline",
+}
+
+
+def _check_gguf_runtime(*, architecture="", pipeline="", config=None, model_index=None):
+    """Reject proven diffusion GGUFs until Studio has that format's adapter.
+
+    Repository names, filenames and free-form tags never determine this check.
+    Unknown text architectures retain the existing unverified admission route.
+    """
+    config, model_index = config or {}, model_index or {}
+    declared = config.get("architectures") or []
+    if isinstance(declared, str):
+        declared = [declared]
+    names = {str(value).lower() for value in [architecture, config.get("model_type"),
+                                              model_index.get("_class_name"), *declared] if value}
+    if str(pipeline).lower() in _DIFFUSION_PIPELINES or names & _DIFFUSION_ARCHITECTURES:
+        raise ValueError("This selection is an image/video diffusion GGUF. Studio has no compatible diffusion-GGUF runtime adapter; "
+                         "use a supported Diffusers or MLX media checkpoint instead.")
 
 
 def _relative_name(value: Any) -> str:
@@ -303,6 +329,7 @@ def _check_safetensors(path: Path) -> dict:
 def _gguf_metadata(path: Path, group: dict, root: Path) -> dict:
     from core.gguf_metadata import inspect_gguf
     checked = inspect_gguf(str(path))
+    _check_gguf_runtime(architecture=checked.get("architecture"))
     projector = inspect_gguf(str(root / group["mmproj_file"])) if group.get("mmproj_file") else None
     observed = set(checked.get("quantization_types") or [])
     precision = "GGUF " + ", ".join(_TYPE_NAMES.get(t, f"type {t}") for t in sorted(observed))
@@ -384,7 +411,8 @@ def admit_local_model(path: str, gguf_file: str | None = None) -> tuple[bool, st
 
 def admit_hf_model(repo_id: str, gguf_file: str | None = None) -> tuple[bool, str, dict]:
     try:
-        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub import HfApi
+        from core.hf_transfer import hf_hub_download
         repo_id = str(repo_id or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo_id):
             raise ValueError("Use a Hugging Face model repository ID in owner/name form.")
@@ -417,7 +445,7 @@ def admit_hf_model(repo_id: str, gguf_file: str | None = None) -> tuple[bool, st
                 raise ValueError("Checkpoint metadata exceeds the aggregate inspection limit.")
             local = hf_hub_download(repo_id=repo_id, filename=name, revision=revision)
             return _read_json(Path(local))
-        for name in (() if files else ("config.json", "model_index.json")):
+        for name in ("config.json", "model_index.json"):
             if name not in rows:
                 continue
             value = read_remote_object(name)
@@ -428,6 +456,7 @@ def admit_hf_model(repo_id: str, gguf_file: str | None = None) -> tuple[bool, st
         if not files:
             indices = {name: read_remote_object(name) for name in _checkpoint_index_names(names, model_index)}
         if files:
+            _check_gguf_runtime(pipeline=pipeline, config=config, model_index=model_index)
             # No card/repository name can prove a selected GGUF's tensor types.
             # The exact downloaded group is structurally inspected before use.
             runtime = derive_runtime_metadata(json.dumps(config), file_names=files, repo_id=repo_id, ternary=False)

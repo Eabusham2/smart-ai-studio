@@ -71,7 +71,7 @@ def _pipeline_class(info) -> str:
         if path.is_dir() and (path / "model_index.json").is_file():
             config = json.loads((path / "model_index.json").read_text(encoding="utf-8"))
         else:
-            from huggingface_hub import hf_hub_download
+            from core.hf_transfer import hf_hub_download
             cfg = hf_hub_download(repo_id=repo, filename="model_index.json")
             config = json.loads(Path(cfg).read_text(encoding="utf-8"))
         name = str(config.get("_class_name") or "")
@@ -112,8 +112,9 @@ def _find_script(env_var: str, package: str, relatives: list[str]) -> Path | Non
 
 
 def _run_cancelable(command: list[str], cancel_event=None, cwd: Path | None = None):
+    from core.hf_transfer import hf_subprocess_command
     proc = subprocess.Popen(
-        command,
+        hf_subprocess_command(command),
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

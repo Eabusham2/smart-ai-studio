@@ -1,11 +1,13 @@
 """Small flow simulations; no scores claim a real model inference pass."""
 import importlib.util
 import json
+import queue
 from pathlib import Path
 import sys
 import threading
 import types
 import pytest
+from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,7 +40,16 @@ def env(tmp_path,monkeypatch):
         def generate_image(self,info,prompt,output_path=None,**kwargs):
             self.calls.append(info["repo_id"])
             if self.fail:raise RuntimeError("simulated OOM")
-            Path(output_path).write_bytes(b"test-artifact" if not self.empty else b"")
+            if kwargs.get('progress_callback'):
+                kwargs['progress_callback'](0.5, 'Denoising fixture step')
+            if self.empty:
+                Path(output_path).write_bytes(b"")
+            else:
+                from PIL import Image
+                image=Image.new("RGB", (16,16), "red")
+                image.save(output_path)
+                if kwargs.get('preview_callback'):
+                    kwargs['preview_callback']({'kind':'image','image':image,'label':'Generated image'})
             return {"status":"success","path":output_path}
         def generate_video(self,*a,**k):return self.generate_image(*a,**k)
     class Tools:
@@ -86,6 +97,70 @@ def test_no_artifact_no_success(env):
     c,a,_,_=env;a.media_engine.empty=True
     assert c.call("media_generate",{"kind":"image","prompt":"test"})['status']=='error'
 
+def test_image_alias_uses_real_route_and_exact_catalog_repository(env):
+    c,a,_,_=env
+    ok,payload=a.tools.execute_tool("image_gen",{"prompt":"test","model_id":"tested-image"})
+    result=json.loads(payload)
+    assert ok and result['format']=='PNG' and a.media_engine.calls==['tested-image']
+
+def test_unsupported_requested_model_is_not_replaced(env):
+    c,a,_,_=env
+    a.models_config['image']['download_unavailable_reason']='Matching packed runtime is missing'
+    result=c.call('media_generate',{'kind':'image','prompt':'test','model_id':'tested-image'})
+    assert result['status']=='error' and 'packed runtime' in result['error']
+    assert not a.media_engine.calls
+
+def test_nonempty_fake_image_is_not_reported_as_generated(env):
+    c,a,_,_=env
+    def invalid(info,prompt,output_path=None,**kwargs):
+        Path(output_path).write_text('<svg>placeholder</svg>')
+        return {'status':'success','path':output_path}
+    a.media_engine.generate_image=invalid
+    result=c.call('media_generate',{'kind':'image','prompt':'test'})
+    assert result['status']=='error' and not c.artifacts
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_tool_generation_posts_progress_preview_and_finish_on_ui_owner(env, failure):
+    c,a,_,_=env
+    a._ui_thread_ident=threading.get_ident()
+    a._event_queue=queue.Queue()
+    methods=('_create_generation_visual','_update_generation_visual','_update_generation_preview','_finish_generation_visual')
+    for name in methods:
+        setattr(a,name,Mock())
+    a.media_engine.fail=failure
+    result={}
+    worker=threading.Thread(target=lambda:result.update(c.call('media_generate',{'kind':'image','prompt':'test'})))
+    worker.start();worker.join(5)
+    assert not worker.is_alive()
+    assert all(not getattr(a,name).called for name in methods)
+    while not a._event_queue.empty():
+        kind,callback=a._event_queue.get_nowait()
+        assert kind=='ui_callback'
+        callback()
+    a._create_generation_visual.assert_called_once()
+    assert a._finish_generation_visual.call_args.args[1] is (not failure)
+    if not failure:
+        visual_id=result['visual_id']
+        assert a._create_generation_visual.call_args.args[0]==visual_id
+        assert a._update_generation_visual.call_args.args[1:]==(0.5,'Denoising fixture step')
+        assert a._update_generation_preview.call_args.args[1]['image'].getpixel((0,0))==(255,0,0)
+
+def test_tool_preview_callbacks_do_not_repaint_a_new_generation_or_tab(env):
+    c,a,_,_=env
+    a._ui_thread_ident=threading.get_ident()
+    a._event_queue=queue.Queue()
+    a._generation_epoch=1
+    methods=('_create_generation_visual','_update_generation_visual','_update_generation_preview','_finish_generation_visual')
+    for name in methods:
+        setattr(a,name,Mock())
+    worker=threading.Thread(target=lambda:c.call('media_generate',{'kind':'image','prompt':'test'}))
+    worker.start();worker.join(5)
+    assert not worker.is_alive() and not a._event_queue.empty()
+    a._generation_epoch=2
+    while not a._event_queue.empty():
+        _,callback=a._event_queue.get_nowait();callback()
+    assert all(not getattr(a,name).called for name in methods)
+
 def test_cancel_does_not_load_models(env):
     c,a,_,_=env;a.cancel_event.set()
     assert c.call("media_generate",{"kind":"image","prompt":"test"})['status']=='error'
@@ -105,6 +180,76 @@ def test_model_can_call_existing_media_engine(env):
     a.engine.outputs=['<media_call>{"name":"media_generate","arguments":{"kind":"image","prompt":"test"}}</media_call>','Here is the result.']
     text=''.join(c.stream_solve("make a picture"))
     assert a.media_engine.calls==['tested-image'] and 'artifact_id' in text and text.endswith('Here is the result.')
+
+@pytest.mark.parametrize('best_work', [False, True])
+def test_gui_media_stream_keeps_exact_grounding_and_shows_artifact_without_tool_json(env, best_work):
+    c,a,_,_=env
+    a._ui_thread_ident=threading.get_ident()
+    a._event_queue=queue.Queue()
+    a._append_media_tool_result=Mock()
+    a._create_generation_visual=Mock()
+    call='<media_call>{"name":"media_generate","arguments":{"kind":"image","prompt":"test"}}</media_call>'
+    rounds=[list(call), ['Here is ', 'the result.']]
+    histories=[]
+    def stream(prompt, history=None, cancel_event=None):
+        histories.append([dict(turn) for turn in history])
+        yield from rounds.pop(0)
+    a.engine.stream_solve=stream
+    chunks=[]
+    def run():
+        if best_work:
+            from core.best_work import stream_best_work_legacy
+            iterator=stream_best_work_legacy(c, 'make a picture')
+        else:
+            iterator=c.stream_solve('make a picture')
+        chunks.extend(iterator)
+    worker=threading.Thread(target=run)
+    worker.start();worker.join(5)
+    assert not worker.is_alive()
+    assert ''.join(chunks)=='Here is the result.'
+    assert not a._append_media_tool_result.called
+    while not a._event_queue.empty():
+        _,callback=a._event_queue.get_nowait();callback()
+    a._append_media_tool_result.assert_called_once()
+    result=a._append_media_tool_result.call_args.args[0]
+    assert result['visual_id']==a._create_generation_visual.call_args.args[0]
+    assert result['format']=='PNG' and Path(result['path']).is_file()
+    assert histories[1][-2]['content']==call
+    assert json.loads(histories[1][-1]['content'].split(': ',1)[1])==result
+
+def test_gui_media_stream_still_streams_prose_and_preserves_non_generation_calls(env):
+    c,a,_,_=env
+    a._append_media_tool_result=Mock()
+    def prose(prompt, history=None, cancel_event=None):
+        yield 'Ordinary '
+        yield 'reply.'
+    a.engine.stream_solve=prose
+    iterator=c.stream_solve('hello')
+    assert next(iterator)=='Ordinary '
+    assert ''.join(iterator)=='reply.'
+    calls=['<media_call>{"name":"media_list_models","arguments":{}}</media_call>', 'Listed.']
+    def models(prompt, history=None, cancel_event=None):
+        yield from calls.pop(0)
+    a.engine.stream_solve=models
+    answer=''.join(c.stream_solve('list models'))
+    assert '<media_call>' in answer and '[Media tool result]' in answer and answer.endswith('Listed.')
+    a._append_media_tool_result.assert_not_called()
+
+def test_gui_media_completion_does_not_attach_to_replaced_transcript(env):
+    c,a,_,_=env
+    a._ui_thread_ident=threading.get_ident()
+    a._event_queue=queue.Queue()
+    a._generation_epoch=1
+    a._append_media_tool_result=Mock()
+    presenter=c.media_result_presenter('media_generate')
+    result={'status':'success','kind':'image','path':'output.png','visual_id':'original'}
+    worker=threading.Thread(target=lambda:presenter(result))
+    worker.start();worker.join(5)
+    assert not worker.is_alive() and not a._event_queue.empty()
+    a._generation_epoch=2
+    while not a._event_queue.empty():
+        _,callback=a._event_queue.get_nowait();callback()
+    a._append_media_tool_result.assert_not_called()
 
 def test_tool_loop_is_bounded(env):
     c,a,_,_=env;a.engine.outputs=['<media_call>{"name":"media_list_models","arguments":{}}</media_call>']*10

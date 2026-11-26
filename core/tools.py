@@ -98,10 +98,10 @@ class AgentToolRegistry:
             {"name": "sqlite_schema_inspector", "description": "Inspects database tables, column types, foreign keys, and indexes.", "parameters": {"table": "optional string"}},
             {"name": "interactive_visual_maker", "description": "Creates interactive visual widgets, multi-series charts, neural net graphs, mathematical simulations, and dashboards with live parameter sliders and tooltips like Gemini & ChatGPT.", "parameters": {"visual_type": "string (chart, diagram, neural_net, simulation, dashboard)", "title": "string", "data_or_spec": "optional dict/json", "description": "optional string", "theme": "optional string", "filename": "optional string"}},
             {"name": "html_diagram_builder", "description": "Generates interactive HTML diagrams and system architecture DAGs with multi-select (Shift/Cmd or Marquee drag), auto-layout (DAG, Force, Grid, Circular), draggable nodes, search filtering, and node property inspection.", "parameters": {"title": "string", "diagram_type": "optional string (architecture, flowchart, neural_dag, decision_tree, workflow)", "nodes": "optional list of dicts", "edges": "optional list of dicts", "auto_layout": "optional string", "theme": "optional string", "filename": "optional string"}},
-            {"name": "generate_image", "description": "Generates a graphical visual, diagram, or canvas art and saves to workspace as PNG/SVG.", "parameters": {"prompt": "string", "filename": "optional string", "format": "optional string"}},
-            {"name": "generate_image_diffusion", "description": "Generates high-resolution uncensored images via SDXL RealVisXL V5.0, Z-Image Turbo Q8 GGUF, or Ideogram Instant with LoRA sliders (softer anatomy @ 1.0, harder motion @ 0.8, mystic blend).", "parameters": {"prompt": "string", "model_id": "optional string", "softer_lora_str": "optional float", "harder_lora_str": "optional float", "custom_lora": "optional string", "custom_lora_str": "optional float", "filename": "optional string"}},
-            {"name": "generate_video_diffusion", "description": "Generates video and audio motion clips via LTX-Video 2.5 MLX Q4, Wan 2.2 Remix GGUF, or MiniMax-H3 AfterMidnight NSFW LoRA.", "parameters": {"prompt": "string", "model_id": "optional string", "motion_scale": "optional float", "frames": "optional int", "filename": "optional string"}},
-            {"name": "edit_image_rapid", "description": "Performs rapid multimodal image and text editing / transformation using Qwen Image Edit Rapid AIO GGUF.", "parameters": {"prompt": "string", "image_path": "optional string", "filename": "optional string"}},
+            {"name": "generate_image", "description": "Runs the image model and saves a decoded PNG, JPEG, or WebP in the workspace.", "parameters": {"prompt": "string", "filename": "optional string", "format": "optional string"}},
+            {"name": "generate_image_diffusion", "description": "Runs a supported image pipeline using the selected repository and reports the actual output file; unsupported model layouts return an error.", "parameters": {"prompt": "string", "model_id": "optional string", "filename": "optional string"}},
+            {"name": "generate_video_diffusion", "description": "Runs a supported video pipeline and saves a decoded MP4; this tool does not synthesize an audio track.", "parameters": {"prompt": "string", "model_id": "optional string", "frames": "optional int", "filename": "optional string"}},
+            {"name": "edit_image_rapid", "description": "Checks availability of the selected Qwen GGUF image-edit runtime. Returns an error until that runtime is integrated.", "parameters": {"prompt": "string", "image_path": "optional string", "filename": "optional string"}},
             {"name": "render_bezier_art", "description": "Generates parametric Bezier curves and vector art canvas as SVG/PNG in workspace.", "parameters": {"curves": "optional list", "filename": "optional string"}},
             {"name": "export_chat_history", "description": "Exports conversation history to a clean readable Markdown (.md) file in the workspace.", "parameters": {"filename": "optional string"}},
             {"name": "dsl_evaluator", "description": "Evaluates TensorGraphDSL (non-commutative matrix/tensor operators) or GlyphScript (symbolic logic rules and graph invariants) or executes code in Python sandbox.", "parameters": {"dsl_type": "string (tensorgraph, glyphscript, python)", "expression_or_code": "string", "assertions": "optional string"}},
@@ -192,18 +192,18 @@ class AgentToolRegistry:
                 return self._tool_generate_image_diffusion(
                     prompt=args.get("prompt", ""),
                     model_id=args.get("model_id", "SG161222/RealVisXL_V5.0"),
-                    softer_lora_str=float(args.get("softer_lora_str", 1.0)),
-                    harder_lora_str=float(args.get("harder_lora_str", 0.8)),
-                    custom_lora=args.get("custom_lora", "mystic_xxx"),
-                    custom_lora_str=float(args.get("custom_lora_str", 0.7)),
+                    softer_lora_str=float(args.get("softer_lora_str", 0.0)),
+                    harder_lora_str=float(args.get("harder_lora_str", 0.0)),
+                    custom_lora=args.get("custom_lora"),
+                    custom_lora_str=float(args.get("custom_lora_str", 0.0)),
                     filename=args.get("filename")
                 )
             elif tool in ("generate_video_diffusion", "video_gen", "ltx_video", "wan_video", "minimax_video"):
                 return self._tool_generate_video_diffusion(
                     prompt=args.get("prompt", ""),
-                    model_id=args.get("model_id", "dgrauet/ltx-2.5-mlx-q4"),
-                    motion_scale=float(args.get("motion_scale", 0.8)),
-                    frames=int(args.get("frames", 24)),
+                    model_id=args.get("model_id", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"),
+                    motion_scale=args.get("motion_scale"),
+                    frames=int(args.get("frames", 49)),
                     filename=args.get("filename")
                 )
             elif tool in ("edit_image_rapid", "image_edit", "qwen_edit"):
@@ -927,158 +927,78 @@ class AgentToolRegistry:
         )
         return ok, report
 
-    def _tool_generate_image(self, prompt: str, filename: Optional[str] = None, format: str = "png") -> Tuple[bool, str]:
-        """Generates graphical visual artifact, diagram, or canvas art and saves to workspace."""
-        if not prompt or not prompt.strip():
-            return False, "Image generation prompt required."
+    def _run_media_generation(self, kind, prompt, model_id, filename=None, *, frames=49):
+        """Use the same real backend as the selected-model GUI route."""
+        from config.media_models import media_download_metadata
+        from core.media_engine import MediaGenerationEngine, validate_media_file
 
-        clean_name = filename or f"generated_visual_{int(time.time())}.svg"
-        if not clean_name.endswith((".png", ".svg", ".jpg")):
-            clean_name += f".{format}"
-
-        full_path = os.path.join(self.workspace_dir, clean_name)
-
-        # High-res SVG vector diagram & art rendering
-        prompt_title = prompt[:45].strip()
-        svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
-  <defs>
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f17" />
-      <stop offset="50%" stop-color="#131d2e" />
-      <stop offset="100%" stop-color="#1e1b4b" />
-    </linearGradient>
-    <linearGradient id="curveGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#38bdf8" />
-      <stop offset="50%" stop-color="#a855f7" />
-      <stop offset="100%" stop-color="#22c55e" />
-    </linearGradient>
-  </defs>
-  <rect width="100%" height="100%" fill="url(#bgGrad)" rx="16" />
-  <circle cx="400" cy="250" r="180" fill="none" stroke="#1e293b" stroke-width="2" stroke-dasharray="6,6" />
-  <path d="M 100,380 C 250,100 550,420 700,160" fill="none" stroke="url(#curveGrad)" stroke-width="6" stroke-linecap="round" />
-  <circle cx="100" cy="380" r="8" fill="#38bdf8" />
-  <circle cx="700" cy="160" r="8" fill="#22c55e" />
-  <rect x="50" y="40" width="700" height="60" rx="8" fill="#111827" opacity="0.85" />
-  <text x="400" y="78" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold" fill="#38bdf8" text-anchor="middle">🎨 {prompt_title}</text>
-  <text x="400" y="440" font-family="system-ui, -apple-system, sans-serif" font-size="13" fill="#94a3b8" text-anchor="middle">Synthesized Vector Graphic • Smart AI Studio Multimodal Engine</text>
-</svg>"""
+        if not str(prompt or "").strip():
+            return False, f"{kind.title()} generation prompt required."
+        suffix = ".png" if kind == "image" else ".mp4"
+        filename = filename or f"{kind}_{time.time_ns()}{suffix}"
+        if not os.path.splitext(filename)[1]:
+            filename += suffix
+        output_path = os.path.abspath(os.path.join(self.workspace_dir, filename))
+        info = {"repo_id": model_id, **media_download_metadata(model_id)}
+        engine = MediaGenerationEngine()
+        if kind == "image":
+            result = engine.generate_image(info, prompt, output_path=output_path)
+        else:
+            result = engine.generate_video(info, prompt, output_path=output_path, frames=frames)
+        if result.get("status") != "success":
+            return False, json.dumps({**result, "kind": kind}, ensure_ascii=False)
         try:
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(svg_content)
-            return True, f"### 🖼️ Generated Visual Artifact\n\n• **File Saved**: `{full_path}`\n• **Prompt**: *\"{prompt}\"*\n• **Format**: High-Resolution Vector Graphic (SVG / Canvas Renderable)"
-        except Exception as e:
-            return False, f"Failed to save generated image: {str(e)}"
+            actual = os.path.abspath(str(result.get("path") or ""))
+            if actual != output_path:
+                raise ValueError("The media backend returned a different output filename.")
+            details = validate_media_file(actual, kind)
+        except Exception as error:
+            return False, json.dumps({"status": "error", "kind": kind, "error": str(error)}, ensure_ascii=False)
+        return True, json.dumps({**result, **details, "kind": kind}, ensure_ascii=False)
+
+    def _tool_generate_image(self, prompt: str, filename: Optional[str] = None, format: str = "png") -> Tuple[bool, str]:
+        """Generate model pixels; explicit vector tools remain separate features."""
+        image_format = str(format or "png").lower()
+        if image_format not in {"png", "jpg", "jpeg", "webp"}:
+            return False, "Image generation saves PNG, JPEG, or WebP. Use a diagram or Bezier tool for SVG."
+        filename = filename or f"image_{time.time_ns()}.{image_format}"
+        return self._run_media_generation("image", prompt, "SG161222/RealVisXL_V5.0", filename)
 
     def _tool_generate_image_diffusion(
         self,
         prompt: str,
         model_id: str = "SG161222/RealVisXL_V5.0",
-        softer_lora_str: float = 1.0,
-        harder_lora_str: float = 0.8,
-        custom_lora: str = "mystic_xxx",
-        custom_lora_str: float = 0.7,
-        filename: Optional[str] = None
+        softer_lora_str: float = 0.0,
+        harder_lora_str: float = 0.0,
+        custom_lora: Optional[str] = None,
+        custom_lora_str: float = 0.0,
+        filename: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """High-resolution uncensored image generation with LoRA slider controls and 16GB RAM optimization."""
-        if not prompt or not prompt.strip():
-            return False, "Image generation prompt required."
-
-        clean_name = filename or f"diffusion_{int(time.time())}.png"
-        if not clean_name.endswith((".png", ".jpg", ".webp", ".svg")):
-            clean_name += ".png"
-        full_path = os.path.join(self.workspace_dir, clean_name)
-
-        # Generate output artifact metadata
-        res = (
-            f"### 🎨 High-Res Uncensored Image Synthesized\n\n"
-            f"• **File Location**: `{full_path}`\n"
-            f"• **Base Model**: `{model_id}`\n"
-            f"• **Prompt**: *\"{prompt}\"*\n"
-            f"• **LoRA Sliders & Conditioning**:\n"
-            f"  - **Softer LoRA (Anatomy / Detail Target)**: `{softer_lora_str:.2f}x` (Optimal: 1.0)\n"
-            f"  - **Harder LoRA (Motion / Dynamic Target, Rank 32)**: `{harder_lora_str:.2f}x` (Cap: 0.8)\n"
-            f"  - **Custom / Secondary LoRA (`{custom_lora}`)**: `{custom_lora_str:.2f}x`\n"
-            f"• **Memory & Execution**: Metal MPS / FP16 Quantized (Optimized for 16GB Unified RAM)"
-        )
-
-        # Write high-res visual artifact placeholder SVG if direct image file doesn't exist
-        svg_name = full_path.rsplit(".", 1)[0] + ".svg"
-        prompt_title = prompt[:40].strip()
-        svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <defs>
-    <radialGradient id="grad" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#1e1b4b"/>
-      <stop offset="60%" stop-color="#0f172a"/>
-      <stop offset="100%" stop-color="#05070a"/>
-    </radialGradient>
-  </defs>
-  <rect width="100%" height="100%" fill="url(#grad)"/>
-  <circle cx="512" cy="512" r="380" fill="none" stroke="#ec4899" stroke-width="3" opacity="0.6"/>
-  <circle cx="512" cy="512" r="280" fill="none" stroke="#a855f7" stroke-width="2" stroke-dasharray="8,8"/>
-  <rect x="112" y="420" width="800" height="180" rx="16" fill="#0f172a" opacity="0.9" stroke="#38bdf8" stroke-width="1.5"/>
-  <text x="512" y="480" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="bold" fill="#ffffff" text-anchor="middle">🎨 High-Res Diffusion Synthesizer</text>
-  <text x="512" y="525" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#38bdf8" text-anchor="middle">Model: {model_id}</text>
-  <text x="512" y="565" font-family="system-ui, -apple-system, sans-serif" font-size="15" fill="#a855f7" text-anchor="middle">Softer LoRA: {softer_lora_str:.2f}x | Harder LoRA: {harder_lora_str:.2f}x</text>
-  <text x="512" y="850" font-family="system-ui, -apple-system, sans-serif" font-size="16" fill="#94a3b8" text-anchor="middle">Prompt: "{prompt_title}"</text>
-</svg>"""
-        try:
-            with open(svg_name, "w", encoding="utf-8") as f:
-                f.write(svg_content)
-        except Exception:
-            pass
-
-        return True, res
+        if softer_lora_str or harder_lora_str or custom_lora or custom_lora_str:
+            return False, "These LoRA sliders do not identify installed adapter weights. Select a real learned adapter before applying LoRA conditioning."
+        return self._run_media_generation("image", prompt, model_id, filename)
 
     def _tool_generate_video_diffusion(
         self,
         prompt: str,
-        model_id: str = "dgrauet/ltx-2.5-mlx-q4",
-        motion_scale: float = 0.8,
-        frames: int = 24,
-        filename: Optional[str] = None
+        model_id: str = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        motion_scale: Optional[float] = None,
+        frames: int = 49,
+        filename: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """High-resolution video and audio synthesis with motion control."""
-        if not prompt or not prompt.strip():
-            return False, "Video generation prompt required."
-
-        clean_name = filename or f"video_{int(time.time())}.mp4"
-        full_path = os.path.join(self.workspace_dir, clean_name)
-
-        res = (
-            f"### 🎬 High-Res Motion Video Synthesized\n\n"
-            f"• **File Location**: `{full_path}`\n"
-            f"• **Engine**: `{model_id}`\n"
-            f"• **Prompt**: *\"{prompt}\"*\n"
-            f"• **Motion Scale**: `{motion_scale:.2f}` (Rank 32 Motion Objective)\n"
-            f"• **Frames / Framerate**: `{frames} frames` @ 24 fps\n"
-            f"• **Audio Synthesizer**: Native Multimodal Synchronized Track Enabled\n"
-            f"• **VRAM Footprint**: ~5.8 GB (Apple Silicon Metal Q4 / 16GB Safe)"
-        )
-        return True, res
+        if motion_scale is not None:
+            return False, "A motion-scale adapter is not installed for this video pipeline. No video was generated."
+        return self._run_media_generation("video", prompt, model_id, filename, frames=frames)
 
     def _tool_edit_image_rapid(
         self,
         prompt: str,
         image_path: Optional[str] = None,
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """Rapid multimodal text + image editing using Qwen Image Edit Rapid AIO GGUF."""
-        if not prompt or not prompt.strip():
-            return False, "Image editing instructions prompt required."
-
-        clean_name = filename or f"edited_image_{int(time.time())}.png"
-        full_path = os.path.join(self.workspace_dir, clean_name)
-
-        src_info = f"`{image_path}`" if image_path else "Current active canvas image"
-        res = (
-            f"### 🖼️ Rapid Multimodal Image Edit Executed\n\n"
-            f"• **Source Image**: {src_info}\n"
-            f"• **Edit Instruction**: *\"{prompt}\"*\n"
-            f"• **Target Output**: `{full_path}`\n"
-            f"• **Engine**: `Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF` (Rapid AIO GGUF)\n"
-            f"• **Processing Mode**: Zero-shot rapid latent inpainting & visual editing"
-        )
-        return True, res
+        from config.media_models import media_download_metadata
+        info = media_download_metadata("Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF")
+        return False, str(info.get("download_unavailable_reason") or "The selected image-edit runtime is not integrated. No edited image was created.")
 
     def _tool_render_bezier_art(self, filename: str = "bezier_artwork.svg") -> Tuple[bool, str]:
         """Renders mathematical cubic/quadratic Bezier spline vector art canvas."""

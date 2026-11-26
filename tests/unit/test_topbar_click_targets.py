@@ -42,6 +42,9 @@ def test_all_header_buttons_are_topmost_and_click_events_invoke_commands(width):
     root = tk.Tk()
     try:
         app = SmartAIChatbotApp(root, settings=get_settings(backend="mock"))
+        # Reset belongs to an installed selection; expose that real UI state.
+        app._model_is_cached = lambda _info: True
+        app._update_model_action_buttons()
         # The virtual CI display can be 1280px wide. Never assert physical
         # clickability outside the OS screen while testing larger presets.
         _resize_on_screen(root, width, 900)
@@ -96,6 +99,8 @@ def test_eval_is_unmapped_when_nontext_model_selected():
     root = tk.Tk()
     try:
         app = SmartAIChatbotApp(root, settings=get_settings(backend="mock"))
+        app._model_is_cached = lambda _info: True
+        app._update_model_action_buttons()
         _resize_on_screen(root, 760, 850)
         assert app.btn_eval.winfo_manager() == "place"
         # Honor the Eval extension's text-only visibility rule.

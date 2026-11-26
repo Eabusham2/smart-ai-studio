@@ -17,6 +17,7 @@ from consolidation.ewc_loss import EWCLossCalculator
 from consolidation.fisher import FisherEstimator
 from memory.anchor_dataset import get_anchor_dataset, get_anchor_texts
 from memory.db import EpisodicMemoryDB
+from core.hf_transfer import run_hf_operation
 
 
 class SleepConsolidationDaemon:
@@ -84,14 +85,14 @@ class SleepConsolidationDaemon:
                 if not is_model_cached_locally(model_path) and not os.path.exists(model_path):
                     raise FileNotFoundError(f"Model checkpoint not found or cached locally: {model_path}")
 
-                self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-                self.base_model = AutoModelForCausalLM.from_pretrained(
+                self.tokenizer = run_hf_operation(lambda: AutoTokenizer.from_pretrained(model_path))
+                self.base_model = run_hf_operation(lambda: AutoModelForCausalLM.from_pretrained(
                     model_path,
                     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float16,
                     device_map=self.device if torch.cuda.is_available() else None,
                     low_cpu_mem_usage=True,
                     trust_remote_code=True
-                )
+                ))
                 lora_config = LoraConfig(
                     r=32,
                     lora_alpha=64,

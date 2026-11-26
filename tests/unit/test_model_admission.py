@@ -68,6 +68,16 @@ def test_new_architecture_can_register_without_claiming_engine_compatibility(tmp
     assert meta["execution_compatibility"] == "unverified"
 
 
+def test_diffusion_gguf_architecture_is_not_registered_as_a_text_model(tmp_path):
+    path = write_gguf(tmp_path / "selected.gguf", architecture="flux")
+    allowed, reason, meta = admit_local_model(str(path))
+    assert not allowed and "diffusion-GGUF runtime adapter" in reason
+    assert meta["ok"] is False
+    # A misleading name does not reject a real text architecture.
+    text = write_gguf(tmp_path / "Flux-Wan-image-diffusion.gguf", architecture="llama")
+    assert admit_local_model(str(text))[0] is True
+
+
 @pytest.mark.parametrize("quant,ternary,precision", [(145, False, "TQK6"), (143, True, "PTQ1_0"), (34, True, "TQ1_0")])
 def test_filename_cannot_change_real_ternary_identity(tmp_path, quant, ternary, precision):
     path = write_gguf(tmp_path / "Definitely-Ternary-TQ1_0.gguf", architecture="qwen4exp", quant=quant)
@@ -260,6 +270,10 @@ def test_truncated_safetensors_payload_is_rejected(tmp_path):
 
 
 def fake_hub(monkeypatch, tmp_path, names, *, config=None, pipeline="text-generation", library="", revision="a" * 40, objects=None, sizes=None):
+    # Hub metadata and transfers below are local fixtures; simulate their
+    # online API contract without changing the suite's real network ban.
+    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "OFFLINE"):
+        monkeypatch.delenv(name, raising=False)
     downloaded = []
     metadata = {}
     if config is not None:
@@ -306,6 +320,18 @@ def test_hf_selection_pins_revision_and_only_selected_shard_downloads(tmp_path, 
     assert meta["repo_revision"] == "a" * 40
     assert meta["requires_local_validation"] is True
     assert meta["ternary"] is False and calls == []
+
+
+@pytest.mark.parametrize("pipeline,config", [
+    ("text-to-image", None), ("image-to-video", None),
+    ("", {"architectures": ["FluxTransformer2DModel"]}),
+])
+def test_hf_diffusion_gguf_is_rejected_from_structured_metadata(tmp_path, monkeypatch, pipeline, config):
+    calls = fake_hub(monkeypatch, tmp_path, ["chosen.gguf"], pipeline=pipeline, config=config)
+    allowed, reason, meta = admit_hf_model("owner/chosen")
+    assert not allowed and "diffusion-GGUF runtime adapter" in reason
+    assert meta["ok"] is False
+    assert all(filename == "config.json" for _, filename, _ in calls)
 
 
 def test_hf_mlx_metadata_download_is_revision_pinned(tmp_path, monkeypatch):

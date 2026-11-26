@@ -5,6 +5,7 @@ import gc
 import hashlib
 import math
 from pathlib import Path
+from core.hf_transfer import run_hf_operation
 
 
 def _digest(path):
@@ -53,8 +54,8 @@ def review_artifact(record):
             import torch
             from transformers import CLIPModel, CLIPProcessor
             repo = "openai/clip-vit-base-patch32"
-            processor = CLIPProcessor.from_pretrained(repo)
-            model = CLIPModel.from_pretrained(repo).eval()
+            processor = run_hf_operation(lambda: CLIPProcessor.from_pretrained(repo))
+            model = run_hf_operation(lambda: CLIPModel.from_pretrained(repo)).eval()
             try:
                 token_count = len(processor.tokenizer(prompt)["input_ids"])
                 evidence["prompt_truncated_for_reviewer"] = token_count > 77
@@ -84,8 +85,8 @@ def review_artifact(record):
                 divisor = math.gcd(meta.samplerate,48000)
                 samples = resample_poly(samples,48000//divisor,meta.samplerate//divisor)
             repo = "laion/clap-htsat-unfused"
-            processor = ClapProcessor.from_pretrained(repo)
-            model = ClapModel.from_pretrained(repo).eval()
+            processor = run_hf_operation(lambda: ClapProcessor.from_pretrained(repo))
+            model = run_hf_operation(lambda: ClapModel.from_pretrained(repo)).eval()
             try:
                 inputs = processor(text=[prompt], audios=[samples],sampling_rate=48000,return_tensors="pt",padding=True)
                 with torch.inference_mode():

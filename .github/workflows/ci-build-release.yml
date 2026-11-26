@@ -304,6 +304,16 @@ jobs:
           fi
           python -m pip install -r tools/requirements-ci.txt
 
+      - name: Verify isolated native audio runtime without model weights
+        if: runner.os == 'Linux' && matrix.python-version == '3.11'
+        shell: bash
+        env:
+          SMARTAI_DATA_DIR: ${{ runner.temp }}/smartai-audio-runtime-probe
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          RUN_REAL_WEIGHTS_EVAL: "0"
+        run: python -m core.stable_audio_runtime --prepare --probe --cpu-probe
+
       - name: Execute Selected Test Suite
         shell: bash
         env:
@@ -768,7 +778,11 @@ jobs:
 
           The app, Python, dependencies and matching original Bonsai 2 native runtime are now packaged together. Bonsai 2.5 and the local API remain available. Models download only when selected inside the app.
 
-          This update fixes the built-in Bonsai 2.5 MLX downloads, including CRACK, while preserving their MTP settings. The Mac installer now comes in a ZIP that preserves its executable permission.
+          This update fixes interrupted model downloads, exact media component selection, and installed-model detection after restarting. One model button now handles Install, Cancel, Load and Unload.
+
+          Image, video and audio generation use their real runtimes and validated output files. Generated media opens in large previews with playback, expansion and Save As; generation progress uses real steps. Component-only presets that need an unintegrated runtime explain what is missing instead of reporting a false installation or generating a placeholder.
+
+          Mac launches and relaunches keep the Smart AI Studio application identity. The installer ZIP preserves its executable permission, and the built-in Bonsai 2.5 MLX presets, including CRACK, retain their exact downloads and MTP settings.
 
           ### Start here
 

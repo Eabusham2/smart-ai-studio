@@ -533,6 +533,8 @@ class SmartAIChatbotApp:
                 "accent": "#fb7185"
             }
         }
+        from config.media_models import apply_builtin_media_catalog
+        apply_builtin_media_catalog(self.models_config)
         self.models_config.update({key: get_strata_preset(key) for key in STRATA_PRESETS})
         self._load_saved_custom_models()
         self.active_tab_id = "model_1"
@@ -676,6 +678,12 @@ class SmartAIChatbotApp:
             hook = getattr(getattr(engine, name, None), "owned_process_ids", None)
             if callable(hook):
                 pids.update(hook())
+        for name in ("media_engine", "audio_engine"):
+            hook = getattr(getattr(self, name, None), "owned_process_ids", None)
+            if callable(hook):
+                pids.update(hook())
+        from core.bonsai_image_runtime import owned_process_ids as image_processes
+        pids.update(image_processes())
         # Eval unloads chat and runs its own model in a retained subprocess.
         # Follow only that owner's live subtree, never all application children.
         evaluation = getattr(self, "_eval_proc", None)
@@ -1369,6 +1377,9 @@ class SmartAIChatbotApp:
                 self.watchdog.stop_monitoring()
             if hasattr(self, "cancel_event"):
                 self.cancel_event.set()
+            setup_cancel = getattr(self, "_model_load_cancel_event", None)
+            if setup_cancel is not None:
+                setup_cancel.set()
             service = getattr(getattr(self, "engine", None), "awake_consolidator", None)
             if getattr(service, "is_consolidating", False) or getattr(self, "_sleep_consolidating", False):
                 self._closing_during_learning = True
@@ -1504,8 +1515,9 @@ class SmartAIChatbotApp:
         right_box = tk.Frame(self.hud_bar, bg=self.C["bg_hud"])
         right_box.pack(side="right", padx=4, pady=2)
 
-        total_p = curr_info.get("raw_params", 27_400_000_000) + self.synapses_learned_count
-        param_str = format_parameter_count(total_p)
+        raw_params = curr_info.get("raw_params")
+        total_p = (raw_params or 0) + self.synapses_learned_count
+        param_str = format_parameter_count(total_p) if raw_params else "—"
         self.lbl_params = self._make_badge(right_box, f"🧠 {param_str} Total Params")
 
         syn_str = format_added_synapses(self.synapses_learned_count)
@@ -1584,7 +1596,7 @@ class SmartAIChatbotApp:
         self._local_api_ui = LocalAPIUI(self)
         self._local_api_ui.create_button(right_box, font=_FONT_TINY_BOLD)
 
-        # Dedicated Grab / Reset & Re-grab Button
+        # Reset is available only for an installed model; Install has one button.
         self.btn_reset_reinstall = tk.Button(
             right_box, text="🔄 Reset", font=_FONT_TINY_BOLD,
             bg=self.C["btn_bg"], fg=self.C["btn_fg"],
@@ -1595,7 +1607,7 @@ class SmartAIChatbotApp:
             command=self._on_reset_and_reinstall_single_confirm
         )
         self.btn_reset_reinstall.pack(side="left", padx=2)
-        self.btn_download_model = self.btn_reset_reinstall
+        self.btn_download_model = self.btn_load_unload
         self.btn_download_reset = self.btn_reset_reinstall
 
         # Export Chat to Markdown
@@ -3353,6 +3365,9 @@ class SmartAIChatbotApp:
         if target_id in getattr(self, "_hf_download_in_progress", set()):
             return
         target_info = self.models_config[self.active_tab_id]
+        if target_info.get("download_unavailable_reason"):
+            self._on_download_hf_failed(target_info, target_info["download_unavailable_reason"])
+            return
         if target_info.get("controller_runtime") == "strata":
             self._on_toggle_load_unload()
             return
@@ -3367,7 +3382,7 @@ class SmartAIChatbotApp:
         if target_info.get("requires_local_validation") or (
             target_info.get("download_required_files")
             and (target_info.get("repo_revision") or target_info.get("source_revision"))
-            and not target_info.get("bonsai25_mtp")
+            and not (target_info.get("bonsai25_mtp") or target_info.get("builtin_media_preset"))
         ):
             pending = getattr(self, "_hf_download_in_progress", set())
             self._hf_download_in_progress = pending
@@ -3410,6 +3425,8 @@ class SmartAIChatbotApp:
                     events.pop(target_id, None)
                     # A removed/replaced selector entry must not be resurrected.
                     if self.models_config.get(target_id) is not target_info:
+                        if self.active_tab_id in self.models_config:
+                            self._update_model_action_buttons()
                         return
                     if download_cancel.is_set():
                         if self.active_tab_id == target_id:
@@ -3431,70 +3448,85 @@ class SmartAIChatbotApp:
             threading.Thread(target=_selected_worker, name="studio-model-download", daemon=True).start()
             return
 
-        self.btn_reset_reinstall.configure(state="disabled", text="⏳ Downloading...")
+        pending = getattr(self, "_hf_download_in_progress", set())
+        self._hf_download_in_progress = pending
+        pending.add(target_id)
+        download_cancel = threading.Event()
+        events = getattr(self, "_hf_download_events", {})
+        self._hf_download_events = events
+        events[target_id] = download_cancel
+        self._update_model_action_buttons()
+
+        def _finish(result):
+            pending.discard(target_id)
+            events.pop(target_id, None)
+            if self.models_config.get(target_id) is not target_info or self.active_tab_id != target_id:
+                if self.active_tab_id in self.models_config:
+                    self._update_model_action_buttons()
+                return
+            if download_cancel.is_set() or result.get("status") == "cancelled":
+                self._append_ai_message("Model download cancelled. Completed cache files were kept for retry.")
+                self.lbl_model_status.configure(text="○ Download cancelled", fg=self.C["accent_yellow"])
+                self._update_model_action_buttons()
+            elif result.get("status") == "success":
+                self._on_download_hf_completed(target_info)
+            else:
+                self._on_download_hf_failed(target_info, str(result.get("error") or "Download failed."))
+
         def _worker():
             def _progress(msg: str, pct: float):
-                self.root.after(0, lambda p=pct: self.lbl_model_status.configure(
-                    text=f"⬇️ {p:.0f}% {target_info['short_name']}", fg=self.C["accent_yellow"]
-                ))
+                def _show():
+                    if self.active_tab_id == target_id and self.models_config.get(target_id) is target_info:
+                        self.lbl_model_status.configure(
+                            text=f"⬇️ {pct:.0f}% {target_info['short_name']}", fg=self.C["accent_yellow"])
+                self._event_queue.put(("model_load_complete", _show))
 
-            gguf_file = str(target_info.get("gguf_file") or "").strip()
-            mmproj_file = str(target_info.get("mmproj_file") or "").strip()
-            mmproj_repo_id = str(target_info.get("mmproj_repo_id") or "").strip()
+            def _download():
+                gguf_file = str(target_info.get("gguf_file") or "").strip()
+                mmproj_file = str(target_info.get("mmproj_file") or "").strip()
+                mmproj_repo_id = str(target_info.get("mmproj_repo_id") or "").strip()
 
-            # Built-in GGUF models are fail-closed: download the exact pinned ternary
-            # artifact instead of snapshotting every quant and later guessing.
-            if gguf_file:
-                primary_patterns = [gguf_file]
-                primary_required = [gguf_file]
-                if mmproj_file and (not mmproj_repo_id or mmproj_repo_id == repo_id):
-                    primary_patterns.append(mmproj_file)
-                    primary_required.append(mmproj_file)
-
-                res = download_model_from_hf(
-                    repo_id,
-                    progress_callback=lambda msg, pct: _progress(msg, pct * 0.80),
-                    cancel_event=self.cancel_event,
-                    allow_patterns=primary_patterns,
-                    required_files=primary_required,
-                    revision=target_info.get("repo_revision"),
-                )
-                if res.get("status") != "success":
-                    err = res.get("error", "Unknown error")
-                    self.root.after(0, lambda e=err: self._on_download_hf_failed(target_info, e))
-                    return
-
-                if mmproj_file and mmproj_repo_id and mmproj_repo_id != repo_id:
-                    projector_res = download_model_from_hf(
-                        mmproj_repo_id,
-                        progress_callback=lambda msg, pct: _progress(msg, 80.0 + pct * 0.20),
-                        cancel_event=self.cancel_event,
-                        allow_patterns=[mmproj_file],
-                        required_files=[mmproj_file],
-                        revision=target_info.get("mmproj_repo_revision"),
+                # Keep every built-in selection on its pinned source and files.
+                if gguf_file:
+                    primary_patterns = [gguf_file]
+                    if mmproj_file and (not mmproj_repo_id or mmproj_repo_id == repo_id):
+                        primary_patterns.append(mmproj_file)
+                    result = download_model_from_hf(
+                        repo_id,
+                        progress_callback=lambda msg, pct: _progress(msg, pct * 0.80),
+                        cancel_event=download_cancel,
+                        allow_patterns=primary_patterns,
+                        required_files=primary_patterns,
+                        revision=target_info.get("repo_revision"),
                     )
-                    if projector_res.get("status") != "success":
-                        err = projector_res.get("error", "Unknown projector download error")
-                        self.root.after(0, lambda e=err: self._on_download_hf_failed(target_info, e))
-                        return
-                _progress("Pinned ternary GGUF artifacts downloaded.", 100.0)
-            else:
-                res = download_model_from_hf(
+                    if result.get("status") != "success":
+                        return result
+                    if mmproj_file and mmproj_repo_id and mmproj_repo_id != repo_id:
+                        result = download_model_from_hf(
+                            mmproj_repo_id,
+                            progress_callback=lambda msg, pct: _progress(msg, 80.0 + pct * 0.20),
+                            cancel_event=download_cancel,
+                            allow_patterns=[mmproj_file],
+                            required_files=[mmproj_file],
+                            revision=target_info.get("mmproj_repo_revision"),
+                        )
+                    return result
+                return download_model_from_hf(
                     repo_id,
                     progress_callback=_progress,
-                    cancel_event=self.cancel_event,
+                    cancel_event=download_cancel,
                     revision=target_info.get("repo_revision"),
                     required_files=target_info.get("download_required_files"),
                     allow_patterns=target_info.get("download_allow_patterns"),
                 )
-                if res.get("status") != "success":
-                    err = res.get("error", "Unknown error")
-                    self.root.after(0, lambda e=err: self._on_download_hf_failed(target_info, e))
-                    return
 
-            self.root.after(0, lambda: self._on_download_hf_completed(target_info))
+            try:
+                result = _download()
+            except Exception as error:
+                result = {"status": "error", "error": str(error)}
+            self._event_queue.put(("model_load_complete", lambda: _finish(result)))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=_worker, name="studio-preset-download", daemon=True).start()
 
     def _on_download_hf_completed(self, target_info: Dict[str, Any]):
         self._append_ai_message(
@@ -3583,13 +3615,23 @@ class SmartAIChatbotApp:
                 # A cache hint must not crash Tk on an unsupported platform.
                 # The background Load action reports the actual reason.
                 return False
+        if info.get("gguf_file") and not info.get("download_required_files"):
+            from core.controller_runtime import resolve_gguf_artifacts
+            try:
+                weights, projector = resolve_gguf_artifacts(
+                    info.get("path") or info.get("model_path") or info.get("repo_id"), info)
+                return all(os.path.isfile(path) and os.path.getsize(path) > 0
+                           for path in (weights, projector) if path)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return False
         if info.get("download_required_files") and (info.get("repo_revision") or info.get("source_revision")):
             root = info.get("path")
-            if not root and info.get("bonsai25_mtp") and info.get("repo_id"):
+            if not root and (info.get("bonsai25_mtp") or info.get("builtin_media_preset")) and info.get("repo_id"):
                 from core.controller_runtime import resolve_local_snapshot
                 root = resolve_local_snapshot(info["repo_id"], info.get("repo_revision"))
             return bool(root and os.path.isdir(root) and all(
-                os.path.isfile(os.path.join(root, name)) for name in info["download_required_files"]
+                os.path.isfile(os.path.join(root, name)) and os.path.getsize(os.path.join(root, name)) > 0
+                for name in info["download_required_files"]
             ))
         path = info.get("model_path") or info.get("repo_id")
         return (is_model_cached_locally(info["repo_id"]) if info.get("repo_id")
@@ -3606,41 +3648,62 @@ class SmartAIChatbotApp:
         )
 
     def _update_model_action_buttons(self):
-        """
-        Dynamically updates model action buttons according to state:
-        - If NOT installed/cached:
-            self.btn_load_unload -> "⬇️ Install" (runs self._on_download_hf_model)
-            self.btn_reset_reinstall -> "📥 Grab" (runs self._on_download_hf_model)
-        - If installed & NOT loaded:
-            self.btn_load_unload -> "⚡ Load" (runs self._on_toggle_load_unload)
-            self.btn_reset_reinstall -> "🔄 Reset" (runs self._on_reset_and_reinstall_single_confirm)
-        - If LOADED in memory:
-            self.btn_load_unload -> "⏏ Unload" (runs self._on_toggle_load_unload)
-            self.btn_reset_reinstall -> "🔄 Reset & Re-grab" (runs self._on_reset_and_reinstall_single_confirm)
-        """
+        """One primary Install / Cancel / Load / Unload action, plus installed Reset."""
         if not hasattr(self, "btn_load_unload") or not hasattr(self, "btn_reset_reinstall"):
             return
 
+        def show_reset(visible):
+            layout = getattr(self, "_responsive_toolbar_set_visible", None)
+            if callable(layout):
+                layout(self.btn_reset_reinstall, visible, before=getattr(self, "btn_export_chat", None))
+            elif visible:
+                self.btn_reset_reinstall.pack(side="left", padx=2, after=self.btn_load_unload)
+            else:
+                self.btn_reset_reinstall.pack_forget()
+
         target_info = self.models_config[self.active_tab_id]
+        setup_cancel = getattr(self, "_model_load_cancel_event", None)
+        setup_active = (getattr(self, "_model_load_in_progress", False)
+                        and getattr(self, "_model_loading_tab_id", None) == self.active_tab_id
+                        and setup_cancel is not None)
+        previous_setup_state = getattr(self, "_model_setup_button_state", None)
+        if previous_setup_state is not None and not setup_active:
+            self.btn_load_unload.configure(state=previous_setup_state)
+            self._model_setup_button_state = None
+        if setup_active:
+            if previous_setup_state is None:
+                self._model_setup_button_state = self.btn_load_unload.cget("state")
+            def cancel_setup():
+                setup_cancel.set()
+                self._update_model_action_buttons()
+            show_reset(False)
+            self.btn_load_unload.configure(text="Cancelling…" if setup_cancel.is_set() else "Cancel setup",
+                                            state="disabled" if setup_cancel.is_set() else "normal",
+                                            command=cancel_setup)
+            return
         download_cancel = getattr(self, "_hf_download_events", {}).get(self.active_tab_id)
         previous = getattr(self, "_hf_download_button_state", None)
         if previous is not None and (previous[0] != self.active_tab_id or download_cancel is None):
-            if previous[1] is self.btn_reset_reinstall:
-                self.btn_reset_reinstall.configure(state=previous[2])
+            previous[1].configure(state=previous[2])
             self._hf_download_button_state = None
         if download_cancel is not None:
             if getattr(self, "_hf_download_button_state", None) is None:
-                self._hf_download_button_state = (self.active_tab_id, self.btn_reset_reinstall,
-                                                  self.btn_reset_reinstall.cget("state"))
+                self._hf_download_button_state = (self.active_tab_id, self.btn_load_unload,
+                                                  self.btn_load_unload.cget("state"))
             def _cancel_download():
                 download_cancel.set()
-                self.btn_reset_reinstall.configure(state="disabled", text="Cancelling…")
-                self.lbl_model_status.configure(text="Cancelling import; current file transfer may finish into cache.",
+                self.btn_load_unload.configure(state="disabled", text="Cancelling…")
+                self.lbl_model_status.configure(text="Cancelling download; the current file may finish into cache.",
                                                 fg=self.C["accent_yellow"])
-            self.btn_reset_reinstall.configure(state="normal" if not download_cancel.is_set() else "disabled",
+            show_reset(False)
+            self.btn_load_unload.configure(state="normal" if not download_cancel.is_set() else "disabled",
                                               text="Cancel download" if not download_cancel.is_set() else "Cancelling…",
                                               command=_cancel_download)
-            self.btn_load_unload.configure(text="⏳ Downloading…", command=self._on_download_hf_model)
+            return
+        if target_info.get("download_unavailable_reason") and not self.is_model_loaded:
+            show_reset(False)
+            self.btn_load_unload.configure(text="Setup required", command=lambda: messagebox.showinfo(
+                target_info["short_name"], target_info["download_unavailable_reason"]))
             return
         cached = self._model_is_cached(target_info)
 
@@ -3656,19 +3719,16 @@ class SmartAIChatbotApp:
                 command=self._on_toggle_load_unload,
             )
             self.btn_reset_reinstall.configure(text="Model info", command=self._show_strata_model_info)
+            show_reset(True)
             return
 
-        if not cached:
+        if not cached and not self.is_model_loaded:
             self.btn_load_unload.configure(
                 text="⬇️ Install",
                 fg=self.C.get("accent_cyan", "#38bdf8"),
                 command=self._on_download_hf_model
             )
-            self.btn_reset_reinstall.configure(
-                text="📥 Grab",
-                fg=self.C.get("btn_fg", "#ffffff"),
-                command=self._on_download_hf_model
-            )
+            show_reset(False)
         elif not self.is_model_loaded:
             self.btn_load_unload.configure(
                 text="⚡ Load",
@@ -3680,6 +3740,7 @@ class SmartAIChatbotApp:
                 fg=self.C.get("btn_fg", "#ffffff"),
                 command=self._on_reset_and_reinstall_single_confirm
             )
+            show_reset(True)
         else:
             self.btn_load_unload.configure(
                 text="⏏ Unload",
@@ -3687,10 +3748,11 @@ class SmartAIChatbotApp:
                 command=self._on_toggle_load_unload
             )
             self.btn_reset_reinstall.configure(
-                text="🔄 Reset & Re-grab",
+                text="🔄 Reset",
                 fg=self.C.get("btn_fg", "#ffffff"),
                 command=self._on_reset_and_reinstall_single_confirm
             )
+            show_reset(True)
 
     def _update_input_lock_state(self):
         """Enforces input lock-out when the neural model is unloaded."""
@@ -3843,6 +3905,10 @@ class SmartAIChatbotApp:
             self._append_ai_message(f"⏏ **Model Unloaded**: `{target_info['name']}`.")
             return
 
+        if target_info.get("download_unavailable_reason"):
+            self._on_download_hf_failed(target_info, target_info["download_unavailable_reason"])
+            return
+
         if not cached and repo_id and not _skip_download and not is_strata:
             self._on_download_hf_model()
             return
@@ -3858,11 +3924,22 @@ class SmartAIChatbotApp:
             target_info["name"], target_info.get("vram", "Auto"), **details,
         )
         self._model_load_in_progress = True
+        self._model_loading_tab_id = load_tab_id
         self._model_loading_update = _update_cb
         load_cancel = threading.Event()
         self._model_load_cancel_event = load_cancel
         self.engine._model_load_cancelled = load_cancel.is_set
-        asynchronous = is_strata or bool(self.root.winfo_viewable())
+        asynchronous = is_strata or model_type == "audio" or bool(self.root.winfo_viewable())
+        self._update_model_action_buttons()
+
+        def load_progress(value, message):
+            if load_cancel.is_set():
+                return
+            def show():
+                if self.active_tab_id == load_tab_id and getattr(self, "_model_load_in_progress", False):
+                    _update_cb(value, message)
+                    self.lbl_model_status.configure(text=message, fg=self.C["accent_yellow"])
+            self._event_queue.put(("model_load_complete", show))
 
         def _do_load():
             try:
@@ -3882,7 +3959,11 @@ class SmartAIChatbotApp:
                         load_res = ({"status": "cancelled"} if stopped.get("status") == "unloaded"
                                     else {"status": "error", "error": stopped.get("error") or "Runtime cleanup is incomplete. Use Retry unload."})
                 elif model_type == "audio":
-                    load_res = self.audio_engine.load_model(target_info)
+                    load_res = self.audio_engine.load_model(target_info, progress_callback=load_progress,
+                                                           cancel_event=load_cancel)
+                    if load_cancel.is_set() and load_res.get("status") == "loaded":
+                        self.audio_engine.unload_model()
+                        load_res = {"status": "cancelled"}
                 else:
                     # Image/video pipelines are lazy-loaded by their generation backend.
                     load_res = {"status": "loaded", "backend": f"{model_type}-lazy"}
@@ -3891,6 +3972,7 @@ class SmartAIChatbotApp:
 
             def _done():
                 self._model_load_in_progress = False
+                self._model_loading_tab_id = None
                 self._model_loading_update = None
                 self.engine._model_load_cancelled = None
                 migrations = getattr(self, "_legacy_learning_migrations", None)
@@ -4085,11 +4167,22 @@ class SmartAIChatbotApp:
             return ChatArchive(self.settings.database_path, key)
         return cached if isinstance(cached, list) else []
 
+    def _clear_media_previews(self):
+        for state in getattr(self, "_generation_visuals", {}).values():
+            state["active"] = False
+            try:
+                state["progress"].stop()
+                state["frame"].destroy()
+            except tk.TclError:
+                pass
+        self._generation_visuals = {}
+
     def _show_transcript_page(self, end=None, *, start=None):
         if getattr(self, "is_generating", False):
             return
         from core.gui_thinking import clear_display_state
         clear_display_state(self)
+        self._clear_media_previews()
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
         self._chat_follow_tail = True
@@ -4142,13 +4235,18 @@ class SmartAIChatbotApp:
                 if role == "user":
                     self._append_rendered_user_turn(content)
                 elif role == "assistant":
-                    self._append_rendered_ai_turn(content, item.get("display_thoughts"))
+                    media = item.get("media")
+                    if isinstance(media, dict) and media.get("kind") in {"image", "video", "audio"} and media.get("path"):
+                        self._append_media_result(media["kind"], media["path"], media.get("title", ""), record=False)
+                    else:
+                        self._append_rendered_ai_turn(content, item.get("display_thoughts"))
             self.chat_stream.configure(state="disabled")
             self._scroll_chat_to_bottom()
 
     def _on_switch_model_tab(self, target_tab_id: str):
         worker = getattr(self, "_generation_worker", None)
-        if getattr(self, "is_generating", False) or (worker is not None and worker.is_alive()):
+        if (getattr(self, "is_generating", False) or (worker is not None and worker.is_alive())
+                or getattr(self, "_model_load_in_progress", False)):
             # This is a core ownership rule, even if an optional toolbar fails
             # to install. The old worker cannot own a newly selected model.
             return
@@ -4220,6 +4318,7 @@ class SmartAIChatbotApp:
         if hasattr(self, "model_var"):
             self.model_var.set(target_info["short_name"])
 
+        self._clear_media_previews()
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
         from core.gui_thinking import clear_display_state
@@ -4238,6 +4337,7 @@ class SmartAIChatbotApp:
         cached = self._model_is_cached(target_info)
 
         load_text_after_switch = False
+        load_audio_after_switch = False
         if model_type == "text":
             # Custom model format and exact source are inspected during import.
             # Reuse the loader's worker thread so automatic calibration cannot
@@ -4250,26 +4350,13 @@ class SmartAIChatbotApp:
                 fg=self.C["accent_cyan"] if load_text_after_switch else self.C["accent_yellow"],
             )
         elif model_type == "audio":
-            if cached:
-                try:
-                    load_res = self.audio_engine.load_model(target_info)
-                except Exception as exc:
-                    load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
-                self.is_model_loaded = bool(load_res.get("status") == "loaded")
-                if self.is_model_loaded:
-                    self.lbl_model_status.configure(
-                        text=f"● Audio Loaded: {target_info['short_name']}", fg=self.C["accent_green"]
-                    )
-                else:
-                    self.lbl_model_status.configure(
-                        text=f"⚠ Audio runtime needed ({target_info['short_name']})",
-                        fg=self.C["accent_yellow"],
-                    )
-            else:
-                self.is_model_loaded = False
-                self.lbl_model_status.configure(
-                    text=f"○ Not Downloaded ({target_info['short_name']})", fg=self.C["accent_yellow"]
-                )
+            self.is_model_loaded = False
+            load_audio_after_switch = bool(cached)
+            self.lbl_model_status.configure(
+                text=(f"⚡ Ready to Load ({target_info['short_name']})" if cached
+                      else f"○ Not Downloaded ({target_info['short_name']})"),
+                fg=self.C["accent_cyan"] if cached else self.C["accent_yellow"],
+            )
         else:
             # Image/video runtimes load lazily at generation time. Cached means ready,
             # never "loaded into Pro".
@@ -4285,10 +4372,10 @@ class SmartAIChatbotApp:
         self._sync_memory_watchdog(target_info)
         self._update_memory_hud_badge()
         self._update_model_action_buttons()
-        total_p = target_info.get("raw_params", 0) + (
+        total_p = (target_info.get("raw_params") or 0) + (
             self.synapses_learned_count if model_type == "text" else 0
         )
-        param_str = format_parameter_count(total_p) if total_p else target_info.get("base_params", "—")
+        param_str = format_parameter_count(total_p) if target_info.get("raw_params") else "—"
         self.lbl_params.configure(text=f"🧠 {param_str} Total Params")
         if hasattr(self, "lbl_model_speed_params"):
             self.lbl_model_speed_params.configure(
@@ -4303,7 +4390,7 @@ class SmartAIChatbotApp:
         if callable(refresh_telemetry):
             refresh_telemetry()
 
-        if load_text_after_switch:
+        if load_text_after_switch or load_audio_after_switch:
             # A registered local artifact can be present without a matching HF
             # cache entry. Switching never starts a new download implicitly.
             self._on_toggle_load_unload(_skip_download=True)
@@ -4503,10 +4590,11 @@ class SmartAIChatbotApp:
         self.chat_stream.configure(state="normal")
         info = self.models_config[self.active_tab_id]
         self.chat_stream.insert("end", f"✦ {info['name']}  •  {datetime.now().strftime('%H:%M')}\n\n", "ai_header")
-        param_str = format_parameter_count(info.get("raw_params", 27_400_000_000))
+        raw_params = info.get("raw_params")
+        parameter_note = f" ({format_parameter_count(raw_params)} Parameters)" if raw_params else ""
         welcome_text = (
             f"Smart AI Studio ready to assist with autonomous reasoning, coding, and tool execution.\n\n"
-            f"• **Active Model**: {info['name']} ({param_str} Parameters)\n"
+            f"• **Active Model**: {info['name']}{parameter_note}\n"
             f"• **Custom Models**: Click **'➕ Import Model'** in the top bar to add your own local or HuggingFace models.\n"
             f"• **Live Steer**: Press `⌘+Enter` (or `Ctrl+Enter`) to steer the model while typing.\n"
         )
@@ -4555,177 +4643,123 @@ class SmartAIChatbotApp:
         self._scroll_chat_to_bottom()
 
     def _create_generation_visual(self, visual_id: str, kind: str, title: str):
-        """Small OSS-style live generation card embedded in the chat stream."""
+        """Show actual backend progress until a real media preview is available."""
         if visual_id in self._generation_visuals:
             return
-        try:
-            self.chat_stream.configure(state="normal")
-            self.chat_stream.insert(
-                "end",
-                f"\n✦ {title}  •  {datetime.now().strftime('%H:%M')}\n",
-                "ai_header",
-            )
-
-            frame = tk.Frame(
-                self.chat_stream,
-                bg=self.C["bg_card"],
-                highlightbackground=self.C["border"],
-                highlightthickness=1,
-                padx=8,
-                pady=7,
-            )
-            canvas = tk.Canvas(
-                frame,
-                width=360,
-                height=96,
-                bg=self.C["bg_chat"],
-                highlightthickness=0,
-                bd=0,
-            )
-            canvas.pack(fill="x")
-            status = tk.Label(
-                frame,
-                text="Starting…",
-                font=_FONT_TINY_BOLD,
-                bg=self.C["bg_card"],
-                fg=self.C["text_muted"],
-                anchor="w",
-            )
-            status.pack(fill="x", pady=(5, 0))
-
-            self.chat_stream.window_create("end", window=frame)
-            self.chat_stream.insert("end", "\n\n")
-            self.chat_stream.configure(state="disabled")
-            self._scroll_chat_to_bottom()
-
-            self._generation_visuals[visual_id] = {
-                "kind": str(kind or "image").lower(),
-                "frame": frame,
-                "canvas": canvas,
-                "status": status,
-                "target": 0.02,
-                "shown": 0.0,
-                "phase": 0,
-                "active": True,
-            }
-            self._redraw_generation_visual(visual_id)
-            self.root.after(120, lambda vid=visual_id: self._animate_generation_visual(vid))
-        except Exception:
-            pass
-
-    def _redraw_generation_visual(self, visual_id: str):
-        state = self._generation_visuals.get(visual_id)
-        if not state:
-            return
-        canvas = state.get("canvas")
-        try:
-            if canvas is None or not canvas.winfo_exists():
-                return
-            canvas.delete("all")
-            kind = state.get("kind", "image")
-            p = max(0.0, min(1.0, float(state.get("shown", 0.0))))
-            phase = int(state.get("phase", 0))
-            fg = self.C.get("accent_cyan", "#38bdf8")
-            muted = self.C.get("text_muted", "#94a3b8")
-            border = self.C.get("border", "#334155")
-
-            if kind == "image":
-                x0, y0, x1, y1 = 12, 10, 348, 80
-                canvas.create_rectangle(x0, y0, x1, y1, outline=border, width=2)
-                reveal = x0 + int((x1 - x0) * p)
-                if reveal > x0:
-                    canvas.create_rectangle(x0 + 2, y0 + 2, reveal, y1 - 2, fill=fg, outline="")
-                for gx in range(x0 + 56, x1, 56):
-                    canvas.create_line(gx, y0, gx, y1, fill=border)
-                for gy in range(y0 + 23, y1, 23):
-                    canvas.create_line(x0, gy, x1, gy, fill=border)
-                canvas.create_text(180, 45, text=f"IMAGE  {int(p * 100)}%", fill="#ffffff", font=_FONT_SMALL_BOLD)
-
-            elif kind == "video":
-                count = 6
-                gap = 6
-                frame_w = 50
-                filled = int(round(p * count))
-                start_x = 12
-                for idx in range(count):
-                    x0 = start_x + idx * (frame_w + gap)
-                    x1 = x0 + frame_w
-                    fill = fg if idx < filled else self.C["bg_chat"]
-                    canvas.create_rectangle(x0, 18, x1, 70, outline=border, fill=fill, width=2)
-                    canvas.create_rectangle(x0 + 5, 13, x0 + 12, 17, fill=muted, outline="")
-                    canvas.create_rectangle(x0 + 20, 13, x0 + 27, 17, fill=muted, outline="")
-                    canvas.create_rectangle(x0 + 35, 13, x0 + 42, 17, fill=muted, outline="")
-                play_x = start_x + int((count * frame_w + (count - 1) * gap) * p)
-                canvas.create_line(play_x, 8, play_x, 82, fill="#ffffff", width=2)
-                canvas.create_text(180, 89, text=f"VIDEO  {int(p * 100)}%", fill=muted, font=_FONT_TINY_BOLD)
-
-            else:
-                # Animated waveform; progress controls the illuminated portion.
-                bars = 30
-                left = 14
-                width = 332
-                step = width / bars
-                center = 47
-                lit = int(round(p * bars))
-                canvas.create_line(left, center, left + width, center, fill=border)
-                for idx in range(bars):
-                    wobble = abs(((idx * 11 + phase * 7) % 34) - 17)
-                    height = 8 + wobble
-                    x = left + idx * step + step / 2
-                    color = fg if idx < lit or state.get("active") else border
-                    canvas.create_line(x, center - height, x, center + height, fill=color, width=3)
-                canvas.create_text(180, 89, text=f"AUDIO  {int(p * 100)}%", fill=muted, font=_FONT_TINY_BOLD)
-        except Exception:
-            pass
-
-    def _animate_generation_visual(self, visual_id: str):
-        state = self._generation_visuals.get(visual_id)
-        if not state or not state.get("active"):
-            return
-        state["phase"] = int(state.get("phase", 0)) + 1
-        shown = float(state.get("shown", 0.0))
-        target = float(state.get("target", 0.0))
-
-        # Smooth OSS-style fallback when a backend has no native progress callback.
-        if target <= shown + 0.005:
-            target = min(0.92, shown + 0.006)
-        state["shown"] = min(0.98, shown + max(0.004, min(0.035, target - shown)))
-        self._redraw_generation_visual(visual_id)
-        try:
-            if self.root.winfo_exists():
-                self.root.after(120, lambda vid=visual_id: self._animate_generation_visual(vid))
-        except Exception:
-            pass
+        self.chat_stream.configure(state="normal")
+        self.chat_stream.insert("end", f"\n✦ {title}  •  {datetime.now().strftime('%H:%M')}\n", "ai_header")
+        frame = tk.Frame(self.chat_stream, bg=self.C["bg_card"], padx=12, pady=10)
+        status = tk.Label(frame, text="Loading model…", font=_FONT_TINY_BOLD,
+                          bg=self.C["bg_card"], fg=self.C["text_muted"], anchor="w")
+        status.pack(fill="x")
+        progress = ttk.Progressbar(frame, mode="indeterminate", length=520)
+        progress.pack(fill="x", pady=(8, 0))
+        progress.start(18)
+        self.chat_stream.window_create("end", window=frame)
+        self.chat_stream.insert("end", "\n\n")
+        self.chat_stream.configure(state="disabled")
+        self._generation_visuals[visual_id] = {
+            "kind": kind, "frame": frame, "status": status, "progress": progress,
+            "active": True, "title": title, "preview": None,
+        }
+        self._scroll_chat_to_bottom()
 
     def _update_generation_visual(self, visual_id: str, progress: float, status_text: str = ""):
         state = self._generation_visuals.get(visual_id)
-        if not state:
+        if not state or not state.get("active"):
             return
-        try:
-            state["target"] = max(float(state.get("target", 0.0)), max(0.0, min(1.0, float(progress))))
-            if status_text:
-                state["status"].configure(text=status_text, fg=self.C["text_muted"])
-            self._redraw_generation_visual(visual_id)
-            self._scroll_chat_to_bottom()
-        except Exception:
-            pass
+        if status_text:
+            state["status"].configure(text=status_text, fg=self.C["text_muted"])
+        # Loading has no honest percentage. Denoising callbacks provide real steps.
+        if any(word in status_text.casefold() for word in ("denois", "step", "generating image", "generating video", "encoding")):
+            bar = state["progress"]
+            bar.stop()
+            bar.configure(mode="determinate", value=100 * max(0.0, min(1.0, float(progress))))
+
+    def _update_generation_preview(self, visual_id: str, payload):
+        state = self._generation_visuals.get(visual_id)
+        if not state or not state.get("active") or not isinstance(payload, dict):
+            return
+        from core.gui_media import fit_size, waveform_points
+        from PIL import Image, ImageTk
+        preview = state.get("preview")
+        if payload.get("image") is not None:
+            picture = payload["image"]
+            if not isinstance(picture, Image.Image):
+                return
+            if preview is None or not isinstance(preview, tk.Label):
+                if preview is not None:
+                    preview.destroy()
+                preview = tk.Label(state["frame"], bg=self.C["bg_chat"])
+                preview.pack(fill="both", before=state["status"], pady=(0, 8))
+                state["preview"] = preview
+            bounds = (min(880, max(320, self.chat_stream.winfo_width() - 60)), 560)
+            state["preview_photo"] = ImageTk.PhotoImage(
+                picture.resize(fit_size(picture.size, bounds), Image.Resampling.LANCZOS), master=preview)
+            preview.configure(image=state["preview_photo"])
+        elif payload.get("samples") is not None:
+            if preview is None or not isinstance(preview, tk.Canvas):
+                if preview is not None:
+                    preview.destroy()
+                preview = tk.Canvas(state["frame"], width=700, height=150,
+                                    bg=self.C["bg_chat"], highlightthickness=0)
+                preview.pack(fill="x", before=state["status"], pady=(0, 8))
+                state["preview"] = preview
+            preview.delete("all")
+            for points in waveform_points(payload["samples"], 700, 150):
+                preview.create_line(*points, fill=self.C["accent_cyan"], width=2)
+        if payload.get("label"):
+            state["status"].configure(text=payload["label"])
+        self._scroll_chat_to_bottom()
 
     def _finish_generation_visual(self, visual_id: str, success: bool, status_text: str):
         state = self._generation_visuals.get(visual_id)
         if not state:
             return
         state["active"] = False
-        if success:
-            state["target"] = 1.0
-            state["shown"] = 1.0
+        state["progress"].stop()
+        state["progress"].pack_forget()
+        state["status"].configure(text=status_text,
+                                  fg=self.C["accent_green"] if success else self.C["accent_red"])
+        self._scroll_chat_to_bottom()
+
+    def _append_media_result(self, kind: str, path: str, title: str = "", *, visual_id=None, record=True):
+        from core.gui_media import MediaPreview
+        from pathlib import Path
+        source = Path(path).expanduser().resolve()
+        if not source.is_file() or not source.stat().st_size:
+            message = "The media file is no longer available. Generate it again or restore the original file."
+            if visual_id:
+                self._finish_generation_visual(visual_id, False, message)
+            elif record:
+                self._append_ai_message(message)
+            else:
+                self._append_rendered_ai_turn(message)
+            return
+        title = title or kind.title()
+        state = self._generation_visuals.get(visual_id) if visual_id else None
+        if state is None:
+            visual_id = f"media_{time.time_ns()}"
+            self._create_generation_visual(visual_id, kind, title)
+            state = self._generation_visuals[visual_id]
+        self._finish_generation_visual(visual_id, True, f"✓ {kind.title()} complete")
+        if state.get("preview") is not None:
+            state["preview"].destroy()
+            state["preview"] = None
         try:
-            state["status"].configure(
-                text=status_text,
-                fg=self.C["accent_green"] if success else self.C["accent_red"],
-            )
-        except Exception:
-            pass
-        self._redraw_generation_visual(visual_id)
+            width = min(960, max(320, self.chat_stream.winfo_width() - 60))
+            preview = MediaPreview(state["frame"], source, kind, self.C, bounds=(width, 640))
+            preview.pack(fill="both", before=state["status"], pady=(0, 8))
+            state["preview"] = preview
+        except Exception as error:
+            state["status"].configure(text=f"Preview could not open: {error}", fg=self.C["accent_red"])
+            from core.gui_media import open_media_file
+            tk.Button(state["frame"], text="Open original", command=lambda: open_media_file(source)).pack(anchor="w")
+        if record and hasattr(self, "chat_history"):
+            self.chat_history[self.active_tab_id].append({
+                "role": "assistant", "content": f"Generated {kind}: {source}",
+                "media": {"kind": kind, "path": str(source), "title": title},
+            })
         self._scroll_chat_to_bottom()
 
     def _append_ai_message(
@@ -4859,7 +4893,31 @@ class SmartAIChatbotApp:
 
         self.chat_stream.configure(state="disabled")
 
+    def _append_media_tool_result(self, result):
+        from core.gui_media import media_artifacts
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (TypeError, ValueError):
+                self._append_ai_message(result)
+                return
+        if not isinstance(result, dict):
+            self._append_ai_message("⚠️ Media generation returned an invalid result.")
+            return
+        records = media_artifacts(result)
+        for record in records:
+            self._append_media_result(record["kind"], record["path"],
+                                      str(record.get("title") or record.get("model_id") or ""),
+                                      visual_id=record.get("visual_id"))
+        if not records or result.get("status") not in {"success", None}:
+            message = result.get("error") or result.get("reason") or "Media generation did not produce an output file."
+            self._append_ai_message("⚠️ " + str(message))
+
     def _append_tool_call(self, tool_name: str, args_str: str, result_str: str):
+        from core.gui_media import MEDIA_GENERATION_TOOLS
+        if tool_name in MEDIA_GENERATION_TOOLS:
+            self._append_media_tool_result(result_str)
+            return
         self.chat_stream.configure(state="normal")
         self.chat_stream.insert("end", f"  ⚙️ Tool Execution: {tool_name}({args_str})  ", "tool_pill")
         self.chat_stream.insert("end", "\n")
@@ -5058,8 +5116,12 @@ class SmartAIChatbotApp:
         try:
             media_command = self.multimodal.handle_command(full_msg)
             if media_command is not None:
-                message = json.dumps(media_command, ensure_ascii=False, indent=2)
-                _post(0, lambda text=message: self._append_ai_message(text))
+                from core.gui_media import media_artifacts
+                if media_artifacts(media_command) or full_msg.lstrip().lower().startswith("/media "):
+                    _post(0, lambda result=media_command: self._append_media_tool_result(result))
+                else:
+                    message = json.dumps(media_command, ensure_ascii=False, indent=2)
+                    _post(0, lambda text=message: self._append_ai_message(text))
                 return
             msg_lower = full_msg.lower().strip()
             response_text = None
@@ -5084,21 +5146,27 @@ class SmartAIChatbotApp:
                 )
 
                 def _audio_progress(progress: float, message: str):
+                    if self.cancel_event.is_set():
+                        raise RuntimeError("Audio generation cancelled.")
                     _post(
                         0,
                         lambda vid=visual_id, p=progress, m=message:
                             self._update_generation_visual(vid, p, m),
                     )
 
-                output_dir = self.workspace_dir or os.getcwd()
+                output_dir = os.path.join(self.workspace_dir or get_portable_data_dir(), "generated_media")
+                os.makedirs(output_dir, exist_ok=True)
                 output_path = os.path.join(
-                    output_dir, f"audio_{int(time.time())}.wav"
+                    output_dir, f"audio_{time.time_ns()}.wav"
                 )
                 audio_res = self.audio_engine.generate(
                     full_msg,
                     output_path=output_path,
                     duration_seconds=10.0,
                     progress_callback=_audio_progress,
+                    preview_callback=lambda payload: _post(
+                        0, lambda value=payload: self._update_generation_preview(visual_id, value)),
+                    cancel_event=self.cancel_event,
                 )
                 if audio_res.get("status") == "success":
                     path = str(audio_res.get("path") or output_path)
@@ -5109,9 +5177,7 @@ class SmartAIChatbotApp:
                             vid, True, "✓ Audio complete"
                         ),
                     )
-                    _post(0, lambda p=path, b=backend: self._append_ai_message(
-                        f"🎵 **Audio generated** with {b}: `{p}`"
-                    ))
+                    _post(0, lambda p=path: self._append_media_result("audio", p, title, visual_id=visual_id))
                 else:
                     error = str(audio_res.get("error") or "Audio generation failed.")
                     _post(
@@ -5126,93 +5192,52 @@ class SmartAIChatbotApp:
                 return
 
             if active_type in ("image", "video"):
+                if active_info.get("download_unavailable_reason"):
+                    _post(0, lambda: self._append_ai_message(active_info["download_unavailable_reason"]))
+                    return
                 if not self.is_model_loaded:
                     _post(0, lambda: self._append_ai_message(
-                        "⚠️ Install and Load the selected media model before generating."
+                        "Install and Load the selected media model before generating."
                     ))
                     return
-
-                visual_id = f"{active_type}_gen_{int(time.time() * 1000)}"
+                visual_id = f"{active_type}_gen_{time.time_ns()}"
                 title = str(active_info.get("short_name") or f"{active_type.title()} generation")
-                _post(
-                    0,
-                    lambda vid=visual_id, k=active_type, t=title:
-                        self._create_generation_visual(vid, k, t),
-                )
+                _post(0, lambda: self._create_generation_visual(visual_id, active_type, title))
 
                 def _media_progress(progress: float, message: str):
-                    _post(
-                        0,
-                        lambda vid=visual_id, p=progress, m=message:
-                            self._update_generation_visual(vid, p, m),
-                    )
+                    if self.cancel_event.is_set():
+                        raise RuntimeError("Media generation cancelled.")
+                    _post(0, lambda p=progress, m=message: self._update_generation_visual(visual_id, p, m))
 
-                if bool(active_info.get("real_media_engine", False)):
-                    output_dir = self.workspace_dir or os.getcwd()
-                    if active_type == "image":
-                        output_path = os.path.join(output_dir, f"image_{int(time.time())}.png")
-                        media_res = self.media_engine.generate_image(
-                            active_info,
-                            full_msg,
-                            output_path=output_path,
-                            progress_callback=_media_progress,
-                        )
-                    else:
-                        output_path = os.path.join(output_dir, f"video_{int(time.time())}.mp4")
-                        media_res = self.media_engine.generate_video(
-                            active_info,
-                            full_msg,
-                            output_path=output_path,
-                            frames=int(active_info.get("frames", 49) or 49),
-                            progress_callback=_media_progress,
-                        )
-                    if media_res.get("status") == "success":
-                        path = str(media_res.get("path") or output_path)
-                        _post(
-                            0,
-                            lambda vid=visual_id, kind=active_type:
-                                self._finish_generation_visual(
-                                    vid, True, f"✓ {kind.title()} complete"
-                                ),
-                        )
-                        _post(0, lambda p=path, kind=active_type: self._append_ai_message(
-                            f"✓ **{kind.title()} generated**: `{p}`"
-                        ))
-                    else:
-                        error = str(media_res.get("error") or f"{active_type.title()} generation failed.")
-                        _post(
-                            0,
-                            lambda vid=visual_id, kind=active_type:
-                                self._finish_generation_visual(
-                                    vid, False, f"⚠ {kind.title()} generation failed"
-                                ),
-                        )
-                        _post(0, lambda e=error: self._append_ai_message(
-                            f"⚠️ **Media generation failed**: {e}"
-                        ))
+                def _media_preview(payload):
+                    if self.cancel_event.is_set():
+                        raise RuntimeError("Media generation cancelled.")
+                    _post(0, lambda value=payload: self._update_generation_preview(visual_id, value))
+
+                output_dir = os.path.join(self.workspace_dir or get_portable_data_dir(), "generated_media")
+                os.makedirs(output_dir, exist_ok=True)
+                suffix = ".png" if active_type == "image" else ".mp4"
+                output_path = os.path.join(output_dir, f"{active_type}_{time.time_ns()}{suffix}")
+                if active_type == "image":
+                    media_res = self.media_engine.generate_image(
+                        active_info, full_msg, output_path=output_path,
+                        progress_callback=_media_progress, preview_callback=_media_preview,
+                    )
                 else:
-                    # Legacy media backends do not expose denoising callbacks, so the
-                    # same card uses its smooth indeterminate growth animation.
-                    _post(
-                        0,
-                        lambda vid=visual_id:
-                            self._update_generation_visual(vid, 0.15, "Generating…"),
+                    media_res = self.media_engine.generate_video(
+                        active_info, full_msg, output_path=output_path,
+                        frames=int(active_info.get("frames", 49) or 49),
+                        progress_callback=_media_progress, preview_callback=_media_preview,
                     )
-                    tool_name = "generate_image_diffusion" if active_type == "image" else "generate_video_diffusion"
-                    args = {"prompt": full_msg, "model_id": active_info.get("repo_id")}
-                    ok, res = origin_tools.execute_tool(tool_name, args)
-                    _post(
-                        0,
-                        lambda vid=visual_id, passed=ok, kind=active_type:
-                            self._finish_generation_visual(
-                                vid,
-                                passed,
-                                f"{'✓' if passed else '⚠'} {kind.title()} {'complete' if passed else 'failed'}",
-                            ),
-                    )
-                    _post(0, lambda tn=tool_name, r=res: self._append_tool_call(tn, "", r))
-                    if not ok:
-                        _post(0, lambda r=res: self._append_ai_message(f"⚠️ {r}"))
+                if media_res.get("status") == "success":
+                    path = str(media_res.get("path") or output_path)
+                    _post(0, lambda p=path: self._append_media_result(
+                        active_type, p, title, visual_id=visual_id))
+                else:
+                    error = str(media_res.get("error") or f"{active_type.title()} generation failed.")
+                    _post(0, lambda: self._finish_generation_visual(
+                        visual_id, False, f"{active_type.title()} generation stopped"))
+                    _post(0, lambda e=error: self._append_ai_message(f"⚠️ Media generation failed: {e}"))
                 return
 
             # 1. Autonomous Learning Mode (/learn or learn <topic>)
@@ -5968,8 +5993,9 @@ class SmartAIChatbotApp:
                 prompt_count, limit, completion_tokens=selected_count, live=live))
         inference_only = bool(curr_info.get("inference_only")
                               or (is_native and not getattr(self, "_loaded_text_can_train", False)))
-        total_p = curr_info.get("raw_params", 27_400_000_000) + (0 if inference_only else self.synapses_learned_count)
-        param_str = format_parameter_count(total_p)
+        raw_params = curr_info.get("raw_params")
+        total_p = (raw_params or 0) + (0 if inference_only else self.synapses_learned_count)
+        param_str = format_parameter_count(total_p) if raw_params else "—"
         if hasattr(self, "lbl_params"):
             self.lbl_params.configure(text=f"🧠 {param_str} Total Params")
         if hasattr(self, "lbl_synapses"):
@@ -6053,6 +6079,7 @@ class SmartAIChatbotApp:
         clear_display_state(self)
         self._generation_epoch = getattr(self, "_generation_epoch", 0) + 1
         self._chat_follow_tail = True
+        self._clear_media_previews()
         self.chat_stream.configure(state="normal")
         self.chat_stream.delete("1.0", "end")
         self.chat_stream.configure(state="disabled")

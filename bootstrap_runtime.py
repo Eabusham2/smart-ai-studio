@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -119,6 +120,26 @@ def ensure_runtime(root):
     return private
 
 
+def macos_native_launcher(root):
+    """Find this app's native entry point, including a renamed/relocated app."""
+    if sys.platform != 'darwin' or root.name != 'app' or root.parent.name != 'Resources' or root.parent.parent.name != 'Contents':
+        return None
+    bundle = root.parent.parent.parent
+    if bundle.suffix != '.app':
+        return None
+    try:
+        with (bundle / 'Contents/Info.plist').open('rb') as handle:
+            info = plistlib.load(handle)
+    except (OSError, ValueError):
+        return None
+    if info.get('SmartAINativeLauncher') != 1:
+        return None
+    executable = bundle / 'Contents/MacOS/applet'
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise RuntimeError('This release is missing its native Mac launcher. Re-extract the complete app.')
+    return executable
+
+
 def main(argv=None):
     root = Path(__file__).resolve().parent
     args = list(sys.argv[1:] if argv is None else argv)
@@ -133,6 +154,13 @@ def main(argv=None):
     env['PYTHONNOUSERSITE'] = '1'
     # The updater must also wait for this parent to release the bundled runtime.
     env['SMARTAI_BOOTSTRAP_PID'] = str(os.getpid())
+    native = macos_native_launcher(root)
+    if native is not None:
+        # Keep the actual GUI executable inside SmartAI.app on first launch,
+        # private Setup reuse, and the updater's direct bootstrap restart path.
+        os.execve(str(native), [str(native), '--smartai-run-python',
+                               str(runtime.resolve()), str(target), *args], env)
+        return 0  # execve replaces this process; useful to mocked launch tests.
     # Run the owned interpreter, not a machine/global Python discovered on PATH.
     return subprocess.call([str(python_path(runtime)), str(target), *args], cwd=str(root), env=env)
 

@@ -167,14 +167,50 @@ def test_setup_smoke_uses_a_private_clean_home_and_ignores_host_python(tmp_path,
     monkeypatch.setenv('PYTHONPATH', '/wrong-host-packages')
     calls = []
     monkeypatch.setattr(builder.subprocess, 'run', lambda cmd, **kwargs:calls.append((cmd,kwargs)))
-    builder.smoke_app(tmp_path / 'code', setup_home=tmp_path / 'clean setup')
+    builder.smoke_app(tmp_path / 'code', setup_home=tmp_path / 'clean setup',
+                      smoke_data_dir=tmp_path / 'saved preferences', launch=2)
     command, options = calls[0]
     assert command[-1] == '--smoke-test'
     assert str(tmp_path / 'code/runtime/python') in command[0]
     assert options['check'] is True
     assert options['env']['SMARTAI_SETUP_HOME'] == str(tmp_path / 'clean setup')
+    assert options['env']['SMARTAI_SMOKE_DATA_DIR'] == str(tmp_path / 'saved preferences')
+    assert options['env']['SMARTAI_SMOKE_LAUNCH'] == '2'
     assert options['env']['RUN_REAL_WEIGHTS_EVAL'] == '0'
     assert 'PYTHONHOME' not in options['env'] and 'PYTHONPATH' not in options['env']
+
+
+def test_bonsai_image_probe_uses_relocated_app_python_and_an_unshipped_private_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv('PYTHONHOME', '/wrong-host-python')
+    monkeypatch.setenv('PYTHONPATH', '/wrong-host-packages')
+    calls = []
+    monkeypatch.setattr(builder.subprocess, 'run', lambda cmd, **kwargs: calls.append((cmd, kwargs)))
+    code = tmp_path / 'relocated with spaces' / 'app'
+    cache = tmp_path / 'separate probe cache'
+    builder.smoke_bonsai_image_runtime(code, cache)
+    command, options = calls[0]
+    assert str(code / 'runtime/python') in command[0]
+    assert options['cwd'] == code
+    assert options['env']['SMARTAI_DATA_DIR'] == str(cache)
+    assert options['env']['HF_HUB_OFFLINE'] == options['env']['TRANSFORMERS_OFFLINE'] == '1'
+    assert 'PYTHONHOME' not in options['env'] and 'PYTHONPATH' not in options['env']
+    assert 'force_probe=True' in command[-1]
+    assert 'no model weights' in command[-1]
+
+
+def test_mac_smoke_checks_native_entry_and_direct_bootstrap_relaunch(tmp_path, monkeypatch):
+    code = tmp_path / 'Renamed app.app/Contents/Resources/app'
+    native = code.parent.parent / 'MacOS/applet'
+    monkeypatch.setattr(bootstrap, 'macos_native_launcher', lambda root: native)
+    calls = []
+    monkeypatch.setattr(builder.subprocess, 'run', lambda cmd, **kwargs: calls.append((cmd, kwargs)))
+    data = tmp_path / 'unshipped saved preferences'
+    builder.smoke_app(code, smoke_data_dir=data)
+    builder.smoke_app(code, smoke_data_dir=data, launch=2)
+    assert calls[0][0] == [str(native), '--smoke-test']
+    assert calls[1][0] == [str(bootstrap.python_path(code / 'runtime/python')),
+                            str(code / 'bootstrap_runtime.py'), '--smoke-test']
+    assert calls[0][1]['env']['SMARTAI_SMOKE_DATA_DIR'] == calls[1][1]['env']['SMARTAI_SMOKE_DATA_DIR']
 
 
 @pytest.mark.parametrize('missing', ['setup_smoke', 'bundled_native_verified'])

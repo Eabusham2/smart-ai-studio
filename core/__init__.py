@@ -1,3 +1,7 @@
+from core.hf_transfer import install_hf_transfer_policy
+
+install_hf_transfer_policy()
+
 import core.pro_engine as pro_engine_module
 from core.entropy_router import EntropyRouter
 from core.verifier import GroundTruthVerifier, VerificationResult

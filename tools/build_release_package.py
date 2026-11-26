@@ -203,9 +203,9 @@ def portable_dependency_lock(frozen, native_version):
     return '\n'.join(rows) + '\n'
 
 
-def smoke_app(code, *, setup_home=None):
+def smoke_app(code, *, setup_home=None, smoke_data_dir=None, launch=1):
     """Launch the packaged interpreter with no host Python/user site fallback."""
-    from bootstrap_runtime import python_path
+    from bootstrap_runtime import macos_native_launcher, python_path
     code = Path(code)
     env = dict(os.environ, PYTHONNOUSERSITE='1', HF_HUB_OFFLINE='1',
                TRANSFORMERS_OFFLINE='1', RUN_REAL_WEIGHTS_EVAL='0')
@@ -213,9 +213,14 @@ def smoke_app(code, *, setup_home=None):
     env.pop('PYTHONPATH', None)
     if setup_home is not None:
         env['SMARTAI_SETUP_HOME'] = str(setup_home)
-    subprocess.run([str(python_path(code / 'runtime/python')),
-                    str(code / 'bootstrap_runtime.py'), '--smoke-test'],
-                   env=env, check=True)
+    if smoke_data_dir is not None:
+        env['SMARTAI_SMOKE_DATA_DIR'] = str(Path(smoke_data_dir).resolve())
+    env['SMARTAI_SMOKE_LAUNCH'] = str(launch)
+    native = macos_native_launcher(code.resolve()) if launch == 1 else None
+    command = ([str(native), '--smoke-test'] if native is not None else
+               [str(python_path(code / 'runtime/python')),
+                str(code / 'bootstrap_runtime.py'), '--smoke-test'])
+    subprocess.run(command, env=env, check=True)
 
 
 def smoke_bonsai_runtime(code, cache_dir):
@@ -256,6 +261,28 @@ print('BONSAI_NATIVE_SMOKE', RELEASE, 'passed; no model weights loaded')
 '''
     subprocess.run([str(python_path(code / 'runtime/python')), '-c', script],
                    cwd=code, env=env, check=True, timeout=300)
+
+
+def smoke_bonsai_image_runtime(code, cache_dir):
+    """Test private image setup using the relocated Mac app's actual Python."""
+    from bootstrap_runtime import python_path
+    code = Path(code).resolve()
+    env = dict(os.environ, PYTHONNOUSERSITE='1', SMARTAI_DATA_DIR=str(Path(cache_dir).resolve()),
+               HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', RUN_REAL_WEIGHTS_EVAL='0')
+    for key in ('PYTHONHOME', 'PYTHONPATH'):
+        env.pop(key, None)
+    script = '''
+from importlib.metadata import version
+from core.bonsai_image_runtime import ensure_bonsai_image_runtime
+before = version('mlx')
+assert before == '0.32.0', 'Unexpected chat MLX runtime'
+runtime = ensure_bonsai_image_runtime(force_probe=True)
+assert version('mlx') == before, 'Private image setup changed the chat MLX runtime'
+assert ensure_bonsai_image_runtime() == runtime, 'The private image runtime could not be reused'
+print('BONSAI_IMAGE_NATIVE_SMOKE passed; publisher imports and 2-bit Metal, no model weights')
+'''
+    subprocess.run([str(python_path(code / 'runtime/python')), '-c', script],
+                   cwd=code, env=env, check=True, timeout=1800)
 
 
 def package(target, output, *, prepare_only=False):
@@ -319,8 +346,12 @@ def package(target, output, *, prepare_only=False):
     relocated.parent.mkdir();shutil.move(str(app),str(relocated));app=relocated
     code=app/'Contents/Resources/app' if target.startswith('macOS') else app/'SmartAI.AppDir/usr/bin' if target.startswith('Linux') else app
     write_build_record(code, app, target, 'portable', identity)
-    smoke_app(code)
+    portable_smoke_data = build / 'portable launch preferences'
+    smoke_app(code, smoke_data_dir=portable_smoke_data)
+    smoke_app(code, smoke_data_dir=portable_smoke_data, launch=2)
     smoke_bonsai_runtime(code, build / 'bonsai-runtime-smoke')
+    if target.startswith('macOS'):
+        smoke_bonsai_image_runtime(code, build / 'bonsai-image-runtime-smoke')
     if prepare_only:return app
     portable=output/f'SmartAI-{target}-portable.zip'
     archive_tree(app,portable)
@@ -339,13 +370,14 @@ def package(target, output, *, prepare_only=False):
     if setup_home.exists():
         raise RuntimeError('Setup smoke directory is not initially empty')
     try:
-        smoke_app(code, setup_home=setup_home)
+        setup_smoke_data = build / 'setup launch preferences'
+        smoke_app(code, setup_home=setup_home, smoke_data_dir=setup_smoke_data)
         markers = list(setup_home.glob('runtimes/*/.smartai-deps-ready'))
         if len(markers) != 1 or markers[0].read_text(encoding='utf-8').strip() != fingerprint(code):
             raise RuntimeError('Setup did not initialize its isolated private runtime')
         first_marker = markers[0].stat().st_mtime_ns
         # A second launch must reuse the complete private environment.
-        smoke_app(code, setup_home=setup_home)
+        smoke_app(code, setup_home=setup_home, smoke_data_dir=setup_smoke_data, launch=2)
         if markers[0].stat().st_mtime_ns != first_marker:
             raise RuntimeError('Second Setup launch unexpectedly reinstalled dependencies')
     finally:
@@ -355,7 +387,10 @@ def package(target, output, *, prepare_only=False):
     archive_tree(app,setup);files+=split_large(setup)
     receipt={'schema':1,'target':target,'commit':identity['commit'],
              'model_inference_run':False,'gui_smoke':'passed','setup_smoke':'passed',
+             'relaunch_smoke':'passed',
+             'macos_app_identity':'passed' if target.startswith('macOS') else 'not_applicable',
              'bonsai_native_smoke':'passed',
+             'bonsai_image_runtime_smoke':'passed' if target.startswith('macOS') else 'not_applicable',
              'bundled_native_verified':'passed' if bundled_native else 'not_applicable',
              'files':[{'name':p.name,'size':p.stat().st_size,'sha256':sha(p)} for p in files]}
     (output/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')

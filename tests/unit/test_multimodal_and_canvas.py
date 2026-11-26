@@ -13,6 +13,8 @@ import os
 import tempfile
 import unittest
 import tkinter as tk
+import json
+from unittest.mock import patch
 from config.settings import get_settings
 from core.memory_watchdog import SystemMemoryWatchdog
 from core.pro_engine import ProReasoningEngine
@@ -58,13 +60,19 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         self.assertGreater(len(schema["tools"]), 5)
 
     def test_03_image_generation_tool(self):
-        """Verify image generation tool writes valid visual vector artifact to workspace."""
-        ok, res = self.tools.execute_tool("generate_image", {"prompt": "Neural Network Architecture", "filename": "test_nn.svg"})
-        self.assertTrue(ok)
-        self.assertIn("Generated Visual Artifact", res)
-        self.assertTrue(os.path.exists("test_nn.svg"))
-        if os.path.exists("test_nn.svg"):
-            os.remove("test_nn.svg")
+        """Route generated pixels through the backend and verify their actual format."""
+        from PIL import Image
+        def generate(_engine, info, prompt, output_path=None, **kwargs):
+            Image.new("RGB", (16,16), "red").save(output_path)
+            return {"status": "success", "path": output_path, "backend": "fixture"}
+        with tempfile.TemporaryDirectory() as folder:
+            destination = os.path.join(folder, 'test_nn.png')
+            with patch('core.media_engine.MediaGenerationEngine.generate_image', generate):
+                ok, res = self.tools.execute_tool("generate_image", {"prompt": "Neural Network Architecture", "filename": destination})
+            self.assertTrue(ok, res)
+            self.assertEqual(json.loads(res)['format'], 'PNG')
+            with Image.open(destination) as image:
+                self.assertEqual(image.getpixel((0,0)), (255,0,0))
 
     def test_04_bezier_canvas_art_tool(self):
         """Verify Bezier vector art tool generates parametric cubic splines."""
@@ -158,8 +166,7 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         self.assertIn("export function greet", extracted_ts)
 
     def test_09_diffusion_and_video_generation_tools(self):
-        """Verify high-res image diffusion, video motion synthesis, and rapid image edit tools."""
-        # 1. High-Res Image Diffusion (RealVisXL / Z-Image Turbo with LoRA Sliders)
+        """Unavailable runtimes and unselected LoRAs must never fabricate success."""
         ok, res = self.tools.execute_tool("generate_image_diffusion", {
             "prompt": "Cybernetic futuristic sanctuary, ultra photoreal 8k",
             "model_id": "SG161222/RealVisXL_V5.0",
@@ -169,21 +176,20 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
             "custom_lora_str": 0.7,
             "filename": "test_diffusion_art.png"
         })
-        self.assertTrue(ok)
-        self.assertIn("High-Res Uncensored Image Synthesized", res)
-        self.assertIn("RealVisXL_V5.0", res)
-        self.assertIn("Softer LoRA", res)
+        self.assertFalse(ok)
+        self.assertIn("adapter weights", res)
+        self.assertFalse(os.path.exists("test_diffusion_art.png"))
+        self.assertFalse(os.path.exists("test_diffusion_art.svg"))
 
         # 2. Video & Audio Synthesis (LTX-Video 2.5 / Wan 2.2 / MiniMax-H3)
         ok, res = self.tools.execute_tool("generate_video_diffusion", {
             "prompt": "Fluid particle simulation in zero gravity",
             "model_id": "dgrauet/ltx-2.5-mlx-q4",
-            "motion_scale": 0.8,
             "filename": "test_video.mp4"
         })
-        self.assertTrue(ok)
-        self.assertIn("High-Res Motion Video Synthesized", res)
-        self.assertIn("ltx-2.5", res)
+        self.assertFalse(ok)
+        self.assertIn("runtime", res)
+        self.assertFalse(os.path.exists("test_video.mp4"))
 
         # 3. Rapid Image Edit (Qwen Image Edit Rapid AIO GGUF)
         ok, res = self.tools.execute_tool("edit_image_rapid", {
@@ -191,9 +197,9 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
             "image_path": "test_diffusion_art.png",
             "filename": "test_edit.png"
         })
-        self.assertTrue(ok)
-        self.assertIn("Rapid Multimodal Image Edit Executed", res)
-        self.assertIn("Qwen-Image-Edit-Rapid-AIO-GGUF", res)
+        self.assertFalse(ok)
+        self.assertIn("runtime", res)
+        self.assertFalse(os.path.exists("test_edit.png"))
 
         # Clean up
         for f in ("test_diffusion_art.png", "test_diffusion_art.svg", "test_video.mp4", "test_edit.png"):

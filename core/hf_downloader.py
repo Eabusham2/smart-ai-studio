@@ -5,6 +5,7 @@ inspects local cache presence, supports cache purge, and tracks models proven lo
 """
 
 import os
+import json
 import shutil
 import threading
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -24,6 +25,7 @@ _METADATA_NAMES = {
     "generation_config.json",
     "model.safetensors.index.json",
     "tokenizer.json",
+    "model_index.json",
 }
 _LOADED_MODEL_KEYS = set()
 _LOADED_MODEL_LOCK = threading.Lock()
@@ -102,7 +104,7 @@ def _snapshot_looks_installed(path: str) -> bool:
     if not path or not os.path.exists(path):
         return False
     if os.path.isfile(path):
-        return path.lower().endswith(_WEIGHT_SUFFIXES)
+        return path.lower().endswith(_WEIGHT_SUFFIXES) and os.path.getsize(path) > 0
 
     has_weights = False
     has_metadata = False
@@ -110,12 +112,19 @@ def _snapshot_looks_installed(path: str) -> bool:
         for root, _, files in os.walk(path):
             for filename in files:
                 lower = filename.lower()
-                if lower.endswith(_WEIGHT_SUFFIXES):
+                full_path = os.path.join(root, filename)
+                if lower.endswith(".index.json"):
+                    with open(full_path, encoding="utf-8") as handle:
+                        index = json.load(handle)
+                    shards = set((index.get("weight_map") or {}).values())
+                    if shards and not all(os.path.isfile(os.path.join(root, shard)) and
+                                          os.path.getsize(os.path.join(root, shard)) > 0
+                                          for shard in shards):
+                        return False
+                if lower.endswith(_WEIGHT_SUFFIXES) and os.path.isfile(full_path) and os.path.getsize(full_path) > 0:
                     has_weights = True
                 if filename in _METADATA_NAMES or lower.endswith("config.json"):
                     has_metadata = True
-                if has_weights and has_metadata:
-                    return True
     except Exception:
         return False
 
@@ -228,7 +237,7 @@ def download_model_from_hf(
         progress_callback(f"Connecting to HuggingFace Hub for `{repo_id}`...", 5.0)
 
     try:
-        from huggingface_hub import snapshot_download
+        from core.hf_transfer import snapshot_download
 
         if progress_callback:
             progress_callback(f"Downloading snapshot for `{repo_id}`...", 20.0)
@@ -236,7 +245,9 @@ def download_model_from_hf(
         local_dir = snapshot_download(
             repo_id=repo_id,
             max_workers=4,
-            allow_patterns=list(allow_patterns) if allow_patterns else None,
+            allow_patterns=list(allow_patterns) if allow_patterns is not None else None,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
             **({"revision": revision} if revision else {}),
         )
         if cancel_event is not None and cancel_event.is_set():
@@ -247,6 +258,7 @@ def download_model_from_hf(
             missing = [
                 name for name in required_files
                 if not os.path.isfile(os.path.join(local_dir, name))
+                or os.path.getsize(os.path.join(local_dir, name)) == 0
             ]
             if missing:
                 return {
@@ -272,7 +284,11 @@ def download_model_from_hf(
             "local_dir": local_dir,
         }
     except Exception as e:
-        error_msg = str(e)
+        from core.hf_transfer import DownloadCancelled, format_download_error
+        if isinstance(e, DownloadCancelled) or (cancel_event is not None and cancel_event.is_set()):
+            return {"status": "cancelled", "repo_id": repo_id,
+                    "error": "Download cancelled; completed cache files are kept."}
+        error_msg = format_download_error(e)
         if progress_callback:
             progress_callback(f"Download error: {error_msg}", 0.0)
         return {

@@ -140,6 +140,9 @@ print('all packaged controls visible')
 @pytest.mark.parametrize("theme", ["dark", "light"])
 def test_all_persistent_controls_visible_clickable_and_inside_window(app, width, height, theme):
     root = app.root
+    # Include the conditional Reset action by representing an installed model.
+    app._model_is_cached = lambda _info: True
+    app._update_model_action_buttons()
     app.current_theme = theme
     app._apply_theme_colors()
     _resize_on_screen(root, width, height)

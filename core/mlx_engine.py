@@ -588,7 +588,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 return str(cached)
         if os.getenv("OFFLINE", "0") == "1":
             raise RuntimeError("The selected MLX snapshot is not available locally in offline mode")
-        from huggingface_hub import snapshot_download
+        from core.hf_transfer import snapshot_download
         patterns = (list(required) + ["runtime/*", "mtp/*", "LICENSE", "NOTICE.txt"]) if required else ["*.safetensors", "*.json", "*.jsonl", "*.txt", "*.model", "*.tiktoken",
                                 "*.jinja", "*.py", "*.metal", "*.toml", "*.yaml", "*.yml", "runtime/*"]
         return str(snapshot_download(repo_id=identifier, revision=revision, allow_patterns=patterns))

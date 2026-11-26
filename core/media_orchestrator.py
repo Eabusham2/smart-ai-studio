@@ -21,6 +21,7 @@ import urllib.request
 from config.paths import get_portable_data_dir
 from core.media_learning import MediaLearningService
 from core.media_review import review_artifact
+from core.gui_dispatch import post_ui
 
 TOOL_NAMES = ("media_list_models", "media_generate", "media_review", "media_pro", "media_rsi", "media_learn", "media_inspect_url", "media_gather")
 
@@ -124,7 +125,8 @@ class MediaController:
             return tools
         def execute(_registry, name, args):
             active = self.app.models_config.get(self.app.active_tab_id, {})
-            aliases = {"generate_image":"image", "generate_image_diffusion":"image", "generate_video_diffusion":"video", "generate_audio":"audio"}
+            aliases = {**dict.fromkeys(("generate_image", "image_gen", "draw_image", "create_image", "generate_image_diffusion", "diffusion_image", "realvis", "z_image", "sdxl_image"), "image"),
+                       **dict.fromkeys(("generate_video_diffusion", "video_gen", "ltx_video", "wan_video", "minimax_video"), "video"), "generate_audio":"audio"}
             if active.get("model_type", "text") == "text" and name in aliases:
                 args = dict(args, kind=aliases[name])
                 name = "media_generate"
@@ -169,9 +171,38 @@ class MediaController:
 
     def _notify(self, text):
         try:
-            self.app.root.after(0, lambda: self.app._append_ai_message(text))
+            post_ui(self.app, lambda: self.app._append_ai_message(text))
         except Exception:
             pass
+
+    def media_result_presenter(self, name):
+        """Capture the GUI owner before a media tool runs; headless callers keep text."""
+        handler = getattr(self.app, "_append_media_tool_result", None)
+        if not callable(handler):
+            return None
+        from core.gui_media import MEDIA_GENERATION_TOOLS, media_artifacts
+        if name not in MEDIA_GENERATION_TOOLS:
+            return None
+        origin_tab = self.app.active_tab_id
+        origin_epoch = getattr(self.app, "_generation_epoch", 0)
+
+        def present(result):
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except (TypeError, ValueError):
+                    return False
+            if not media_artifacts(result):
+                return False
+
+            def guarded():
+                if (self.app.active_tab_id == origin_tab
+                        and getattr(self.app, "_generation_epoch", 0) == origin_epoch):
+                    handler(result)
+            post_ui(self.app, guarded)
+            return True
+
+        return present
 
     def _cancelled(self):
         event = getattr(self.app, "cancel_event", None)
@@ -182,11 +213,14 @@ class MediaController:
         if kind not in ("image", "video", "audio"):
             raise ValueError("kind must be image, video, or audio")
         candidates = [(mid, dict(info)) for mid, info in self.app.models_config.items()
-                      if info.get("model_type") == kind and (not model_id or mid == model_id)]
+                      if info.get("model_type") == kind and (not model_id or mid == model_id or info.get("repo_id") == model_id)]
+        if model_id and candidates and candidates[0][1].get("download_unavailable_reason"):
+            raise ValueError(candidates[0][1]["download_unavailable_reason"])
+        candidates = [(mid, info) for mid, info in candidates if not info.get("download_unavailable_reason")]
         # Prefer the existing runnable routes. MLX-only media cannot be loaded by Diffusers.
         candidates = [(mid, info) for mid, info in candidates if kind == "audio" or
                       "mlx" not in str(info.get("repo_id", "")).lower() or
-                      info.get("image_backend") == "mflux"]
+                      info.get("image_backend") in {"mflux", "bonsai_mlx"}]
         if not candidates:
             raise ValueError("No compatible catalog model for this media type/id")
         candidates.sort(key=lambda row: not bool(row[1].get("real_media_engine")))
@@ -366,7 +400,7 @@ class MediaController:
                         if checkpoint and restore_error is None:
                             checkpoint.unlink(missing_ok=True)
                         try:
-                            self.app.root.after(0, self.app._sync_memory_watchdog)
+                            post_ui(self.app, self.app._sync_memory_watchdog)
                         except Exception:
                             pass
                     if restore_error is not None:
@@ -380,34 +414,76 @@ class MediaController:
             raise ValueError("A media prompt is required")
         self._cancelled()
         aid = uuid.uuid4().hex
-        workspace = Path(self.app.workspace_dir or os.getcwd()).resolve()
-        directory = workspace / "generated_media"
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / (aid + {"image": ".png", "video": ".mp4", "audio": ".wav"}[kind])
-        info["seed"] = int(args.get("seed", 42))
-        def progress(_fraction, message):
+        visual_id = "media_" + aid
+        origin_tab = self.app.active_tab_id
+        origin_epoch = getattr(self.app, "_generation_epoch", 0)
+        title = str(info.get("short_name") or info.get("name") or info.get("repo_id") or kind.title())
+
+        def show(method, *values):
+            handler = getattr(self.app, method, None)
+            if not callable(handler):
+                return
+            def guarded():
+                if (self.app.active_tab_id == origin_tab
+                        and getattr(self.app, "_generation_epoch", 0) == origin_epoch):
+                    handler(visual_id, *values)
+            post_ui(self.app, guarded)
+
+        def progress(fraction, message):
             self._cancelled()
-        with self._lease(self._estimated_peak(info)):
-            if kind == "audio":
-                try:
-                    loaded = self.app.audio_engine.load_model(info)
-                    if loaded.get("status") != "loaded":
-                        raise RuntimeError(str(loaded.get("error") or loaded))
-                    result = self.app.audio_engine.generate(prompt, output_path=str(path), progress_callback=progress)
-                finally:
-                    self.app.audio_engine.unload_model()
-            elif kind == "image":
-                result = self.app.media_engine.generate_image(info, prompt, output_path=str(path), progress_callback=progress)
-            else:
-                result = self.app.media_engine.generate_video(info, prompt, output_path=str(path), frames=int(info.get("frames",49)), progress_callback=progress)
-        if result.get("status") != "success":
-            raise RuntimeError(str(result.get("error") or result))
-        actual = Path(result.get("path", path)).resolve()
-        if actual.parent != directory or not actual.is_file() or actual.stat().st_size == 0:
-            raise RuntimeError("Media backend did not write a valid artifact in the output directory")
-        record = {"artifact_id": aid, "kind": kind, "model_id": mid, "repo_id": info["repo_id"], "prompt": prompt, "path": str(actual)}
-        self.artifacts[aid] = record
-        return {"status": "success", **record, "weights_updated": False}
+            show("_update_generation_visual", fraction, message)
+
+        def preview(payload):
+            self._cancelled()
+            show("_update_generation_preview", payload)
+
+        show("_create_generation_visual", kind, title)
+        try:
+            workspace = Path(self.app.workspace_dir or os.getcwd()).resolve()
+            directory = workspace / "generated_media"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / (aid + {"image": ".png", "video": ".mp4", "audio": ".wav"}[kind])
+            info["seed"] = int(args.get("seed", 42))
+            with self._lease(self._estimated_peak(info)):
+                if kind == "audio":
+                    try:
+                        loaded = self.app.audio_engine.load_model(info, progress_callback=progress,
+                            cancel_event=getattr(self.app, "cancel_event", None))
+                        if loaded.get("status") != "loaded":
+                            raise RuntimeError(str(loaded.get("error") or loaded))
+                        result = self.app.audio_engine.generate(prompt, output_path=str(path),
+                            progress_callback=progress, preview_callback=preview,
+                            cancel_event=getattr(self.app, "cancel_event", None))
+                    finally:
+                        self.app.audio_engine.unload_model()
+                elif kind == "image":
+                    result = self.app.media_engine.generate_image(info, prompt, output_path=str(path),
+                        progress_callback=progress, preview_callback=preview,
+                        cancel_event=getattr(self.app, "cancel_event", None))
+                else:
+                    result = self.app.media_engine.generate_video(info, prompt, output_path=str(path),
+                        frames=int(args.get("frames", info.get("frames",49))),
+                        progress_callback=progress, preview_callback=preview,
+                        cancel_event=getattr(self.app, "cancel_event", None))
+            if result.get("status") != "success":
+                raise RuntimeError(str(result.get("error") or result))
+            self._cancelled()
+            actual = Path(result.get("path", path)).resolve()
+            if actual.parent != directory or not actual.is_file() or actual.stat().st_size == 0:
+                raise RuntimeError("Media backend did not write a valid artifact in the output directory")
+            details = {}
+            if kind in {"image", "video"}:
+                from core.media_engine import validate_media_file
+                details = validate_media_file(str(actual), kind)
+            record = {"artifact_id": aid, "visual_id": visual_id, "kind": kind, "model_id": mid,
+                      "title": title, "repo_id": info["repo_id"], "prompt": prompt, "path": str(actual),
+                      "backend": result.get("backend"), **details}
+            self.artifacts[aid] = record
+            show("_finish_generation_visual", True, f"✓ {kind.title()} complete")
+            return {"status": "success", **record, "weights_updated": False}
+        except Exception:
+            show("_finish_generation_visual", False, f"⚠ {kind.title()} generation failed")
+            raise
 
     def _inspect_url(self, args):
         url = str(args.get("url", "")).strip()
@@ -754,9 +830,13 @@ class MediaController:
         turns = list(history or [])
         turns.insert(0, {"role":"system","content":guide})
         executed_actions = set()
+        gui_media = callable(getattr(self.app, "_append_media_tool_result", None))
+        if gui_media:
+            from core.best_work import visible_prefix
         for _round in range(3):
             self._cancelled()
             pieces = []
+            displayed = 0
             engine = self.app.engine
             # After receiving real tool output, restore the historical
             # uncertainty router when the user has enabled Pro. Do not
@@ -783,7 +863,16 @@ class MediaController:
                 for chunk in iterator:
                     self._cancelled()
                     pieces.append(str(chunk))
-                    yield chunk
+                    if gui_media:
+                        # Hold split executable tags until the result tells us
+                        # whether an artifact card can replace the tool text.
+                        visible = visible_prefix("".join(pieces))
+                        if len(visible) > displayed:
+                            yield visible[displayed:]
+                            displayed = len(visible)
+                    else:
+                        yield chunk
+                        displayed += len(str(chunk))
             finally:
                 try:
                     close = getattr(iterator, "close", None)
@@ -795,10 +884,14 @@ class MediaController:
             visible = re.sub(r"<think>.*?</think>", "", answer, flags=re.S).strip()
             matched = re.fullmatch(r"<media_call>\s*(\{.*\})\s*</media_call>", visible, flags=re.S)
             if not matched:
+                if displayed < len(answer):
+                    yield answer[displayed:]
                 return
+            presenter = None
             try:
                 request = json.loads(matched.group(1))
                 requested_name = request.get("name")
+                presenter = self.media_result_presenter(requested_name)
                 update_allowed = bool(
                     allow_media_update
                     and requested_name in ("media_learn", "media_rsi")
@@ -807,6 +900,8 @@ class MediaController:
                               json.dumps(request.get("arguments", {}), sort_keys=True))
                 if getattr(self.app.engine, "_gui_pro_enabled", False):
                     if action_key in executed_actions:
+                        if displayed < len(answer):
+                            yield answer[displayed:]
                         yield "\nDuplicate tool request blocked."
                         return
                     executed_actions.add(action_key)
@@ -817,7 +912,10 @@ class MediaController:
                 )
             except (ValueError, TypeError) as exc:
                 result = {"status":"error","error":str(exc)}
-            yield "\n[Media tool result] " + json.dumps(result, ensure_ascii=False) + "\n"
+            if presenter is None or not presenter(result):
+                if displayed < len(answer):
+                    yield answer[displayed:]
+                yield "\n[Media tool result] " + json.dumps(result, ensure_ascii=False) + "\n"
             if not bool(getattr(self.app.engine, "is_model_loaded", False)):
                 yield "\nText continuation stopped because the text model is not loaded."
                 return

@@ -20,6 +20,7 @@ import numpy as np
 from config.settings import Settings, get_settings, MODEL_PRESETS
 from core.adaptation_capabilities import adaptation_capabilities
 from core.downloader import ensure_model_available, is_model_available_locally
+from core.hf_transfer import run_hf_operation
 from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
 from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
@@ -358,10 +359,10 @@ class ProReasoningEngine:
             try:
                 if original_cuda:
                     from transformers import AutoModelForCausalLM, AutoTokenizer
-                    tokenizer = AutoTokenizer.from_pretrained(target_path, trust_remote_code=True)
-                    model = AutoModelForCausalLM.from_pretrained(
+                    tokenizer = run_hf_operation(lambda: AutoTokenizer.from_pretrained(target_path, trust_remote_code=True))
+                    model = run_hf_operation(lambda: AutoModelForCausalLM.from_pretrained(
                         target_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
-                    )
+                    ))
                     model.eval()
                     self.tokenizer, self.model = tokenizer, model
                     self.awake_consolidator.engine = None

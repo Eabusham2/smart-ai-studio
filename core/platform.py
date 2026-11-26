@@ -11,6 +11,7 @@ import os
 import platform
 import sys
 from typing import Any, Dict, List, Optional, Tuple
+from core.hf_transfer import run_hf_operation
 
 
 class PlatformRouter:
@@ -120,7 +121,7 @@ class PlatformRouter:
                 import mlx.core as mx
                 from mlx_lm import load
                 print(f"[*] Loading Apple Silicon MLX Model from {model_path} (full-precision KV)...")
-                model, tokenizer = load(model_path)
+                model, tokenizer = run_hf_operation(lambda: load(model_path))
                 return "mlx", model, tokenizer
             except Exception as e:
                 print(f"[!] MLX load failed: {e}. Falling back to PyTorch/Transformers...")
@@ -134,13 +135,13 @@ class PlatformRouter:
                 dtype = torch.bfloat16 if (device == "cuda" or (device == "mps" and info["os_family"] == "macos")) else torch.float32
 
                 print(f"[*] Loading PyTorch Model from {model_path} on {device} ({dtype})...")
-                tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-                model = AutoModelForCausalLM.from_pretrained(
+                tokenizer = run_hf_operation(lambda: AutoTokenizer.from_pretrained(model_path, trust_remote_code=True))
+                model = run_hf_operation(lambda: AutoModelForCausalLM.from_pretrained(
                     model_path,
                     torch_dtype=dtype,
                     device_map="auto" if device == "cuda" else None,
                     trust_remote_code=True
-                )
+                ))
                 if device == "mps":
                     model = model.to("mps")
                 elif device == "cpu":

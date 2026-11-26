@@ -339,7 +339,8 @@ def inspect_hf_model(repo_id: str) -> Dict[str, Any]:
     if not repo_id:
         return {"ok": False, "reason": "No Hugging Face repository ID provided."}
     try:
-        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub import HfApi
+        from core.hf_transfer import hf_hub_download
 
         api = HfApi()
         info = api.model_info(repo_id)

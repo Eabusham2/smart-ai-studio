@@ -108,10 +108,18 @@ class UpdatePackagingTests(unittest.TestCase):
                 wheel.writestr('fixture', b'native wheel fixture')
             return subprocess.CompletedProcess(command, 0)
 
-        def smoke(code, *, setup_home=None):
+        smoke_directories = {}
+        def smoke(code, *, setup_home=None, smoke_data_dir=None, launch=1):
             record = json.loads((code / builder.BUILD_RECORD).read_text(encoding='utf-8'))
             smoke_kinds.append(record['package_kind'])
             self.assertEqual(record['commit'], COMMIT)
+            self.assertIsNotNone(smoke_data_dir)
+            self.assertFalse(smoke_data_dir.is_relative_to(code))
+            if launch == 1:
+                smoke_directories[record['package_kind']] = smoke_data_dir
+            else:
+                self.assertEqual(launch, 2)
+                self.assertEqual(smoke_data_dir, smoke_directories[record['package_kind']])
             if setup_home is not None:
                 self.assertEqual(record['package_kind'], 'setup')
                 self.assertFalse((code / 'runtime/python/.smartai-deps-ready').exists())
@@ -150,10 +158,12 @@ class UpdatePackagingTests(unittest.TestCase):
              patch.object(builder.subprocess, 'run', side_effect=run), \
              patch.object(builder, 'smoke_app', side_effect=smoke), \
              patch.object(builder, 'smoke_bonsai_runtime') as native_smoke, \
+             patch.object(builder, 'smoke_bonsai_image_runtime') as image_smoke, \
              patch.object(builder, 'split_large', side_effect=split), \
              patch.object(bundled_native, 'embed_native_runtime', side_effect=embed_native) as embed:
             result = builder.package(target, output, prepare_only=prepare_only)
             native_smoke.assert_called_once()
+            self.assertEqual(image_smoke.call_count, 1 if target.startswith('macOS') else 0)
             embed.assert_called_once()
         return output, result, smoke_kinds
 
@@ -161,7 +171,7 @@ class UpdatePackagingTests(unittest.TestCase):
         for target in ('macOS-arm64', 'Windows-x86_64', 'Linux-x86_64'):
             with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
                 output, _, smoke_kinds = self._package_fixture(directory, target)
-                self.assertEqual(smoke_kinds, ['portable', 'setup', 'setup'])
+                self.assertEqual(smoke_kinds, ['portable', 'portable', 'setup', 'setup'])
                 for suffix, expected in (('portable', 'portable'), ('Setup', 'setup')):
                     with zipfile.ZipFile(output / f'SmartAI-{target}-{suffix}.zip') as archive:
                         stamp = next(name for name in archive.namelist()
@@ -179,6 +189,9 @@ class UpdatePackagingTests(unittest.TestCase):
                 receipt = json.loads((output / f'SmartAI-{target}.receipt.json').read_text())
                 self.assertEqual(receipt['commit'], COMMIT)
                 self.assertEqual(receipt['bonsai_native_smoke'], 'passed')
+                self.assertEqual(receipt['relaunch_smoke'], 'passed')
+                self.assertEqual(receipt['macos_app_identity'],
+                                 'passed' if target.startswith('macOS') else 'not_applicable')
                 self.assertEqual(receipt['bundled_native_verified'],
                                  'not_applicable' if target.startswith('Windows') else 'passed')
                 self.assertEqual({path.name for path in output.iterdir()}, {
@@ -201,7 +214,7 @@ class UpdatePackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output, app, smoke_kinds = self._package_fixture(
                 directory, 'Windows-x86_64', prepare_only=True)
-            self.assertEqual(smoke_kinds, ['portable'])
+            self.assertEqual(smoke_kinds, ['portable', 'portable'])
             self.assertEqual(json.loads((app / builder.BUILD_RECORD).read_text())['package_kind'], 'portable')
             self.assertEqual(list(output.iterdir()), [])
 

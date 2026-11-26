@@ -177,6 +177,9 @@ def continue_selected_best_work(
         if status_callback:
             status_callback("executing", name, stage + 1)
 
+        media_hook = getattr(controller, "media_result_presenter", None)
+        presenter = media_hook(name) if callable(media_hook) else None
+
         if kind == "media_call":
             if name not in _MEDIA_TOOLS:
                 ok, result_text = False, "Unknown media operation"
@@ -200,7 +203,8 @@ def continue_selected_best_work(
 
         if cancel_event is not None and cancel_event.is_set():
             return
-        yield f"\n⚙️ {name} ({'complete' if ok else 'failed'}): {result_text[:1400]}\n"
+        if presenter is None or not presenter(result_text):
+            yield f"\n⚙️ {name} ({'complete' if ok else 'failed'}): {result_text[:1400]}\n"
         if not getattr(controller.app.engine, "is_model_loaded", False):
             yield "\nContinuation stopped because the selected model is unloaded."
             return
@@ -400,16 +404,23 @@ def stream_best_work_legacy(controller, prompt, history=None, cancel_event=None,
                 return
             if cancel_event is not None and cancel_event.is_set():
                 return
-            # Yield the chosen invocation itself before dispatch. The GUI
-            # acknowledges queued painting in the executing status callback.
-            yield "\n⚙️ Calling " + action[1] + "(" + json.dumps(action[2], ensure_ascii=False) + ")\n"
+            # Media has its own progress/card UI. Other tools retain the exact
+            # visible invocation before the execution acknowledgement.
+            media_hook = getattr(controller, "media_result_presenter", None)
+            presenter = media_hook(action[1]) if callable(media_hook) else None
+            invocation = "\n⚙️ Calling " + action[1] + "(" + json.dumps(action[2], ensure_ascii=False) + ")\n"
+            if presenter is None:
+                yield invocation
             if status_callback:
                 status_callback({"kind": "executing", "name": action[1], "stage": stage + 1})
             if cancel_event is not None and cancel_event.is_set():
                 return
             ok, result, repeated = _execute_action(
                 controller, action, original_prompt if authorization_prompt is None else str(authorization_prompt), executed)
-            yield f"\n⚙️ {action[1]} ({'complete' if ok else 'failed'}): {result}\n"
+            if presenter is None or not presenter(result):
+                if presenter is not None:
+                    yield invocation
+                yield f"\n⚙️ {action[1]} ({'complete' if ok else 'failed'}): {result}\n"
             if repeated or (cancel_event is not None and cancel_event.is_set()):
                 return
             if getattr(engine, "is_model_loaded", True) is False:
