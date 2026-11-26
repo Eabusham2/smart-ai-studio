@@ -404,3 +404,27 @@ def test_packed_bonsai_uses_exact_isolated_worker_components_and_validates_its_p
             np.testing.assert_array_equal(np.asarray(image), media.pixels)
     else:
         assert result['status'] == 'error' and output.read_bytes() == b'previous user file'
+
+
+@pytest.mark.parametrize("name", ["CogVideoXDDIMScheduler", "CogVideoXDPMScheduler"])
+def test_cogvideox_mps_scheduler_casts_only_float64_coefficients(media, name):
+    class Coefficient:
+        def __init__(self, dtype):
+            self.dtype = dtype
+        def to(self, *, dtype):
+            return Coefficient(dtype)
+    media.torch.float64 = "fp64"
+    scheduler = type(name, (), {})()
+    fields = ("betas", "alphas", "alphas_cumprod", "final_alpha_cumprod")
+    for field in fields:
+        setattr(scheduler, field, Coefficient("fp64"))
+    timesteps = scheduler.timesteps = Coefficient("int64")
+    pipe = SimpleNamespace(scheduler=scheduler)
+    media.engine._prepare_cogvideox_mps_scheduler(pipe, "cuda")
+    assert all(getattr(scheduler, field).dtype == "fp64" for field in fields)
+    media.engine._prepare_cogvideox_mps_scheduler(pipe, "mps")
+    assert all(getattr(scheduler, field).dtype == "fp32" for field in fields)
+    assert scheduler.timesteps is timesteps
+    other = SimpleNamespace(scheduler=SimpleNamespace(alphas=Coefficient("fp64")))
+    media.engine._prepare_cogvideox_mps_scheduler(other, "mps")
+    assert other.scheduler.alphas.dtype == "fp64"

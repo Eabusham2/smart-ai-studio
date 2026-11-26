@@ -33,8 +33,8 @@ class GenerationRequest:
     model: str
     messages: list[dict]
     tools: list[dict] = field(default_factory=list)
-    temperature: float = 0.65
-    top_p: float = 0.92
+    temperature: float | None = None
+    top_p: float | None = None
     max_tokens: int | None = None
     stop: list[str] = field(default_factory=list)
     tool_choice: str | dict = "auto"
@@ -45,6 +45,7 @@ class GenerationRequest:
     enable_thinking: bool | None = None
     speedups: dict = field(default_factory=dict)
     include_reasoning: bool = False
+    learning_mode: str | None = None
 
 
 @dataclass
@@ -262,9 +263,12 @@ def _optional_execution_options(body, protocol):
         settings = {}
     if not isinstance(settings, dict):
         raise APIError(400, "smartai must be an object.")
-    unknown = set(settings) - {"context_limit", "enable_thinking", "speedups", "include_reasoning"}
+    unknown = set(settings) - {"context_limit", "enable_thinking", "speedups", "include_reasoning", "learning_mode"}
     if unknown:
         raise APIError(400, "Unknown smartai option: " + ", ".join(sorted(unknown)))
+    learning = settings.get("learning_mode")
+    if learning is not None and (not isinstance(learning, str) or learning not in {"legacy", "managed", "hybrid", "off"}):
+        raise APIError(400, "smartai.learning_mode must be legacy, managed, hybrid, or off.")
     context = settings.get("context_limit")
     if context is not None and (type(context) is not int or not 1 <= context <= 10_000_000):
         raise APIError(400, "smartai.context_limit must be a positive integer up to 10000000.")
@@ -360,7 +364,7 @@ def _optional_execution_options(body, protocol):
             raise APIError(400, f"{key} must be {'an integer' if integer else 'a number'} between {low} and {high}.")
         sampling[key] = value
     return {"context_limit": context, "enable_thinking": thinking, "speedups": speedups,
-            "include_reasoning": include, "sampling": sampling}
+            "include_reasoning": include, "sampling": sampling, "learning_mode": learning}
 
 
 def normalize_request(body, protocol, model):
@@ -405,9 +409,10 @@ def normalize_request(body, protocol, model):
     if choice == "required" and not tools:
         raise APIError(400, "tool_choice=required needs tool definitions.")
     options = {}
-    for key, default, lower, upper in (("temperature", 0.65, 0, 2), ("top_p", 0.92, 0, 1)):
-        value = body.get(key, default)
-        value = default if value is None else value
+    for key, lower, upper in (("temperature", 0, 2), ("top_p", 0, 1)):
+        value = body.get(key)
+        if value is None:
+            continue
         if type(value) not in (int, float) or not math.isfinite(value) or not lower <= value <= upper:
             raise APIError(400, f"{key} must be a finite number between {lower} and {upper}.")
         options[key] = float(value)

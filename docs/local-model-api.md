@@ -141,8 +141,9 @@ loaded model. Keep requests serial and use text tools. See
 ## Model ownership and request behavior
 
 The server uses the already loaded backend. It does not allocate another model,
-enter the desktop Pro/Best Work solver, run Studio's tool registry, or learn from
-API conversations. Histories and tool schemas are rendered using the actual
+enter the desktop Pro/Best Work solver or run Studio's tool registry. The optional
+parameter-learning path is separate from inference and never archives client chat.
+Histories and tool schemas are rendered using the actual
 loaded model's chat template. Multiple system/developer messages are combined
 into one leading system turn for templates that require it; their text is kept.
 
@@ -154,7 +155,7 @@ wait for backend cleanup to finish. No cancelled request is silently restarted.
 
 The client controls `temperature`, `top_p`, output-token limit, supported stop
 strings and tool choice. No Studio system prompt, chat history, Best Work
-branch, learning pass, or tool registry is appended. The model's own chat
+branch, desktop transcript learning pass, or tool registry is appended. The model's own chat
 template may supply its native formatting/defaults, and explicit required/named
 tool choice adds only an instruction derived from that client option. Already
 learned weights or a loaded adapter remain part of the served model. Exact
@@ -162,6 +163,11 @@ in-memory token-prefix caches may be reused for speed; API prompt caches are
 never written to disk, even if the desktop disk-cache preference is enabled.
 
 ### Optional execution controls
+
+Omitted sampling options use the resident model’s recommendation, falling back to the existing API defaults when no recommendation is available. Bonsai 2.5 (including its CRACK derivative) uses Prism’s thinking profile (temperature 1.0, top-p 0.95, top-k 20, min-p 0, repetition penalty 1.0) or its non-thinking profile (0.7, 0.80, 20, 0, repetition penalty 1.0, presence penalty 1.5). Explicit supported client overrides take precedence. The loaded model’s speedups are inherited unless explicitly overridden; API disk prompt persistence and desktop Best Work remain disabled.
+
+`smartai.learning_mode` optionally accepts `legacy`, `managed`, `hybrid`, or `off`. Omission inherits the app’s currently selected implementation. A different implementation uses the existing checkpoint-aware mode switch and restores the original app selection afterward; this can require two model reloads. The API learns from a successfully completed ordinary user/assistant exchange via the existing trainer, never from injected desktop history, tool calls, system prompts, aborted or truncated responses. Learning can add latency and may be rejected by the trainer; the capabilities endpoint exposes the last outcome. API requests do not create desktop chat traces or retire the harness’s context. Existing managed replay/checkpoint metadata can still contain training evidence. Read-only/inference-only runtimes report unavailable learning, rather than fabricating a parameter update.
+
 
 The authenticated `GET /v1/smartai/capabilities` endpoint lists the loaded
 context, accepted sampling fields, active and request-adjustable speedups, and
@@ -172,7 +178,7 @@ The optional top-level sampling fields are `top_k`, `min_p`,
 `repeat_penalty` (alias `repetition_penalty`), `repeat_last_n`,
 `frequency_penalty` and `presence_penalty` on the main MLX and native GGUF
 backends; native GGUF also accepts `typical_p` and `seed`. Omit a field to
-keep the actual backend's default. Other runtimes may expose fewer controls.
+keep the loaded model's recommendation or backend default. Other runtimes may expose fewer controls.
 
 For example, this optional extension to a Chat Completions request uses an
 8,192-token total request budget within the loaded context and disables exact

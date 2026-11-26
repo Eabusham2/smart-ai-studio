@@ -193,6 +193,23 @@ class MediaGenerationEngine:
             raise ValueError("The Diffusers pipeline manifest is missing components: " + ", ".join(sorted(missing)))
         return data
 
+    @staticmethod
+    def _prepare_cogvideox_mps_scheduler(pipe, device):
+        """Keep CogVideoX scaled-linear scheduler math representable on MPS."""
+        scheduler = getattr(pipe, "scheduler", None)
+        if device != "mps" or type(scheduler).__name__ not in {
+                "CogVideoXDDIMScheduler", "CogVideoXDPMScheduler"}:
+            return
+        import torch
+        # Diffusers constructs these schedules in float64 on CPU. Combining
+        # their scalar coefficients with MPS latents attempts an unsupported
+        # float64 conversion. Cast the coefficients before any device transfer;
+        # keep timesteps integer and all other pipeline/model dtypes unchanged.
+        for name in ("betas", "alphas", "alphas_cumprod", "final_alpha_cumprod"):
+            tensor = getattr(scheduler, name, None)
+            if getattr(tensor, "dtype", None) == torch.float64:
+                setattr(scheduler, name, tensor.to(dtype=torch.float32))
+
     def _load_pipeline(self, model_info, progress_callback=None, cancel_event=None):
         import torch
         from diffusers import DiffusionPipeline
@@ -228,6 +245,8 @@ class MediaGenerationEngine:
         pipe = run_hf_operation(load, cancel_event=cancel_event)
         from core.media_learning import apply_saved_media_adapter
         apply_saved_media_adapter(pipe, repo_id)
+        if index.get("_class_name") == "CogVideoXPipeline":
+            self._prepare_cogvideox_mps_scheduler(pipe, device)
 
         # CUDA can genuinely offload model components. MPS shares unified RAM, so
         # moving the pipeline to MPS is simpler and avoids duplicate CPU/GPU copies.

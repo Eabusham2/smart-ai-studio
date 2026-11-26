@@ -316,3 +316,66 @@ def test_optional_reasoning_effort_is_boolean_and_explicit_local_setting_wins():
     with pytest.raises(APIError, match="Signed Anthropic"):
         normalize_request({**base, "thinking": {"type": "enabled", "budget_tokens": 2048}},
                           "anthropic", "smart-ai-studio")
+
+
+def test_optional_learning_mode_validation_and_loaded_model_sampling():
+    adapter, engine, backend = adapter_fixture()
+    adapter.selected_model = lambda: {"model_type": "text", "bonsai25_mtp": True, "max_context": 256}
+    backend.tokenizer.apply_chat_template = lambda *a, **k: "assistant<think>\n"
+    list(adapter.generate(request(max_tokens=12), threading.Event()))
+    assert backend.calls[-1][2:4] == (1.0, .95)
+    list(adapter.generate(request(max_tokens=12, temperature=.2, top_p=.6, learning_mode="off"), threading.Event()))
+    assert backend.calls[-1][2:4] == (.2, .6)
+    backend.tokenizer.apply_chat_template = lambda *a, **k: "assistant<think></think>\n"
+    list(adapter.generate(request(max_tokens=12), threading.Event()))
+    assert backend.calls[-1][2:4] == (.7, .8)
+    parsed = normalize_request({"messages": [{"role": "user", "content": "hi"}],
+                                "smartai": {"learning_mode": "managed"}}, "chat", "smart-ai-studio")
+    assert parsed.temperature is None and parsed.top_p is None and parsed.learning_mode == "managed"
+    with pytest.raises(APIError, match="learning_mode"):
+        normalize_request({"messages": [{"role": "user", "content": "hi"}],
+                           "smartai": {"learning_mode": "invented"}}, "chat", "smart-ai-studio")
+
+
+@pytest.mark.parametrize("mode", ["managed", "hybrid", "legacy"])
+def test_api_uses_real_learning_service_without_desktop_context(mode):
+    adapter, engine, backend = adapter_fixture()
+    trained = []
+    def train(pairs, **kwargs):
+        trained.append(pairs)
+        return {"status": "success", "parameter_drift_l2": .25, "trainable_parameters_touched": 42}
+    def legacy(turns, **kwargs):
+        assert service.db is None
+        trained.append([{"prompt": turns[0]["content"], "completion": turns[1]["content"]}])
+        return True
+    service = SimpleNamespace(engine=backend, learning_implementation=mode,
+                              _real_training_ready=lambda: True, train_pairs=train,
+                              consolidate_chunk_sync=legacy, db=object())
+    engine.awake_consolidator = service
+    original_db = service.db
+    req = request(max_tokens=8)
+    req.messages.insert(0, {"role": "system", "content": "not training data"})
+    list(adapter.generate(req, threading.Event()))
+    assert trained == [[{"prompt": "hello", "completion": "Hello world!"}]]
+    assert service.db is original_db
+    assert adapter.model_info()["capabilities"]["learning_last_result"]["status"] == "updated"
+    list(adapter.generate(request(max_tokens=8, learning_mode="off"), threading.Event()))
+    list(adapter.generate(request(max_tokens=3), threading.Event()))
+    assert len(trained) == 1
+
+
+def test_learning_mode_override_uses_existing_switch_and_restores_app_mode():
+    adapter, engine, backend = adapter_fixture()
+    engine._model_lock = threading.RLock()
+    calls = []
+    service = SimpleNamespace(engine=backend, learning_implementation="hybrid",
+                              _real_training_ready=lambda: True,
+                              train_pairs=lambda *a, **k: {"status": "success", "parameter_drift_l2": .5})
+    engine.awake_consolidator = service
+    def switch(mode, **kwargs):
+        calls.append(mode)
+        service.learning_implementation = mode
+    engine.set_learning_implementation = switch
+    list(adapter.generate(request(max_tokens=9, learning_mode="managed"), threading.Event()))
+    assert calls == ["managed", "hybrid"]
+    assert service.learning_implementation == "hybrid"

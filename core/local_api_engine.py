@@ -1,4 +1,4 @@
-"""Serve the already loaded model without entering desktop tools or learning.
+"""Serve the already loaded model without entering desktop chat or tools.
 
 The API owns a request, not a second model. Client histories are formatted with
 the selected model's chat template and never enter the Studio conversation DB.
@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from copy import deepcopy
 import inspect
 import json
+import math
+from pathlib import Path
 import threading
 
 
@@ -29,6 +31,7 @@ class LoadedModelAdapter:
         self.selected_model = selected_model or (lambda: {})
         self.busy = busy or (lambda: "")
         self._request_lock = threading.Lock()
+        self._last_learning = {"status": "not_run"}
 
     def model_info(self):
         if not getattr(self.engine, "is_model_loaded", False):
@@ -42,6 +45,127 @@ class LoadedModelAdapter:
             "backend": getattr(self.engine, "active_backend", None),
             "capabilities": self._capabilities(),
         }
+
+    def _learning_mode(self):
+        service = getattr(self.engine, "awake_consolidator", None)
+        return getattr(service, "learning_implementation",
+                       getattr(getattr(self.engine, "settings", None), "learning_implementation", "off"))
+
+    def _learning_ready(self, backend):
+        service = getattr(self.engine, "awake_consolidator", None)
+        check = getattr(service, "_real_training_ready", None)
+        try:
+            return bool(getattr(service, "engine", None) is backend and callable(check) and check())
+        except Exception:
+            return False
+
+    def _sampling_defaults(self, backend, supported, thinking=True):
+        """Prefer the resident model's published sampling policy, not desktop Pro temperatures."""
+        info = self.selected_model() or {}
+        config = getattr(getattr(backend, "model", None), "generation_config", None)
+        raw = {}
+        if config is not None:
+            try:
+                raw.update(config if isinstance(config, dict) else config.to_dict())
+            except (AttributeError, TypeError, ValueError):
+                pass
+        # MLX packs commonly ship a separate local generation_config.json.
+        for source in (getattr(backend, "_mtp_source", None), getattr(backend, "_mlx_loaded_source", None),
+                       getattr(backend, "model_path", None), getattr(self.engine, "active_model_path", None)):
+            if not isinstance(source, (str, Path)):
+                continue
+            try:
+                candidate = Path(source).expanduser() / "generation_config.json"
+                if candidate.is_file():
+                    with candidate.open("r", encoding="utf-8") as handle:
+                        value = json.load(handle)
+                    if isinstance(value, dict):
+                        raw.update(value)
+                    break
+            except (OSError, ValueError, TypeError):
+                continue
+        defaults = {"temperature": 0.65, "top_p": 0.92}
+        raw.update(getattr(backend, "sampling_defaults", None) or {})
+        for source, key, low, high in (
+            ("temperature", "temperature", 0, 2), ("top_p", "top_p", 0, 1),
+            ("top_k", "top_k", 0, 200000), ("min_p", "min_p", 0, 1),
+            ("typical_p", "typical_p", 0, 1),
+            ("repetition_penalty", "repeat_penalty", .01, 10),
+            ("repeat_penalty", "repeat_penalty", .01, 10),
+            ("presence_penalty", "presence_penalty", -2, 2),
+            ("frequency_penalty", "frequency_penalty", -2, 2),
+        ):
+            value = raw.get(source)
+            if key in {"temperature", "top_p"} or key in supported:
+                if type(value) in (int, float) and math.isfinite(value) and low <= value <= high:
+                    if key != "top_k" or type(value) is int:
+                        defaults[key] = value
+        # The two built-in Bonsai 2.5 presets share the publisher's Qwen3.8
+        # sampling recommendations; these override generic llama.cpp defaults.
+        if info.get("bonsai25_mtp"):
+            defaults.update(temperature=1.0 if thinking else .7, top_p=.95 if thinking else .8)
+            defaults.update({k: v for k, v in {
+                "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0,
+                "presence_penalty": 0.0 if thinking else 1.5, "frequency_penalty": 0.0,
+            }.items() if k in supported})
+        return defaults
+
+    def _learn_completed_reply(self, backend, request, raw, starts_thinking, cancel_event):
+        """Learn one new ordinary exchange without archiving or projecting client history."""
+        mode = self._learning_mode()
+        if request.learning_mode == "off" or mode == "off":
+            self._last_learning = {"status": "disabled", "mode": mode}
+            return
+        if not self._learning_ready(backend):
+            self._last_learning = {"status": "unavailable", "mode": mode}
+            return
+        if cancel_event.is_set():
+            return
+        # Tools and control messages belong to the harness. Never train on
+        # incomplete tool calls, reasoning text or an unpaired tool result.
+        from core.gui_thinking import reasoning_segments
+        from core.context_memory import working_history, completed_groups
+        text = "".join(value for thought, value in reasoning_segments(raw, starts_in_thought=starts_thinking)
+                       if not thought).strip()
+        if (not text or "<tool_call>" in text.casefold() or "<media_call>" in text.casefold()
+                or request.tool_choice == "required" or isinstance(request.tool_choice, dict) or not request.messages):
+            self._last_learning = {"status": "skipped", "mode": mode}
+            return
+        last = request.messages[-1]
+        if last.get("role") != "user" or not str(last.get("content", "")).strip():
+            self._last_learning = {"status": "skipped", "mode": mode}
+            return
+        turns = [{"role": "user", "content": last["content"]},
+                 {"role": "assistant", "content": text}]
+        if not completed_groups(working_history(turns)):
+            self._last_learning = {"status": "skipped", "mode": mode}
+            return
+        service = self.engine.awake_consolidator
+        try:
+            if mode == "legacy":
+                # The original consolidator marks its own desktop traces when
+                # a DB is attached. Use the same algorithm without that DB.
+                previous_db = service.db
+                try:
+                    service.db = None
+                    accepted = service.consolidate_chunk_sync(turns, cancel_event=cancel_event)
+                finally:
+                    service.db = previous_db
+                self._last_learning = {"status": "updated" if accepted else "not_committed", "mode": mode}
+            else:
+                result = service.train_pairs([{"prompt": last["content"], "completion": text}],
+                                             mode="awake", cancel_event=cancel_event)
+                drift = result.get("parameter_drift_l2")
+                if result.get("status") != "success" or type(drift) not in (int, float) or not math.isfinite(drift) or drift <= 0:
+                    self._last_learning = {"status": "not_committed", "mode": mode}
+                    return
+                self._last_learning = {"status": "updated", "mode": mode,
+                                       "parameter_drift_l2": drift,
+                                       "trainable_parameters_touched": result.get("trainable_parameters_touched")}
+        except Exception:
+            # Inference already completed. Do not turn a rejected/failed
+            # training candidate into a fabricated success or lost answer.
+            self._last_learning = {"status": "not_committed", "mode": mode}
 
     def _runtime_options(self, backend):
         """Only advertise controls explicitly implemented by the selected runtime."""
@@ -95,20 +219,25 @@ class LoadedModelAdapter:
             plan = getattr(backend, "_plan", None)
             active["speculative_mode"] = getattr(plan, "active_mode", "none")
             active["max_draft_tokens"] = getattr(plan, "max_draft_tokens", None)
-        defaults = {key: value for key, value in (getattr(backend, "sampling_defaults", None) or {}).items()
-                    if key in sampling and type(value) in (int, float)}
+        defaults = self._sampling_defaults(backend, sampling)
         return {
             "stateless": True, "client_owned_history": True, "client_owned_tools": True,
             "context_limit": self._context_limit(backend),
             "sampling_options": ["temperature", "top_p", *sorted(sampling)],
-            "sampling_defaults": {"temperature": 0.65, "top_p": 0.92, **defaults},
+            "sampling_defaults": defaults,
+            "sampling_defaults_non_thinking": self._sampling_defaults(backend, sampling, thinking=False),
+            "learning_modes": ["legacy", "managed", "hybrid", "off"],
+            "learning_mode_default": self._learning_mode(),
+            "learning_ready": self._learning_ready(backend),
+            "learning_last_result": dict(self._last_learning),
+            "learning_mode_switch_requires_reload": True,
             "enable_thinking_supported": thinking,
             "include_reasoning_protocols": ["chat"],
             "request_speedups": sorted(speedups),
             "active_speedups": active,
             "load_time_only": ["model", "context_capacity", "device", "offload", "kv_cache_precision",
                                "runtime", "memory_limit", "native_gguf_speculation"],
-            "disabled": ["desktop_history", "desktop_tools", "desktop_learning", "best_work",
+            "disabled": ["desktop_history", "desktop_tools", "desktop_trace_logging", "best_work",
                          "persistent_api_prompt_cache", "server_side_conversation"],
         }
 
@@ -134,7 +263,7 @@ class LoadedModelAdapter:
         return native, mlx
 
     @contextmanager
-    def _lease(self):
+    def _lease(self, request=None, cancel_event=None):
         from core.local_api import APIError
         reason = self.busy()
         if reason:
@@ -143,6 +272,7 @@ class LoadedModelAdapter:
             raise APIError(409, "The model is serving another request.", code="model_busy")
         model_lock = getattr(self.engine, "_model_lock", None)
         acquired = False
+        previous_mode, previous_scope, switched = None, None, False
         try:
             if model_lock is not None:
                 acquired = model_lock.acquire(blocking=False)
@@ -150,15 +280,36 @@ class LoadedModelAdapter:
                     raise APIError(409, "A model operation is in progress.", code="model_busy")
             if not self.model_info():
                 raise APIError(503, "Load a text model in Smart AI Studio first.", code="model_not_loaded")
+            previous_mode = self._learning_mode()
+            requested = getattr(request, "learning_mode", None)
+            if requested not in (None, "off", previous_mode):
+                switch = getattr(self.engine, "set_learning_implementation", None)
+                if previous_mode not in {"legacy", "managed", "hybrid"} or not callable(switch):
+                    raise APIError(400, "This model cannot switch learning implementations.", code="unsupported_option")
+                previous_scope = getattr(self.engine, "learning_scope", None)
+                if getattr(previous_scope, "pin", None) or getattr(previous_scope, "kind", "model") not in {"model", "session", "project"}:
+                    raise APIError(400, "A pinned or document learning scope cannot be switched by an API request.", code="unsupported_option")
+                # The real implementation switch reloads its own checkpoint and
+                # rolls back on failure. The production model lock is reentrant.
+                switch(requested, cancel_event=cancel_event)
+                switched = True
             backend = self._backend()
+            if requested not in (None, "off") and not self._learning_ready(backend):
+                raise APIError(400, "The requested learning implementation has no verified trainer on this model.", code="unsupported_option")
             prepare = getattr(backend, "prepare_request", None)
             if callable(prepare):
                 prepare()
             yield backend
         finally:
-            if acquired:
-                model_lock.release()
-            self._request_lock.release()
+            try:
+                if switched:
+                    # Restore the app selection, not the just-trained checkpoint
+                    # of a different implementation. It stays saved in its own store.
+                    self.engine.set_learning_implementation(previous_mode, preferred_scope=previous_scope)
+            finally:
+                if acquired:
+                    model_lock.release()
+                self._request_lock.release()
 
     def _backend(self):
         from core.local_api import APIError
@@ -300,7 +451,7 @@ class LoadedModelAdapter:
     def generate(self, request, cancel_event):
         from core.generation_metrics import RequestMetrics, observe_generations, valid_count
         from core.local_api import APIError, GenerationChunk
-        with self._lease() as backend:
+        with self._lease(request, cancel_event) as backend:
             if cancel_event.is_set():
                 return
             native, mlx = self._validate_execution(backend, request)
@@ -327,17 +478,26 @@ class LoadedModelAdapter:
             # Carry the effective request limit through the MLX desktop
             # all-remaining-context shim, even when max_tokens was omitted.
             prompt._smartai_api_max_tokens = maximum
-            options = {"prompt": prompt, "max_tokens": maximum,
-                       "temperature": request.temperature, "top_p": request.top_p}
-            if native:
-                options.update({key: value for key, value in request.sampling.items()
-                                if key == "seed" or key in backend.sampling_defaults})
-            elif mlx:
-                options.update(api_sampling=dict(request.sampling), api_speedups=dict(request.speedups))
             prefix = prompt.rstrip().casefold()
             from core.gui_thinking import _OPEN
-            yield GenerationChunk(prompt_tokens=prompt_count,
-                                  starts_in_thought=prefix.endswith(tuple(_OPEN)))
+            starts_thinking = prefix.endswith(tuple(_OPEN))
+            _, _, supported, _, _ = self._runtime_options(backend)
+            defaults = self._sampling_defaults(backend, supported, thinking=starts_thinking)
+            temperature = defaults.pop("temperature") if request.temperature is None else request.temperature
+            top_p = defaults.pop("top_p") if request.top_p is None else request.top_p
+            # Final Responses metadata reports the parameters actually used.
+            request.temperature, request.top_p = temperature, top_p
+            sampling = {key: value for key, value in defaults.items() if key in supported}
+            sampling.update(request.sampling)
+            options = {"prompt": prompt, "max_tokens": maximum, "temperature": temperature, "top_p": top_p}
+            if native:
+                options.update({key: value for key, value in sampling.items()
+                                if key == "seed" or key in backend.sampling_defaults})
+            elif mlx:
+                options.update(api_sampling=sampling, api_speedups=dict(request.speedups))
+            yield GenerationChunk(prompt_tokens=prompt_count, starts_in_thought=starts_thinking)
+            learn = request.learning_mode != "off" and self._learning_ready(backend)
+            raw_parts, raw_size = [], 0
             measurements = RequestMetrics()
             if backend is self.engine:
                 stream = self._torch_stream(backend, options, cancel_event)
@@ -356,6 +516,13 @@ class LoadedModelAdapter:
                                 break
                             if not isinstance(piece, str):
                                 raise RuntimeError("The model backend emitted a non-text chunk.")
+                            if learn:
+                                raw_size += len(piece.encode("utf-8"))
+                                if raw_size <= 16 * 1024 * 1024:
+                                    raw_parts.append(piece)
+                                else:
+                                    raw_parts.clear()
+                                    learn = False
                             live = measurements.snapshot()
                             current = live.get("context") or {}
                             yield GenerationChunk(text=piece,
@@ -375,10 +542,21 @@ class LoadedModelAdapter:
             usage = snapshot.get("context") or {}
             measured_prompt = usage.get("prompt_tokens")
             completion = snapshot.get("tokens")
+            if cancel_event.is_set():
+                return
+            finish = "length" if valid_count(completion) and completion >= maximum else "stop"
+            if finish == "stop" and learn and valid_count(completion):
+                self._learn_completed_reply(backend, request, "".join(raw_parts), starts_thinking, cancel_event)
+            elif request.learning_mode == "off":
+                self._last_learning = {"status": "disabled", "mode": "off"}
+            elif not self._learning_ready(backend):
+                self._last_learning = {"status": "unavailable", "mode": self._learning_mode()}
+            else:
+                self._last_learning = {"status": "skipped", "mode": self._learning_mode()}
             yield GenerationChunk(
                 prompt_tokens=measured_prompt if valid_count(measured_prompt) else prompt_count,
                 completion_tokens=completion if valid_count(completion) else None,
-                finish_reason="length" if valid_count(completion) and completion >= maximum else "stop",
+                finish_reason=finish,
             )
 
     @staticmethod
