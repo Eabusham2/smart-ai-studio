@@ -30,7 +30,8 @@ class MLXReasoningBackend:
         Loads MLX neural model into Apple Silicon unified memory with dynamic RAM scaling.
         Memory allocation starts lean and dynamically expands on demand as context & rollouts grow.
         """
-        if platform.system() != "Darwin" or platform.machine() != "arm64":
+        from core.cross_platform_mlx import native_mlx_platform
+        if not native_mlx_platform():
             self.is_mlx_available = False
             return False
 

@@ -300,6 +300,19 @@ class ProReasoningEngine:
                 if target_backend == "auto":
                     target_backend = resolved_backend
 
+            # Select the compute runtime for the same MLX checkpoint.
+            if target_backend == "mlx":
+                from core.cross_platform_mlx import select_mlx_runtime
+                try:
+                    mlx_runtime = select_mlx_runtime(controller_runtime, info)
+                except (ValueError, RuntimeError) as exc:
+                    return {"status": "error", "model": model_name, "backend": "mlx",
+                            "path": target_path, "error": str(exc)}
+                if mlx_runtime == "tensorfold":
+                    target_backend = "controller"
+                    controller_runtime = "tensorfold_mlx"
+                    info["controller_runtime"] = controller_runtime
+
             # The original CUDA text loader owned the model and tokenizer directly.
             # The managed controller supplies PEFT, scope switching and CPU/MPS placement.
             direct_torch = target_backend in ("torch", "cuda", "cpu", "mps")
@@ -386,7 +399,11 @@ class ProReasoningEngine:
 
                 # 0. Architecture-specific controller adapter (VLM/audio-language/etc.)
                 if target_backend == "controller":
-                    controller_cls = StrataReasoningBackend if controller_runtime == "strata" else UniversalControllerBackend
+                    if controller_runtime == "tensorfold_mlx":
+                        from core.engines.tensorfold_mlx_engine import TensorFoldMLXBackend
+                        controller_cls = TensorFoldMLXBackend
+                    else:
+                        controller_cls = StrataReasoningBackend if controller_runtime == "strata" else UniversalControllerBackend
                     self.controller_backend = controller_cls(
                         model_path=target_path,
                         model_info=info,
@@ -403,7 +420,7 @@ class ProReasoningEngine:
                         getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768
                     )
                     load_options = {}
-                    if controller_runtime == "strata":
+                    if controller_runtime in {"strata", "tensorfold_mlx"}:
                         self.controller_backend.speed_memory_limit_gb = getattr(self, "speed_memory_limit_gb", None)
 
                         def load_progress(message):
@@ -412,7 +429,7 @@ class ProReasoningEngine:
                         load_options = {
                             "progress": load_progress,
                             "cancelled": load_cancelled,
-                            "context_tokens": int(getattr(self, "_context_budget_tokens", 0) or info["default_context"]),
+                            "context_tokens": int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
                         }
                     if self.controller_backend.load_model(**load_options):
                         if getattr(self.controller_backend, "is_mlx_available", False):
@@ -432,18 +449,18 @@ class ProReasoningEngine:
                             "memory_placement": dict(getattr(self.controller_backend, "memory_placement", {}) or {}),
                             **migration_details(loaded=True),
                         }
-                    if controller_runtime == "strata":
+                    if controller_runtime in {"strata", "tensorfold_mlx"}:
                         return {
                             "status": "cancelled" if load_cancelled() else "error",
-                            "model": model_name, "backend": "strata", "path": target_path,
-                            "error": self.controller_backend.last_error or "Strata could not prepare the selected model.",
+                            "model": model_name, "backend": controller_runtime, "path": target_path,
+                            "error": self.controller_backend.last_error or "The selected native runtime could not prepare the model.",
                         }
                     return {"status": "error", "model": model_name, "backend": controller_runtime,
                             "path": target_path, "error": "The selected runtime did not load a usable model.",
                             **migration_details()}
 
-                # 1. Native Apple Silicon MLX
-                if target_backend == "mlx" and platform.system() == "Darwin" and platform.machine() == "arm64":
+                # 1. Native MLX (Apple Metal or Linux CUDA/CPU)
+                if target_backend == "mlx":
                     self.mlx_backend = MLXReasoningBackend(
                         model_path=target_path,
                         adapter_path=(info.get("legacy_adapter_path") or self.lora_adapter_path)
@@ -475,10 +492,6 @@ class ProReasoningEngine:
                     else:
                         return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
                                 "error": getattr(self.mlx_backend, "last_error", "") or "The selected checkpoint could not load with its MLX runtime."}
-
-                if target_backend == "mlx":
-                    return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
-                            "error": "This checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."}
 
                 # 2. GGUF / Llama.cpp Cross-Platform
                 if target_backend == "gguf":
@@ -998,9 +1011,9 @@ class ProReasoningEngine:
         from core.lossless_speed_control import cancel_before_request
         if cancel_before_request(self, cancel_event):
             return
-        if (getattr(self.controller_backend, "runtime", None) == "strata"
+        if (getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
                 and not getattr(self.controller_backend, "is_loaded", False)):
-            raise RuntimeError("Load the Strata model before generating text.")
+            raise RuntimeError("Load the selected native model before generating text.")
         if (getattr(self.gguf_backend, "runtime", None) == "prism_speculative"
                 and not getattr(self.gguf_backend, "is_loaded", False)):
             raise RuntimeError("Load the selected native runtime before generating text.")
@@ -1020,7 +1033,7 @@ class ProReasoningEngine:
         # 0. Specialized controller streaming
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
             has_yielded = False
-            is_strata = getattr(self.controller_backend, "runtime", None) == "strata"
+            is_strata = getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
             cancel_options = {"cancelled": cancel_event.is_set} if is_strata and cancel_event is not None else {}
             stream = self.controller_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
@@ -1147,9 +1160,9 @@ class ProReasoningEngine:
         from core.lossless_speed_control import cancel_before_request
         if cancel_before_request(self, cancel_event):
             return []
-        if (getattr(self.controller_backend, "runtime", None) == "strata"
+        if (getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
                 and not getattr(self.controller_backend, "is_loaded", False)):
-            raise RuntimeError("Load the Strata model before generating text.")
+            raise RuntimeError("Load the selected native model before generating text.")
         formatted_prompt = self._format_prompt_with_history(prompt, history)
         ladder = temperatures if temperatures is not None else get_ladder_temperatures(branch_count)
 
@@ -1194,7 +1207,7 @@ class ProReasoningEngine:
 
         # 0. Architecture-specific controller inference
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
-            is_strata = getattr(self.controller_backend, "runtime", None) == "strata"
+            is_strata = getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
             cancel_options = _cancel_kwargs(self.controller_backend)
             branches = self.controller_backend.generate_branches(
                 prompt=formatted_prompt,
