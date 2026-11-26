@@ -40,6 +40,11 @@ class GenerationRequest:
     tool_choice: str | dict = "auto"
     protocol: str = "chat"
     parallel_tool_calls: bool = True
+    sampling: dict = field(default_factory=dict)
+    context_limit: int | None = None
+    enable_thinking: bool | None = None
+    speedups: dict = field(default_factory=dict)
+    include_reasoning: bool = False
 
 
 @dataclass
@@ -176,6 +181,10 @@ def _messages(body, protocol):
             flush()
             continue
         row = {"role": role, "content": _text(content)}
+        if item.get("reasoning_content") is not None:
+            if role != "assistant" or not isinstance(item["reasoning_content"], str):
+                raise APIError(400, "reasoning_content must be assistant text.")
+            row["reasoning_content"] = item["reasoning_content"]
         if item.get("tool_calls"):
             if role != "assistant" or not isinstance(item["tool_calls"], list):
                 raise APIError(400, "tool_calls must be an assistant message list.")
@@ -246,6 +255,114 @@ def _tools(source, protocol, namespace=""):
     return result
 
 
+def _optional_execution_options(body, protocol):
+    """Validate the deliberately bounded, optional execution-only API surface."""
+    settings = body.get("smartai")
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict):
+        raise APIError(400, "smartai must be an object.")
+    unknown = set(settings) - {"context_limit", "enable_thinking", "speedups", "include_reasoning"}
+    if unknown:
+        raise APIError(400, "Unknown smartai option: " + ", ".join(sorted(unknown)))
+    context = settings.get("context_limit")
+    if context is not None and (type(context) is not int or not 1 <= context <= 10_000_000):
+        raise APIError(400, "smartai.context_limit must be a positive integer up to 10000000.")
+    thinking = settings.get("enable_thinking")
+    if body.get("enable_thinking") is not None:
+        if type(body["enable_thinking"]) is not bool:
+            raise APIError(400, "enable_thinking must be a boolean.")
+        if thinking is not None and body["enable_thinking"] != thinking:
+            raise APIError(400, "Conflicting enable_thinking options.")
+        thinking = body["enable_thinking"]
+    template_kwargs = body.get("chat_template_kwargs")
+    if template_kwargs is not None:
+        if not isinstance(template_kwargs, dict) or set(template_kwargs) - {"enable_thinking"}:
+            raise APIError(400, "Only chat_template_kwargs.enable_thinking is supported.")
+        if "enable_thinking" in template_kwargs:
+            if type(template_kwargs["enable_thinking"]) is not bool:
+                raise APIError(400, "enable_thinking must be a boolean.")
+            if thinking is not None and template_kwargs["enable_thinking"] != thinking:
+                raise APIError(400, "Conflicting enable_thinking options.")
+            thinking = template_kwargs["enable_thinking"]
+    # A local reasoning template has an on/off switch, not vendor effort tiers.
+    # Explicit local controls take precedence over a harness's effort default.
+    reasoning = body.get("reasoning")
+    if reasoning is not None and not isinstance(reasoning, dict):
+        raise APIError(400, "reasoning must be an object.")
+    effort = body.get("reasoning_effort")
+    if effort is None and isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+    if effort is not None:
+        if not isinstance(effort, str) or effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise APIError(400, "Unsupported reasoning effort.")
+        if thinking is None:
+            thinking = effort != "none"
+    vendor_thinking = body.get("thinking")
+    if protocol == "anthropic" and vendor_thinking is not None:
+        if not isinstance(vendor_thinking, dict) or vendor_thinking.get("type") != "disabled":
+            raise APIError(400, "Signed Anthropic thinking/budget controls are unsupported; use smartai.enable_thinking.")
+        if thinking is None:
+            thinking = False
+    if thinking is not None and type(thinking) is not bool:
+        raise APIError(400, "enable_thinking must be a boolean.")
+    include = settings.get("include_reasoning", False)
+    if type(include) is not bool or (include and protocol != "chat"):
+        raise APIError(400, "Plain reasoning_content is optional on Chat Completions only.")
+    speedups = settings.get("speedups")
+    if speedups is None:
+        speedups = {}
+    if not isinstance(speedups, dict):
+        raise APIError(400, "smartai.speedups must be an object.")
+    speedups = dict(speedups)
+    bool_keys = {"enabled", "prompt_reuse", "tokenizer_memo", "metal_warmup", "persistent_cache"}
+    unknown = set(speedups) - bool_keys - {"speculative_mode", "max_draft_tokens"}
+    if unknown:
+        raise APIError(400, "Unknown or non-request speedup: " + ", ".join(sorted(unknown)))
+    for key in bool_keys & set(speedups):
+        if type(speedups[key]) is not bool:
+            raise APIError(400, key + " must be a boolean.")
+    if speedups.get("persistent_cache"):
+        raise APIError(400, "API prompt persistence is disabled; the client owns memory.")
+    speedups.pop("persistent_cache", None)
+    mode = speedups.get("speculative_mode")
+    if mode is not None and (not isinstance(mode, str) or mode not in {"auto", "none", "mtp"}):
+        raise APIError(400, "speculative_mode must be auto, none, or mtp.")
+    if mode is None:
+        speedups.pop("speculative_mode", None)
+    draft = speedups.get("max_draft_tokens")
+    if draft is not None and (type(draft) is not int or not 1 <= draft <= 64):
+        raise APIError(400, "max_draft_tokens must be an integer from 1 to 64.")
+    if draft is None:
+        speedups.pop("max_draft_tokens", None)
+    if speedups.get("enabled") is False and (
+            any(speedups.get(key) is True for key in bool_keys - {"enabled", "persistent_cache"})
+            or mode in {"auto", "mtp"} or draft is not None):
+        raise APIError(400, "Speedups cannot be enabled individually when enabled is false.")
+    if mode == "none" and draft is not None:
+        raise APIError(400, "Draft tokens require active speculative decoding.")
+    sampling = {}
+    for key, low, high, integer in (
+        ("top_k", 0, 200000, True), ("min_p", 0, 1, False),
+        ("typical_p", 0, 1, False), ("repeat_penalty", 0.01, 10, False),
+        ("repeat_last_n", 0, 1000000, True), ("seed", 0, 4294967295, True),
+        ("frequency_penalty", -2, 2, False), ("presence_penalty", -2, 2, False),
+    ):
+        value = body.get(key)
+        if key == "repeat_penalty" and body.get("repetition_penalty") is not None:
+            alias = body["repetition_penalty"]
+            if value is not None and value != alias:
+                raise APIError(400, "Conflicting repetition penalty options.")
+            value = alias
+        if value is None:
+            continue
+        if type(value) not in ((int,) if integer else (int, float)) or not low <= value <= high:
+            raise APIError(400, f"{key} must be {'an integer' if integer else 'a number'} between {low} and {high}.")
+        sampling[key] = value
+    return {"context_limit": context, "enable_thinking": thinking, "speedups": speedups,
+            "include_reasoning": include, "sampling": sampling}
+
+
 def normalize_request(body, protocol, model):
     if not isinstance(body, dict):
         raise APIError(400, "The JSON body must be an object.")
@@ -263,9 +380,6 @@ def normalize_request(body, protocol, model):
     response_format = body.get("response_format") or (body.get("text") or {}).get("format") or {"type": "text"}
     if not isinstance(response_format, dict) or response_format.get("type", "text") != "text":
         raise APIError(400, "Constrained JSON/schema output is not supported by this adapter.")
-    for key in ("frequency_penalty", "presence_penalty"):
-        if body.get(key) not in (None, 0, 0.0):
-            raise APIError(400, f"{key} is not supported by this adapter.")
     if body.get("logit_bias") or body.get("audio") or body.get("modalities") not in (None, ["text"]):
         raise APIError(400, "Only text output without logit_bias is supported.")
     tools = _tools(body.get("tools"), protocol)
@@ -310,7 +424,7 @@ def normalize_request(body, protocol, model):
     return GenerationRequest(model=model, messages=_messages(body, protocol), tools=tools,
                              max_tokens=maximum, stop=stops, tool_choice=choice, protocol=protocol,
                              parallel_tool_calls=body.get("parallel_tool_calls", True) is not False,
-                             **options)
+                             **options, **_optional_execution_options(body, protocol))
 
 
 class _OutputParser:
@@ -327,6 +441,10 @@ class _OutputParser:
         self.tools = {t["function"]["name"]: t for t in request.tools}
         self.stopped, self.stop_sequence = False, None
         self.calls = 0
+
+    def _display_events(self, events):
+        return [(kind, value) for kind, value in events
+                if kind == "text" or (kind == "thought" and self.request.include_reasoning)]
 
     def _parse_call(self, source, final):
         if not source.startswith("<function="):
@@ -393,7 +511,7 @@ class _OutputParser:
         self.buffer += text
         events = self._drain(final)
         if final:
-            events.extend((kind, value) for kind, value in self.reasoning.feed("", final=True) if kind == "text")
+            events.extend(self._display_events(self.reasoning.feed("", final=True)))
         return events
 
     def _drain(self, final):
@@ -402,7 +520,7 @@ class _OutputParser:
         def emit(text):
             if text:
                 self.prefix += text
-                events.extend((kind, value) for kind, value in self.reasoning.feed(text) if kind == "text")
+                events.extend(self._display_events(self.reasoning.feed(text)))
         while self.buffer and not self.stopped:
             low = self.buffer.casefold()
             marker = low.find("<tool_call>") if self.tools and self.request.tool_choice != "none" else -1
@@ -468,6 +586,7 @@ class _Reply:
         self.id = ("chatcmpl-" if self.protocol == "chat" else "resp_" if self.protocol == "responses" else "msg_") + uuid4().hex
         self.created = int(time.time())
         self.output, self.text, self.calls = [], "", []
+        self.reasoning_text = ""
         self.prompt_tokens = self.completion_tokens = None
         self.finish_reason, self.stop_sequence = "stop", None
         self.sequence, self.text_index, self.text_id = 0, None, None
@@ -499,6 +618,11 @@ class _Reply:
             initial = self.result("in_progress")
             initial["usage"] = {"input_tokens": None, "output_tokens": 0}
             self.event("message_start", message=initial)
+
+    def add_reasoning(self, text):
+        if self.protocol == "chat" and self.request.include_reasoning and text:
+            self.reasoning_text += text
+            self.chat_event({"reasoning_content": text})
 
     def add_text(self, text):
         if not text:
@@ -587,6 +711,8 @@ class _Reply:
         finish = "tool_calls" if self.calls else self.finish_reason
         if self.protocol == "chat":
             message = {"role": "assistant", "content": self.text or (None if self.calls else "")}
+            if self.request.include_reasoning:
+                message["reasoning_content"] = self.reasoning_text
             if self.calls:
                 message["tool_calls"] = [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": _json(c["arguments"])}} for c in self.calls]
             return {"id": self.id, "object": "chat.completion", "created": self.created, "model": self.request.model,
@@ -882,6 +1008,13 @@ class _Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path.rstrip("/")
             if path in {"/health", "/healthz"}:
                 self._send_json(200, {"status": "ok", "model_loaded": bool(self.owner.model_info()), "active_requests": self.owner.active_requests})
+            elif path == "/v1/smartai/capabilities":
+                info = self.owner.model_info()
+                if not info:
+                    raise APIError(503, "Load a text model in Smart AI Studio first.", "server_error", "model_not_loaded")
+                self._send_json(200, {"model": info.get("id", "smart-ai-studio"),
+                                      "name": info.get("name"), "backend": info.get("backend"),
+                                      "capabilities": info.get("capabilities", {})})
             elif path == "/v1/models":
                 info = self.owner.model_info()
                 data = [] if not info else [{"id": info.get("id", "smart-ai-studio"), "object": "model", "created": 0,
@@ -967,7 +1100,12 @@ class _Handler(BaseHTTPRequestHandler):
             parser, total_bytes, ping_at = _OutputParser(request), 0, time.monotonic()
             def consume(events):
                 for kind, value in events:
-                    reply.add_tool(value) if kind == "tool" else reply.add_text(value)
+                    if kind == "tool":
+                        reply.add_tool(value)
+                    elif kind == "thought":
+                        reply.add_reasoning(value)
+                    else:
+                        reply.add_text(value)
             while True:
                 if self._disconnected():
                     job.cancel.set()

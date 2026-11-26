@@ -1040,8 +1040,70 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         return branches
 
+    def api_prompt_count(self, prompt, speedups=None):
+        """Count the same prepared input that native decoding will consume."""
+        if self._vlm_runtime is None:
+            return len(self.tokenizer.encode(prompt))
+        overrides = speedups or {}
+        enabled = self._lossless_speedups["tokenizer_memo"]
+        if overrides.get("enabled") is False:
+            enabled = False
+        elif overrides.get("enabled") is True:
+            enabled = True
+        enabled = overrides.get("tokenizer_memo", enabled)
+        def count():
+            prepared_prompt = self._prepare_vlm_prompt(prompt, 0)
+            _, tokens = self._vlm_input_memo.prepare(
+                self.model, self.processor, prepared_prompt, enabled=enabled)
+            return tokens
+        return self.run_on_mlx_owner(count)
+
     def stream_generate_tokens(self, prompt: str, max_tokens: int = 512,
-                               temperature: float = 0.75, top_p: float = 0.92):
+                               temperature: float = 0.75, top_p: float = 0.92,
+                               *, api_sampling=None, api_speedups=None):
+        # The public wrapper already runs under the MLX owner/runtime lock.
+        # Do not persist caller settings or load another model/draft here.
+        if not getattr(prompt, "_smartai_api_request", False):
+            yield from self._stream_generate_tokens_impl(prompt, max_tokens, temperature, top_p)
+            return
+        saved = self._lossless_speedups
+        overrides = api_speedups or {}
+        scoped = dict(saved)
+        scoped["persistent_cache"] = False
+        scoped["branch_prefill"] = False
+        keys = ("prompt_reuse", "tokenizer_memo", "metal_warmup")
+        if overrides.get("enabled") is False:
+            scoped.update({key: False for key in keys})
+        elif overrides.get("enabled") is True:
+            scoped.update(prompt_reuse=True, tokenizer_memo=True)
+        scoped.update({key: overrides[key] for key in keys if key in overrides})
+        mtp = getattr(self, "_mtp", None)
+        original_head = getattr(mtp, "head", None)
+        original_depth = getattr(mtp, "max_draft_tokens", None)
+        warmup = self._metal_warmup
+        changed_warmup = scoped["metal_warmup"] != saved["metal_warmup"]
+        try:
+            self._lossless_speedups = scoped
+            if changed_warmup:
+                from core.mlx_warmup import SafeMLXWarmup
+                self._metal_warmup = SafeMLXWarmup(enabled=scoped["metal_warmup"])
+            if mtp is not None:
+                if overrides.get("enabled") is False or overrides.get("speculative_mode") == "none":
+                    mtp.head = None
+                if "max_draft_tokens" in overrides:
+                    mtp.max_draft_tokens = overrides["max_draft_tokens"]
+            yield from self._stream_generate_tokens_impl(prompt, max_tokens, temperature, top_p,
+                                                         api_sampling=api_sampling)
+        finally:
+            self._lossless_speedups = saved
+            if mtp is not None:
+                mtp.head, mtp.max_draft_tokens = original_head, original_depth
+            if changed_warmup:
+                self._metal_warmup.close()
+                self._metal_warmup = warmup
+
+    def _stream_generate_tokens_impl(self, prompt: str, max_tokens: int,
+                                     temperature: float, top_p: float, *, api_sampling=None):
         if not self.is_mlx_available or self.model is None:
             return
 
@@ -1068,6 +1130,10 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
             def create_vlm_stream():
                 prefill_kwargs = self._speed_vlm_prefill_kwargs()
+                sampling = dict(api_sampling or {})
+                for source, target in (("repeat_penalty", "repetition_penalty"), ("repeat_last_n", "repetition_context_size")):
+                    if source in sampling:
+                        sampling[target] = sampling.pop(source)
                 return vlm_stream_generate(
                     self.model,
                     self.processor,
@@ -1080,6 +1146,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                     **prepared_inputs,
                     **self._vlm_reuse_kwargs(prepared_prompt, prefill_kwargs),
                     **(self._mtp.generation_kwargs() if getattr(self, "_mtp", None) is not None else {}),
+                    **sampling,
                 )
 
             try:
@@ -1112,7 +1179,18 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
         try:
             from mlx_lm.sample_utils import make_sampler
-            sampler = make_sampler(temp=temperature, top_p=top_p)
+            sampling = dict(api_sampling or {})
+            sampler = make_sampler(temp=temperature, top_p=top_p,
+                                   **{key: sampling[key] for key in ("top_k", "min_p") if key in sampling})
+            processors = []
+            penalties = {key: sampling[key] for key in ("frequency_penalty", "presence_penalty") if key in sampling}
+            if "repeat_penalty" in sampling:
+                penalties["repetition_penalty"] = sampling["repeat_penalty"]
+            if "repeat_last_n" in sampling:
+                penalties["repetition_context_size"] = sampling["repeat_last_n"]
+            if penalties:
+                from mlx_lm.sample_utils import make_logits_processors
+                processors = make_logits_processors(**penalties)
         except Exception as exc:
             raise RuntimeError("MLX sampler unavailable; refusing to change sampling semantics") from exc
 
@@ -1130,6 +1208,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
                 "sampler": sampler,
                 "prefill_step_size": int(prefill_step_size),
             }
+            if processors:
+                kwargs["logits_processors"] = processors
             suffix = self._prepare_text_cache(prompt_ids, prefill_step_size)
             return mlx_lm.stream_generate(
                 self.model,

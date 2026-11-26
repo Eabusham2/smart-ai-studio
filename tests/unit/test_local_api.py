@@ -395,6 +395,43 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.json_request("/v1/responses", {"model": MODEL, "input": "Hi", "previous_response_id": "old"})[0], 400)
         self.assertEqual(self.json_request(body={**base, "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://example.test/a.png"}}]}]})[0], 400)
 
+    def test_stateless_options_and_plain_reasoning_are_opt_in(self):
+        base = {"model": MODEL, "messages": [{"role": "user", "content": "Only my input"}]}
+        self.chunks = ["<think>private scratch</think>", "answer"]
+        status, ordinary = self.json_request(body=base)
+        self.assertEqual(status, 200)
+        self.assertEqual(ordinary["choices"][0]["message"]["content"], "answer")
+        self.assertNotIn("reasoning_content", ordinary["choices"][0]["message"])
+        status, explicit = self.json_request(body={**base, "top_k": 20, "min_p": .05,
+            "repeat_penalty": 1.1, "seed": 42,
+            "smartai": {"enable_thinking": True, "context_limit": 8192,
+                        "speedups": {"prompt_reuse": False}, "include_reasoning": True}})
+        self.assertEqual(status, 200)
+        self.assertEqual(explicit["choices"][0]["message"]["reasoning_content"], "private scratch")
+        self.assertEqual(self.requests[-1].messages, base["messages"])
+        self.assertEqual(self.requests[-1].sampling, {"top_k": 20, "min_p": .05, "repeat_penalty": 1.1, "seed": 42})
+        self.assertEqual(self.requests[-1].context_limit, 8192)
+        self.assertTrue(self.requests[-1].enable_thinking)
+        self.assertEqual(self.requests[-1].speedups, {"prompt_reuse": False})
+        self.assertEqual(self.json_request("/v1/smartai/capabilities", method="GET")[0], 200)
+        for options in ({"speedups": {"persistent_cache": True}}, {"speedups": {"cache_dir": "/tmp/x"}},
+                        {"speedups": {"enabled": False, "speculative_mode": "mtp"}},
+                        {"context_limit": 0}, {"memory": True}):
+            self.assertEqual(self.json_request(body={**base, "smartai": options})[0], 400)
+        self.assertEqual(self.json_request(body={**base, "top_k": -1})[0], 400)
+        self.assertEqual(self.json_request(body={**base, "seed": True})[0], 400)
+        self.assertEqual(self.json_request(body={**base, "min_p": 2})[0], 400)
+
+    def test_optional_reasoning_stream_uses_separate_field(self):
+        self.chunks = [GenerationChunk(starts_in_thought=True), "reason", "</thi", "nk>answer"]
+        status, _, raw = self.request(body={"model": MODEL, "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True, "smartai": {"include_reasoning": True}})
+        self.assertEqual(status, 200)
+        deltas = [choice["delta"] for event in events(raw) if isinstance(event, dict)
+                  for choice in event.get("choices", [])]
+        self.assertEqual("".join(d.get("reasoning_content", "") for d in deltas), "reason")
+        self.assertEqual("".join(d.get("content", "") for d in deltas), "answer")
+
     def test_max_output_bytes_cancels_and_returns_error(self):
         self.server.max_output_bytes = 2
         self.assertEqual(self.json_request()[0], 413)

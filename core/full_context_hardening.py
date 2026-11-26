@@ -71,7 +71,7 @@ def install(cls) -> None:
                     # one user message, replacing its assistant/thinking
                     # prefix with a second (usually non-thinking) template.
                     from core.local_api_engine import FormattedPrompt
-                    return FormattedPrompt(rendered)
+                    return FormattedPrompt(rendered, api_request=False)
                 return rendered
             except Exception:
                 pass

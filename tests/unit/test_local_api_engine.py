@@ -198,3 +198,121 @@ def test_controller_preserves_preformatted_chat_prompt():
     backend = UniversalControllerBackend.__new__(UniversalControllerBackend)
     backend._apply_chat_template = lambda *a, **k: pytest.fail("Double chat template")
     assert backend._mlx_prompt(prompt) is prompt
+
+
+def test_harness_requests_do_not_receive_desktop_history_tools_or_settings():
+    adapter, engine, backend = adapter_fixture()
+    engine.chat_history = [{"role": "system", "content": "PRIVATE DESKTOP HISTORY"}]
+    engine.tools = SimpleNamespace(list_available_tools=lambda: pytest.fail("Desktop tool registry accessed"))
+    engine.solve = lambda *a, **k: pytest.fail("Desktop solver called")
+    engine.settings = SimpleNamespace(search_temperature=1.99, max_new_tokens=1)
+    for content in ("Harness A", "Harness B"):
+        req = GenerationRequest("smart-ai-studio", [{"role": "user", "content": content}])
+        list(adapter.generate(req, threading.Event()))
+    assert backend.tokenizer.template_calls[0][0] == [{"role": "user", "content": "Harness A"}]
+    assert backend.tokenizer.template_calls[1][0] == [{"role": "user", "content": "Harness B"}]
+    assert all("tools" not in kw for _, kw in backend.tokenizer.template_calls)
+    assert all(call[1:4] == (124, .65, .92) for call in backend.calls)
+
+
+def test_request_context_is_optional_and_does_not_change_loaded_capacity():
+    adapter, engine, backend = adapter_fixture()
+    list(adapter.generate(request(context_limit=32), threading.Event()))
+    assert backend.calls[-1][1] == 28
+    assert backend.calls[-1][0]._smartai_api_max_tokens == 28
+    assert backend.context_budget_tokens == 128
+    with pytest.raises(APIError, match="exceeds"):
+        list(adapter.generate(request(context_limit=129), threading.Event()))
+    with pytest.raises(APIError, match="Sampling option unavailable"):
+        list(adapter.generate(request(sampling={"top_k": 20}), threading.Event()))
+    with pytest.raises(APIError, match="Speedup requires"):
+        list(adapter.generate(request(speedups={"tokenizer_memo": False}), threading.Event()))
+
+
+def test_native_sampling_and_template_controls_are_forwarded_without_mutation():
+    adapter, engine, backend = adapter_fixture()
+    engine.active_backend = "gguf"
+    engine.gguf_backend = backend
+    backend.runtime = "prism_speculative"
+    backend.tokenizer.apply_chat_template = None
+    backend.tokenizer.chat_template = "{% if enable_thinking %}"
+    captured = []
+    backend._request = lambda path, payload: captured.append((path, payload)) or {"prompt": "native format"}
+    backend.sampling_defaults = {"top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0}
+    kwargs_seen = []
+    def stream(**kwargs):
+        kwargs_seen.append(kwargs)
+        yield "answer"
+    backend.stream_generate_tokens = stream
+    list(adapter.generate(request(max_tokens=9, sampling={"top_k": 10, "seed": 42},
+                                  enable_thinking=False), threading.Event()))
+    assert captured[0][1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert kwargs_seen[0]["top_k"] == 10 and kwargs_seen[0]["seed"] == 42
+    assert backend.sampling_defaults["top_k"] == 20
+    capabilities = adapter.model_info()["capabilities"]
+    assert capabilities["context_limit"] == 128
+    assert "top_k" in capabilities["sampling_options"] and "seed" in capabilities["sampling_options"]
+    assert capabilities["request_speedups"] == []
+    assert not capabilities["active_speedups"]["persistent_cache"]
+
+
+def test_mlx_api_speedup_scope_is_restored_on_close_and_desktop_is_unchanged():
+    from core.mlx_engine import MLXReasoningBackend
+    from core.mlx_warmup import SafeMLXWarmup
+    method = MLXReasoningBackend.stream_generate_tokens
+    # Unwrap only the existing owner/lock decorators to exercise the real
+    # request-scoped settings code with a deterministic decoder.
+    import inspect
+    method = inspect.unwrap(method)
+    head = object()
+    saved = {"prompt_reuse": True, "tokenizer_memo": True, "branch_prefill": True,
+             "persistent_cache": True, "metal_warmup": False}
+    warmup = SafeMLXWarmup()
+    fake = SimpleNamespace(_lossless_speedups=saved, _metal_warmup=warmup,
+                           _mtp=SimpleNamespace(head=head, max_draft_tokens=2))
+    observations = []
+    def decode(prompt, maximum, temperature, top_p, **kwargs):
+        observations.append((dict(fake._lossless_speedups), fake._mtp.head, kwargs))
+        yield "a"
+        yield "b"
+    fake._stream_generate_tokens_impl = decode
+    stream = method(fake, FormattedPrompt("api", 4), 4, api_sampling={"top_k": 10},
+                    api_speedups={"enabled": False})
+    assert next(stream) == "a"
+    assert observations[-1] == ({key: False for key in saved}, None, {"api_sampling": {"top_k": 10}})
+    stream.close()
+    assert fake._lossless_speedups is saved and fake._mtp.head is head
+    assert fake._metal_warmup is warmup and fake._mtp.max_draft_tokens == 2
+    list(method(fake, FormattedPrompt("desktop", api_request=False), 4))
+    assert observations[-1] == (saved, head, {})
+    list(method(fake, FormattedPrompt("api", 4), 4))
+    assert observations[-1][0]["prompt_reuse"] is True
+    assert observations[-1][0]["persistent_cache"] is False
+    assert fake._lossless_speedups is saved
+
+
+def test_api_uses_native_preprocessed_count_instead_of_plain_tokenizer_estimate():
+    adapter, _, backend = adapter_fixture()
+    backend.api_prompt_count = lambda prompt, speedups: 12
+    list(adapter.generate(request(context_limit=32), threading.Event()))
+    assert backend.calls[-1][1] == 20
+    assert adapter.count_tokens(request()) == 12
+    with pytest.raises(APIError, match="exceeds"):
+        list(adapter.generate(request(context_limit=32, max_tokens=21), threading.Event()))
+    backend.api_prompt_count = lambda prompt, speedups: None
+    with pytest.raises(APIError, match="Cannot verify"):
+        list(adapter.generate(request(max_tokens=1), threading.Event()))
+
+
+def test_optional_reasoning_effort_is_boolean_and_explicit_local_setting_wins():
+    base = {"messages": [{"role": "user", "content": "hello"}]}
+    assert normalize_request({**base, "reasoning_effort": "high"}, "chat", "smart-ai-studio").enable_thinking is True
+    assert normalize_request({"input": "hello", "reasoning": {"effort": "none"}}, "responses", "smart-ai-studio").enable_thinking is False
+    assert normalize_request({**base, "reasoning_effort": "high", "smartai": {"enable_thinking": False}},
+                             "chat", "smart-ai-studio").enable_thinking is False
+    assert normalize_request({**base, "enable_thinking": True}, "chat", "smart-ai-studio").enable_thinking is True
+    with pytest.raises(APIError, match="enable_thinking"):
+        normalize_request({**base, "enable_thinking": 1}, "chat", "smart-ai-studio")
+    with pytest.raises(APIError, match="Signed Anthropic"):
+        normalize_request({**base, "thinking": {"type": "enabled", "budget_tokens": 2048}},
+                          "anthropic", "smart-ai-studio")

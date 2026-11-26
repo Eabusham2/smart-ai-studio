@@ -16,9 +16,10 @@ class FormattedPrompt(str):
     """An already-templated request; VLM paths must not wrap it as one user turn."""
     _smartai_formatted_chat = True
 
-    def __new__(cls, value, max_tokens=None):
+    def __new__(cls, value, max_tokens=None, *, api_request=True):
         result = super().__new__(cls, value)
         result._smartai_api_max_tokens = max_tokens
+        result._smartai_api_request = bool(api_request)
         return result
 
 
@@ -39,7 +40,98 @@ class LoadedModelAdapter:
             "id": "smart-ai-studio",
             "name": getattr(self.engine, "active_model_name", None) or info.get("name", "Loaded model"),
             "backend": getattr(self.engine, "active_backend", None),
+            "capabilities": self._capabilities(),
         }
+
+    def _runtime_options(self, backend):
+        """Only advertise controls explicitly implemented by the selected runtime."""
+        native = getattr(backend, "runtime", None) == "prism_speculative"
+        try:
+            params = inspect.signature(backend.stream_generate_tokens).parameters
+        except (TypeError, ValueError, AttributeError):
+            params = {}
+        mlx = "api_sampling" in params and "api_speedups" in params
+        sampling = set()
+        if native:
+            sampling = set(getattr(backend, "sampling_defaults", {})) & {
+                "top_k", "min_p", "typical_p", "repeat_penalty", "repeat_last_n",
+                "frequency_penalty", "presence_penalty"}
+            sampling.add("seed")
+        elif mlx:
+            sampling = {"top_k", "min_p", "repeat_penalty", "repeat_last_n",
+                        "frequency_penalty", "presence_penalty"}
+        info = self.selected_model() or {}
+        tokenizer = getattr(backend, "tokenizer", None)
+        processor = getattr(backend, "processor", None)
+        template = getattr(tokenizer, "chat_template", None) or getattr(processor, "chat_template", None)
+        thinking = bool(info.get("bonsai25_mtp") or
+                        (isinstance(template, str) and "enable_thinking" in template))
+        speedups = {"enabled", "prompt_reuse", "tokenizer_memo", "metal_warmup"} if mlx else set()
+        if mlx and getattr(backend, "_vlm_runtime", None) is not None:
+            speedups.add("speculative_mode")
+            if getattr(getattr(backend, "_mtp", None), "head", None) is not None:
+                speedups.add("max_draft_tokens")
+        return native, mlx, sampling, thinking, speedups
+
+    def _capabilities(self):
+        try:
+            backend = self._backend()
+        except ValueError:
+            return {}
+        native, mlx, sampling, thinking, speedups = self._runtime_options(backend)
+        configured = getattr(self.engine, "lossless_speed_options", None) or {}
+        actual = getattr(backend, "_lossless_speedups", None) or {}
+        active = {key: bool(actual.get(key, configured.get(key, False))) if mlx else False
+                  for key in ("prompt_reuse", "tokenizer_memo", "metal_warmup")}
+        active["persistent_cache"] = False
+        active["branch_prefill"] = False
+        if mlx:
+            mtp = getattr(backend, "_mtp", None)
+            active["speculative_mode"] = "mtp" if getattr(mtp, "head", None) is not None else "none"
+            if active["speculative_mode"] == "mtp":
+                active["max_draft_tokens"] = mtp.max_draft_tokens
+                active["prompt_reuse"] = False  # MTP owns the prefill state.
+        elif native:
+            plan = getattr(backend, "_plan", None)
+            active["speculative_mode"] = getattr(plan, "active_mode", "none")
+            active["max_draft_tokens"] = getattr(plan, "max_draft_tokens", None)
+        defaults = {key: value for key, value in (getattr(backend, "sampling_defaults", None) or {}).items()
+                    if key in sampling and type(value) in (int, float)}
+        return {
+            "stateless": True, "client_owned_history": True, "client_owned_tools": True,
+            "context_limit": self._context_limit(backend),
+            "sampling_options": ["temperature", "top_p", *sorted(sampling)],
+            "sampling_defaults": {"temperature": 0.65, "top_p": 0.92, **defaults},
+            "enable_thinking_supported": thinking,
+            "include_reasoning_protocols": ["chat"],
+            "request_speedups": sorted(speedups),
+            "active_speedups": active,
+            "load_time_only": ["model", "context_capacity", "device", "offload", "kv_cache_precision",
+                               "runtime", "memory_limit", "native_gguf_speculation"],
+            "disabled": ["desktop_history", "desktop_tools", "desktop_learning", "best_work",
+                         "persistent_api_prompt_cache", "server_side_conversation"],
+        }
+
+    def _validate_execution(self, backend, request):
+        from core.local_api import APIError
+        native, mlx, sampling, thinking, speedups = self._runtime_options(backend)
+        unsupported = set(request.sampling) - sampling
+        # A standard client may transmit zero-valued neutral penalties.
+        unsupported -= {key for key in ("frequency_penalty", "presence_penalty")
+                        if request.sampling.get(key) == 0}
+        if unsupported:
+            raise APIError(400, "Sampling option unavailable for the loaded runtime: " + ", ".join(sorted(unsupported)),
+                           code="unsupported_option")
+        if request.enable_thinking is not None and not thinking:
+            raise APIError(400, "The loaded chat template does not expose enable_thinking.", code="unsupported_option")
+        unsupported = set(request.speedups) - speedups
+        if unsupported:
+            raise APIError(400, "Speedup requires a compatible loaded runtime or reload: " + ", ".join(sorted(unsupported)),
+                           code="unsupported_option")
+        head = getattr(getattr(backend, "_mtp", None), "head", None)
+        if (request.speedups.get("speculative_mode") == "mtp" or "max_draft_tokens" in request.speedups) and head is None:
+            raise APIError(400, "Load the verified MTP head in Studio before requesting MTP.", code="unsupported_option")
+        return native, mlx
 
     @contextmanager
     def _lease(self):
@@ -134,6 +226,8 @@ class LoadedModelAdapter:
             options = {"tokenize": False, "add_generation_prompt": True}
             if tools:
                 options["tools"] = tools
+            if request.enable_thinking is not None:
+                options["enable_thinking"] = request.enable_thinking
             try:
                 prompt = template(messages, **options)
             except Exception as error:
@@ -145,6 +239,8 @@ class LoadedModelAdapter:
             payload = {"messages": messages, "add_generation_prompt": True}
             if tools:
                 payload["tools"] = tools
+            if request.enable_thinking is not None:
+                payload["chat_template_kwargs"] = {"enable_thinking": request.enable_thinking}
             try:
                 result = backend._request("/apply-template", payload)
                 prompt = result.get("prompt")
@@ -159,7 +255,10 @@ class LoadedModelAdapter:
         return FormattedPrompt(prompt, request.max_tokens)
 
     @staticmethod
-    def _prompt_tokens(backend, prompt):
+    def _prompt_tokens(backend, prompt, speedups=None):
+        count_native = getattr(backend, "api_prompt_count", None)
+        if callable(count_native):
+            return count_native(prompt, speedups or {})
         encode = getattr(getattr(backend, "tokenizer", None), "encode", None)
         if not callable(encode):
             encode = getattr(getattr(getattr(backend, "processor", None), "tokenizer", None), "encode", None)
@@ -178,12 +277,12 @@ class LoadedModelAdapter:
         values = []
         info = self.selected_model() or {}
         for value in (getattr(backend, "context_budget_tokens", None), getattr(backend, "n_ctx", None),
-                      info.get("max_context")):
+                      getattr(self.engine, "_context_budget_tokens", None), info.get("max_context")):
             if type(value) is int and 0 < value <= 10_000_000:
                 values.append(value)
         for obj in (getattr(backend, "config", None), getattr(getattr(backend, "model", None), "config", None),
                     getattr(getattr(backend, "model", None), "args", None), getattr(backend, "tokenizer", None)):
-            for name in ("max_position_embeddings", "max_seq_len", "model_max_length"):
+            for name in ("max_position_embeddings", "max_seq_len", "max_sequence_length", "context_length", "model_max_length"):
                 value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
                 if type(value) is int and 0 < value <= 10_000_000:
                     values.append(value)
@@ -192,7 +291,8 @@ class LoadedModelAdapter:
     def count_tokens(self, request):
         from core.local_api import APIError
         with self._lease() as backend:
-            count = self._prompt_tokens(backend, self._format_prompt(backend, request))
+            self._validate_execution(backend, request)
+            count = self._prompt_tokens(backend, self._format_prompt(backend, request), request.speedups)
             if count is None:
                 raise APIError(501, "The loaded runtime does not expose an exact text tokenizer.")
             return count
@@ -203,9 +303,17 @@ class LoadedModelAdapter:
         with self._lease() as backend:
             if cancel_event.is_set():
                 return
+            native, mlx = self._validate_execution(backend, request)
             prompt = self._format_prompt(backend, request)
-            prompt_count = self._prompt_tokens(backend, prompt)
+            prompt_count = self._prompt_tokens(backend, prompt, request.speedups)
             context = self._context_limit(backend)
+            if context is not None and (type(prompt_count) is not int or prompt_count < 0):
+                raise APIError(501, "Cannot verify the native input token count against the loaded Context.",
+                               code="tokenizer_unavailable")
+            if request.context_limit is not None:
+                if context is None or request.context_limit > context:
+                    raise APIError(400, "The requested context_limit exceeds the verified loaded Context.", code="context_length_exceeded")
+                context = request.context_limit
             remaining = context - prompt_count if context and prompt_count is not None else None
             if remaining is not None and remaining <= 0:
                 raise APIError(400, "The request fills the loaded context. Shorten the input or increase Context in Studio.",
@@ -216,11 +324,20 @@ class LoadedModelAdapter:
             maximum = request.max_tokens or remaining
             if maximum is None:
                 raise APIError(400, "Specify max_tokens: this backend does not expose its remaining Context.")
+            # Carry the effective request limit through the MLX desktop
+            # all-remaining-context shim, even when max_tokens was omitted.
+            prompt._smartai_api_max_tokens = maximum
             options = {"prompt": prompt, "max_tokens": maximum,
                        "temperature": request.temperature, "top_p": request.top_p}
+            if native:
+                options.update({key: value for key, value in request.sampling.items()
+                                if key == "seed" or key in backend.sampling_defaults})
+            elif mlx:
+                options.update(api_sampling=dict(request.sampling), api_speedups=dict(request.speedups))
             prefix = prompt.rstrip().casefold()
+            from core.gui_thinking import _OPEN
             yield GenerationChunk(prompt_tokens=prompt_count,
-                                  starts_in_thought=prefix.endswith(("<think>", "<thinking>")))
+                                  starts_in_thought=prefix.endswith(tuple(_OPEN)))
             measurements = RequestMetrics()
             if backend is self.engine:
                 stream = self._torch_stream(backend, options, cancel_event)

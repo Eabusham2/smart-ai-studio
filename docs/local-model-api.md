@@ -20,6 +20,7 @@ answer the requests.
 | Anthropic Messages | `POST /v1/messages` |
 | Exact input-token count | `POST /v1/messages/count_tokens` |
 | Health | `GET /health` or `GET /healthz` |
+| Loaded runtime capabilities | `GET /v1/smartai/capabilities` |
 
 ## Quick check
 
@@ -152,7 +153,71 @@ the server or disconnecting a client cancels generation; unloading and app exit
 wait for backend cleanup to finish. No cancelled request is silently restarted.
 
 The client controls `temperature`, `top_p`, output-token limit, supported stop
-strings and tool choice. The API respects the request's output limit separately
+strings and tool choice. No Studio system prompt, chat history, Best Work
+branch, learning pass, or tool registry is appended. The model's own chat
+template may supply its native formatting/defaults, and explicit required/named
+tool choice adds only an instruction derived from that client option. Already
+learned weights or a loaded adapter remain part of the served model. Exact
+in-memory token-prefix caches may be reused for speed; API prompt caches are
+never written to disk, even if the desktop disk-cache preference is enabled.
+
+### Optional execution controls
+
+The authenticated `GET /v1/smartai/capabilities` endpoint lists the loaded
+context, accepted sampling fields, active and request-adjustable speedups, and
+load-time-only settings. Ordinary harness requests need none of these extensions.
+Unknown extension keys and unsupported backend overrides return explicit errors.
+
+The optional top-level sampling fields are `top_k`, `min_p`,
+`repeat_penalty` (alias `repetition_penalty`), `repeat_last_n`,
+`frequency_penalty` and `presence_penalty` on the main MLX and native GGUF
+backends; native GGUF also accepts `typical_p` and `seed`. Omit a field to
+keep the actual backend's default. Other runtimes may expose fewer controls.
+
+For example, this optional extension to a Chat Completions request uses an
+8,192-token total request budget within the loaded context and disables exact
+prompt reuse just for this MLX request:
+
+```json
+{
+  "model": "smart-ai-studio",
+  "messages": [{"role": "user", "content": "Explain this code."}],
+  "temperature": 0.65,
+  "top_k": 20,
+  "min_p": 0.05,
+  "max_tokens": 1024,
+  "smartai": {
+    "context_limit": 8192,
+    "enable_thinking": true,
+    "include_reasoning": true,
+    "speedups": {
+      "prompt_reuse": false,
+      "tokenizer_memo": true
+    }
+  }
+}
+```
+
+- `context_limit` may lower, never enlarge, the verified loaded capacity.
+- `enable_thinking` is optional on supported chat templates; it is also
+  accepted at the top level or as `chat_template_kwargs.enable_thinking`.
+  Standard reasoning effort maps only to on/off (none disables; other
+  recognized tiers enable). Explicit local thinking controls take precedence;
+  no vendor-specific compute budget or signed reasoning is emulated.
+- `include_reasoning` optionally returns plaintext `reasoning_content` on
+  Chat Completions only, including streaming. Tool examples in thoughts remain
+  inert. It does not emulate encrypted or signed vendor reasoning.
+- MLX request speedups include `enabled`, `prompt_reuse`, `tokenizer_memo`,
+  `metal_warmup`, and (on compatible VLMs) `speculative_mode` and
+  `max_draft_tokens`. They restore the original settings even after cancellation.
+  MTP may be disabled per request; enabling it requires an already loaded
+  verified head. Disk persistence and branch prefill are not API features.
+- Native GGUF speculation strategy and draft depth are fixed by the loaded
+  server. Model selection, device/offload, KV precision, memory limits and
+  physical context are configured locally before starting the API, not remotely
+  changed mid-request. Unsupported overrides are rejected rather than ignored.
+
+These controls do not add conversation memory or desktop behavior. The API respects the request's output limit separately
 from Studio's unlimited-until-context desktop behavior. Exact prompt/output
 counts come from the tokenizer and backend metrics; unavailable counts remain
 unknown. Input plus requested output that exceeds the loaded context is a
