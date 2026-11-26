@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -16,12 +17,20 @@ import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from core.gguf_image_runtime import (GGML_COMMIT, RECEIPT_NAME, SD_CPP_COMMIT, SOURCE_ARCHIVES,
-                                    _machine, _sha256, probe_sd_cpp_runtime,
-                                    validate_runtime_bundle)
+# Packaging starts on a bare host interpreter. Load this stdlib-only module
+# directly so core/__init__.py does not initialize app engines and their NumPy
+# dependencies before the bundled application environment has been installed.
+_spec = importlib.util.spec_from_file_location("_smartai_gguf_media_runtime", ROOT / "core/gguf_image_runtime.py")
+_runtime = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_runtime)
+GGML_COMMIT = _runtime.GGML_COMMIT
+RECEIPT_NAME = _runtime.RECEIPT_NAME
+SD_CPP_COMMIT = _runtime.SD_CPP_COMMIT
+SOURCE_ARCHIVES = _runtime.SOURCE_ARCHIVES
+_machine = _runtime._machine
+_sha256 = _runtime._sha256
+probe_sd_cpp_runtime = _runtime.probe_sd_cpp_runtime
+validate_runtime_bundle = _runtime.validate_runtime_bundle
 
 
 def _download_source(url, destination, expected):

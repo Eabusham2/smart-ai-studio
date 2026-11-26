@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 import zipfile
@@ -11,6 +12,15 @@ from PIL import Image
 
 from core import gguf_image_runtime as runtime
 from tools import build_gguf_media_runtime as builder
+
+
+@pytest.mark.parametrize("script", ["build_gguf_media_runtime.py", "build_release_package.py"])
+def test_packaging_entry_points_need_only_the_standard_library(script):
+    entry = Path(__file__).resolve().parents[2] / "tools" / script
+    result = subprocess.run([sys.executable, "-I", "-S", str(entry), "--help"],
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
 
 
 @pytest.fixture
