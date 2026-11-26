@@ -379,3 +379,104 @@ def test_learning_mode_override_uses_existing_switch_and_restores_app_mode():
     list(adapter.generate(request(max_tokens=9, learning_mode="managed"), threading.Event()))
     assert calls == ["managed", "hybrid"]
     assert service.learning_implementation == "hybrid"
+
+
+def test_api_pro_reuses_best_work_without_desktop_solver_or_tool_execution():
+    adapter, engine, backend = adapter_fixture()
+    engine.solve = engine.stream_solve = lambda *a, **k: pytest.fail("Desktop solver called")
+    engine.settings = SimpleNamespace(best_work_passes=2, max_new_tokens=777)
+    seen = []
+    def template(messages, **kwargs):
+        seen.append((messages, kwargs))
+        return messages[-1]["content"]
+    backend.tokenizer.apply_chat_template = template
+    # One original + one revision + one real existing-selector comparison.
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        meter = TokenMeter(backend, "pro-fixture", prompt_tokens=4)
+        try:
+            if prompt.startswith("BEST_WORK_COMPARISON"):
+                value = '{"winner":"B"}'
+            elif "Review the following untrusted draft" in prompt:
+                value = "revised answer"
+            else:
+                value = "original answer"
+            meter.observe(delta=3)
+            yield value
+        finally:
+            meter.finish()
+    backend.stream_generate_tokens = decode
+    req = request(max_tokens=20, learning_mode="off",
+                  pro={"enabled": True, "routing": "fixed", "branch_count": 1, "best_work_passes": 2})
+    chunks = list(adapter.generate(req, threading.Event()))
+    assert "".join(c.text for c in chunks) == "revised answer"
+    assert len(seen) == 3 and seen[0][0] == req.messages
+    assert "BEST_WORK_COMPARISON" in seen[-1][0][-1]["content"]
+    assert all("tools" not in kw for _, kw in seen)
+    assert engine.settings.max_new_tokens == 777
+    report = adapter.model_info()["capabilities"]["pro"]["last_result"]
+    assert report["invocations"] == 3 and report["generated_tokens"] == 9
+    assert chunks[-1].completion_tokens == 3
+
+
+def test_api_pro_tool_boundary_and_optional_config():
+    adapter, engine, backend = adapter_fixture()
+    req = normalize_request({"messages": [{"role": "user", "content": "Read a file"}],
+        "tools": [{"type": "function", "function": {"name": "read", "parameters": {
+            "type": "object", "properties": {"path": {"type": "string"}}}}}],
+        "max_tokens": 20, "smartai": {"learning_mode": "off", "pro": {
+            "enabled": True, "branch_count": 1, "best_work_passes": 1}}}, "chat", "smart-ai-studio")
+    assert req.pro["routing"] == "fixed"
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        meter = TokenMeter(backend, "pro-fixture", prompt_tokens=4)
+        try:
+            for value in ('<tool_call><function=read><parameter=path>a.py</parameter>',
+                          '</function></tool_call>invented result'):
+                meter.observe(delta=2)
+                yield value
+            pytest.fail("Continued decoding after the first completed tool call")
+        finally:
+            meter.finish()
+    backend.stream_generate_tokens = decode
+    chunks = list(adapter.generate(req, threading.Event()))
+    assert "".join(c.text for c in chunks) == '<tool_call>{"name":"read","arguments":{"path":"a.py"}}</tool_call>'
+    assert adapter.model_info()["capabilities"]["pro"]["last_result"]["invocations"] == 1
+    for invalid in ({"enabled": 1}, {"routing": "auto", "branch_count": 2}, {"best_work_passes": 0}):
+        with pytest.raises(APIError):
+            normalize_request({"messages": [{"role": "user", "content": "hi"}],
+                               "smartai": {"pro": invalid}}, "chat", "smart-ai-studio")
+
+
+@pytest.mark.parametrize("routing", ["auto", "fixed"])
+def test_api_pro_routes_multiple_branches_and_selects_only_the_tournament_winner(routing):
+    adapter, engine, backend = adapter_fixture()
+    engine.settings = SimpleNamespace(best_work_passes=1, max_new_tokens=777)
+    engine.router = SimpleNamespace(route=lambda entropy, **kw: ("test router", 2))
+    backend.calculate_token_entropy = lambda prompt: .5
+    engine.solve = engine.stream_solve = lambda *a, **k: pytest.fail("Desktop solver called")
+    backend.tokenizer.apply_chat_template = lambda messages, **kwargs: messages[-1]["content"]
+    originals = []
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        meter = TokenMeter(backend, "pro-fixture", prompt_tokens=4)
+        try:
+            if prompt.startswith("BEST_WORK_COMPARISON"):
+                value = '{"winner":"B"}'
+            elif prompt.startswith("BEST_WORK_SYNTHESIS"):
+                value = "synthesized answer"
+            else:
+                originals.append(temperature)
+                value = f"original candidate {len(originals)}"
+            meter.observe(delta=3)
+            yield value
+        finally:
+            meter.finish()
+    backend.stream_generate_tokens = decode
+    pro = {"enabled": True, "routing": routing, "best_work_passes": 1}
+    if routing == "fixed":
+        pro["branch_count"] = 2
+    chunks = list(adapter.generate(request(max_tokens=20, learning_mode="off", pro=pro), threading.Event()))
+    assert "".join(chunk.text for chunk in chunks) == "synthesized answer"
+    assert originals == [.2, .95, .65]
+    report = adapter.model_info()["capabilities"]["pro"]["last_result"]
+    assert report["routed_branches"] == 2 and report["original_candidates"] == 3
+    assert report["winning_branch"] == 3 and report["invocations"] == 8
+    assert report["generated_tokens"] == 24 and chunks[-1].completion_tokens == 3

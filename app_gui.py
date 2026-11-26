@@ -2701,29 +2701,69 @@ class SmartAIChatbotApp:
             self.btn_canvas_preview.configure(text="👁️ Preview", fg=self.C["accent_cyan"])
             self.txt_canvas.configure(font=_FONT_MONO, wrap="none", bg=self.C["code_bg"])
 
+    @staticmethod
+    def _canvas_web_source(content):
+        """Recognize web artifacts without treating ordinary Python strings as HTML."""
+        from pathlib import Path
+        stripped = content.lstrip("\ufeff \t\r\n")
+        fenced = re.fullmatch(r"```(?:html|htm|svg)\s*\n([\s\S]*?)\n```\s*", stripped, re.I)
+        if fenced:
+            stripped = fenced.group(1)
+        # Leading HTML comments and XML declarations are legal in a web artifact.
+        probe = re.sub(r"^(?:\s*(?:<!--[\s\S]*?-->|<\?xml[^>]*\?>))*\s*", "", stripped, flags=re.I)
+        if re.match(r"(?i)^(?:<!doctype\s+html\b|<(?:html|head|body|svg|style|script|div|section|main|canvas|p|h[1-6]|article|form|button|table|meta|link)\b)", probe):
+            return stripped
+        if len(stripped) < 4096 and "\n" not in stripped and stripped.lower().endswith((".html", ".htm", ".svg")):
+            try:
+                if Path(stripped.strip()).is_file():
+                    return stripped.strip()
+            except OSError:
+                pass
+        return None
+
     def _on_canvas_run_code(self):
         # Preserve source positions so Python's traceback matches the editor.
         code = self.txt_canvas.get("1.0", "end-1c")
         if not code.strip():
             return
+        if self._canvas_web_source(code) is not None:
+            self._on_canvas_open_browser()
+            return
         ok, res = self.tools.execute_tool("python_sandbox", {"code": code})
         self._append_tool_call("python_sandbox", "Canvas Code Execution", res)
 
     def _on_canvas_open_browser(self):
-        """Opens current canvas HTML/SVG content or saved artifact in user's default web browser."""
-        content = self.txt_canvas.get("1.0", "end").strip()
-        if not content:
+        """Open web artifacts in the browser; show other content as escaped text."""
+        from pathlib import Path
+        import html
+        import tempfile
+        content = self.txt_canvas.get("1.0", "end-1c")
+        if not content.strip():
             messagebox.showinfo("Canvas Empty", "Please generate or load an interactive visualizer or HTML/SVG content first.")
             return
+        web_source = self._canvas_web_source(content)
+        if web_source is not None and "\n" not in web_source and len(web_source) < 4096:
+            try:
+                artifact = Path(web_source)
+                if artifact.suffix.lower() in {".html", ".htm", ".svg"} and artifact.is_file():
+                    webbrowser.open(artifact.resolve().as_uri())
+                    return
+            except OSError:
+                pass
 
-        # Check if content points to an existing file
-        if os.path.exists(content) and content.endswith((".html", ".htm", ".svg")):
-            webbrowser.open(f"file://{os.path.abspath(content)}")
-            return
-
-        # Create or update preview HTML in workspace
-        preview_file = os.path.join(self.workspace_dir, "canvas_interactive_preview.html")
-        if not content.startswith("<!DOCTYPE") and not content.startswith("<html") and not content.startswith("<svg"):
+        # The workspace is optional. Use a private temporary preview directory
+        # when no workspace is set, rather than joining a path with None.
+        workspace = getattr(self, "workspace_dir", None)
+        if workspace:
+            directory = Path(workspace)
+        else:
+            directory = Path(getattr(self, "_canvas_preview_directory", "") or tempfile.mkdtemp(prefix="smartai-canvas-"))
+            self._canvas_preview_directory = str(directory)
+        preview_file = directory / "canvas_interactive_preview.html"
+        if web_source is not None:
+            content = web_source
+        else:
+            content = html.escape(content)
             # Wrap standard code / text into styled HTML document
             html_wrapped = f"""<!DOCTYPE html>
 <html>
@@ -2742,11 +2782,15 @@ class SmartAIChatbotApp:
 </html>"""
             content = html_wrapped
 
-        with open(preview_file, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        webbrowser.open(f"file://{os.path.abspath(preview_file)}")
-        self._append_ai_message(f"🌐 **Browser Preview Opened**: Interactive visualizer launched at [`{preview_file}`](file://{os.path.abspath(preview_file)}).")
+        try:
+            preview_file.write_text(content, encoding="utf-8")
+            uri = preview_file.resolve().as_uri()
+            if not webbrowser.open(uri):
+                messagebox.showwarning("Canvas Browser", f"Could not open the default browser. Preview saved at {preview_file}.")
+                return
+            self._append_ai_message(f"🌐 **Browser Preview Opened**: Interactive visualizer launched at [`{preview_file}`]({uri}).")
+        except (OSError, webbrowser.Error) as error:
+            messagebox.showerror("Canvas Browser", str(error))
 
     def _on_canvas_make_visual(self):
         """Triggers the Interactive Visual Maker to generate a rich chart or simulation on Canvas."""

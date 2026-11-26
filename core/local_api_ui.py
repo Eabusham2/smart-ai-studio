@@ -75,9 +75,14 @@ class LocalAPIUI:
         from core.local_api_engine import LoadedModelAdapter
         from core.local_api import LocalModelAPIServer
         factory = self.adapter_factory or LoadedModelAdapter
+        # Read Tk preferences on its owner thread, not the HTTP worker.
+        pro_var = getattr(self.app, "pro_branches_var", None)
+        settings = getattr(self.app, "settings", None)
+        pro_defaults = {"enabled": bool(pro_var is not None and pro_var.get()),
+                        "best_work_passes": getattr(settings, "best_work_passes", 2)}
         adapter = factory(self.app.engine,
                           selected_model=lambda: self.app.models_config.get(self.app.active_tab_id, {}),
-                          busy=lambda: desktop_busy_reason(self.app))
+                          busy=lambda: desktop_busy_reason(self.app), pro_defaults=pro_defaults)
         if not adapter.model_info():
             self._status = "Select and load a text model with the Load button first."
             self._render()
@@ -220,7 +225,7 @@ class LocalAPIUI:
         ttk.Label(frame, text="Model ID: smart-ai-studio\nClaude Code base URL: omit /v1 from the URL above.",
                   wraplength=580).pack(anchor="w", pady=5)
         ttk.Label(frame, textvariable=self._status_var, wraplength=580, justify="left").pack(anchor="w", pady=8)
-        ttk.Label(frame, text="While serving, the model is reserved for API requests. Stop the server to chat, switch models, or learn in Studio.",
+        ttk.Label(frame, text="API inherits Pro branches and Best Work passes when started; clients can override smartai.pro. Stop the server to use desktop chat or switch models.",
                   wraplength=580, justify="left").pack(anchor="w", pady=5)
         self._render()
 
