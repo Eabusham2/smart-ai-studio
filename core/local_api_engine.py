@@ -254,8 +254,10 @@ class LoadedModelAdapter:
         count = (getattr(self.engine, "lossless_speed_options", None) or {}).get("native_branch_count", 1)
         if type(count) is not int or not 1 <= count <= 64:
             count = 1
-        return {"enabled": False, "routing": "auto", "branch_count": count,
-                "best_work_passes": passes, **self.pro_defaults, **overrides}
+        # The API must not inherit an enabled desktop Pro toggle. Only an
+        # explicit request can enable it; other Pro preferences remain defaults.
+        return {"routing": "auto", "branch_count": count,
+                "best_work_passes": passes, **self.pro_defaults, "enabled": False, **overrides}
 
     def _decode_stream(self, backend, options, cancel_event):
         if backend is self.engine:

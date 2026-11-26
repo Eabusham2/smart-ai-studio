@@ -75,11 +75,10 @@ class LocalAPIUI:
         from core.local_api_engine import LoadedModelAdapter
         from core.local_api import LocalModelAPIServer
         factory = self.adapter_factory or LoadedModelAdapter
-        # Read Tk preferences on its owner thread, not the HTTP worker.
-        pro_var = getattr(self.app, "pro_branches_var", None)
+        # API Pro is opt-in, regardless of the desktop Pro checkbox.
+        # Keep the app's pass count as the default when a client opts in.
         settings = getattr(self.app, "settings", None)
-        pro_defaults = {"enabled": bool(pro_var is not None and pro_var.get()),
-                        "best_work_passes": getattr(settings, "best_work_passes", 2)}
+        pro_defaults = {"best_work_passes": getattr(settings, "best_work_passes", 2)}
         adapter = factory(self.app.engine,
                           selected_model=lambda: self.app.models_config.get(self.app.active_tab_id, {}),
                           busy=lambda: desktop_busy_reason(self.app), pro_defaults=pro_defaults)
@@ -225,7 +224,7 @@ class LocalAPIUI:
         ttk.Label(frame, text="Model ID: smart-ai-studio\nClaude Code base URL: omit /v1 from the URL above.",
                   wraplength=580).pack(anchor="w", pady=5)
         ttk.Label(frame, textvariable=self._status_var, wraplength=580, justify="left").pack(anchor="w", pady=8)
-        ttk.Label(frame, text="API inherits Pro branches and Best Work passes when started; clients can override smartai.pro. Stop the server to use desktop chat or switch models.",
+        ttk.Label(frame, text="API Pro is off by default. Set smartai.pro.enabled to true to opt in; Best Work passes inherit the app setting. Stop the server to use desktop chat or switch models.",
                   wraplength=580, justify="left").pack(anchor="w", pady=5)
         self._render()
 

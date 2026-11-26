@@ -480,3 +480,18 @@ def test_api_pro_routes_multiple_branches_and_selects_only_the_tournament_winner
     assert report["routed_branches"] == 2 and report["original_candidates"] == 3
     assert report["winning_branch"] == 3 and report["invocations"] == 8
     assert report["generated_tokens"] == 24 and chunks[-1].completion_tokens == 3
+
+
+def test_api_pro_is_off_by_default_even_when_desktop_pro_is_enabled():
+    adapter, engine, backend = adapter_fixture()
+    # Simulate legacy server-start defaults captured with the desktop checkbox on.
+    adapter.pro_defaults = {"enabled": True, "best_work_passes": 5}
+    for pro in ({}, {"best_work_passes": 3}, {"enabled": False}):
+        chunks = list(adapter.generate(request(max_tokens=8, learning_mode="off", pro=pro),
+                                       threading.Event()))
+        assert "".join(chunk.text for chunk in chunks) == "Hello world!"
+        assert adapter.model_info()["capabilities"]["pro"]["last_result"]["status"] == "disabled"
+    assert len(backend.calls) == 3
+    defaults = adapter.model_info()["capabilities"]["pro"]["defaults"]
+    assert defaults["enabled"] is False and defaults["best_work_passes"] == 5
+    assert adapter._pro_config({"enabled": True})["enabled"] is True
