@@ -222,6 +222,94 @@ class ChatArchive(Sequence):
                           (self.tab, self.tab)).fetchone()
 
 
+class LegacyChatArchive(ChatArchive):
+    """Retain every visible turn while the original learner compacts a working view.
+
+    Legacy learning has no source-free recall validator. Its existing successful
+    parameter update may retire a completed exchange from the working prompt
+    only when a durable, matching loaded checkpoint exists. Missing, replaced
+    or rolled-back weights restore the unretired source text automatically.
+    """
+
+    def __init__(self, db_path, tab):
+        super().__init__(db_path, tab)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("""CREATE TABLE IF NOT EXISTS legacy_chat_receipts (
+                tab TEXT NOT NULL, model_key TEXT NOT NULL, generation TEXT NOT NULL,
+                retired TEXT NOT NULL, PRIMARY KEY(tab, model_key, generation))""")
+
+    @staticmethod
+    def _checkpoint(backend):
+        store = getattr(backend, "learning_state", None)
+        if store is None:
+            return None
+        try:
+            manifest = store.current_manifest(verify=False)
+            if not manifest:
+                return None
+            generation = manifest["generation"]
+            expected = (Path(store.directory) / "generations" / generation /
+                        manifest["checkpoint"]).resolve()
+            # A current pointer on disk is not sufficient: the live runtime
+            # must have activated that exact artifact before using its receipt.
+            actual = next((getattr(backend, name, None) for name in (
+                "_loaded_learning_checkpoint", "_last_managed_checkpoint",
+                "_loaded_legacy_deployment", "adapter_path")
+                if isinstance(getattr(backend, name, None), (str, Path))
+                and getattr(backend, name, None)), None)
+            if actual is None or Path(actual).resolve() != expected or not expected.exists():
+                return None
+            if getattr(backend, "_mlx_parent_generation", generation) != generation:
+                return None
+            identity = json.dumps([str(Path(store.directory).resolve()), store.identity_digest],
+                                  ensure_ascii=False, separators=(",", ":"))
+            return identity, generation, manifest.get("parent")
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+
+    def legacy_projection(self, backend):
+        state = self._checkpoint(backend)
+        retired = set()
+        if state:
+            model_key, generation, parent = state
+            with closing(sqlite3.connect(self.path)) as db:
+                row = db.execute("SELECT retired FROM legacy_chat_receipts WHERE tab=? AND model_key=? AND generation=?",
+                                 (self.tab, model_key, generation)).fetchone()
+                if row is None and parent:
+                    # A direct descendant includes its authenticated parent's
+                    # learned weights. No receipt from another model may apply.
+                    row = db.execute("SELECT retired FROM legacy_chat_receipts WHERE tab=? AND model_key=? AND generation=?",
+                                     (self.tab, model_key, parent)).fetchone()
+            if row:
+                retired = set(json.loads(row[0]))
+        return [turn for turn in self if turn.turn_id not in retired], retired, state
+
+    def record_legacy_update(self, backend, previous, retired, learned):
+        """Bind retirement IDs to the actual newly published learned generation."""
+        state = self._checkpoint(backend)
+        if not state or state == previous:
+            return None
+        model_key, generation, parent = state
+        if previous is None:
+            if parent is not None:
+                return None
+        elif previous[0] != model_key or previous[1] != parent:
+            return None
+        updated = set(retired) | {turn.turn_id for turn in learned if isinstance(turn, TranscriptTurn)}
+        with self._lock, closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("INSERT OR REPLACE INTO legacy_chat_receipts VALUES (?,?,?,?)",
+                       (self.tab, model_key, generation, json.dumps(sorted(updated))))
+            # Match the normal checkpoint store's current/parent retention.
+            db.execute("DELETE FROM legacy_chat_receipts WHERE tab=? AND model_key=? AND generation NOT IN (?,?)",
+                       (self.tab, model_key, generation, parent or generation))
+        return updated, state
+
+    def clear(self):
+        super().clear()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DELETE FROM legacy_chat_receipts WHERE tab=?", (self.tab,))
+
+
 class ActiveChatHistory(Sequence):
     """Indexable, paged projection of a large transcript against a particular receipt."""
 

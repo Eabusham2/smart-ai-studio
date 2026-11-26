@@ -4192,17 +4192,29 @@ class SmartAIChatbotApp:
         self._show_transcript_page()
 
     def _open_tab_history(self, tab, cached=None):
+        """Persist the complete visible history independently of the active prompt."""
+        from core.context_memory import LegacyChatArchive
         implementation = getattr(self.settings, "learning_implementation", "legacy")
-        if (implementation in {"managed", "hybrid"}
-                and self.models_config[tab].get("model_type", "text") == "text"):
+        archive_cls = ChatArchive
+        if self.models_config[tab].get("model_type", "text") != "text":
+            # Media conversations belong to the model, not a text learning mode.
+            key = f"media:{tab}"
+        elif implementation == "legacy":
+            key = f"legacy:{tab}"
+            archive_cls = LegacyChatArchive
+        else:
             scope = getattr(self.engine, "learning_scope", None)
             key = tab if scope is None or scope.kind == "model" else f"{tab}:scope:{scope.scope_id}"
             if implementation == "hybrid":
                 key = f"hybrid:{key}"
-            if isinstance(cached, ChatArchive) and cached.path == self.settings.database_path and cached.tab == key:
-                return cached
-            return ChatArchive(self.settings.database_path, key)
-        return cached if isinstance(cached, list) else []
+        if isinstance(cached, archive_cls) and cached.path == self.settings.database_path and cached.tab == key:
+            return cached
+        archive = archive_cls(self.settings.database_path, key)
+        # Migrate any still-live old list without duplicating an existing archive.
+        if isinstance(cached, list) and cached and not archive:
+            for turn in cached:
+                archive.append(turn)
+        return archive
 
     def _clear_media_previews(self):
         for state in getattr(self, "_generation_visuals", {}).values():
