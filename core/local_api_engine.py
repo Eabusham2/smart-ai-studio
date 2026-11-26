@@ -13,6 +13,9 @@ import math
 from pathlib import Path
 import threading
 
+from core.local_api import DEFAULT_API_MEMORY_LIMIT_GB, validate_memory_limit
+from core.local_api_memory import RequestMemoryLimit
+
 
 class FormattedPrompt(str):
     """An already-templated request; VLM paths must not wrap it as one user turn."""
@@ -26,13 +29,17 @@ class FormattedPrompt(str):
 
 
 class LoadedModelAdapter:
-    def __init__(self, engine, *, selected_model=None, busy=None, pro_defaults=None):
+    def __init__(self, engine, *, selected_model=None, busy=None, pro_defaults=None,
+                 memory_limit_defaults=None, owned_processes_provider=None):
         self.engine = engine
         self.selected_model = selected_model or (lambda: {})
         self.busy = busy or (lambda: "")
         self._request_lock = threading.Lock()
         self._last_learning = {"status": "not_run"}
         self.pro_defaults = dict(pro_defaults or {})
+        self.memory_limit_defaults = {"enabled": False, "limit_gb": DEFAULT_API_MEMORY_LIMIT_GB,
+                                      **validate_memory_limit({} if memory_limit_defaults is None else memory_limit_defaults)}
+        self.owned_processes_provider = owned_processes_provider
         self._last_pro = {"status": "not_run"}
 
     def model_info(self):
@@ -125,6 +132,8 @@ class LoadedModelAdapter:
             return
         if cancel_event.is_set():
             return
+        if isinstance(cancel_event, RequestMemoryLimit):
+            cancel_event.check()
         # Tools and control messages belong to the harness. Never train on
         # incomplete tool calls, reasoning text or an unpaired tool result.
         from core.gui_thinking import reasoning_segments
@@ -236,6 +245,7 @@ class LoadedModelAdapter:
             "learning_ready": self._learning_ready(backend),
             "learning_last_result": dict(self._last_learning),
             "learning_mode_switch_requires_reload": not inference_only,
+            "memory_limit": {"supported": True, "defaults": dict(self.memory_limit_defaults)},
             "pro": {"supported": True, "defaults": self._pro_config({}),
                     "routing": ["auto", "fixed"], "max_branches": 64,
                     "max_best_work_passes": 999, "last_result": dict(self._last_pro)},
@@ -244,7 +254,7 @@ class LoadedModelAdapter:
             "request_speedups": sorted(speedups),
             "active_speedups": active,
             "load_time_only": ["model", "context_capacity", "device", "offload", "kv_cache_precision",
-                               "runtime", "memory_limit", "native_gguf_speculation"],
+                               "runtime", "native_gguf_speculation"],
             "disabled": ["desktop_history", "desktop_tools", "desktop_trace_logging",
                          "persistent_api_prompt_cache", "server_side_conversation"],
         }
@@ -264,11 +274,15 @@ class LoadedModelAdapter:
 
     def _decode_stream(self, backend, options, cancel_event):
         if backend is self.engine:
-            return self._torch_stream(backend, options, cancel_event)
-        options = dict(options)
-        if "cancelled" in inspect.signature(backend.stream_generate_tokens).parameters:
-            options["cancelled"] = cancel_event.is_set
-        return backend.stream_generate_tokens(**options)
+            stream = self._torch_stream(backend, options, cancel_event)
+        else:
+            options = dict(options)
+            if "cancelled" in inspect.signature(backend.stream_generate_tokens).parameters:
+                options["cancelled"] = cancel_event.is_set
+            stream = backend.stream_generate_tokens(**options)
+        if isinstance(cancel_event, RequestMemoryLimit):
+            return cancel_event.checked_stream(stream)
+        return stream
 
     def _validate_execution(self, backend, request):
         from core.local_api import APIError
@@ -302,6 +316,8 @@ class LoadedModelAdapter:
         model_lock = getattr(self.engine, "_model_lock", None)
         acquired = False
         previous_mode, previous_scope, switched = None, None, False
+        switch_attempted = False
+        budget = None
         try:
             if model_lock is not None:
                 acquired = model_lock.acquire(blocking=False)
@@ -309,6 +325,13 @@ class LoadedModelAdapter:
                     raise APIError(409, "A model operation is in progress.", code="model_busy")
             if not self.model_info():
                 raise APIError(503, "Load a text model in Smart AI Studio first.", code="model_not_loaded")
+            if request is not None:
+                options = {**self.memory_limit_defaults, **validate_memory_limit(request.memory_limit)}
+                budget = RequestMemoryLimit(self.engine, self._backend(), options, cancel_event,
+                                            self.owned_processes_provider)
+                budget.start()
+                if options["enabled"]:
+                    cancel_event = budget
             previous_mode = self._learning_mode()
             requested = getattr(request, "learning_mode", None)
             if (requested not in (None, "off")
@@ -323,25 +346,45 @@ class LoadedModelAdapter:
                     raise APIError(400, "A pinned or document learning scope cannot be switched by an API request.", code="unsupported_option")
                 # The real implementation switch reloads its own checkpoint and
                 # rolls back on failure. The production model lock is reentrant.
+                switch_attempted = True
                 switch(requested, cancel_event=cancel_event)
                 switched = True
             backend = self._backend()
+            if switched:
+                budget.bind(backend)
+                budget.check()
             if requested not in (None, "off") and not self._learning_ready(backend):
                 raise APIError(400, "The requested learning implementation has no verified trainer on this model.", code="unsupported_option")
             prepare = getattr(backend, "prepare_request", None)
             if callable(prepare):
+                # Native template/tokenizer calls also need to clear a previous cancellation.
                 prepare()
-            yield backend
+            yield backend, cancel_event
+            if budget is not None:
+                budget.check()
+        except Exception:
+            if budget is not None and budget.error is not None:
+                raise budget.error
+            raise
         finally:
             try:
+                if budget is not None:
+                    budget.close()
                 if switched:
                     # Restore the app selection, not the just-trained checkpoint
                     # of a different implementation. It stays saved in its own store.
                     self.engine.set_learning_implementation(previous_mode, preferred_scope=previous_scope)
             finally:
-                if acquired:
-                    model_lock.release()
-                self._request_lock.release()
+                try:
+                    if switch_attempted and getattr(self.engine, "is_model_loaded", False):
+                        # The learning switch may also replace the model while rolling back.
+                        current = self._backend()
+                        if current is not budget.original_backend:
+                            budget.restore_reloaded_backend(current)
+                finally:
+                    if acquired:
+                        model_lock.release()
+                    self._request_lock.release()
 
     def _backend(self):
         from core.local_api import APIError
@@ -483,7 +526,7 @@ class LoadedModelAdapter:
 
     def count_tokens(self, request):
         from core.local_api import APIError
-        with self._lease() as backend:
+        with self._lease() as (backend, _):
             self._validate_execution(backend, request)
             count = self._prompt_tokens(backend, self._format_prompt(backend, request), request.speedups)
             if count is None:
@@ -493,7 +536,7 @@ class LoadedModelAdapter:
     def generate(self, request, cancel_event):
         from core.generation_metrics import RequestMetrics, observe_generations, valid_count
         from core.local_api import APIError, GenerationChunk
-        with self._lease(request, cancel_event) as backend:
+        with self._lease(request, cancel_event) as (backend, cancel_event):
             if cancel_event.is_set():
                 return
             native, mlx = self._validate_execution(backend, request)

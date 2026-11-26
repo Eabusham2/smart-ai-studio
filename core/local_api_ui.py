@@ -36,6 +36,7 @@ def desktop_busy_reason(app):
 
 class LocalAPIUI:
     def __init__(self, app, *, server_factory=None, adapter_factory=None):
+        from core.local_api import DEFAULT_API_MEMORY_LIMIT_GB
         self.app = app
         self.server_factory = server_factory
         self.adapter_factory = adapter_factory
@@ -43,6 +44,9 @@ class LocalAPIUI:
         self._dialog = None
         self._worker = None
         self._stopping = False
+        self._paused_watchdog = None
+        self.memory_limit_defaults = {"enabled": False, "limit_gb": DEFAULT_API_MEMORY_LIMIT_GB}
+        self._memory_enabled_var = None
         self._status = "Load a text model, then start serving it to other programs."
         self.host = os.getenv("SMARTAI_API_HOST", "127.0.0.1")
         self.port = os.getenv("SMARTAI_API_PORT", "1234")
@@ -50,8 +54,7 @@ class LocalAPIUI:
 
     @property
     def reserves_model(self):
-        return bool(self._stopping or (self.server is not None
-                    and (self.server.is_running or self.server.active_requests)))
+        return self.server is not None
 
     def create_button(self, parent, font):
         import tkinter as tk
@@ -64,7 +67,7 @@ class LocalAPIUI:
         )
         self.app.btn_local_api.pack(side="left", padx=2)
 
-    def start(self, *, host=None, port=None, api_key=None):
+    def start(self, *, host=None, port=None, api_key=None, memory_limit_enabled=None, memory_limit_gb=None):
         if self.reserves_model:
             return False
         reason = desktop_busy_reason(self.app)
@@ -73,16 +76,30 @@ class LocalAPIUI:
             self._render()
             return False
         from core.local_api_engine import LoadedModelAdapter
-        from core.local_api import LocalModelAPIServer
+        from core.local_api import LocalModelAPIServer, validate_memory_limit
+        limit = dict(self.memory_limit_defaults)
+        try:
+            if memory_limit_enabled is not None:
+                limit["enabled"] = memory_limit_enabled
+            if memory_limit_gb is not None:
+                limit["limit_gb"] = float(memory_limit_gb) if isinstance(memory_limit_gb, str) else memory_limit_gb
+            limit = validate_memory_limit(limit)
+        except (ValueError, TypeError, OverflowError):
+            self._status = "Enter a finite API memory limit of at least 0.5 GiB."
+            self._render()
+            return False
         factory = self.adapter_factory or LoadedModelAdapter
         # API Pro is opt-in, regardless of the desktop Pro checkbox.
         # Keep the app's pass count as the default when a client opts in.
         settings = getattr(self.app, "settings", None)
         pro_defaults = {"best_work_passes": getattr(settings, "best_work_passes", 2)}
-        adapter = factory(self.app.engine,
-                          selected_model=lambda: self.app.models_config.get(self.app.active_tab_id, {}),
-                          busy=lambda: desktop_busy_reason(self.app), pro_defaults=pro_defaults)
-        if not adapter.model_info():
+        adapter = factory(
+            self.app.engine, selected_model=lambda: self.app.models_config.get(self.app.active_tab_id, {}),
+            busy=lambda: desktop_busy_reason(self.app), pro_defaults=pro_defaults,
+            memory_limit_defaults=limit, owned_processes_provider=getattr(self.app, "_owned_runtime_pids", None),
+        )
+        model = adapter.model_info()
+        if not model:
             self._status = "Select and load a text model with the Load button first."
             self._render()
             return False
@@ -95,13 +112,22 @@ class LocalAPIUI:
                 port=int(self.port), api_key=self.api_key, count_tokens=adapter.count_tokens,
                 busy=lambda: desktop_busy_reason(self.app),
             )
+            watchdog = getattr(self.app, "watchdog", None)
+            if watchdog is not None and getattr(watchdog, "_running", False):
+                self._paused_watchdog = watchdog
+                self.app._sync_memory_watchdog(force_stop=True)
             server.start()
         except Exception as error:
+            self._resume_desktop_watchdog()
             self._status = f"Could not start API server: {error}"
             self._render()
             return False
         self.server = server
-        self._status = f"Serving {adapter.model_info()['name']} at {server.base_url}"
+        self.memory_limit_defaults = limit
+        if self._memory_enabled_var is not None:
+            self._memory_enabled_var.set(limit["enabled"])
+            self._memory_gb_var.set(str(limit["limit_gb"]))
+        self._status = f"Serving {model['name']} at {server.base_url}"
         self._render()
         return True
 
@@ -130,6 +156,13 @@ class LocalAPIUI:
         self._status = f"Server shutdown is incomplete: {error}. Choose Stop to retry."
         self._render()
 
+    def _resume_desktop_watchdog(self):
+        watchdog, self._paused_watchdog = self._paused_watchdog, None
+        if watchdog is not None and getattr(self.app, "is_model_loaded", False):
+            # Restart the same monitor and threshold without recalculating or saving desktop preferences.
+            self.app._memory_watchdog_epoch += 1
+            watchdog.start_monitoring()
+
     def _finish_stop(self, server, stopped):
         if self.server is not server:
             return
@@ -140,6 +173,7 @@ class LocalAPIUI:
             return
         self.server = None
         self._stopping = False
+        self._resume_desktop_watchdog()
         self._status = "API server stopped. The model is still loaded and ready in Studio."
         self._render()
 
@@ -164,6 +198,8 @@ class LocalAPIUI:
             self._start_button.configure(state="disabled" if active else "normal")
             self._stop_button.configure(state="normal" if active and not self._stopping else "disabled")
             self._key_button.configure(state="disabled" if active else "normal")
+            self._memory_toggle.configure(state="disabled" if active else "normal")
+            self._memory_entry.configure(state="normal" if self._memory_enabled_var.get() and not active else "disabled")
             for entry in self._entries:
                 entry.configure(state="disabled" if active else "normal")
             self._endpoint_var.set(self.server.base_url if self.server else "http://127.0.0.1:1234/v1")
@@ -180,7 +216,7 @@ class LocalAPIUI:
         dialog = self._dialog = tk.Toplevel(self.app.root)
         dialog.title("Local model API")
         dialog.transient(self.app.root)
-        fit_window_to_screen(dialog, 650, 480, min_width=540, min_height=430)
+        fit_window_to_screen(dialog, 650, 565, min_width=540, min_height=515)
         frame = ttk.Frame(dialog, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Use your loaded model in other apps", font=("Arial", 16, "bold")).pack(anchor="w")
@@ -201,10 +237,25 @@ class LocalAPIUI:
             self._entries.append(entry)
         ttk.Label(frame, text="127.0.0.1 serves this computer. For your LAN, use 0.0.0.0 and set an API key.",
                   wraplength=580).pack(anchor="w", pady=5)
+        if self._memory_enabled_var is None:
+            self._memory_enabled_var = tk.BooleanVar(self.app.root, value=self.memory_limit_defaults["enabled"])
+            self._memory_gb_var = tk.StringVar(self.app.root, value=str(self.memory_limit_defaults["limit_gb"]))
+        memory = ttk.Frame(frame)
+        memory.pack(fill="x", pady=(6, 2))
+        self._memory_toggle = ttk.Checkbutton(memory, text="API memory limit", variable=self._memory_enabled_var,
+                                              command=self._render)
+        self._memory_toggle.pack(side="left")
+        self._memory_entry = ttk.Entry(memory, textvariable=self._memory_gb_var, width=8)
+        self._memory_entry.pack(side="left", padx=(12, 4))
+        ttk.Label(memory, text="GiB").pack(side="left")
+        ttk.Label(frame, text="Clients can override this default. When Studio and its workers exceed the limit, "
+                  "the request is cancelled at the next memory check.", wraplength=580,
+                  justify="left").pack(anchor="w", pady=3)
         actions = ttk.Frame(frame)
         actions.pack(fill="x", pady=10)
         self._start_button = ttk.Button(actions, text="Start server", command=lambda: self.start(
-            host=self._host_var.get(), port=self._port_var.get(), api_key=self._key_var.get()))
+            host=self._host_var.get(), port=self._port_var.get(), api_key=self._key_var.get(),
+            memory_limit_enabled=self._memory_enabled_var.get(), memory_limit_gb=self._memory_gb_var.get()))
         self._start_button.pack(side="left")
         self._stop_button = ttk.Button(actions, text="Stop server", command=self.stop)
         self._stop_button.pack(side="left", padx=6)
@@ -271,13 +322,19 @@ def install_local_api_ui(module=None):
             return
         return close(self, *args, **kwargs)
 
+    sync_watchdog = getattr(cls, "_sync_memory_watchdog", None)
+    if callable(sync_watchdog):
+        @functools.wraps(sync_watchdog)
+        def sync_desktop_watchdog(self, model_info=None, *, force_stop=False):
+            return sync_watchdog(self, model_info, force_stop=force_stop or api_serving(self))
+        cls._sync_memory_watchdog = sync_desktop_watchdog
+
     emergency = getattr(cls, "_on_memory_pressure_emergency", None)
     if callable(emergency):
         @functools.wraps(emergency)
         def emergency_after_api(self, *args, **kwargs):
-            controller = getattr(self, "_local_api_ui", None)
-            if controller is not None and not controller.shutdown_ready():
-                self.root.after(100, lambda: emergency_after_api(self, *args, **kwargs))
+            # A desktop sample already in flight when the listener started belongs to the old policy.
+            if api_serving(self):
                 return
             return emergency(self, *args, **kwargs)
         cls._on_memory_pressure_emergency = emergency_after_api

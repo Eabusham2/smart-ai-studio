@@ -6,6 +6,12 @@ the top bar. Keep `127.0.0.1` and port `1234` for clients on the same computer,
 optionally set an API key, and select **Start**. The dialog shows the URL and has
 **Copy URL**, **Stop**, and a key generator.
 
+**API memory limit** starts unchecked with **14.5 GiB** in the amount field.
+Check it before starting the server to apply that default to API requests.
+Studio remembers your selection when you reopen the dialog in the same session.
+Serving pauses the desktop memory watchdog. Stopping the server restores the
+previous desktop policy once active requests have finished cleaning up.
+
 The public model ID is always `smart-ai-studio`; `/v1/models` reports the actual
 loaded model name. Choosing Bonsai or CRACK in Studio determines which weights
 answer the requests.
@@ -164,6 +170,10 @@ never written to disk, even if the desktop disk-cache preference is enabled.
 
 ### Optional execution controls
 
+API Pro starts off even when desktop Pro is enabled. Set `smartai.pro.enabled`
+to `true` on a request to opt in. Best Work uses Studio’s configured pass count
+unless the request supplies `smartai.pro.best_work_passes`.
+
 Omitted sampling options use the resident model’s recommendation, falling back to the existing API defaults when no recommendation is available. Bonsai 2.5 (including its CRACK derivative) uses Prism’s thinking profile (temperature 1.0, top-p 0.95, top-k 20, min-p 0, repetition penalty 1.0) or its non-thinking profile (0.7, 0.80, 20, 0, repetition penalty 1.0, presence penalty 1.5). Explicit supported client overrides take precedence. The loaded model’s speedups are inherited unless explicitly overridden; API disk prompt persistence and desktop Best Work remain disabled.
 
 `smartai.learning_mode` optionally accepts `legacy`, `managed`, `hybrid`, or `off`. Omission inherits the app’s currently selected implementation. A different implementation uses the existing checkpoint-aware mode switch and restores the original app selection afterward; this can require two model reloads. The API learns from a successfully completed ordinary user/assistant exchange via the existing trainer, never from injected desktop history, tool calls, system prompts, aborted or truncated responses. Learning can add latency and may be rejected by the trainer; the capabilities endpoint exposes the last outcome. API requests do not create desktop chat traces or retire the harness’s context. Existing managed replay/checkpoint metadata can still contain training evidence. Read-only/inference-only runtimes report unavailable learning, rather than fabricating a parameter update.
@@ -173,6 +183,35 @@ The authenticated `GET /v1/smartai/capabilities` endpoint lists the loaded
 context, accepted sampling fields, active and request-adjustable speedups, and
 load-time-only settings. Ordinary harness requests need none of these extensions.
 Unknown extension keys and unsupported backend overrides return explicit errors.
+
+The `memory_limit` capability reports the server's current request defaults.
+A newly opened Studio session reports
+`{"supported":true,"defaults":{"enabled":false,"limit_gb":14.5}}`.
+Clients can override either field for a single request. For example, this
+Chat Completions request enables the 14.5 GiB limit even when the server
+default is off.
+
+```json
+{
+  "model": "smart-ai-studio",
+  "messages": [{"role": "user", "content": "Summarize this conversation."}],
+  "smartai": {"memory_limit": {"enabled": true, "limit_gb": 14.5}}
+}
+```
+
+Omitted fields inherit the server defaults. Setting only `limit_gb` changes
+the amount while retaining the server's enabled setting. The amount must be a
+finite number of at least 0.5 GiB. A client can turn the limit off or choose a
+different amount. Changes apply to that request and leave subsequent requests
+and desktop preferences untouched.
+
+When enabled, Studio checks the memory used by the app and its owned workers
+before inference and periodically during the request. Exceeding the limit
+cancels the request with `memory_limit_exceeded`. If memory usage cannot be
+measured, the request fails with `memory_measurement_unavailable`. Both are
+HTTP 503 errors before streaming starts. During streaming the server reports
+the error on the open stream. Memory use can exceed the threshold between
+samples or while the backend finishes cancelling.
 
 The optional top-level sampling fields are `top_k`, `min_p`,
 `repeat_penalty` (alias `repetition_penalty`), `repeat_last_n`,
@@ -219,9 +258,9 @@ prompt reuse just for this MLX request:
   MTP may be disabled per request; enabling it requires an already loaded
   verified head. Disk persistence and branch prefill are not API features.
 - Native GGUF speculation strategy and draft depth are fixed by the loaded
-  server. Model selection, device/offload, KV precision, memory limits and
-  physical context are configured locally before starting the API, not remotely
-  changed mid-request. Unsupported overrides are rejected rather than ignored.
+  server. Configure model selection, device/offload, KV precision and physical
+  context locally before starting the API. A request memory limit can cancel
+  inference while keeping the loaded model and its allocation settings in place.
 
 These controls do not add conversation memory or desktop behavior. The API respects the request's output limit separately
 from Studio's unlimited-until-context desktop behavior. Exact prompt/output

@@ -555,3 +555,201 @@ def test_tensorfold_terminal_reason_reaches_api_even_when_token_heuristic_differ
     result = list(adapter.generate(request(max_tokens=limit, learning_mode="off", pro=pro), threading.Event()))
     assert result[-1].completion_tokens == 3
     assert result[-1].finish_reason == native_reason
+
+
+@pytest.mark.parametrize("options", [
+    None, "14.5", 14.5, False, [], {"enabled": 0}, {"enabled": "off"}, {"extra": True},
+    {"limit_gb": False}, {"limit_gb": 0.49}, {"limit_gb": "14.5"}, {"limit_gb": None},
+    {"limit_gb": float("nan")}, {"limit_gb": float("inf")}, {"limit_gb": 10**500},
+])
+def test_invalid_memory_limit_fails_before_generation(options):
+    with pytest.raises(APIError, match="memory_limit") as error:
+        normalize_request({"messages": [{"role": "user", "content": "hi"}],
+                           "smartai": {"memory_limit": options}}, "chat", "model")
+    assert error.value.status == 400
+
+
+def test_api_memory_defaults_overrides_and_count_are_separate_from_desktop(monkeypatch):
+    from unittest.mock import Mock
+    from core.memory_watchdog import SystemMemoryWatchdog
+    measure = Mock(return_value={"process_memory_known": True, "owned_memory_complete": True, "total_allocated_bytes": 1024**3})
+    monkeypatch.setattr(SystemMemoryWatchdog, "get_detailed_memory_breakdown", measure)
+    adapter, engine, backend = adapter_fixture()
+    engine.speed_memory_limit_gb, backend.speed_memory_limit_gb = 12, 10
+    seen = []
+    backend.owned_process_ids = lambda: [413]
+    backend.prepare_request = lambda: seen.append((engine.speed_memory_limit_gb, backend.speed_memory_limit_gb))
+    caps = adapter.model_info()["capabilities"]
+    assert caps["memory_limit"] == {"supported": True, "defaults": {"enabled": False, "limit_gb": 14.5}}
+    assert "memory_limit" not in caps["load_time_only"]
+    for options in ({}, {"limit_gb": 6}):
+        list(adapter.generate(request(memory_limit=options), threading.Event()))
+        assert seen[-1] == (None, None)
+    measure.assert_not_called()
+    assert adapter.count_tokens(request(memory_limit={"enabled": True}, learning_mode="managed")) == 4
+    assert len(seen) == 3 and seen[-1] == (12, 10) and not measure.called
+    list(adapter.generate(request(memory_limit={"enabled": True}), threading.Event()))
+    assert seen[-1] == (14.5, 14.5)
+    measure.assert_called_with(owned_pids=[413])
+    enabled = LoadedModelAdapter(engine, memory_limit_defaults={"enabled": True, "limit_gb": 9},
+                                 owned_processes_provider=lambda: [417, 418])
+    for options, expected in (({}, 9), ({"limit_gb": 3}, 3), ({"enabled": False}, None), ({}, 9)):
+        list(enabled.generate(request(memory_limit=options), threading.Event()))
+        assert seen[-1] == (expected, expected)
+        assert (engine.speed_memory_limit_gb, backend.speed_memory_limit_gb) == (12, 10)
+    measure.assert_called_with(owned_pids=[417, 418])
+
+
+@pytest.mark.parametrize("known,usage,code", [(True, 17.0, "memory_limit_exceeded"),
+                                            (False, 0.0, "memory_measurement_unavailable")])
+def test_memory_preflight_rejects_before_inference_or_learning_switch(monkeypatch, known, usage, code):
+    from core.memory_watchdog import SystemMemoryWatchdog
+    monkeypatch.setattr(SystemMemoryWatchdog, "get_detailed_memory_breakdown", lambda **_: {
+        "process_memory_known": known, "owned_memory_complete": True, "total_allocated_bytes": usage * 1024**3})
+    adapter, engine, backend = adapter_fixture()
+    engine.set_learning_implementation = lambda *a, **kw: pytest.fail("unexpected reload")
+    for pro in ({}, {"enabled": True}):
+        with pytest.raises(APIError) as error:
+            list(adapter.generate(request(memory_limit={"enabled": True}, pro=pro, learning_mode="managed"),
+                                  threading.Event()))
+        assert error.value.status == 503 and error.value.code == code
+        assert not backend.calls and not engine._model_lock.locked()
+        assert not hasattr(engine, "speed_memory_limit_gb") and not hasattr(backend, "speed_memory_limit_gb")
+
+
+def test_memory_cap_restores_after_generator_close_and_reloaded_learning_mode(monkeypatch):
+    from core.memory_watchdog import SystemMemoryWatchdog
+    monkeypatch.setattr(SystemMemoryWatchdog, "get_detailed_memory_breakdown", lambda **_: {
+        "process_memory_known": True, "owned_memory_complete": True, "total_allocated_bytes": 1024**3})
+    adapter, engine, original = adapter_fixture()
+    engine._model_lock = threading.RLock()
+    engine.speed_memory_limit_gb, original.speed_memory_limit_gb = 5, 4
+    service = SimpleNamespace(engine=original, learning_implementation="hybrid", _real_training_ready=lambda: True)
+    engine.awake_consolidator = service
+    switched = []
+    def switch(mode, **kwargs):
+        switched.append((mode, engine.speed_memory_limit_gb))
+        model = Backend()
+        model.speed_memory_limit_gb = engine.speed_memory_limit_gb
+        service.learning_implementation, service.engine, engine.mlx_backend = mode, model, model
+    engine.set_learning_implementation = switch
+    stream = adapter.generate(request(memory_limit={"enabled": True, "limit_gb": 3}, learning_mode="managed"),
+                              threading.Event())
+    next(stream)
+    temporary = engine.mlx_backend
+    assert temporary.speed_memory_limit_gb == 3
+    stream.close()
+    assert switched == [("managed", 3), ("hybrid", 5)]
+    assert engine.mlx_backend is not original and engine.mlx_backend is not temporary
+    assert (original.speed_memory_limit_gb, engine.mlx_backend.speed_memory_limit_gb) == (4, 4)
+    assert engine.speed_memory_limit_gb == 5
+
+
+@pytest.mark.parametrize("pro", [{}, {"enabled": True, "routing": "fixed", "branch_count": 1,
+                                     "best_work_passes": 1}])
+def test_api_memory_monitor_cancels_blocked_decoder_and_never_trains(monkeypatch, pro):
+    from core import local_api_memory
+    adapter, engine, backend = adapter_fixture()
+    pressure, interrupted = threading.Event(), threading.Event()
+    backend.cancel_current_request = interrupted.set
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        pressure.set()
+        assert interrupted.wait(2) and cancelled()
+        yield "should never reach a client"
+    backend.stream_generate_tokens = decode
+    def measure(**kwargs):
+        return {"process_memory_known": True, "owned_memory_complete": True,
+                "total_allocated_bytes": (20 if pressure.is_set() else 1) * 1024**3}
+    monkeypatch.setattr(local_api_memory, "_SAMPLE_INTERVAL", 0.01)
+    monkeypatch.setattr(local_api_memory.SystemMemoryWatchdog, "get_detailed_memory_breakdown", measure)
+    engine.awake_consolidator = SimpleNamespace(engine=backend, learning_implementation="managed",
+        _real_training_ready=lambda: True, train_pairs=lambda *a, **k: pytest.fail("trained an interrupted response"))
+    client = threading.Event()
+    chunks = []
+    with pytest.raises(APIError) as error:
+        chunks.extend(adapter.generate(request(memory_limit={"enabled": True}, pro=pro), client))
+    assert not any(chunk.text for chunk in chunks)
+    assert error.value.code == "memory_limit_exceeded" and not client.is_set()
+    assert not hasattr(engine, "speed_memory_limit_gb") and not hasattr(backend, "speed_memory_limit_gb")
+    assert not engine._model_lock.locked()
+
+
+def test_fast_prefill_exceeding_cap_never_emits_a_tool_call(monkeypatch):
+    from core import local_api_memory
+    adapter, engine, backend = adapter_fixture()
+    pressure = threading.Event()
+    def decode(**kwargs):
+        pressure.set()
+        try:
+            yield '<tool_call>{"name":"read","arguments":{}}</tool_call>'
+        finally:
+            backend.closed = True
+    backend.stream_generate_tokens = decode
+    monkeypatch.setattr(local_api_memory, "_SAMPLE_INTERVAL", 15)
+    monkeypatch.setattr(local_api_memory.SystemMemoryWatchdog, "get_detailed_memory_breakdown",
+                        lambda **_: {"process_memory_known": True, "owned_memory_complete": True,
+                                     "total_allocated_bytes": (18 if pressure.is_set() else 1) * 1024**3})
+    chunks = []
+    with pytest.raises(APIError) as error:
+        chunks.extend(adapter.generate(request(memory_limit={"enabled": True}), threading.Event()))
+    assert error.value.code == "memory_limit_exceeded"
+    assert not any(c.text for c in chunks) and backend.closed
+
+
+def test_api_memory_cancellation_reaches_in_progress_learning_and_releases_lock(monkeypatch):
+    from core import local_api_memory
+    adapter, engine, backend = adapter_fixture()
+    learning = threading.Event()
+    def train(pairs, *, mode, cancel_event):
+        learning.set()
+        assert cancel_event.wait(2) and cancel_event.is_set()
+        return {"status": "cancelled"}
+    engine.awake_consolidator = SimpleNamespace(engine=backend, learning_implementation="managed",
+        _real_training_ready=lambda: True, train_pairs=train)
+    monkeypatch.setattr(local_api_memory, "_SAMPLE_INTERVAL", 0.01)
+    monkeypatch.setattr(local_api_memory.SystemMemoryWatchdog, "get_detailed_memory_breakdown",
+                        lambda **_: {"process_memory_known": True, "owned_memory_complete": True,
+                                     "total_allocated_bytes": (17 if learning.is_set() else 1) * 1024**3})
+    event = threading.Event()
+    with pytest.raises(APIError) as error:
+        list(adapter.generate(request(memory_limit={"enabled": True}), event))
+    assert error.value.code == "memory_limit_exceeded" and learning.is_set()
+    assert not event.is_set() and not engine._model_lock.locked()
+    assert adapter.model_info()["capabilities"]["learning_last_result"]["status"] == "not_committed"
+
+
+@pytest.mark.parametrize("exited", [False, True])
+def test_memory_limit_distinguishes_exited_and_unreadable_owned_workers(monkeypatch, exited):
+    import psutil
+    from core import memory_watchdog
+    adapter, _, backend = adapter_fixture()
+    backend.owned_process_ids = lambda: [74291]
+    def process(pid=None):
+        if pid == 74291:
+            raise (psutil.NoSuchProcess(pid) if exited else psutil.AccessDenied(pid))
+        return SimpleNamespace(memory_info=lambda: SimpleNamespace(rss=1024**3))
+    monkeypatch.setattr(psutil, "Process", process)
+    monkeypatch.setattr(memory_watchdog.platform, "system", lambda: "Linux")
+    if exited:
+        assert list(adapter.generate(request(memory_limit={"enabled": True}), threading.Event()))[-1].finish_reason == "stop"
+    else:
+        with pytest.raises(APIError) as error:
+            list(adapter.generate(request(memory_limit={"enabled": True}), threading.Event()))
+        assert error.value.code == "memory_measurement_unavailable"
+        assert not backend.calls
+
+
+def test_monitor_start_failure_restores_original_limits_and_releases_lease(monkeypatch):
+    from core import local_api_memory
+    adapter, engine, backend = adapter_fixture()
+    engine.speed_memory_limit_gb, backend.speed_memory_limit_gb = 9, 8
+    monkeypatch.setattr(local_api_memory.SystemMemoryWatchdog, "get_detailed_memory_breakdown",
+                        lambda **_: {"process_memory_known": True, "owned_memory_complete": True,
+                                     "total_allocated_bytes": 1024**3})
+    def fail_start(self):
+        raise RuntimeError("cannot start new thread")
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    with pytest.raises(RuntimeError, match="cannot start new thread"):
+        list(adapter.generate(request(memory_limit={"enabled": True, "limit_gb": 3}), threading.Event()))
+    assert (engine.speed_memory_limit_gb, backend.speed_memory_limit_gb) == (9, 8)
+    assert not engine._model_lock.locked()

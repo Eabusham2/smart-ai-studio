@@ -98,9 +98,11 @@ class SystemMemoryWatchdog:
         owned_rss_gb = 0.0
         owned_footprint_gb = 0.0
         owned_process_count = 0
-        if owned_pids is not None:
+        owned_memory_complete = True
+        if owned_pids:
             try:
                 import psutil
+                exited = (ProcessLookupError, getattr(psutil, "NoSuchProcess", ProcessLookupError))
                 seen = {os.getpid()}
                 for pid in owned_pids:
                     if type(pid) is not int or pid <= 0 or pid in seen:
@@ -109,16 +111,19 @@ class SystemMemoryWatchdog:
                     try:
                         rss = int(psutil.Process(pid).memory_info().rss)
                         if rss < 0:
+                            owned_memory_complete = False
                             continue
                         owned_rss_gb += rss / (1024 ** 3)
                         footprint = process_memory_bytes(pid) if platform.system() == "Darwin" else rss
                         owned_footprint_gb += (footprint if footprint > 0 else rss) / (1024 ** 3)
                         owned_process_count += 1
-                    except Exception:
+                    except exited:
                         # A verified worker can exit between discovery and this read.
                         continue
+                    except Exception:
+                        owned_memory_complete = False
             except (ImportError, TypeError):
-                pass
+                owned_memory_complete = False
 
         model_active_gb = 0.0
         model_peak_gb = 0.0
@@ -166,10 +171,12 @@ class SystemMemoryWatchdog:
             "owned_process_rss_gb": round(owned_rss_gb, 2),
             "owned_process_footprint_gb": round(owned_footprint_gb, 2),
             "owned_process_count": owned_process_count,
+            "owned_memory_complete": owned_memory_complete,
             "model_metal_active_gb": round(model_active_gb, 2),
             "model_metal_peak_gb": round(max(model_active_gb, model_peak_gb), 2),
             "model_metal_cache_gb": round(model_cache_gb, 2),
             "total_allocated_gb": round(total_allocated_gb, 2),
+            "total_allocated_bytes": round(total_allocated_gb * (1024 ** 3)),
             "system_total_gb": round(system_total_gb, 1),
             "system_used_gb": round(system_used_gb, 1),
             "system_free_gb": round(system_free_gb, 1),

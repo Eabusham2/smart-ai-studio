@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from core.local_api import APIError, GenerationChunk, LocalModelAPIServer, normalize_request
 
@@ -64,6 +65,57 @@ class APITests(unittest.TestCase):
     def json_request(self, *args, **kwargs):
         status, headers, raw = self.request(*args, **kwargs)
         return status, json.loads(raw)
+
+    def test_memory_limit_applies_across_protocols_and_validates_the_wire_object(self):
+        endpoints = (("/v1/chat/completions", {"messages": [{"role": "user", "content": "Hi"}]}),
+                     ("/v1/responses", {"input": "Hi"}),
+                     ("/v1/messages", {"messages": [{"role": "user", "content": "Hi"}], "max_tokens": 4}))
+        for path, body in endpoints:
+            with self.subTest(path=path):
+                status, _ = self.json_request(path, {**body, "smartai": {"memory_limit": {"enabled": True}}})
+                self.assertEqual(status, 200)
+                self.assertEqual(self.requests[-1].memory_limit, {"enabled": True})
+                status, error = self.json_request(path, {**body, "smartai": {"memory_limit": {"limit_gb": True}}})
+                self.assertEqual(status, 400)
+                self.assertIn("memory_limit.limit_gb", error["error"]["message"])
+
+    def test_memory_excess_reaches_http_and_sse_clients_after_generation_starts(self):
+        from tests.unit.test_local_api_engine import adapter_fixture
+        from core import local_api_memory
+        adapter, _, backend = adapter_fixture()
+        self.server.generate, self.server.model_info = adapter.generate, adapter.model_info
+        pressure, interrupted = threading.Event(), threading.Event()
+        backend.cancel_current_request = interrupted.set
+
+        def blocked(prompt, max_tokens, temperature, top_p, cancelled=None):
+            yield "partial"
+            pressure.set()
+            if not interrupted.wait(2):
+                raise RuntimeError("Native request was not interrupted")
+
+        def measure(owned_pids):
+            return {"process_memory_known": True, "owned_memory_complete": True,
+                    "total_allocated_bytes": (18 if pressure.is_set() else 1) * 1024**3}
+
+        backend.stream_generate_tokens = blocked
+        body = {"messages": [{"role": "user", "content": "Hi"}], "smartai": {"memory_limit": {"enabled": True}}}
+        with patch.object(local_api_memory, "_SAMPLE_INTERVAL", 0.01), patch.object(
+                local_api_memory.SystemMemoryWatchdog, "get_detailed_memory_breakdown", measure):
+            for stream in (False, True):
+                with self.subTest(stream=stream):
+                    pressure.clear()
+                    interrupted.clear()
+                    status, _, raw = self.request(body={**body, "stream": stream})
+                    if stream:
+                        self.assertEqual(status, 200)
+                        parsed = events(raw)
+                        self.assertTrue(any(event.get("choices", [{}])[0].get("delta", {}).get("content") == "partial"
+                                            for event in parsed if isinstance(event, dict)))
+                        error = parsed[-1]
+                    else:
+                        self.assertEqual(status, 503)
+                        error = json.loads(raw)
+                    self.assertEqual(error["error"]["code"], "memory_limit_exceeded")
 
     def test_models_and_health_use_the_loaded_model(self):
         status, models = self.json_request("/v1/models", method="GET")

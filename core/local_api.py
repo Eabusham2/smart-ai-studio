@@ -28,6 +28,28 @@ class APIError(ValueError):
         self.status, self.error_type, self.code = status, error_type, code
 
 
+DEFAULT_API_MEMORY_LIMIT_GB = 14.5
+
+
+def validate_memory_limit(value):
+    """Normalize the fields supplied by a client or the API server settings."""
+    if not isinstance(value, dict) or set(value) - {"enabled", "limit_gb"}:
+        raise APIError(400, "smartai.memory_limit must be an object containing only enabled and limit_gb.")
+    options = dict(value)
+    if "enabled" in options and type(options["enabled"]) is not bool:
+        raise APIError(400, "smartai.memory_limit.enabled must be a boolean.")
+    if "limit_gb" in options:
+        limit = options["limit_gb"]
+        try:
+            valid = type(limit) in (int, float) and math.isfinite(limit) and limit >= 0.5
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise APIError(400, "smartai.memory_limit.limit_gb must be a finite number of at least 0.5.")
+        options["limit_gb"] = float(limit)
+    return options
+
+
 @dataclass
 class GenerationRequest:
     model: str
@@ -47,6 +69,7 @@ class GenerationRequest:
     include_reasoning: bool = False
     learning_mode: str | None = None
     pro: dict = field(default_factory=dict)
+    memory_limit: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -264,9 +287,10 @@ def _optional_execution_options(body, protocol):
         settings = {}
     if not isinstance(settings, dict):
         raise APIError(400, "smartai must be an object.")
-    unknown = set(settings) - {"context_limit", "enable_thinking", "speedups", "include_reasoning", "learning_mode", "pro"}
+    unknown = set(settings) - {"context_limit", "enable_thinking", "speedups", "include_reasoning", "learning_mode", "pro", "memory_limit"}
     if unknown:
         raise APIError(400, "Unknown smartai option: " + ", ".join(sorted(unknown)))
+    memory_limit = validate_memory_limit(settings.get("memory_limit", {}))
     pro = settings.get("pro")
     if pro is None:
         pro = {}
@@ -382,7 +406,8 @@ def _optional_execution_options(body, protocol):
             raise APIError(400, f"{key} must be {'an integer' if integer else 'a number'} between {low} and {high}.")
         sampling[key] = value
     return {"context_limit": context, "enable_thinking": thinking, "speedups": speedups,
-            "include_reasoning": include, "sampling": sampling, "learning_mode": learning, "pro": pro}
+            "include_reasoning": include, "sampling": sampling, "learning_mode": learning, "pro": pro,
+            "memory_limit": memory_limit}
 
 
 def normalize_request(body, protocol, model):
