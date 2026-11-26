@@ -189,28 +189,8 @@ def split_large(path, limit=1_850_000_000):
     manifest=path.with_name(path.name+'.parts.json')
     full_hash=sha(path)
     manifest.write_text(json.dumps({'archive':path.name,'sha256':full_hash,'parts':rows},indent=2)+'\n',encoding='utf-8')
-    checksums=path.with_name(path.name+'.sha256')
-    checksums.write_text(''.join(row['sha256']+'  '+row['name']+'\n' for row in rows),encoding='utf-8')
-    sh=path.with_name('Reassemble-'+path.name+'.sh')
-    sh.write_text('#!/bin/sh\nset -eu\ncd "$(dirname "$0")"\n'
-                  'if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi\n'
-                  f'$SHA -c "{checksums.name}"\ncat "{path.name}".part[0-9][0-9][0-9] > "{path.name}"\n'
-                  f"printf '%s\\n' '{full_hash}  {path.name}' | $SHA -c -\n"
-                  f'echo "Verified: {path.name}. Extract normally."\n',encoding='utf-8')
-    sh.chmod(0o755)
-    ps=path.with_name('Reassemble-'+path.name+'.ps1')
-    ps.write_text("$ErrorActionPreference = 'Stop'\nSet-Location $PSScriptRoot\n"
-                  f"$m = Get-Content -LiteralPath '{manifest.name}' -Raw | ConvertFrom-Json\n"
-                  "$dst = [IO.File]::Create((Join-Path $PSScriptRoot $m.archive))\n"
-                  "try { foreach ($part in $m.parts) {\n"
-                  "  $p = Join-Path $PSScriptRoot $part.name\n"
-                  "  if ((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLower() -ne $part.sha256) { throw 'Part checksum mismatch' }\n"
-                  "  $src = [IO.File]::OpenRead($p); try { $src.CopyTo($dst) } finally { $src.Dispose() }\n"
-                  "} } finally { $dst.Dispose() }\n"
-                  "if ((Get-FileHash -LiteralPath $m.archive -Algorithm SHA256).Hash.ToLower() -ne $m.sha256) { throw 'Archive checksum mismatch' }\n"
-                  "Write-Host ('Verified: ' + $m.archive + '. Extract normally.')\n",encoding='utf-8')
     path.unlink()
-    return [path.parent/r['name'] for r in rows]+[manifest,checksums,sh,ps]
+    return [path.parent/r['name'] for r in rows]+[manifest]
 
 
 def portable_dependency_lock(frozen, native_version):
@@ -278,31 +258,10 @@ print('BONSAI_NATIVE_SMOKE', RELEASE, 'passed; no model weights loaded')
                    cwd=code, env=env, check=True, timeout=300)
 
 
-def verified_dmg(app, destination):
-    """Package the .app directory itself, then test it from the mounted image."""
-    app, destination = Path(app), Path(destination)
-    # -srcfolder copies a directory's contents. Its source must contain the
-    # .app, rather than point inside the .app and put Contents at volume root.
-    subprocess.run(['hdiutil', 'create', '-volname', 'SmartAI', '-srcfolder',
-                    str(app.parent), '-ov', '-format', 'UDZO', str(destination)], check=True)
-    mount = app.parent.parent / 'mounted-dmg-check'
-    mount.mkdir()
-    attached = False
-    try:
-        subprocess.run(['hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint',
-                        str(mount), str(destination)], check=True)
-        attached = True
-        mounted_code = mount / 'SmartAI.app/Contents/Resources/app'
-        if not (mounted_code / 'bootstrap_runtime.py').is_file():
-            raise RuntimeError('DMG does not contain the complete SmartAI.app')
-        smoke_app(mounted_code)
-    finally:
-        if attached:
-            subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
-
-
 def package(target, output, *, prepare_only=False):
     from bootstrap_runtime import pip_install, fingerprint, python_path
+    from tools.bundled_native import embed_native_runtime
+    from tools.portable_download import write_linux_downloader
     import build_app
     if target!=target_name():raise RuntimeError('Packages must be built on their matching native OS/architecture')
     identity = release_identity()
@@ -311,8 +270,7 @@ def package(target, output, *, prepare_only=False):
     if build.exists():shutil.rmtree(build)
     build.mkdir()
     base=fetch_runtime(target,build/'base')
-    # Copy the verified runtime while assembling; all archives, including DMG,
-    # are made only after this runtime has been placed in the app.
+    # All packages contain the verified private Python runtime.
     os.environ['SMARTAI_EMBEDDED_RUNTIME']=str(base)
     os.environ['SMARTAI_PACKAGE_ASSEMBLY_ONLY']='1'
     os.environ['SMARTAI_MODEL_BUNDLE_RELEASE']='1'
@@ -325,6 +283,7 @@ def package(target, output, *, prepare_only=False):
     else:
         build_app.create_linux_bundle(str(build),'SmartAI')
         app=build/'SmartAI-Linux';code=app/'SmartAI.AppDir/usr/bin'
+    bundled_native = embed_native_runtime(code, target)
     runtime=code/'runtime/python'
     # Every declared app dependency is installed; no models or inference.
     if target.startswith('macOS'):
@@ -366,17 +325,10 @@ def package(target, output, *, prepare_only=False):
     portable=output/f'SmartAI-{target}-portable.zip'
     archive_tree(app,portable)
     files=split_large(portable)
-    if target.startswith('Linux'):
-        linux_tar=output/'SmartAI-Linux-x86_64.tar.gz'
-        archive_tree(app,linux_tar,'tar');files+=split_large(linux_tar)
-    if target=='macOS-arm64':
-        # The Mac installers reuse these exact tested app/runtime bytes. No
-        # model snapshots are downloaded or appended by release packaging.
-        archive_tree(app,output/'SmartAI.app.tar.gz','tar')
-    if target.startswith('macOS'):
-        dmg=output/f'SmartAI-{target}.dmg'
-        verified_dmg(app, dmg)
-        files+=split_large(dmg)
+    if target.startswith('Linux') and not portable.exists():
+        files.append(write_linux_downloader(
+            portable.with_name(portable.name+'.parts.json'), output,
+            repository=identity['repository'], tag=identity['tag']))
     # Setup is the same app and pinned Python, with packages installed on demand
     # into a user-owned directory, never into /Applications or system Python.
     shutil.rmtree(code/'runtime/python');shutil.copytree(base,code/'runtime/python',symlinks=False)
@@ -404,7 +356,7 @@ def package(target, output, *, prepare_only=False):
     receipt={'schema':1,'target':target,'commit':identity['commit'],
              'model_inference_run':False,'gui_smoke':'passed','setup_smoke':'passed',
              'bonsai_native_smoke':'passed',
-             'dmg_smoke':'passed' if target.startswith('macOS') else 'not_applicable',
+             'bundled_native_verified':'passed' if bundled_native else 'not_applicable',
              'files':[{'name':p.name,'size':p.stat().st_size,'sha256':sha(p)} for p in files]}
     (output/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
     print('PACKAGES_VERIFIED',target,len(files),flush=True)

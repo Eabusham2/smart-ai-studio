@@ -68,16 +68,15 @@ def test_archive_accepts_internal_python_symlinks(tmp_path):
     assert (tmp_path/'dest/python/bin/python3').read_bytes()==b'bin'
 
 
-def test_split_download_has_verified_shell_and_powershell_reassembly(tmp_path):
+def test_split_download_keeps_only_parts_and_verified_manifest(tmp_path):
     archive=tmp_path/'SmartAI-Test-portable.zip';original=b'abcdefghijk'*20;archive.write_bytes(original)
     files=builder.split_large(archive,limit=50)
     manifest=json.loads((tmp_path/'SmartAI-Test-portable.zip.parts.json').read_text())
     assert b''.join((tmp_path/r['name']).read_bytes() for r in manifest['parts'])==original
-    assert any(p.suffix=='.ps1' for p in files)
-    shell=next(p for p in files if p.suffix=='.sh')
-    if os.name!='nt':
-        subprocess.run(['sh',str(shell)],check=True,capture_output=True)
-        assert archive.read_bytes()==original
+    assert len(files) == len(manifest['parts']) + 1
+    assert all(p.name.endswith('.parts.json') or '.part' in p.name for p in files)
+    assert manifest['sha256'] == hashlib.sha256(original).hexdigest()
+    assert not archive.exists()
 
 
 def test_receipts_reject_wrong_commit_missing_file_and_corruption(tmp_path):
@@ -87,7 +86,10 @@ def test_receipts_reject_wrong_commit_missing_file_and_corruption(tmp_path):
             p=tmp_path/f'SmartAI-{target}-{suffix}';p.write_bytes(b'package')
             files.append({'name':p.name,'size':7,'sha256':hashlib.sha256(b'package').hexdigest()})
         (tmp_path/f'SmartAI-{target}.receipt.json').write_text(json.dumps({
-            'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed','setup_smoke':'passed','dmg_smoke':'passed','bonsai_native_smoke':'passed','files':files}))
+            'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed','setup_smoke':'passed',
+            'bonsai_native_smoke':'passed',
+            'bundled_native_verified':'not_applicable' if target.startswith('Windows') else 'passed',
+            'files':files}))
     verifier.verify(tmp_path,'a'*40)
     receipt_path = tmp_path / 'SmartAI-Windows-x86_64.receipt.json'
     receipt = json.loads(receipt_path.read_text())
@@ -160,36 +162,6 @@ def test_shipped_setup_lock_does_not_reference_the_ci_wheel_directory():
     assert 'file:' not in result
 
 
-@pytest.mark.parametrize('fails', [False, True])
-def test_dmg_contains_app_at_volume_root_and_detaches_after_smoke(tmp_path, monkeypatch, fails):
-    app = tmp_path / 'relocated with spaces' / 'SmartAI.app'
-    app.mkdir(parents=True)
-    destination = tmp_path / 'SmartAI.dmg'
-    commands, launched = [], []
-    def run(command, **kwargs):
-        commands.append(command)
-        if command[:2] == ['hdiutil', 'attach']:
-            mount = Path(command[command.index('-mountpoint')+1])
-            code = mount / 'SmartAI.app/Contents/Resources/app'
-            code.mkdir(parents=True)
-            (code / 'bootstrap_runtime.py').write_text('# fixture')
-    def smoke(code):
-        launched.append(code)
-        if fails:
-            raise RuntimeError('synthetic mounted launch failure')
-    monkeypatch.setattr(builder.subprocess, 'run', run)
-    monkeypatch.setattr(builder, 'smoke_app', smoke)
-    if fails:
-        with pytest.raises(RuntimeError, match='mounted launch failure'):
-            builder.verified_dmg(app, destination)
-    else:
-        builder.verified_dmg(app, destination)
-    create = commands[0]
-    assert create[create.index('-srcfolder')+1] == str(app.parent)
-    assert commands[-1][:2] == ['hdiutil', 'detach']
-    assert launched == [tmp_path / 'mounted-dmg-check/SmartAI.app/Contents/Resources/app']
-
-
 def test_setup_smoke_uses_a_private_clean_home_and_ignores_host_python(tmp_path, monkeypatch):
     monkeypatch.setenv('PYTHONHOME', '/wrong-host-python')
     monkeypatch.setenv('PYTHONPATH', '/wrong-host-packages')
@@ -205,7 +177,7 @@ def test_setup_smoke_uses_a_private_clean_home_and_ignores_host_python(tmp_path,
     assert 'PYTHONHOME' not in options['env'] and 'PYTHONPATH' not in options['env']
 
 
-@pytest.mark.parametrize('missing', ['setup_smoke', 'dmg_smoke'])
+@pytest.mark.parametrize('missing', ['setup_smoke', 'bundled_native_verified'])
 def test_release_refuses_package_without_format_specific_launch_proof(tmp_path, missing):
     for target in ('Linux-x86_64','Windows-x86_64','macOS-arm64'):
         rows = []
@@ -214,7 +186,8 @@ def test_release_refuses_package_without_format_specific_launch_proof(tmp_path, 
             path.write_bytes(b'package')
             rows.append({'name':path.name,'size':7,'sha256':hashlib.sha256(b'package').hexdigest()})
         receipt={'schema':1,'target':target,'commit':'a'*40,'gui_smoke':'passed',
-                 'setup_smoke':'passed','dmg_smoke':'passed','files':rows}
+                 'setup_smoke':'passed','bonsai_native_smoke':'passed',
+                 'bundled_native_verified':'not_applicable' if target.startswith('Windows') else 'passed','files':rows}
         if target == 'macOS-arm64':
             receipt.pop(missing)
         (tmp_path/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt))

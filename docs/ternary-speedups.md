@@ -82,9 +82,24 @@ below preserve the original exactness-verified PQ2_0 implementation.
 
 ### Released builds
 
-The rolling release includes separate `SmartAI-native-cpu-Linux-X64.zip` and `SmartAI-native-metal-macOS-ARM64.zip` assets when produced on those runner architectures. Names record the actual OS and architecture. Each contains the server, its `.smartai.json` receipt, this guide and upstream license. Use the asset matching your OS/architecture. Linux CPU builds use the pinned source's portable x86 instruction configuration; they are not a promise of support for every old CPU or Linux libc.
+The Linux x64 and Apple Silicon Mac Portable and Setup packages include the
+matching tested original Bonsai 2 runtime in `runtime/native/`, together with its
+verification receipt, upstream license and this guide. There is no separate
+native ZIP to choose or install. Linux uses the pinned source's portable x86
+instruction configuration; this does not promise support for every old CPU or
+Linux libc.
 
-Extract the runtime locally. If the executable permission was lost, set it on `llama-server`. In **Speedups…**, choose the executable, select a native mode, and select the matching local draft file only for DFlash2. The receipt is discovered beside the server unless an explicit path is entered. Import/select the exact compatible target GGUF through the existing model picker, then load it. Studio never downloads, converts or switches targets as a consequence of enabling this setting.
+In **Speedups…**, choose **Use included Bonsai 2 runtime** to fill the server and
+receipt fields, select the native mode, and save. The button is shown only when
+the bundled binary and receipt verify for the running platform. An existing
+custom server selection is preserved; clear it explicitly before choosing the
+included one. Select the matching local draft file only for DFlash2, then
+import/select the exact compatible target GGUF and load it. Choosing the included
+runtime does not change your model, automatically select a drafting mode, or
+replace Bonsai 2.5's managed publisher runtime.
+
+Source checkouts and custom builds can still select an external server and its
+adjacent `.smartai.json` receipt with the existing file picker.
 
 Changing the server, target head configuration or draft length requires a model reload. Clearing the server path returns subsequent GGUF loads to the normal engine. Keeping the server selected with mode **none** gives the same patched target baseline without drafting.
 

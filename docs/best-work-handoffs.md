@@ -157,11 +157,12 @@ Portable launch does not run pip. Setup requires internet for dependency downloa
 OS graphics drivers and a supported desktop environment remain host prerequisites.
 Every native package is relocated to a path containing spaces and must pass a
 model-free GUI/database smoke test. Setup must also install into a clean private
-environment and pass both its first and second launch. The macOS disk image is
-mounted read-only and the contained .app is launched before a success receipt is
-written. The
-publisher verifies commit IDs, sizes, hashes, and all required packages before
-moving the rolling release tag. Large archives have verified reassembly helpers.
+environment and pass both its first and second launch. The Mac installer uses
+that same verified portable ZIP and is tested with an offline synthetic app on
+macOS. The publisher verifies commit IDs, sizes, hashes and the exact allowed
+asset list before removing superseded downloads and moving the rolling tag.
+Linux's single download helper fetches and joins oversized portable ZIP parts
+automatically. Original Bonsai 2 native runtimes are inside the matching packages.
 
 ## Validation scope
 

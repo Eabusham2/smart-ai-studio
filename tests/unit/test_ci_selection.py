@@ -30,7 +30,9 @@ def test_ci_keeps_full_matrix_opt_in_and_all_native_package_release_gates():
     assert '"python-version":["3.11"]' in matrix
     assert '"os":["ubuntu-latest","macos-latest","windows-latest"]' in matrix
     assert '"python-version":["3.10","3.11"]' in matrix
-    assert "--no-models" in workflow
+    assert 'HF_HUB_OFFLINE: "1"' in workflow
+    assert 'TRANSFORMERS_OFFLINE: "1"' in workflow
+    assert "build_bonsai2_bundled_zip.py" not in workflow
     assert "HF_TOKEN:" not in workflow
     assert "needs.package.result == 'success'" in workflow
     assert "needs.mlx-learning.result == 'success'" in workflow

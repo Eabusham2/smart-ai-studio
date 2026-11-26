@@ -122,11 +122,12 @@ def test_source_tool_never_overwrites_an_existing_build(tmp_path, monkeypatch):
     assert marker.read_bytes() == b"keep"
 
 
-def test_native_release_packaging_follows_app_cleanup():
-    # The publisher downloads tested apps, then adds verified native artifacts;
-    # it must never run the legacy builder that clears dist afterwards.
+def test_native_runtime_is_included_before_app_packaging():
+    # Tested native artifacts are embedded in both package flavors. The publisher
+    # must never repack them separately or run a builder that clears dist.
     source = (Path(__file__).resolve().parents[2] / ".github/workflows/ci-build-release.yml").read_text(encoding="utf-8")
-    assert source.index("- name: Download native-OS portable") < source.index("- name: Package native runtimes")
+    package = source.split("  package:", 1)[1].split("  build-and-release:", 1)[0]
+    assert package.index("Fetch matching verified native runtime for the app") < package.index("Build bundled runtime and test relocated first launch")
     publisher = source.split("  build-and-release:", 1)[1]
     assert "python build_app.py" not in publisher
     assert "needs: [preflight, test, mlx-learning, native-build, reuse-native, package]" in source

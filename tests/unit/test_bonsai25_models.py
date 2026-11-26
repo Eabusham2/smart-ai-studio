@@ -209,8 +209,10 @@ def test_native_off_and_cancelled_request_recovery(tmp_path, monkeypatch):
     (True, "auto", True), (True, "mtp", True), (True, "none", True),
     (True, "mtp", False), (False, "dflash2", True),
 ])
-def test_model_load_keeps_legacy_native_paths_out_of_bonsai25(tmp_path, monkeypatch, bonsai25, mode, enabled):
+@pytest.mark.parametrize("included_runtime", [False, True])
+def test_model_load_keeps_legacy_native_paths_out_of_bonsai25(tmp_path, monkeypatch, bonsai25, mode, enabled, included_runtime):
     from core import pro_engine
+    from core import bundled_native
     from core.engines.prism_speculative_engine import PrismSpeculativeReasoningBackend
     info = bonsai_model_info(is_apple_silicon=False) if bonsai25 else {"model_type": "text"}
     model_path = str(tmp_path / "model.gguf")
@@ -227,6 +229,16 @@ def test_model_load_keeps_legacy_native_paths_out_of_bonsai25(tmp_path, monkeypa
         "draft_model_path": str(tmp_path / "old-dflash.gguf"),
         "speculative_runtime_receipt_path": str(tmp_path / "old-receipt.json"),
     }
+    if included_runtime:
+        engine.lossless_speed_options.update(speculative_server_path=bundled_native.INCLUDED_RUNTIME,
+                                             speculative_runtime_receipt_path=None)
+        resolved = {"speculative_server_path": str(tmp_path / "moved app/runtime/native/llama-server"),
+                    "speculative_runtime_receipt_path": str(tmp_path / "moved app/runtime/native/llama-server.smartai.json")}
+        def discover(*args):
+            if bonsai25:
+                pytest.fail("Bonsai 2.5 must not inspect the older included runtime")
+            return resolved
+        monkeypatch.setattr(bundled_native, "bundled_runtime_options", discover)
     engine._context_budget_tokens = 65536
     # Exercise load routing without unrelated memory/tuning lifecycle wrappers.
     load = inspect.unwrap(pro_engine.ProReasoningEngine.load_model)
@@ -243,9 +255,10 @@ def test_model_load_keeps_legacy_native_paths_out_of_bonsai25(tmp_path, monkeypa
         assert backend.runtime_receipt_path is None
     else:
         assert type(backend) is PrismSpeculativeReasoningBackend
-        assert backend.server_path == engine.lossless_speed_options["speculative_server_path"]
+        selected = resolved if included_runtime else engine.lossless_speed_options
+        assert backend.server_path == selected["speculative_server_path"]
         assert backend.draft_model_path == engine.lossless_speed_options["draft_model_path"]
-        assert backend.runtime_receipt_path == engine.lossless_speed_options["speculative_runtime_receipt_path"]
+        assert backend.runtime_receipt_path == selected["speculative_runtime_receipt_path"]
 
 
 def test_snapshot_lookup_uses_exact_model_and_projector_revisions(monkeypatch, tmp_path):

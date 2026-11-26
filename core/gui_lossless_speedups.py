@@ -14,6 +14,7 @@ from core.lossless_speed_control import (
     DEFAULT_OPTIONS, load_preferences, normalize_options, save_preferences,
 )
 from core.gui_speed_tuning import speed_busy_reason
+from core.bundled_native import INCLUDED_RUNTIME, bundled_runtime_options
 
 
 _BOOLEAN_FIELDS = (
@@ -246,6 +247,25 @@ def install_gui_lossless_speedups(module=None) -> None:
         themed.extend(((mode_row, "frame"), (mode_label, "label"), (mode, "button")))
         for field in _PATH_FIELDS[1:]:
             path_row(*field)
+        try:
+            bundled = bundled_runtime_options()
+        except (OSError, ValueError) as exc:
+            bundled = None
+            label(f"The included Bonsai 2 runtime could not be verified: {exc}")
+        if bundled:
+            def select_bundled():
+                if (str(variables["speculative_server_path"].get()).strip() not in {"", INCLUDED_RUNTIME}
+                        or str(variables["speculative_runtime_receipt_path"].get()).strip()):
+                    status(self, "A custom native path is selected. Clear the server and receipt fields to choose the included runtime.")
+                    return
+                variables["speculative_server_path"].set(INCLUDED_RUNTIME)
+                variables["speculative_runtime_receipt_path"].set("")
+                status(self, "Included original Bonsai 2 runtime selected. Save settings and reload a compatible Bonsai 2 GGUF. Bonsai 2.5 keeps its own runtime.")
+            included = tk.Button(content, text="Use included Bonsai 2 runtime", command=select_bundled,
+                                 **button_style(self))
+            included.pack(anchor="w", pady=(0, 8))
+            self._speedups_bundled_native_button = included
+            themed.append((included, "button"))
         draft_row = tk.Frame(content, bg=self.C["bg_hud"])
         draft_row.pack(fill="x", pady=(2, 8))
         draft_label = tk.Label(draft_row, text="Maximum draft tokens (blank = automatic, 1–64)", font=font,

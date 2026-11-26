@@ -1,8 +1,8 @@
-"""Exercise the workflow's final provenance gate with a local fake GitHub API."""
+"""Run the actual publication gate against a local, stateful fake GitHub API."""
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -11,212 +11,218 @@ import textwrap
 
 import pytest
 
+from tools.verify_release_packages import file_record, verify
 
-WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/ci-build-release.yml"
-STEP_NAME = "Verify Release Assets and Update Rolling Tag"
-SHA = "a" * 40
+WORKFLOW = Path(__file__).resolve().parents[2] / '.github/workflows/ci-build-release.yml'
+STEP_NAME = 'Verify Release Assets and Update Rolling Tag'
+SHA = 'a' * 40
+OBSOLETE = {
+    'Install-SmartAI-macOS-Full.command.sha256',
+    'Reassemble-SmartAI-Linux-x86_64-portable.zip.ps1',
+    'Reassemble-SmartAI-Linux-x86_64-portable.zip.sh',
+    'Reassemble-SmartAI-Linux-x86_64.tar.gz.ps1',
+    'Reassemble-SmartAI-Linux-x86_64.tar.gz.sh',
+    'Reassemble-SmartAI-macOS-arm64.command',
+    'SmartAI-Linux-x86_64-portable.zip.sha256',
+    'SmartAI-Linux-x86_64.tar.gz.part000',
+    'SmartAI-Linux-x86_64.tar.gz.part001',
+    'SmartAI-Linux-x86_64.tar.gz.parts.json',
+    'SmartAI-Linux-x86_64.tar.gz.sha256',
+    'SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip',
+    'SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256',
+    'SmartAI-macOS-arm64.bundle.json',
+    'SmartAI-macOS-arm64.dmg',
+    'SmartAI-macOS-arm64.zip.part000',
+    'SmartAI-native-cpu-Linux-X64.zip',
+    'SmartAI-native-metal-macOS-ARM64.zip',
+    'SmartAI-macOS-arm64.zip',
+    'SmartAI-Windows.zip',
+    'SmartAI-Unix-POSIX.tar.gz',
+    'SmartAI-Linux-x86_64.tar.gz',
+}
 
 
 def final_script():
-    source = WORKFLOW.read_text(encoding="utf-8")
-    step = source.split(f"- name: {STEP_NAME}\n", 1)[1]
-    assert "if: success()" in step.split("script: |", 1)[0]
-    return textwrap.dedent(step.split("script: |\n", 1)[1])
+    step = WORKFLOW.read_text(encoding='utf-8').split(f'- name: {STEP_NAME}\n', 1)[1]
+    assert 'if: success()' in step.split('script: |', 1)[0]
+    return textwrap.dedent(step.split('script: |\n', 1)[1])
 
 
-def run_release_gate(tmp_path, *, tag="latest", fault=None):
-    node = shutil.which("node")
+def package_fixture(root, *, split_linux=True):
+    root.mkdir()
+    for target in ('Linux-x86_64', 'Windows-x86_64', 'macOS-arm64'):
+        files = []
+        for suffix in ('portable.zip', 'Setup.zip'):
+            path = root / f'SmartAI-{target}-{suffix}'
+            path.write_bytes(b'verified package fixture')
+            if target.startswith('Linux') and suffix == 'portable.zip' and split_linux:
+                payload = path.read_bytes()
+                parts = []
+                for index, chunk in enumerate((payload[:10], payload[10:])):
+                    part = path.with_name(path.name + f'.part{index:03d}')
+                    part.write_bytes(chunk)
+                    parts.append(file_record(part))
+                manifest = path.with_name(path.name + '.parts.json')
+                manifest.write_text(json.dumps({'archive': path.name, 'sha256': hashlib.sha256(payload).hexdigest(), 'parts': parts}))
+                helper = root / 'Download-SmartAI-Linux.sh'
+                helper.write_text('#!/bin/sh\necho verified-download\n')
+                files += parts + [file_record(manifest), file_record(helper)]
+                path.unlink()
+            else:
+                files.append(file_record(path))
+        (root / f'SmartAI-{target}.receipt.json').write_text(json.dumps({
+            'schema': 1, 'target': target, 'commit': SHA, 'gui_smoke': 'passed',
+            'setup_smoke': 'passed', 'bonsai_native_smoke': 'passed',
+            'bundled_native_verified': 'not_applicable' if target.startswith('Windows') else 'passed',
+            'files': files,
+        }))
+    mac = file_record(root / 'SmartAI-macOS-arm64-portable.zip')
+    (root / 'Install-SmartAI-macOS-Full.command').write_text(
+        f'#!/bin/bash\nCOMMIT="{SHA}"\nARCHIVE_NAME="{mac["name"]}"\nARCHIVE_SHA256="{mac["sha256"]}"\n')
+    return verify(root, SHA, include_installer=True)
+
+
+def run_release_gate(tmp_path, *, tag='latest', fault=None):
+    node = shutil.which('node')
     if node is None:
-        pytest.skip("Node is required to execute the GitHub Actions JavaScript gate")
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    manifest = {"archive_name": "SmartAI-macOS-arm64.zip", "parts": [
-        {"name": "SmartAI-macOS-arm64.zip.part000", "size": 9},
-        {"name": "SmartAI-macOS-arm64.zip.part001", "size": 4},
-    ]}
-    (dist / "SmartAI-macOS-arm64.bundle.json").write_text(json.dumps(manifest), encoding="utf-8")
-    # The extra Apple Silicon NoAdmin kit and independently verified SHA256 are
-    # mandatory, alongside the *existing* three-platform/Setup/native packages.
-    kit_name = "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip"
-    kit_payload = b"verified no-admin portable kit"
-    (dist / kit_name).write_bytes(kit_payload)
-    (dist / (kit_name + ".sha256")).write_text(
-        f"{hashlib.sha256(kit_payload).hexdigest()}  {kit_name}\n", encoding="ascii")
-    installer_name = "Install-SmartAI-macOS-Full.command"
-    installer = (f'#!/bin/bash\nCOMMIT="{SHA}"\n'
-                 f'KIT_SHA256="{hashlib.sha256(kit_payload).hexdigest()}"\n').encode()
-    (dist / installer_name).write_bytes(installer)
-    (dist / (installer_name + '.sha256')).write_text(
-        f'{hashlib.sha256(installer).hexdigest()}  {installer_name}\n', encoding='ascii')
-    for name in ("Reassemble-SmartAI-macOS-arm64.command", "SmartAI-Windows.zip",
-                 "SmartAI-Linux-x86_64.tar.gz", "SmartAI-Unix-POSIX.tar.gz",
-                 "SmartAI-native-cpu-Linux-X64.zip", "SmartAI-native-metal-macOS-ARM64.zip"):
-        (dist / name).write_bytes(b"built package")
-    for target in ("Linux-x86_64", "Windows-x86_64", "macOS-arm64"):
-        files=[]
-        for suffix in ("portable.zip", "Setup.zip"):
-            path=dist/f"SmartAI-{target}-{suffix}"
-            path.write_bytes(b"native-tested-package")
-            files.append({"name":path.name,"size":path.stat().st_size})
-        (dist/f"SmartAI-{target}.receipt.json").write_text(json.dumps({
-            "commit":SHA,"gui_smoke":"passed","setup_smoke":"passed","dmg_smoke":"passed","bonsai_native_smoke":"passed","files":files}),encoding="utf-8")
-    assets = [*manifest["parts"], *({"name": path.name, "size": path.stat().st_size} for path in dist.iterdir())]
+        pytest.skip('Node is required to execute the actual publication gate')
+    expected = package_fixture(tmp_path / 'dist')
+    manifest = {'schema': 1, 'commit': SHA, 'assets': expected}
+    assets = [{**row, 'digest': 'sha256:' + row['sha256'], 'state': 'uploaded'} for row in expected]
+    assets += [{'name': name, 'size': 123, 'state': 'uploaded'} for name in sorted(OBSOLETE)]
+    assets += [{'name': 'SmartAI-macOS-arm64.zip.backup', 'size': 123, 'state': 'uploaded'},
+               {'name': 'manual-example.txt', 'size': 2, 'state': 'uploaded'}]
     for index, asset in enumerate(assets):
-        asset.update(id=index + 1, state="uploaded")
-    assets += [
-        {"id": 100, "name": "SmartAI-macOS-arm64.zip", "size": 2_260_000, "state": "uploaded"},
-        {"id": 101, "name": "SmartAI-macOS-arm64.zip.backup", "size": 123, "state": "uploaded"},
-    ]
-    if fault == "missing_part":
-        assets = [item for item in assets if item["name"] != manifest["parts"][1]["name"]]
-    elif fault == "missing_package":
-        assets = [item for item in assets if item["name"] != "SmartAI-Windows-x86_64-portable.zip"]
-    elif fault == "missing_native":
-        assets = [item for item in assets if item["name"] != "SmartAI-native-cpu-Linux-X64.zip"]
-    elif fault == "unverified_bonsai_runtime":
-        path = dist / "SmartAI-Windows-x86_64.receipt.json"
-        receipt = json.loads(path.read_text())
-        receipt.pop("bonsai_native_smoke")
-        path.write_text(json.dumps(receipt))
-        next(item for item in assets if item["name"] == path.name)["size"] = path.stat().st_size
-    elif fault == "missing_noadmin_kit":
-        assets = [item for item in assets if item["name"] != "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip"]
-    elif fault == "missing_noadmin_receipt":
-        assets = [item for item in assets if item["name"] != "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256"]
-    elif fault == "bad_noadmin_receipt":
-        (dist / "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256").write_text(
-            "0" * 64 + "  SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip\n", encoding="ascii")
-    elif fault == "missing_full_installer":
-        assets = [item for item in assets if item["name"] != installer_name]
-    elif fault == "missing_full_receipt":
-        assets = [item for item in assets if item["name"] != installer_name + '.sha256']
-    elif fault in {"bad_full_receipt", "wrong_full_commit", "wrong_full_kit"}:
-        if fault == "bad_full_receipt":
-            (dist / (installer_name + '.sha256')).write_text('0' * 64 + f'  {installer_name}\n')
-        else:
-            bad = installer.replace(SHA.encode(), b'b' * 40) if fault == "wrong_full_commit" else installer.replace(
-                hashlib.sha256(kit_payload).hexdigest().encode(), b'0' * 64)
-            (dist / installer_name).write_bytes(bad)
-            (dist / (installer_name + '.sha256')).write_text(
-                f'{hashlib.sha256(bad).hexdigest()}  {installer_name}\n')
-    elif fault == "wrong_size":
-        assets[0]["size"] += 1
-    elif fault == "upload_in_progress":
-        assets[0]["state"] = "starter"
-    elif fault == "duplicate_part":
-        manifest["parts"].append(dict(manifest["parts"][0]))
-        path = dist / "SmartAI-macOS-arm64.bundle.json"
-        path.write_text(json.dumps(manifest), encoding="utf-8")
-        next(item for item in assets if item["name"] == path.name)["size"] = path.stat().st_size
-
-    harness = """
-const script = SCRIPT;
-const assets = ASSETS;
-const fault = FAULT;
-const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, sha: SHA};
+        asset['id'] = index + 1
+    if fault in {'missing_part', 'missing_package', 'missing_installer'}:
+        missing = {'missing_part': 'SmartAI-Linux-x86_64-portable.zip.part001',
+                   'missing_package': 'SmartAI-Windows-x86_64-portable.zip',
+                   'missing_installer': 'Install-SmartAI-macOS-Full.command'}[fault]
+        assets = [asset for asset in assets if asset['name'] != missing]
+    elif fault == 'wrong_digest':
+        assets[0]['digest'] = 'sha256:' + '0' * 64
+    elif fault == 'missing_digest':
+        assets[0].pop('digest')
+    elif fault == 'wrong_size':
+        assets[0]['size'] += 1
+    elif fault == 'upload_in_progress':
+        assets[0]['state'] = 'starter'
+    elif fault == 'duplicate_asset':
+        assets.append(dict(assets[0]))
+    elif fault == 'wrong_manifest_commit':
+        manifest['commit'] = 'b' * 40
+    elif fault == 'duplicate_expected':
+        manifest['assets'] = expected + [dict(expected[0])]
+    elif fault == 'excess_assets':
+        manifest['assets'] = expected + [{**expected[0], 'name': f'extra-{i}.zip'} for i in range(20)]
+    (tmp_path / 'release-assets.json').write_text(json.dumps(manifest))
+    (tmp_path / 'smartai-release-notes.md').write_text('Verified release notes\n')
+    harness = r'''
+const p = require('./fixture.json');
+const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, sha: p.sha,
+  ref: p.tag === 'latest' ? 'refs/heads/master' : `refs/tags/${p.tag}`};
 const calls = [];
+let moved = false;
 const github = {
-  paginate: async (method, args) => { calls.push(['assets', args]); return assets; },
+  paginate: async (method, args) => { calls.push(['assets', args]); return p.assets; },
   rest: {
     repos: {
       getReleaseByTag: async args => { calls.push(['release', args]); return {data: {id: 42}}; },
       listReleaseAssets: function () {},
       deleteReleaseAsset: async args => {
         calls.push(['delete', args]);
-        if (fault === 'delete_failed') throw new Error('Cannot delete obsolete asset');
+        if (p.fault === 'delete_failed') throw Error('Cannot delete obsolete asset');
       },
+      compareCommits: async args => {
+        calls.push(['compare', args]);
+        return {data: {status: p.fault === 'newer_release' ? 'behind' : p.fault === 'unrelated_release' ? 'diverged' : 'ahead'}};
+      },
+      updateRelease: async args => { calls.push(['publish', args]); },
     },
     git: {
-      updateRef: async args => { calls.push(['update', args]); },
+      updateRef: async args => { moved = true; calls.push(['update', args]); },
       getRef: async args => {
         calls.push(['getRef', args]);
-        return {data: {object: {type: 'commit', sha: fault === 'tag_mismatch' ? 'old' : context.sha}}};
+        const branch = args.ref.startsWith('heads/');
+        const sha = branch ? (p.fault === 'superseded_head' ? 'b'.repeat(40) : context.sha)
+          : (moved && p.fault !== 'tag_mismatch' ? context.sha : 'c'.repeat(40));
+        return {data: {object: {type: 'commit', sha}}};
       },
     },
   },
 };
 const core = {notice: message => calls.push(['notice', message])};
-const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-new AsyncFunction('github', 'context', 'core', 'require', script)(github, context, core, require)
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+new AsyncFunction('github', 'context', 'core', 'require', p.script)(github, context, core, require)
   .then(() => process.stdout.write(JSON.stringify({calls, error: null})))
   .catch(error => process.stdout.write(JSON.stringify({calls, error: error.message})));
-"""
-    # Replace exact, unique harness markers only. Broad `.replace("SHA", ..)`
-    # previously corrupted the release gate's literal "SHA256" error text.
-    harness = (harness.replace("SCRIPT", json.dumps(final_script()))
-               .replace("ASSETS", json.dumps(assets)).replace("FAULT", json.dumps(fault))
-               .replace("const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, sha: SHA};",
-                        "const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, sha: " + json.dumps(SHA) + "};"))
-    result = subprocess.run(
-        [node, "-e", harness], cwd=tmp_path,
-        # The first Node process on a hosted Windows runner can spend more than
-        # ten seconds starting. Keep a bounded process timeout without turning
-        # that startup latency into a false failure of the release assertions.
-        env={**os.environ, "RELEASE_TAG": tag}, capture_output=True, text=True, timeout=30, check=True,
-    )
+'''
+    (tmp_path / 'fixture.json').write_text(json.dumps({'script': final_script(), 'assets': assets, 'sha': SHA, 'fault': fault, 'tag': tag}))
+    (tmp_path / 'gate.js').write_text(harness)
+    result = subprocess.run([node, 'gate.js'], cwd=tmp_path, env={**os.environ, 'RELEASE_TAG': tag, 'RELEASE_TITLE': 'Verified release'},
+                            capture_output=True, text=True, timeout=30, check=True)
     parsed = json.loads(result.stdout)
     parsed['assets'] = assets
     return parsed
 
 
-def test_successful_release_removes_only_obsolete_packages_and_moves_exact_rolling_commit(tmp_path):
+def test_successful_release_removes_all_superseded_formats_after_verification(tmp_path):
     result = run_release_gate(tmp_path)
-    assert result["error"] is None
-    calls = result["calls"]
-    deleted = {args["asset_id"] for method, args in calls if method == "delete"}
-    assert {asset['name'] for asset in result['assets'] if asset['id'] in deleted} == {
-        'SmartAI-macOS-arm64.zip', 'SmartAI-Windows.zip', 'SmartAI-Unix-POSIX.tar.gz',
-        'SmartAI-Linux-x86_64.tar.gz',
-    }
-    assert 101 not in deleted  # An unrelated named backup must be preserved.
-    assert [args for method, args in calls if method == "update"] == [{
-        "owner": "test-owner", "repo": "test-repo", "ref": "tags/latest", "sha": SHA, "force": True,
+    assert result['error'] is None
+    calls = result['calls']
+    deleted = {args['asset_id'] for method, args in calls if method == 'delete'}
+    assert {asset['name'] for asset in result['assets'] if asset['id'] in deleted} == OBSOLETE
+    assert [args for method, args in calls if method == 'update'] == [{
+        'owner': 'test-owner', 'repo': 'test-repo', 'ref': 'tags/latest', 'sha': SHA, 'force': True,
     }]
-    order = [method for method, _args in calls]
-    assert order.index("assets") < order.index("delete") < order.index("update") < order.index("getRef")
+    order = [method for method, _ in calls]
+    assert order.index('assets') < order.index('delete') < order.index('update') < order.index('publish')
+    assert next(args for method, args in calls if method == 'publish')['body'] == 'Verified release notes\n'
 
 
-@pytest.mark.parametrize("fault", ["missing_part", "missing_package", "missing_native", "unverified_bonsai_runtime", "missing_noadmin_kit", "missing_noadmin_receipt", "bad_noadmin_receipt", "missing_full_installer", "missing_full_receipt", "bad_full_receipt", "wrong_full_commit", "wrong_full_kit", "wrong_size", "upload_in_progress", "duplicate_part"])
-def test_incomplete_replacement_neither_deletes_legacy_download_nor_moves_tag(tmp_path, fault):
+@pytest.mark.parametrize('fault', ['missing_part', 'missing_package', 'missing_installer', 'wrong_digest', 'missing_digest',
+                                  'wrong_size', 'upload_in_progress', 'duplicate_asset', 'wrong_manifest_commit',
+                                  'duplicate_expected', 'excess_assets', 'superseded_head', 'newer_release', 'unrelated_release'])
+def test_bad_or_superseded_replacement_never_prunes_or_publishes(tmp_path, fault):
     result = run_release_gate(tmp_path, fault=fault)
-    assert result["error"]
-    assert not any(method in {"delete", "update", "getRef"} for method, _ in result["calls"])
+    assert result['error']
+    assert not any(method in {'delete', 'update', 'publish'} for method, _ in result['calls'])
 
 
-def test_failed_legacy_cleanup_does_not_move_rolling_tag(tmp_path):
-    result = run_release_gate(tmp_path, fault="delete_failed")
-    assert "Cannot delete" in result["error"]
-    assert not any(method == "update" for method, _ in result["calls"])
+def test_failed_cleanup_does_not_move_tag_or_publish(tmp_path):
+    result = run_release_gate(tmp_path, fault='delete_failed')
+    assert 'Cannot delete' in result['error']
+    assert not any(method in {'update', 'publish'} for method, _ in result['calls'])
 
 
 def test_immutable_version_tag_is_never_rewritten(tmp_path):
-    result = run_release_gate(tmp_path, tag="v1.2.3")
-    assert result["error"] is None
-    assert not any(method in {"update", "getRef"} for method, _ in result["calls"])
+    result = run_release_gate(tmp_path, tag='v1.2.3')
+    assert result['error'] is None
+    assert not any(method in {'update', 'getRef'} for method, _ in result['calls'])
 
 
-def test_tag_readback_must_confirm_the_exact_packaged_sha(tmp_path):
-    result = run_release_gate(tmp_path, fault="tag_mismatch")
-    assert "does not point to the packaged commit" in result["error"]
-    assert not any(method == "notice" for method, _ in result["calls"])
+def test_tag_readback_must_confirm_packaged_sha_before_publication(tmp_path):
+    result = run_release_gate(tmp_path, fault='tag_mismatch')
+    assert 'Rolling tag did not move' in result['error']
+    assert not any(method in {'publish', 'notice'} for method, _ in result['calls'])
 
 
-def test_provenance_gate_runs_after_all_uploads_and_missing_package_is_fatal():
-    source = WORKFLOW.read_text(encoding="utf-8")
-    assert source.index("- name: Package verified macOS app without model downloads") < source.index("- name: Build no-admin Apple Silicon portable kit") < source.index("- name: Publish or Update GitHub Release")
-    assert "--no-models" in source
-    assert all(target in source for target in ("Linux-x86_64", "Windows-x86_64", "macOS-arm64"))
-    assert "SmartAI-native-" in source
-    assert "SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip" in source
-    assert source.index("- name: Build standalone full Mac installer") < source.index("- name: Publish or Update GitHub Release")
-    assert 'Install-SmartAI-macOS-Full.command' in source
-    assert source.index("- name: Publish or Update GitHub Release") < source.index(f"- name: {STEP_NAME}")
-    assert 'python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"' in source
-    assert ",check=True)" in source
+@pytest.mark.parametrize('name', ['SmartAI-macOS-arm64.dmg', 'SmartAI-native-cpu-Linux-X64.zip',
+                                 'Reassemble-SmartAI-Linux-x86_64-portable.zip.ps1', 'SmartAI-macOS-arm64.bundle.json'])
+def test_build_rejects_reintroduced_public_clutter(tmp_path, name):
+    package_fixture(tmp_path / 'dist')
+    (tmp_path / 'dist' / name).write_bytes(b'obsolete distribution')
+    with pytest.raises(RuntimeError, match='Unexpected files'):
+        verify(tmp_path / 'dist', SHA, include_installer=True)
 
 
-
-def test_release_does_not_delete_previous_downloads_before_verification():
+def test_pipeline_bundles_native_artifacts_and_uploads_only_verified_allowlist():
     source = WORKFLOW.read_text(encoding='utf-8')
-    preparation = source.split('- name: Prepare GitHub Release', 1)[1].split('- name: Download native-OS', 1)[0]
-    assert 'delete-asset' not in preparation
+    package = source.split('\n  package:\n', 1)[1].split('\n  build-and-release:\n', 1)[0]
+    assert 'needs: [preflight, native-build, reuse-native]' in package
+    assert 'SMARTAI_NATIVE_RUNTIME_DIR:' in package
+    assert 'run-id: ${{ needs.preflight.outputs.verified_run_id || github.run_id }}' in package
+    assert source.index('- name: Build one Mac installer') < source.index('- name: Upload only the verified download set') < source.index('- name: ' + STEP_NAME)
+    assert 'build_bonsai2_bundled_zip.py' not in source and 'build_macos_noadmin_portable.py' not in source
+    assert "for item in rows:" in source and "str(Path('dist') / item['name'])" in source
+    assert 'cancel-in-progress: false' in source

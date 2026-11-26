@@ -70,4 +70,4 @@ def test_release_workflow_packages_python_and_checks_native_launch_before_public
     assert "Build bundled runtime and test relocated first launch" in workflow
     assert "python tools/build_release_package.py" in workflow
     assert "needs.package.result == 'success'" in workflow
-    assert workflow.index("Verify package receipts") < workflow.index("Package verified macOS app without model downloads")
+    assert workflow.index("Verify the canonical portable and setup packages") < workflow.index("Build one Mac installer using the portable app archive")

@@ -50,7 +50,7 @@ After the older audit snapshot, current intended implementation added:
 - recognition of bundled release models as already installed;
 - use of bundled Bonsai 2 MLX snapshots when available;
 - streamed model-bundled macOS release support;
-- `build_bonsai2_bundled_zip.py`;
+- historical streamed macOS model bundling (retired; current releases are model-free);
 - packaging of both Bonsai 2 MLX models in the macOS release path;
 - a bundled-release contract;
 - repaired streamed release workflow;
@@ -512,21 +512,25 @@ Current intended text-generation policy:
 
 Older greedy Eval wording and the older 0.88 maximum are historical and must not silently replace the current policy.
 
-## 12. Packaging and bundled Bonsai 2
+## 12. Release packaging
 
-Packaged macOS releases can carry local Bonsai 2 snapshots. Source checkouts may still resolve/fetch models normally, but packaged builds can resolve the bundled snapshots and treat them as installed.
+Current releases provide one Portable and one Setup package per platform. Both
+include Python; Portable includes installed dependencies and Setup prepares a
+private environment on first launch. Models are downloaded on demand inside
+Studio. Existing locally downloaded or previously bundled models remain usable
+and are preserved by the updater.
 
-The packaged standalone 4K Eval uses the bundled Bonsai 2 snapshot when available.
+The package builder is `tools/build_release_package.py`. Linux publishes one
+portable archive, with a single automatic downloader if GitHub's per-file size
+limit requires parts. The Mac full installer downloads the canonical portable
+ZIP and defaults to the user's Applications folder without administrator rights.
+Matching original Bonsai 2 CPU/Metal server binaries and verification receipts
+are embedded in the Linux/Mac packages rather than published as extra ZIPs.
 
-Relevant implementation areas include:
-
-- `build_bonsai2_bundled_zip.py`;
-- `build_app.py`;
-- `config/paths.py`;
-- macOS release workflow;
-- bundled-release contract coverage.
-
-This packaging behavior is current and should not be reverted merely because it landed after the older implementation audit.
+The release publisher verifies an exact asset list, removes superseded generated
+assets only after replacements verify, and retains the three platform receipts
+required by existing in-app updaters. See the README download table and
+[release formats](best-work-handoffs.md#release-formats).
 
 ## 13. Media tools and media learning
 

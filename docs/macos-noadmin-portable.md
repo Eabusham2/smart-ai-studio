@@ -1,46 +1,58 @@
-# macOS no-admin portable release (Apple Silicon)
+# Mac installation without administrator access (Apple Silicon)
 
-The `latest` GitHub release provides a **separate no-admin portable kit**:
+Download `Install-SmartAI-macOS-Full.command` from the current release. Quit an
+existing SmartAI session, then double-click the installer or run:
 
-- `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip`
-- `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256`
+```sh
+/bin/bash Install-SmartAI-macOS-Full.command
+```
 
-Unzip the kit to a user-owned folder, then double-click its
-`Install-and-Launch-SmartAI-NoAdmin.command` or run it in Terminal with
-`/bin/bash "<kit-folder>/Install-and-Launch-SmartAI-NoAdmin.command"`.
-The helper uses the system `curl`, `osascript`, `shasum`, and `ditto` to fetch,
-verify, and assemble the **existing** split Mac release ZIP. GitHub limits a
-single asset to 2 GiB, so this option shares the standard archive's verified
-parts rather than uploading a duplicate application archive.
+The installer downloads the same `SmartAI-macOS-arm64-portable.zip` offered as a
+direct download. It checks the archive against its embedded SHA-256, extracts the
+complete app and runtime, and opens it. Fresh installations use
+`~/Applications/SmartAI.app` without an administrator password. Existing copies
+in the user Applications folder, `/Applications`, or the older versioned portable
+folder are detected and updated in place so their saved-data location stays the
+same. If several copies exist, choose the one to update. No separate kit,
+reassembler, model archive, native-runtime ZIP, Homebrew, Xcode, system Python or
+extra dependency installation is needed.
 
-The assembled archive contains a fully populated `SmartAI.app`, a bundled
-Python 3.11 runtime with dependencies already installed. **It contains no
-pretrained model weights.** The default tabs are Bonsai 2.5 and Bonsai 2.5 CRACK;
-choose Download in the app to fetch the selected pinned model and its MTP head.
-See [model sources](bonsai25-models.md).
+The existing app is retained as a dated backup. Chat and learning data in their
+normal data directories are preserved. Repeating the installer for the same
+release reuses the installed app and does not restart an active session. Future
+updates can use the app's **↑ Update** button.
 
-The app extracts into `~/Applications/SmartAI-Portable/<release-sha>/SmartAI.app`
-and starts as the ordinary user. No `/Applications` write permission, `sudo`,
-Homebrew, Xcode, system Python or additional dependency installation is needed.
-The first kit run downloads the shared release parts from GitHub. The app does
-not download a model merely because it starts. After you download a model in
-Studio, that model can be loaded offline. The parts are SHA-256 checked before the
-ZIP is assembled, the assembled ZIP is checked again, and the explicit empty
-model manifest and embedded Python readiness marker are validated before moving the app
-into place. Existing versioned installs are left untouched.
+## Portable and offline use
 
-**Storage:** Keep room for the archive parts, assembled ZIP, extracted app, and
-any previous installation you retain. Model downloads need additional space;
-only download the presets you intend to use. Studio switches between resident
-models rather than loading both 27B presets together.
+For a portable copy, download `SmartAI-macOS-arm64-portable.zip`, extract it into
+a user-owned folder, and open `SmartAI.app`. The app includes Python and installed
+dependencies. Download the selected model inside Studio before using it offline;
+no pretrained model weights are bundled or fetched just by opening the app.
 
-**macOS security:** The app is not notarized. If macOS displays a security
-warning, verify the source and use its ordinary user-level Open controls.
-The portable workflow does not disable Gatekeeper or require admin privileges.
+The command installer retains verified downloads after an interrupted attempt.
+Set `SMARTAI_FULL_OFFLINE=1` to require its cached archive and forbid downloads.
+On success it removes only its own archive/cache staging, preserving the previous
+app backup and unrelated files. A previously downloaded command is pinned to its
+release: if a rolling release has changed, download the current command again.
 
-**CI proof:** The packaging tests check ZIP script permissions, manifest integrity,
-explicit model-free installation, and an offline synthetic install on an Apple
-Silicon GitHub runner. The release workflow publishes the kit only after the
-focused regression/native gates, relocated application smoke tests, and the
-verified model-free ZIP pass. The full regression matrix remains a manual option.
-Actual pretrained-model inference is not executed in the release builder.
+## Another installation folder
+
+Use an absolute destination ending in `/SmartAI.app`:
+
+```sh
+SMARTAI_FULL_TARGET="$HOME/My Apps/SmartAI.app" /bin/bash Install-SmartAI-macOS-Full.command
+```
+
+Choosing or updating `/Applications/SmartAI.app` may require administrator
+credentials if that directory is not writable by your account. A fresh install
+in the default user Applications folder avoids this requirement. An explicit
+`SMARTAI_FULL_TARGET` selects that location instead of detecting existing copies.
+
+Keep room for the downloaded ZIP, extracted app, retained backup and your chosen
+models. The app is unsigned; use macOS's ordinary Open controls if it asks for
+approval. The installer does not disable system security settings.
+
+CI checks the canonical archive, relocated first launch and Setup's private
+dependency installation. Mac-specific synthetic installation tests also exercise
+offline installation, upgrade, owned-cache cleanup and rollback after a failed
+move. These packaging checks do not load a pretrained model.

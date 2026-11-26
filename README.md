@@ -349,14 +349,12 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Native GGUF inference on Apple Silicon uses stock `llama-cpp-python` with Metal.
-For the packaged Mac app, run **Install_Dependencies.command** once before using
-that backend. The command is beside the app in the regular package; in the
-multipart model bundle it is inside **SmartAI.app → Show Package Contents →
-Contents/Resources/app**. It requires native Python 3.10+ with Tkinter and Xcode
-Command Line Tools, installs into a user environment, and builds the Metal
-binding. The app launcher uses that environment. It does not download models;
-managed Strata installs its own separate verified runtime when selected.
+Published **Portable** packages include their private Python and runtime dependencies.
+**Setup** packages install dependencies into a private user directory on first
+launch. Neither format requires a separate native-runtime ZIP. The main Bonsai
+2.5 runtime and selected model weights are managed inside Studio; they are
+fetched only when needed. Source checkouts still need their own matching Python
+and build dependencies.
 
 ### 3. Launch Desktop Studio (GUI)
 ```bash
@@ -422,33 +420,40 @@ bundle Python and dependencies; setup packages install dependencies into a priva
 user directory on first launch. No pretrained model is executed by the package
 smoke check.
 
-**Apple Silicon full installer:** Download
-[`Install-SmartAI-macOS-Full.command`](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Install-SmartAI-macOS-Full.command)
-and [its SHA256 receipt](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Install-SmartAI-macOS-Full.command.sha256)
-from the same release. Quit SmartAI, then run these commands in the download folder:
+### Choose your download
 
-```bash
-shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256 &&
-  /bin/bash Install-SmartAI-macOS-Full.command
-```
+[Open the current release](https://github.com/Eabusham2/smart-ai-studio/releases/tag/latest).
 
-The helper verifies a commit-pinned kit, downloads and checks every app archive
-part, assembles the app with its embedded runtime, installs
-`/Applications/SmartAI.app`, removes its own redundant downloads,
-and opens the app. It preserves chat/learning data and keeps the previous app as
-a dated backup. It requests an administrator password only when the Applications
-folder requires one. Allow room for the downloaded parts, extracted app, retained
-backup, and any model weights you later choose to download in Studio.
-After a failed attempt, completed downloads remain available for retry. The
-installer needs no Homebrew, Xcode or system Python. To install elsewhere, set
-`SMARTAI_FULL_TARGET` to an absolute path ending in `/SmartAI.app`.
+| Computer | Full app with dependencies | Smaller Setup download |
+| --- | --- | --- |
+| Apple Silicon Mac | [Mac installer](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Install-SmartAI-macOS-Full.command), or [portable ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-macOS-arm64-portable.zip) | [Mac Setup ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-macOS-arm64-Setup.zip) |
+| Windows x64 | [Windows portable ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-Windows-x86_64-portable.zip) | [Windows Setup ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-Windows-x86_64-Setup.zip) |
+| Linux x64 | [Linux portable downloader](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Download-SmartAI-Linux.sh) | [Linux Setup ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-Linux-x86_64-Setup.zip) |
 
-**Apple Silicon no-admin portable:** The release also provides
-`SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip`. It assembles the existing
-SHA256-verified split Mac ZIP (which includes bundled Python/dependencies) into `~/Applications` without
-administrator rights, Homebrew, or Xcode. The first assembly downloads the
-release parts; download the selected model in the app before using it offline. See
-[No-admin macOS portable instructions](docs/macos-noadmin-portable.md).
+**Mac:** Quit SmartAI, download the installer, then double-click it or run
+`/bin/bash Install-SmartAI-macOS-Full.command`. It downloads and verifies the same
+complete portable ZIP linked above and opens the installed app. Fresh installs
+use `~/Applications/SmartAI.app` without administrator credentials, Homebrew,
+Xcode or system Python. Existing copies are updated in their original location
+so saved data stays visible; if several copies exist, choose which to update.
+The existing app is backed up and chat/learning data is preserved.
+The portable ZIP can also be extracted and opened directly. See the
+[Mac installation guide](docs/macos-noadmin-portable.md) for another destination
+and offline installation.
+
+**Linux:** Download the one helper and run `sh Download-SmartAI-Linux.sh`.
+It downloads, verifies, joins and extracts the complete portable app into a new
+`SmartAI-Linux` folder beside the helper, then prints the launch command. You do
+not need to download or join parts yourself. Choose another folder with
+`--output-dir /path/to/folder`; `--download-only` saves the complete verified ZIP.
+An existing app folder is never overwritten; use **↑ Update** for upgrades.
+
+The release's receipt and part-manifest files are used automatically. The
+original Bonsai 2 CPU/Metal runtime, its license and verification receipt are
+included in the matching Linux/Mac app package. Select it through
+**Speedups… → Use included Bonsai 2 runtime** when using that older model path;
+Bonsai 2.5 retains its own managed runtime. No release package includes model
+weights. Choose the model to download inside Studio.
 
 ### In-app updates
 

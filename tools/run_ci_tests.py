@@ -20,6 +20,8 @@ REGRESSION = (
     "test_native_speculation.py",
     "test_native_exactness_patch.py",
     "test_native_ci_reuse.py",
+    "test_bundled_native.py",
+    "test_gui_lossless_speedups.py",
     "test_lossless_speed_control.py",
     "test_prompt_reuse.py",
     "test_app_updates.py",
@@ -27,12 +29,11 @@ REGRESSION = (
     "test_app_update_packaging.py",
     "test_update_installer.py",
     "test_portable_runtime.py",
+    "test_portable_download.py",
     "test_release_provenance.py",
     "test_learning_release_gate.py",
-    "test_macos_noadmin_portable.py",
     "test_macos_full_installer.py",
     "test_ci_selection.py",
-    "test_model_free_bundle.py",
 )
 NATIVE = (
     "test_mlx_packed_terminal.py",

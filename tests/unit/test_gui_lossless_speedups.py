@@ -215,6 +215,39 @@ def test_dialog_saves_all_controls_and_preserves_other_preferences(monkeypatch, 
     assert "Reload" in app._speedups_dialog_status.cget("text")
 
 
+def test_included_native_runtime_requires_explicit_selection_and_save(monkeypatch, tmp_path):
+    bundled = {"speculative_server_path": "/app/runtime/native/llama-server",
+               "speculative_runtime_receipt_path": "/app/runtime/native/llama-server.smartai.json"}
+    monkeypatch.setattr(gui, "bundled_runtime_options", lambda: bundled)
+    app, _ = make_app(monkeypatch, tmp_path)
+    app._open_lossless_speedups()
+    assert app._speedups_variables["speculative_server_path"].get() == ""
+    app._speedups_bundled_native_button.cget("command")()
+    assert app._speedups_variables["speculative_server_path"].get() == gui.INCLUDED_RUNTIME
+    assert app._speedups_variables["speculative_runtime_receipt_path"].get() == ""
+    assert not app.engine.configure_calls
+    assert app.engine.lossless_speed_options["speculative_server_path"] is None
+    assert app._speedups_variables["speculative_mode"].get() == "auto"
+    assert "Bonsai 2.5 keeps its own runtime" in app._speedups_dialog_status.cget("text")
+    app._speedups_save_button.cget("command")()
+    assert app.engine.configure_calls[0]["speculative_server_path"] == gui.INCLUDED_RUNTIME
+    assert app.engine.configure_calls[0]["speculative_runtime_receipt_path"] is None
+
+
+def test_included_native_button_preserves_custom_server_or_receipt(monkeypatch, tmp_path):
+    bundled = {"speculative_server_path": "/app/runtime/native/llama-server",
+               "speculative_runtime_receipt_path": "/app/runtime/native/llama-server.smartai.json"}
+    monkeypatch.setattr(gui, "bundled_runtime_options", lambda: bundled)
+    app, _ = make_app(monkeypatch, tmp_path)
+    app._open_lossless_speedups()
+    app._speedups_variables["speculative_server_path"].set("/my/custom/server")
+    app._speedups_bundled_native_button.cget("command")()
+    assert app._speedups_variables["speculative_server_path"].get() == "/my/custom/server"
+    assert app._speedups_variables["speculative_runtime_receipt_path"].get() == ""
+    assert "custom native path" in app._speedups_dialog_status.cget("text")
+    assert not app.engine.configure_calls
+
+
 @pytest.mark.parametrize("busy", ["loading", "generation", "media", "tuning", "sleep", "learning", "evaluation", "closing"])
 def test_open_dialog_rechecks_busy_state_at_save_without_writing(monkeypatch, tmp_path, busy):
     app, _ = make_app(monkeypatch, tmp_path)

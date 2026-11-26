@@ -580,12 +580,17 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+
   package:
     name: Portable and Setup (${{ matrix.target }}, no models)
+    needs: [preflight, native-build, reuse-native]
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish_release &&
-       (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+      always() && needs.preflight.result == 'success' &&
+      (needs.preflight.outputs.reuse_green == 'true' ||
+       needs.native-build.result == 'success' || needs.reuse-native.result == 'success') &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish_release &&
+        (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -594,15 +599,32 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: Linux-x86_64
+            native_artifact: SmartAI-native-cpu-Linux-X64
           - os: windows-latest
             target: Windows-x86_64
+            native_artifact: ''
           - os: macos-latest
             target: macOS-arm64
+            native_artifact: SmartAI-native-metal-macOS-ARM64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Fetch matching verified native runtime for the app
+        if: matrix.native_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.native_artifact }}
+          path: native-runtime-downloads
+          run-id: ${{ needs.preflight.outputs.verified_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the no-admin installer on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python -m pip install pytest
+          python -m pytest -q tests/unit/test_macos_full_installer.py
       - name: Install Linux GUI libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb libx11-6 libxext6 libxrender1 libxft2 libgl1
@@ -610,6 +632,7 @@ jobs:
         shell: bash
         env:
           SMARTAI_MODEL_BUNDLE_RELEASE: "1"
+          SMARTAI_NATIVE_RUNTIME_DIR: ${{ github.workspace }}/native-runtime-downloads
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
           RUN_REAL_WEIGHTS_EVAL: "0"
@@ -640,36 +663,42 @@ jobs:
       (needs.preflight.outputs.reuse_green == 'true' ||
        (needs.test.result == 'success' && needs.mlx-learning.result == 'success' &&
         (needs.native-build.result == 'success' || needs.reuse-native.result == 'success')))
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 45
-
+    concurrency:
+      group: smartai-release-${{ github.repository }}-${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+      cancel-in-progress: false
     steps:
       - name: Report Release Gate
         shell: bash
         run: |
           if [ "${{ needs.preflight.outputs.reuse_green }}" = "true" ]; then
             echo "Reusing already-green PR head: ${{ needs.preflight.outputs.verified_pr_head }}"
-            echo "Skipping the duplicate tested regression gate on the merge commit."
           else
             echo "Using successful tests from this workflow run."
           fi
-
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Fetch the exact green native builds
-        uses: actions/download-artifact@v4
-        with:
-          pattern: SmartAI-native-*
-          path: native-runtime-downloads
-          run-id: ${{ needs.preflight.outputs.verified_run_id || github.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+      - name: Refuse superseded release work
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.ref.startsWith('refs/heads/')) {
+              const { data } = await github.rest.git.getRef({ ...context.repo, ref: context.ref.slice(5) });
+              if (data.object.sha !== context.sha) throw new Error('A newer commit superseded this release run.');
+              try {
+                const { data: prior } = await github.rest.git.getRef({ ...context.repo, ref: 'tags/latest' });
+                if (prior.object.type !== 'commit') throw new Error('The rolling tag is not a commit reference.');
+                const { data: relation } = await github.rest.repos.compareCommits({ ...context.repo, base: prior.object.sha, head: context.sha });
+                if (!['ahead', 'identical'].includes(relation.status)) throw new Error('Refusing to upload over a newer or unrelated release.');
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+            }
       - name: Determine Release Tag & Title
         id: release_info
         shell: bash
@@ -683,7 +712,27 @@ jobs:
           fi
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_title=${TITLE}" >> "$GITHUB_OUTPUT"
-
+      - name: Download native-OS portable and setup packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: SmartAI-ready-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the canonical portable and setup packages
+        run: python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"
+      - name: Build one Mac installer using the portable app archive
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
+        run: |
+          python -m tools.build_macos_full_installer \
+            --receipt dist/SmartAI-macOS-arm64.receipt.json \
+            --output-dir dist \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --commit "$GITHUB_SHA"
+          /bin/bash -n dist/Install-SmartAI-macOS-Full.command
+          python tools/verify_release_packages.py dist --commit "$GITHUB_SHA" --include-installer --manifest release-assets.json
       - name: Prepare GitHub Release for Verified Packages
         shell: bash
         env:
@@ -694,262 +743,118 @@ jobs:
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --draft --notes "Packaging release assets..."
           fi
-
-          # Keep prior downloads until replacement files pass the final gate.
-          # The app archive uploader replaces matching part names with --clobber.
-
-      - name: Download native-OS portable and setup packages
-        uses: actions/download-artifact@v4
-        with:
-          pattern: SmartAI-ready-*
-          path: dist
-          merge-multiple: true
-
-      - name: Verify package receipts and recover the tested Mac app
-        shell: bash
-        run: |
-          python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"
-          mkdir -p verified-mac-app
-          tar -xzf dist/SmartAI.app.tar.gz -C verified-mac-app
-          mv verified-mac-app/SmartAI.app dist/SmartAI.app
-          rm dist/SmartAI.app.tar.gz
-
-      - name: Package native runtimes and verified receipts
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib, json, shutil
-          Path('dist').mkdir(exist_ok=True)
-          runtimes = list(Path('native-runtime-downloads').glob('SmartAI-native-*'))
-          if len(runtimes) != 2:
-              raise RuntimeError('Expected both exact CI-built native runtimes')
-          patcher_hash = hashlib.sha256(Path('core/native_exactness.py').read_bytes()).hexdigest()
-          for runtime in runtimes:
-              binary = runtime / 'llama-server'
-              receipt = json.loads((runtime / 'llama-server.smartai.json').read_text())
-              if (receipt['binary_sha256'] != hashlib.sha256(binary.read_bytes()).hexdigest()
-                      or receipt['patcher_sha256'] != patcher_hash
-                      or receipt['exactness_contract'] != 'smartai-serial-target-v1'):
-                  raise RuntimeError('Native release receipt does not match the tested code')
-              binary.chmod(0o755)
-              shutil.make_archive(str(Path('dist') / runtime.name), 'zip', runtime)
-          PY
-
-      - name: Package verified macOS app without model downloads
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_HUB_OFFLINE: "1"
-          TRANSFORMERS_OFFLINE: "1"
-          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
-        run: |
-          python build_bonsai2_bundled_zip.py \
-            --app-bundle dist/SmartAI.app \
-            --output-dir dist \
-            --archive-name SmartAI-macOS-arm64.zip \
-            --no-models \
-            --upload-tag "$RELEASE_TAG"
-
-      - name: Build no-admin Apple Silicon portable kit without models
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
-        run: |
-          # Reuse the exact tested app/runtime parts. Models are downloaded
-          # only when selected in the app, never by a CI build or installer.
-          python tools/build_macos_noadmin_portable.py \
-            --manifest dist/SmartAI-macOS-arm64.bundle.json \
-            --assembler dist/Reassemble-SmartAI-macOS-arm64.command \
-            --output-dir dist \
-            --repo "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --commit "$GITHUB_SHA"
-          cd dist
-          /usr/bin/shasum -a 256 -c SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip.sha256
-
-      - name: Build standalone full Mac installer with verified app kit
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
-        run: |
-          python -m tools.build_macos_full_installer \
-            --kit dist/SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip \
-            --output-dir dist \
-            --repo "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --commit "$GITHUB_SHA"
-          /bin/bash -n dist/Install-SmartAI-macOS-Full.command
-          cd dist
-          /usr/bin/shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256
-
-      - name: Upload Build Artifacts to Workflow Run
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartAI-Packages
-          path: |
-            dist/*.json
-            dist/*.command
-            dist/*.ps1
-            dist/*.sh
-            dist/*.sha256
-          if-no-files-found: error
-
-      - name: Publish or Update GitHub Release
+      - name: Upload only the verified download set
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
-          RELEASE_TITLE: ${{ steps.release_info.outputs.release_title }}
         run: |
-          python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"
           python - <<'PYUPLOAD'
           from pathlib import Path
-          import os, subprocess
-          for path in sorted(Path('dist').iterdir()):
-              if path.is_file():
-                  subprocess.run(['gh','release','upload',os.environ['RELEASE_TAG'],str(path),'--clobber'],check=True)
+          import json, os, subprocess
+          from tools.verify_release_packages import verify
+          rows = verify('dist', os.environ['GITHUB_SHA'], include_installer=True)
+          if rows != json.loads(Path('release-assets.json').read_text())['assets']:
+              raise RuntimeError('Release files changed after verification')
+          for item in rows:
+              subprocess.run(['gh', 'release', 'upload', os.environ['RELEASE_TAG'], str(Path('dist') / item['name']), '--clobber'], check=True)
           PYUPLOAD
-          # Keep the extra no-admin download option discoverable in the
-          # published release, without suggesting it contains a second 18GB copy.
-          cat > smartai-release-notes.md <<'SMARTAI_RELEASE_NOTES'
-          ## Smart AI Studio — Bonsai 2.5 and local API
+          python - <<'PYNOTES'
+          from pathlib import Path
+          import os
+          base = 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/releases/download/' + os.environ['RELEASE_TAG'] + '/'
+          linux = 'Download-SmartAI-Linux.sh' if Path('dist/Download-SmartAI-Linux.sh').is_file() else 'SmartAI-Linux-x86_64-portable.zip'
+          notes = f'''## Smart AI Studio — simpler downloads
 
-          - Update the main model choices to Bonsai 2.5, with compatible
-            speculative decoding determined by the selected model and runtime.
-          - Serve the loaded model through a local API for external clients.
-            See the README for supported protocols and client setup.
-          - Run a focused offline regression gate on ordinary commits. The full
-            six-lane suite and extended native tests remain available through
-            workflow_dispatch with `full_tests` enabled.
-          - Keep native CPU/Metal verifier checks and real packaged GUI, Setup,
-            and mounted Mac DMG first-launch checks as release gates.
-          - Stop downloading or bundling model weights in CI. Download the model
-            you choose inside the app; existing downloaded models are preserved
-            by the in-app updater.
+          The app, Python, dependencies and matching original Bonsai 2 native runtime are now packaged together. Bonsai 2.5 and the local API remain available. Models download only when selected inside the app.
 
-          ### Downloads
+          ### Start here
 
-          **Portable packages** include the app, Python, and dependencies for
-          Windows, Linux, and Apple Silicon macOS. **Setup packages** install
-          their private dependencies on first launch. Neither includes models.
+          | Your computer | Download | Next step |
+          | --- | --- | --- |
+          | Apple Silicon Mac | [Install SmartAI]({base}Install-SmartAI-macOS-Full.command) | Run with `/bin/bash Install-SmartAI-macOS-Full.command`; fresh installs use your own Applications folder without administrator access, and upgrades reuse the existing location. |
+          | Windows x64 | [Portable app]({base}SmartAI-Windows-x86_64-portable.zip) | Extract the ZIP and run SmartAI.bat. |
+          | Linux x64 | [Portable app downloader]({base}{linux}) | Run `bash Download-SmartAI-Linux.sh` when provided; it downloads, verifies and joins the full package automatically. |
 
-          **Mac full installer:** download `Install-SmartAI-macOS-Full.command`
-          and its `.sha256` receipt. Verify with
-          `shasum -a 256 -c Install-SmartAI-macOS-Full.command.sha256`, then run
-          `/bin/bash Install-SmartAI-macOS-Full.command`. It verifies the complete
-          app/runtime archive before installing to `/Applications`. A previous
-          app is backed up, and chat/learning data is preserved. Quit SmartAI
-          before upgrading. Administrator access is requested only if the chosen
-          Applications directory requires it.
+          ### Other installation choices
 
-          **Mac no-admin installer:** download
-          `SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip` and its `.sha256` receipt.
-          Unzip and run `Install-and-Launch-SmartAI-NoAdmin.command`. It installs
-          the complete app/runtime under `~/Applications/SmartAI-Portable/`,
-          without administrator credentials, Homebrew, Xcode, or system Python.
-
-          Both Mac installers download the same checksum-pinned app archive.
-          Models are downloaded only when selected inside Smart AI Studio.
-          Allow free space for the app archive, extraction, and chosen models.
-          Gatekeeper may require normal user approval for this unsigned app.
-          SMARTAI_RELEASE_NOTES
-          gh release edit "$RELEASE_TAG" --title "$RELEASE_TITLE" --notes-file smartai-release-notes.md --draft=false --latest
-
+          - [Mac portable ZIP]({base}SmartAI-macOS-arm64-portable.zip): extract SmartAI.app and open it, or move it to your own Applications folder.
+          - Smaller Setup downloads: [Mac]({base}SmartAI-macOS-arm64-Setup.zip), [Windows]({base}SmartAI-Windows-x86_64-Setup.zip), [Linux]({base}SmartAI-Linux-x86_64-Setup.zip). These install private dependencies on first launch.
+          - The Mac installer verifies the app archive, preserves chat/learning data and backs up an existing app. Quit SmartAI before upgrading. `SMARTAI_FULL_TARGET` can select a different installation location.
+          - Release receipts and any Linux parts are used automatically. You do not need separate native ZIPs, checksum files, reassembly scripts or a Mac portable kit.
+          - Existing in-app updates keep the installed package format and preserve downloaded models and user data.
+          '''
+          import textwrap
+          Path('smartai-release-notes.md').write_text(textwrap.dedent(notes), encoding='utf-8')
+          PYNOTES
       - name: Verify Release Assets and Update Rolling Tag
         if: success()
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ steps.release_info.outputs.tag_name }}
+          RELEASE_TITLE: ${{ steps.release_info.outputs.release_title }}
         with:
           script: |
             const fs = require('fs').promises;
             const { owner, repo } = context.repo;
             const tag = process.env.RELEASE_TAG;
+            if (context.ref.startsWith('refs/heads/')) {
+              const { data } = await github.rest.git.getRef({ owner, repo, ref: context.ref.slice(5) });
+              if (data.object.sha !== context.sha) throw new Error('A newer commit superseded this release run.');
+            }
+            const manifest = JSON.parse(await fs.readFile('release-assets.json', 'utf8'));
+            const expected = manifest.assets;
+            if (manifest.schema !== 1 || manifest.commit !== context.sha || !Array.isArray(expected) ||
+                expected.length < 10 || expected.length > 19 || new Set(expected.map(item => item.name)).size !== expected.length) {
+              throw new Error('Invalid canonical release asset manifest.');
+            }
             const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
               owner, repo, release_id: release.id, per_page: 100,
             });
-            const manifest = JSON.parse(await fs.readFile('dist/SmartAI-macOS-arm64.bundle.json', 'utf8'));
-            if (manifest.archive_name !== 'SmartAI-macOS-arm64.zip' || !Array.isArray(manifest.parts) || !manifest.parts.length) {
-              throw new Error('The split macOS bundle has no valid release manifest.');
-            }
-            const expected = manifest.parts.map(part => {
-              if (!/^SmartAI-macOS-arm64\.zip\.part[0-9]+$/.test(part.name) || !Number.isSafeInteger(part.size) || part.size <= 0) {
-                throw new Error('The split macOS manifest contains an invalid part.');
-              }
-              return { name: part.name, size: part.size };
-            });
-            for (const name of ['SmartAI-macOS-arm64.bundle.json', 'Reassemble-SmartAI-macOS-arm64.command']) {
-              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
-            }
-            // The additional NoAdmin kit must be exactly this workflow's
-            // inspected app manifest and checksum-verified release asset.
-            const kitName = 'SmartAI-macOS-arm64-NoAdmin-Portable-Kit.zip';
-            const receiptName = kitName + '.sha256';
-            const kitBytes = await fs.readFile(`dist/${kitName}`);
-            const kitDigest = require('crypto').createHash('sha256').update(kitBytes).digest('hex');
-            const kitReceipt = (await fs.readFile(`dist/${receiptName}`, 'utf8')).trim();
-            if (kitReceipt !== `${kitDigest}  ${kitName}`) {
-              throw new Error('No-admin portable release kit has an invalid SHA256 receipt');
-            }
-            for (const name of [kitName, receiptName]) {
-              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
-            }
-            const installerName = 'Install-SmartAI-macOS-Full.command';
-            const installerBytes = await fs.readFile(`dist/${installerName}`);
-            const installerDigest = require('crypto').createHash('sha256').update(installerBytes).digest('hex');
-            const installerReceiptName = installerName + '.sha256';
-            const installerReceipt = (await fs.readFile(`dist/${installerReceiptName}`, 'utf8')).trim();
-            const installerText = installerBytes.toString('utf8');
-            if (installerReceipt !== `${installerDigest}  ${installerName}` ||
-                !installerText.includes(`COMMIT="${context.sha}"`) ||
-                !installerText.includes(`KIT_SHA256="${kitDigest}"`)) {
-              throw new Error('Full Mac installer does not pin this commit and verified app kit');
-            }
-            for (const name of [installerName, installerReceiptName]) {
-              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
-            }
-            for (const target of ['Linux-x86_64', 'Windows-x86_64', 'macOS-arm64']) {
-              const name = `SmartAI-${target}.receipt.json`;
-              const receipt = JSON.parse(await fs.readFile(`dist/${name}`, 'utf8'));
-              if (receipt.commit !== context.sha || receipt.gui_smoke !== 'passed' || receipt.setup_smoke !== 'passed' || receipt.bonsai_native_smoke !== 'passed' || (target.startsWith('macOS') && receipt.dmg_smoke !== 'passed')) throw new Error(`Unverified package ${target}`);
-              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
-              expected.push(...receipt.files.map(item => ({ name: item.name, size: item.size })));
-            }
-            const nativeArchives = (await fs.readdir('dist')).filter(name => /^SmartAI-native-.*\.zip$/.test(name));
-            if (nativeArchives.length !== 2) throw new Error('Missing tested native runtime packages');
-            for (const name of nativeArchives) {
-              expected.push({ name, size: (await fs.stat(`dist/${name}`)).size });
-            }
-            if (new Set(expected.map(item => item.name)).size !== expected.length) {
-              throw new Error('The release manifest contains duplicate part names.');
-            }
             for (const item of expected) {
-              const asset = assets.find(asset => asset.name === item.name);
-              if (!asset || asset.state !== 'uploaded' || item.size <= 0 || asset.size !== item.size) {
-                throw new Error(`Release asset is missing, incomplete, or the wrong size: ${item.name}`);
+              if (!/^[A-Za-z0-9_.-]+$/.test(item.name) || !/^[a-f0-9]{64}$/.test(item.sha256) ||
+                  !Number.isSafeInteger(item.size) || item.size <= 0) throw new Error('Invalid verified asset metadata.');
+              const matches = assets.filter(asset => asset.name === item.name);
+              const asset = matches[0];
+              if (matches.length !== 1 || asset.state !== 'uploaded' || asset.size !== item.size || asset.digest !== `sha256:${item.sha256}`) {
+                throw new Error(`Release asset is missing, incomplete, or differs from the verified bytes: ${item.name}`);
               }
             }
-
-            // Do not leave the old dependency-less packages alongside the
-            // verified replacement: users could otherwise download an unfixed
-            // Windows/Unix archive from this new release by mistake.
+            // Publication is serialized across branches. A rerun must never move
+            // the rolling tag backward over an already-published descendant.
+            if (tag === 'latest') {
+              try {
+                const { data: prior } = await github.rest.git.getRef({ owner, repo, ref: 'tags/latest' });
+                if (prior.object.type !== 'commit') throw new Error('The rolling tag is not a commit reference.');
+                const { data: relation } = await github.rest.repos.compareCommits({ owner, repo, base: prior.object.sha, head: context.sha });
+                if (!['ahead', 'identical'].includes(relation.status)) throw new Error('Refusing to replace a newer or unrelated release.');
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+            }
             const currentNames = new Set(expected.map(item => item.name));
-            const legacyNames = new Set([
-              'SmartAI-macOS-arm64.zip', 'SmartAI-Windows.zip',
-              'SmartAI-Unix-POSIX.tar.gz', 'SmartAI-Linux-x86_64.tar.gz',
-            ]);
-            for (const asset of assets.filter(asset => !currentNames.has(asset.name) &&
-                (legacyNames.has(asset.name) || /^SmartAI-macOS-arm64\.zip\.part[0-9]+$/.test(asset.name)))) {
+            const platform = '(?:macOS|Linux|Windows)-(?:arm64|x86_64)';
+            const packagePattern = new RegExp(`^SmartAI-${platform}(?:-(?:portable|Setup|NoAdmin-Portable-Kit))?\\.(?:zip|dmg|tar\\.gz)(?:\\.(?:part[0-9]+|parts\\.json|sha256))?$`);
+            const metadataPattern = new RegExp(`^SmartAI-${platform}\\.(?:receipt|bundle)\\.json$`);
+            const reassemblerPattern = new RegExp(`^Reassemble-SmartAI-${platform}(?:-(?:portable|Setup))?(?:\\.(?:zip|tar\\.gz))?\\.(?:command|sh|ps1)$`);
+            const known = new Set(['SmartAI-Windows.zip', 'SmartAI-Unix-POSIX.tar.gz',
+              'Install-SmartAI-macOS-Full.command', 'Install-SmartAI-macOS-Full.command.sha256', 'Download-SmartAI-Linux.sh']);
+            function managed(name) {
+              return known.has(name) || packagePattern.test(name) || metadataPattern.test(name) || reassemblerPattern.test(name) ||
+                /^SmartAI-native-(?:cpu|metal)-(?:Linux|macOS)-(?:X64|ARM64)\.zip$/.test(name);
+            }
+            // Only prune known generated distributions after all replacements
+            // have matched uploaded size and SHA-256. Leave unrelated uploads alone.
+            for (const asset of assets.filter(asset => !currentNames.has(asset.name) && managed(asset.name))) {
               await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
             }
-            // Only the rolling tag moves. Immutable version tags are never rewritten.
             if (tag === 'latest') {
               await github.rest.git.updateRef({ owner, repo, ref: 'tags/latest', sha: context.sha, force: true });
               const { data: ref } = await github.rest.git.getRef({ owner, repo, ref: 'tags/latest' });
-              if (ref.object.type !== 'commit' || ref.object.sha !== context.sha) {
-                throw new Error('The rolling release tag does not point to the packaged commit.');
-              }
-              core.notice(`Verified rolling release at ${context.sha}.`);
+              if (ref.object.type !== 'commit' || ref.object.sha !== context.sha) throw new Error('Rolling tag did not move to the verified source.');
             }
+            await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
+              name: process.env.RELEASE_TITLE, body: await fs.readFile('smartai-release-notes.md', 'utf8'),
+              draft: false, make_latest: 'true' });
+            core.notice(`Published ${expected.length} verified downloads at ${context.sha}.`);

@@ -476,15 +476,20 @@ class ProReasoningEngine:
                     speed_options = getattr(self, "lossless_speed_options", {})
                     native_options = {}
                     server_path = info.get("speculative_server_path") or speed_options.get("speculative_server_path")
-                    if server_path:
+                    if server_path and not info.get("bonsai25_mtp"):
+                        from core.bundled_native import resolve_runtime_selection
                         from core.engines.prism_speculative_engine import PrismSpeculativeReasoningBackend
+                        server_path, receipt_path = resolve_runtime_selection(
+                            server_path,
+                            info.get("speculative_runtime_receipt_path") or speed_options.get("speculative_runtime_receipt_path"),
+                        )
                         gguf_cls = PrismSpeculativeReasoningBackend
                         native_options = {
                             "server_path": server_path,
                             "mode": (info.get("speculative_mode") or speed_options.get("speculative_mode", "none"))
                             if speed_options.get("enabled", True) else "none",
                             "draft_model_path": info.get("draft_model_path") or speed_options.get("draft_model_path"),
-                            "runtime_receipt_path": info.get("speculative_runtime_receipt_path") or speed_options.get("speculative_runtime_receipt_path"),
+                            "runtime_receipt_path": receipt_path,
                             "max_draft_tokens": info.get("max_draft_tokens", speed_options.get("max_draft_tokens")),
                         }
                     if info.get("bonsai25_mtp"):

@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,6 +14,7 @@ import zipfile
 import bootstrap_runtime as bootstrap
 import build_app
 from tools import build_release_package as builder
+from tools import bundled_native
 
 
 COMMIT = 'a' * 40
@@ -65,7 +65,7 @@ class UpdatePackagingTests(unittest.TestCase):
             self.assertEqual(record['install_managed_paths'], record['managed_paths'])
             self.assertEqual(json.loads((code / builder.BUILD_RECORD).read_text()), record)
 
-    def _package_fixture(self, directory, target, *, prepare_only=False):
+    def _package_fixture(self, directory, target, *, prepare_only=False, split_portable=False):
         directory = Path(directory)
         output = directory / 'release'
         smoke_kinds = []
@@ -123,10 +123,20 @@ class UpdatePackagingTests(unittest.TestCase):
                 self.assertEqual(record['package_kind'], 'portable')
                 self.assertTrue(bootstrap.ready(code / 'runtime/python', code))
 
-        def dmg(app, destination):
-            record = json.loads((code_root(app) / builder.BUILD_RECORD).read_text())
-            self.assertEqual(record['package_kind'], 'portable')
-            destination.write_bytes(b'fixture dmg')
+        def embed_native(code, native_target):
+            self.assertEqual(native_target, target)
+            if target.startswith('Windows'):
+                return None
+            destination = code / 'runtime/native'; destination.mkdir()
+            (destination / 'llama-server').write_bytes(b'fixture verified native')
+            (destination / 'llama-server.smartai.json').write_text('{"fixture": true}')
+            (destination / 'Prism-llama-LICENSE').write_text('fixture license')
+            return destination
+
+        original_split = builder.split_large
+        def split(path):
+            return original_split(path, limit=256 if split_portable and path.name.endswith('-portable.zip')
+                                  else 1_850_000_000)
 
         with patch.dict(os.environ, {'GITHUB_SHA': COMMIT, 'GITHUB_REF_TYPE': 'tag',
                                      'GITHUB_REF_NAME': 'v2.3.0'}, clear=True), \
@@ -140,9 +150,11 @@ class UpdatePackagingTests(unittest.TestCase):
              patch.object(builder.subprocess, 'run', side_effect=run), \
              patch.object(builder, 'smoke_app', side_effect=smoke), \
              patch.object(builder, 'smoke_bonsai_runtime') as native_smoke, \
-             patch.object(builder, 'verified_dmg', side_effect=dmg):
+             patch.object(builder, 'split_large', side_effect=split), \
+             patch.object(bundled_native, 'embed_native_runtime', side_effect=embed_native) as embed:
             result = builder.package(target, output, prepare_only=prepare_only)
             native_smoke.assert_called_once()
+            embed.assert_called_once()
         return output, result, smoke_kinds
 
     def test_each_platform_archives_its_own_portable_and_setup_identity(self):
@@ -160,14 +172,30 @@ class UpdatePackagingTests(unittest.TestCase):
                         self.assertEqual(record['commit'], COMMIT)
                         self.assertEqual(record['tag'], 'v2.3.0')
                         self.assertIn('requirements.lock.txt', record['managed_paths'])
+                        if not target.startswith('Windows'):
+                            native = next(name for name in archive.namelist()
+                                          if name.endswith('/runtime/native/llama-server'))
+                            self.assertEqual(archive.read(native), b'fixture verified native')
                 receipt = json.loads((output / f'SmartAI-{target}.receipt.json').read_text())
                 self.assertEqual(receipt['commit'], COMMIT)
                 self.assertEqual(receipt['bonsai_native_smoke'], 'passed')
-                if target.startswith('macOS'):
-                    # This exact portable app is reused for the model-free Mac installers.
-                    with tarfile.open(output / 'SmartAI.app.tar.gz') as archive:
-                        stamp = archive.extractfile('SmartAI.app/Contents/Resources/app/' + builder.BUILD_RECORD)
-                        self.assertEqual(json.load(stamp)['package_kind'], 'portable')
+                self.assertEqual(receipt['bundled_native_verified'],
+                                 'not_applicable' if target.startswith('Windows') else 'passed')
+                self.assertEqual({path.name for path in output.iterdir()}, {
+                    f'SmartAI-{target}-portable.zip', f'SmartAI-{target}-Setup.zip',
+                    f'SmartAI-{target}.receipt.json'})
+
+    def test_split_linux_has_one_automatic_downloader_and_matching_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, _, _ = self._package_fixture(directory, 'Linux-x86_64', split_portable=True)
+            helper = output / 'Download-SmartAI-Linux.sh'
+            self.assertIn('fetch_part ', helper.read_text())
+            receipt = json.loads((output / 'SmartAI-Linux-x86_64.receipt.json').read_text())
+            actual = {path.name for path in output.iterdir() if not path.name.endswith('.receipt.json')}
+            self.assertEqual({row['name'] for row in receipt['files']}, actual)
+            self.assertIn(helper.name, actual)
+            self.assertIn('SmartAI-Linux-x86_64-portable.zip.parts.json', actual)
+            self.assertFalse(any(name.endswith(('.ps1', '.sha256', '.tar.gz')) for name in actual))
 
     def test_prepare_only_returns_a_stamped_portable_app(self):
         with tempfile.TemporaryDirectory() as directory:

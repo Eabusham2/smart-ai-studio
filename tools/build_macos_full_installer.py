@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
-"""Publish a standalone, commit-pinned full Mac installer using the verified kit."""
+"""Install the canonical portable Mac ZIP with a pinned hash and no extra kit."""
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import re
 
-from tools.build_macos_noadmin_portable import KIT, LAUNCHER, verify
-
-
 INSTALLER = "Install-SmartAI-macOS-Full.command"
+ARCHIVE = "SmartAI-macOS-arm64-portable.zip"
+RECEIPT = "SmartAI-macOS-arm64.receipt.json"
 
 TEMPLATE = r'''#!/bin/bash
 set -euo pipefail
 
 # Full Apple Silicon install with the bundled app runtime and dependencies.
-# This file pins the exact kit digest; a changing rolling release fails closed.
+# This file pins the app archive digest; a changing rolling release fails closed.
 COMMIT="__COMMIT__"
-KIT_SHA256="__KIT_SHA256__"
-KIT_NAME="__KIT__"
-BUNDLED_MODELS="__BUNDLED_MODELS__"
+ARCHIVE_SHA256="__ARCHIVE_SHA256__"
+ARCHIVE_NAME="__ARCHIVE__"
 URL="https://github.com/__REPO__/releases/download/__TAG__"
-TARGET="${SMARTAI_FULL_TARGET:-/Applications/SmartAI.app}"
+SYSTEM_APP="/Applications/SmartAI.app"
+TARGET="${SMARTAI_FULL_TARGET-}"
 CACHE_ROOT="${SMARTAI_FULL_CACHE:-$HOME/Library/Caches/SmartAI/Full-__SHORT_SHA__}"
-DOWNLOADS="$CACHE_ROOT/model-downloads-__SHORT_SHA__"
+DOWNLOADS="$CACHE_ROOT/app-downloads-__SHORT_SHA__"
 STAMP="Contents/Resources/app/.smartai-full-install-commit"
 WORK=""
 BACKUP=""
@@ -37,6 +37,47 @@ fail() { echo "Installation stopped: $*" >&2; exit 1; }
 if [ "$(/usr/bin/uname -s)" != Darwin ] || [ "$(/usr/bin/uname -m)" != arm64 ]; then
   fail "This installer requires an Apple Silicon Mac."
 fi
+# Keep the existing app parent: it also determines where SmartAI finds saved
+# chats, models and learning data. Only fresh installs use the no-admin default.
+if [ "${SMARTAI_FULL_TARGET+x}" != x ]; then
+  CANDIDATES=()
+  CANDIDATE_COUNT=0
+  for candidate in "$HOME/Applications/SmartAI.app" "$SYSTEM_APP" \
+      "$HOME"/Applications/SmartAI-Portable/*/SmartAI.app; do
+    if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+      CANDIDATES[$CANDIDATE_COUNT]="$candidate"
+      CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
+    fi
+  done
+  case "$CANDIDATE_COUNT" in
+    0) TARGET="$HOME/Applications/SmartAI.app" ;;
+    1) TARGET="${CANDIDATES[0]}" ;;
+    *)
+      CHOICE=""
+      if [ -x /usr/bin/osascript ]; then
+        CHOICE=$(/usr/bin/osascript - "${CANDIDATES[@]}" <<'SMARTAI_CHOOSE_APP'
+on run appPaths
+  set chosenApp to choose from list appPaths with title "Update Smart AI Studio" with prompt "Choose the existing installation to update. Its saved-data location will stay the same." OK button name "Update This Copy" cancel button name "Cancel" multiple selections allowed false empty selection allowed false
+  if chosenApp is false then return ""
+  return item 1 of chosenApp
+end run
+SMARTAI_CHOOSE_APP
+        ) || CHOICE=""
+      fi
+      for candidate in "${CANDIDATES[@]}"; do
+        if [ "$CHOICE" = "$candidate" ]; then TARGET="$candidate"; break; fi
+      done
+      if [ -z "$TARGET" ]; then
+        echo 'Multiple installations were found. No app or saved data was changed.' >&2
+        echo 'Rerun the installer and select a copy, or run the command for its exact location:' >&2
+        for candidate in "${CANDIDATES[@]}"; do
+          printf '  SMARTAI_FULL_TARGET=%q /bin/bash %q\n' "$candidate" "$0" >&2
+        done
+        fail 'No recognized installation was selected.'
+      fi
+      ;;
+  esac
+fi
 case "$TARGET" in
   /*/SmartAI.app) ;;
   *) fail "SMARTAI_FULL_TARGET must be an absolute path ending in /SmartAI.app." ;;
@@ -45,17 +86,11 @@ esac
 PARENT="$(/usr/bin/dirname "$TARGET")"
 
 check_app() {
-  local app="$1" code="$1/Contents/Resources/app" model
+  local app="$1" code="$1/Contents/Resources/app"
   [ -f "$app/Contents/Info.plist" ] && [ -x "$app/Contents/MacOS/applet" ] &&
   [ -f "$code/app_gui.py" ] && [ -f "$code/launch_studio.sh" ] &&
   [ -x "$code/runtime/python/bin/python3" ] &&
-  [ -f "$code/runtime/python/.smartai-deps-ready" ] || return 1
-  if [ "$BUNDLED_MODELS" != "1" ]; then return 0; fi
-  for model in prism-ml--Ternary-Bonsai-2-27B-mlx-2bit dealignai--Bonsai-2-27B-CRACK-Ternary-JANG; do
-    [ -f "$code/preloaded_models/$model/config.json" ] || return 1
-    /usr/bin/find "$code/preloaded_models/$model" -name '*.safetensors' -type f -size +0c -print -quit |
-      /usr/bin/grep -q . || return 1
-  done
+  [ -f "$code/runtime/python/.smartai-deps-ready" ]
 }
 
 app_running() {
@@ -106,7 +141,7 @@ trap 'exit 143' TERM
 WORK="$(/usr/bin/mktemp -d "$CACHE_ROOT/work.XXXXXX")"
 
 # Refuse to delete or reuse a caller's unrelated directory. This marker belongs
-# only to the exact release's dedicated part cache, never to CACHE_ROOT itself.
+# only to the exact release's download cache, never to CACHE_ROOT itself.
 if [ -e "$DOWNLOADS" ]; then
   [ -f "$DOWNLOADS/.full-installer-owner" ] &&
   [ "$(/bin/cat "$DOWNLOADS/.full-installer-owner")" = "$COMMIT" ] ||
@@ -116,25 +151,20 @@ else
   printf '%s\n' "$COMMIT" > "$DOWNLOADS/.full-installer-owner"
 fi
 
-KIT_PATH="$DOWNLOADS/$KIT_NAME"
-verify_kit() { printf '%s  %s\n' "$KIT_SHA256" "$KIT_PATH" | /usr/bin/shasum -a 256 -c - >/dev/null 2>&1; }
-if ! verify_kit; then
-  [ "${SMARTAI_FULL_OFFLINE:-0}" != 1 ] || fail "Offline mode: the pinned installer kit is missing or corrupt."
-  echo "Downloading the verified full installer for $COMMIT..."
+ARCHIVE_PATH="$DOWNLOADS/$ARCHIVE_NAME"
+verify_archive() { printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE_PATH" | /usr/bin/shasum -a 256 -c - >/dev/null 2>&1; }
+if ! verify_archive; then
+  [ "${SMARTAI_FULL_OFFLINE:-0}" != 1 ] || fail "Offline mode: the pinned app archive is missing or corrupt."
+  echo "Downloading Smart AI Studio and its complete runtime..."
   /usr/bin/curl --fail --location --show-error --retry 5 --connect-timeout 30 \
-    --proto '=https' --tlsv1.2 --output "$KIT_PATH.download" "$URL/$KIT_NAME"
-  printf '%s  %s\n' "$KIT_SHA256" "$KIT_PATH.download" | /usr/bin/shasum -a 256 -c - ||
-    fail "Kit checksum mismatch. The rolling release may have changed; download its current full installer."
-  /bin/mv "$KIT_PATH.download" "$KIT_PATH"
+    --proto '=https' --tlsv1.2 --output "$ARCHIVE_PATH.download" "$URL/$ARCHIVE_NAME"
+  printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE_PATH.download" | /usr/bin/shasum -a 256 -c - ||
+    fail "App checksum mismatch. The rolling release may have changed; download its current full installer."
+  /bin/mv "$ARCHIVE_PATH.download" "$ARCHIVE_PATH"
 fi
-/usr/bin/ditto -x -k "$KIT_PATH" "$WORK/kit"
-echo "Downloading, checking and assembling the app and embedded runtime..."
-SMARTAI_PORTABLE_CACHE="$DOWNLOADS" \
-SMARTAI_PORTABLE_DEST="$WORK/staging" \
-SMARTAI_PORTABLE_OFFLINE="${SMARTAI_FULL_OFFLINE:-0}" \
-SMARTAI_PORTABLE_INSTALL_ONLY=1 \
-  /bin/bash "$WORK/kit/__LAUNCHER__"
-SOURCE="$WORK/staging/__SHORT_SHA__/SmartAI.app"
+echo "Extracting the verified app and embedded runtime..."
+/usr/bin/ditto -x -k "$ARCHIVE_PATH" "$WORK/staging"
+SOURCE="$WORK/staging/SmartAI.app"
 check_app "$SOURCE" || fail "The assembled app is missing its launcher or required bundle files."
 printf '%s\n' "$COMMIT" > "$SOURCE/$STAMP"
 
@@ -176,35 +206,52 @@ if ! check_app "$TARGET"; then
 fi
 PUBLISHED=1
 
-echo "Removing the verified archive, split parts and temporary installer files..."
+echo "Removing the verified download and temporary installer files..."
 # DOWNLOADS is an owned, dedicated subdirectory; never delete CACHE_ROOT or
 # SmartAI_Data, ~/.smartai, old app backups, user models or chat/learning data.
 [ "$(/bin/cat "$DOWNLOADS/.full-installer-owner")" = "$COMMIT" ]
 /bin/rm -rf "$DOWNLOADS"
 echo "Installed: $TARGET"
-if [ "$BUNDLED_MODELS" = "1" ]; then
-  echo "Both Bonsai 2 model snapshots and the full runtime are installed."
-else
-  echo "The app and full runtime are installed. Download your chosen model inside Smart AI Studio."
-fi
+echo "The app and full runtime are installed. Download your chosen model inside Smart AI Studio."
 if [ -n "$BACKUP" ]; then echo "Previous app backup: $BACKUP"; fi
 if [ "${SMARTAI_FULL_INSTALL_ONLY:-0}" != 1 ]; then /usr/bin/open "$TARGET"; fi
 '''
 
 
-def build(kit_path, output_dir, *, repo, tag, commit):
+def build(receipt_path, output_dir, *, repo, tag, commit):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid source repository")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", tag):
         raise ValueError("Invalid release tag")
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("Missing exact tested commit SHA")
-    kit_path = Path(kit_path)
-    manifest = verify(kit_path, repo=repo, tag=tag, commit=commit)
+    receipt_path = Path(receipt_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if (receipt.get("schema") != 1 or receipt.get("target") != "macOS-arm64"
+            or receipt.get("commit") != commit or receipt.get("gui_smoke") != "passed"
+            or receipt.get("setup_smoke") != "passed"):
+        raise ValueError("Mac package receipt does not identify the verified release")
+    rows = receipt.get("files")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("Invalid Mac package receipt")
+    archives = [row for row in rows if row.get("name") == ARCHIVE]
+    if len(archives) != 1:
+        raise ValueError("The Mac installer requires one complete portable ZIP")
+    archive = archives[0]
+    digest = archive.get("sha256", "")
+    size = archive.get("size")
+    if (not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or not isinstance(size, int) or isinstance(size, bool) or not 0 < size < 2**31):
+        raise ValueError("Invalid portable archive size or SHA256")
+    path = receipt_path.parent / ARCHIVE
+    actual = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
+            actual.update(chunk)
+    if path.stat().st_size != size or actual.hexdigest() != digest:
+        raise ValueError("Portable archive does not match its verified receipt")
     values = {"COMMIT": commit, "SHORT_SHA": commit[:12], "REPO": repo,
-              "TAG": tag, "KIT": KIT, "LAUNCHER": LAUNCHER,
-              "BUNDLED_MODELS": "0" if manifest.get("model_downloads") == "on-demand" else "1",
-              "KIT_SHA256": hashlib.sha256(kit_path.read_bytes()).hexdigest()}
+              "TAG": tag, "ARCHIVE": ARCHIVE, "ARCHIVE_SHA256": digest}
     script = TEMPLATE
     for key, value in values.items():
         script = script.replace(f"__{key}__", value)
@@ -215,20 +262,18 @@ def build(kit_path, output_dir, *, repo, tag, commit):
     dest = output_dir / INSTALLER
     dest.write_text(script, encoding="utf-8", newline="\n")
     dest.chmod(0o755)
-    digest = hashlib.sha256(dest.read_bytes()).hexdigest()
-    dest.with_name(INSTALLER + ".sha256").write_text(f"{digest}  {INSTALLER}\n", encoding="ascii")
     return dest
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kit", default="dist/" + KIT)
+    parser.add_argument("--receipt", default="dist/" + RECEIPT)
     parser.add_argument("--output-dir", default="dist")
     parser.add_argument("--repo", default="Eabusham2/smart-ai-studio")
     parser.add_argument("--tag", default="latest")
     parser.add_argument("--commit", required=True)
     args = parser.parse_args()
-    path = build(args.kit, args.output_dir, repo=args.repo, tag=args.tag, commit=args.commit)
+    path = build(args.receipt, args.output_dir, repo=args.repo, tag=args.tag, commit=args.commit)
     print("VERIFIED_FULL_MAC_INSTALLER", path, path.stat().st_size)
 
 
