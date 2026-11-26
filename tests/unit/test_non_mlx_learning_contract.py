@@ -18,7 +18,7 @@ def test_bonsai_gguf_presets_pin_prism_ternary_and_training_lineage():
         assert info["gguf_training_base_model_id"] == "Qwen/Qwen3.8-27B"
         assert info["mmproj_file"] == "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"
     assert "allow_patterns=primary_patterns" in app
-    assert "required_files=primary_required" in app
+    assert "required_files=primary_patterns" in app
 
 
 def test_gguf_learning_is_real_and_reloaded_into_inference():

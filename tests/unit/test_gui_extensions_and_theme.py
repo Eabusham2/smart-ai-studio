@@ -511,8 +511,11 @@ def test_context_extension_cannot_publish_metadata_into_another_model(tmp_path, 
 
 
 def test_runtime_visibility_failure_is_reported_in_the_window(app, monkeypatch):
-    def broken(*args, **kwargs):
-        raise RuntimeError("broken layout fixture")
+    place = app._responsive_toolbar_set_visible
+    def broken(widget, *args, **kwargs):
+        if widget is app.btn_eval:
+            raise RuntimeError("broken layout fixture")
+        return place(widget, *args, **kwargs)
     monkeypatch.setattr(app, "_responsive_toolbar_set_visible", broken)
     app._on_switch_model_tab(app.active_tab_id)
     app.root.update()

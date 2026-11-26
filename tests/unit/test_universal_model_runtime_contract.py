@@ -68,6 +68,10 @@ def test_gui_passes_full_model_capabilities_into_pro_engine():
     app = _src("app_gui.py")
     assert 'model_info=target_info' in app
     assert "make_imported_model_entry(" in app
-    assert '"runtime_family": "bonsai2_hadamard"' in app
-    assert '"input_modalities": ["text", "image", "video"]' in app
+    from config.bonsai_models import bonsai_model_info
+    for crack in (False, True):
+        for apple_silicon in (False, True):
+            info = bonsai_model_info(crack=crack, is_apple_silicon=apple_silicon)
+            assert info["runtime_family"] == "bonsai2_hadamard"
+            assert info["input_modalities"] == ["text", "image", "video"]
     assert '"model_16"' not in app

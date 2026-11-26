@@ -166,8 +166,15 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         self.assertIn("export function greet", extracted_ts)
 
     def test_09_diffusion_and_video_generation_tools(self):
-        """Unavailable runtimes and unselected LoRAs must never fabricate success."""
-        ok, res = self.tools.execute_tool("generate_image_diffusion", {
+        """Rejected adapters, insufficient video memory, and missing inputs may not produce artifacts."""
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        folder = Path(workspace.name)
+        tools = AgentToolRegistry(db_path=self.db_path, workspace_dir=workspace.name)
+        ok, res = tools.execute_tool("generate_image_diffusion", {
             "prompt": "Cybernetic futuristic sanctuary, ultra photoreal 8k",
             "model_id": "SG161222/RealVisXL_V5.0",
             "softer_lora_str": 1.0,
@@ -178,33 +185,34 @@ class TestMultimodalAndCanvasSuite(unittest.TestCase):
         })
         self.assertFalse(ok)
         self.assertIn("adapter weights", res)
-        self.assertFalse(os.path.exists("test_diffusion_art.png"))
-        self.assertFalse(os.path.exists("test_diffusion_art.svg"))
+        self.assertFalse((folder / "test_diffusion_art.png").exists())
+        self.assertFalse((folder / "test_diffusion_art.svg").exists())
 
-        # 2. Video & Audio Synthesis (LTX-Video 2.5 / Wan 2.2 / MiniMax-H3)
-        ok, res = self.tools.execute_tool("generate_video_diffusion", {
-            "prompt": "Fluid particle simulation in zero gravity",
-            "model_id": "dgrauet/ltx-2.5-mlx-q4",
-            "filename": "test_video.mp4"
-        })
+        # Use the published Apple-Silicon video preset on a known low-memory host.
+        apple = SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64")
+        with patch("core.media_assets.platform", apple), patch("psutil.virtual_memory") as memory:
+            memory.return_value.available = int(6.5 * 1024**3)
+            ok, res = tools.execute_tool("generate_video_diffusion", {
+                "prompt": "Fluid particle simulation in zero gravity",
+                "model_id": "dgrauet/ltx-2.5-mlx-q4",
+                "filename": "test_video.mp4",
+            })
         self.assertFalse(ok)
-        self.assertIn("runtime", res)
-        self.assertFalse(os.path.exists("test_video.mp4"))
+        error = json.loads(res)
+        self.assertEqual((error["status"], error["kind"], error["repo_id"]),
+                         ("error", "video", "dgrauet/ltx-2.5-mlx-q4"))
+        self.assertIn("6.5 GiB is available", error["error"])
+        self.assertFalse((folder / "test_video.mp4").exists())
 
         # 3. Rapid Image Edit (Qwen Image Edit Rapid AIO GGUF)
-        ok, res = self.tools.execute_tool("edit_image_rapid", {
+        ok, res = tools.execute_tool("edit_image_rapid", {
             "prompt": "Change lighting to cyberpunk neon purple and add atmospheric rain",
             "image_path": "test_diffusion_art.png",
             "filename": "test_edit.png"
         })
         self.assertFalse(ok)
-        self.assertIn("runtime", res)
-        self.assertFalse(os.path.exists("test_edit.png"))
-
-        # Clean up
-        for f in ("test_diffusion_art.png", "test_diffusion_art.svg", "test_video.mp4", "test_edit.png"):
-            if os.path.exists(f):
-                os.remove(f)
+        self.assertIn("Could not open the input image", res)
+        self.assertFalse((folder / "test_edit.png").exists())
 
 
 if __name__ == "__main__":

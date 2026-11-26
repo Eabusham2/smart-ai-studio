@@ -437,12 +437,13 @@ def test_text_tab_switch_uses_async_loader_without_implicit_download(cached, loc
     for method in ("winfo_children", "tag_names", "mark_names"):
         getattr(app.chat_stream, method).return_value = ()
     for name in (
-        "_render_tab_transcript", "_scroll_chat_to_bottom", "_sync_memory_watchdog",
+        "_clear_media_previews", "_render_tab_transcript", "_scroll_chat_to_bottom", "_sync_memory_watchdog",
         "_update_memory_hud_badge", "_update_model_action_buttons",
         "_update_resource_view_metrics", "_update_input_lock_state", "_on_toggle_load_unload",
     ):
         setattr(app, name, Mock())
     namespace["_on_switch_model_tab"](app, "m")
+    app._clear_media_previews.assert_called_once_with()
     app.engine.load_model.assert_not_called()
     if cached or local:
         app._on_toggle_load_unload.assert_called_once_with(_skip_download=True)
