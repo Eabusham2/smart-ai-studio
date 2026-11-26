@@ -782,7 +782,11 @@ jobs:
 
           This update fixes interrupted model downloads, exact media component selection, and installed-model detection after restarting. One model button now handles Install, Cancel, Load and Unload.
 
-          Image, video and audio generation use their real runtimes and validated output files. Generated media opens in large previews with playback, expansion and Save As; generation progress uses real steps. Component-only presets that need an unintegrated runtime explain what is missing instead of reporting a false installation or generating a placeholder.
+          All original media preset slots are restored, including Z-Image Turbo GGUF, Qwen Image Edit Rapid GGUF, Wan 2.2 Remix GGUF, LTX-2.5 MLX and MiniMax-H3 MLX with AfterMidnight. Install fetches their exact required encoders, VAEs and adapters together. Ideogram Instant returns as the original local RealVisXL preset, with the actual backend identified in its name.
+
+          Image, video and audio generation use their real runtimes and validated output files. Generated media opens in large previews with playback, expansion and Save As; generation progress uses real steps and available decoded intermediate previews. Qwen accepts an attached reference image. Failed downloads repair missing or empty selected files while preserving completed components.
+
+          Media download sizes now include the whole pipeline. The MLX video presets require Apple Silicon: LTX-2.5 recommends 32 GB RAM, and MiniMax-H3 with AfterMidnight recommends 96 GB RAM and downloads about 104 GB. These are memory estimates, not 16 GB compatibility promises. Native runtime and codec checks run without predownloading model weights.
 
           Mac launches and relaunches keep the Smart AI Studio application identity. The installer ZIP preserves its executable permission, and the built-in Bonsai 2.5 MLX presets, including CRACK, retain their exact downloads and MTP settings.
 

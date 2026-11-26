@@ -3,7 +3,7 @@
 These inventories were checked against each publisher's immutable Hugging Face
 revision. A repository can also contain single-file exports, other precisions,
 older versions, and unrelated examples; none is an implicit download choice.
-An unsupported component layout is kept visible with an explicit explanation.
+Native GGUF and MLX presets include their exact companion component sets.
 """
 from __future__ import annotations
 
@@ -95,12 +95,14 @@ _BONSAI_IMAGE_MLX_FILES = (
 
 
 def _manifest(revision, files, byte_count, **options):
+    component_bytes = sum(int(item["size_bytes"]) for item in options.get("download_components", []))
     return {
         "builtin_media_preset": True,
         "repo_revision": revision,
         "download_required_files": list(files),
         "download_allow_patterns": list(files),
-        "download_bytes": byte_count,
+        "download_primary_bytes": byte_count,
+        "download_bytes": byte_count + component_bytes,
         "est_speed": "Speed depends on your hardware",
         "vram": "Memory depends on the runtime and generation settings",
         **options,
@@ -162,38 +164,13 @@ _DOWNLOADS = {
     ),
 }
 
-_UNAVAILABLE = {
-    "lesliemore/z-image-turbo-nsfw-v2-GGUF": (
-        "image",
-        "This repository contains a diffusion transformer GGUF, not a complete image pipeline. "
-        "Studio does not yet implement its GGUF media loader with the separate Z-Image text encoder "
-        "and VAE. No model files were substituted or downloaded."
-    ),
-    "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF": (
-        "image",
-        "The publisher states this GGUF release is not an all-in-one pipeline: it needs a separately "
-        "selected text encoder and VAE. Studio does not yet implement this GGUF image-edit runtime. "
-        "Downloading every version and quantization in the repository would not make it loadable."
-    ),
-    "dgrauet/ltx-2.5-mlx-q4": (
-        "video",
-        "This split LTX MLX release requires its matching MLX video runtime and a selected component "
-        "set. That runtime is not integrated in Studio's Diffusers video engine. The repository also "
-        "requires Hugging Face access approval. Its weights have not been replaced by another model."
-    ),
-    "freeguyfroverrrr/Wan-2.2-Remix-GGUF": (
-        "video",
-        "This repository contains separate T2V/I2V, high/low-noise and quantization variants. "
-        "Studio does not yet implement the Wan GGUF media pipeline and its required companion "
-        "selection. Downloading all variants is not a supported model installation."
-    ),
-    "pipenetwork/MiniMax-H3-MLX-4bit": (
-        "video",
-        "This repository contains only the MiniMax-H3 MLX diffusion transformer. It requires the "
-        "publisher's MLX pipeline plus upstream text encoder and video/audio VAEs; the advertised "
-        "AfterMidnight LoRA is a separate artifact. This runtime is not integrated in Studio."
-    ),
-}
+# The native adapters restore the original five publisher selections.
+from config.media_components import RESTORED_MEDIA_MODELS
+
+for _entry in RESTORED_MEDIA_MODELS:
+    _DOWNLOADS[_entry["repo_id"]] = _manifest(
+        _entry["revision"], _entry["required_files"], _entry["size_bytes"], **_entry["options"],
+    )
 
 _DISPLAY = {
     REALVIS_REPO: {
@@ -202,30 +179,39 @@ _DISPLAY = {
         "raw_params": None, "base_params": "SDXL",
     },
     "lesliemore/z-image-turbo-nsfw-v2-GGUF": {
-        "name": "Z-Image Turbo NSFW v2 (GGUF transformer)", "short_name": "Z-Image Turbo GGUF",
-        "precision": "Q8_0 transformer; separate text encoder and VAE required",
-        "tag": "Z-Image Turbo · runtime required",
+        "name": "Z-Image Turbo NSFW v2 (Q8 GGUF)", "short_name": "Z-Image Turbo GGUF",
+        "precision": "Q8_0 transformer + Q4 text encoder + VAE",
+        "tag": "⚡ Z-Image Turbo Q8",
+        "raw_params": None, "base_params": "Z-Image Turbo",
     },
     "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF": {
-        "name": "Qwen Image Edit Rapid (GGUF components)", "short_name": "Qwen Image Edit GGUF",
-        "precision": "Separate diffusion, text encoder and VAE components",
-        "tag": "Qwen Image Edit · runtime required",
+        "name": "Qwen Image Edit Rapid v9 (Q4 GGUF)", "short_name": "Qwen Image Edit GGUF",
+        "precision": "Q4_K_M transformer and encoder + Q8 vision projector + VAE",
+        "tag": "🎨 Qwen Image Edit Rapid",
+        "raw_params": None, "base_params": "Qwen Image Edit",
     },
     "dgrauet/ltx-2.5-mlx-q4": {
-        "name": "LTX-2.5 (MLX components)", "short_name": "LTX-2.5 MLX",
-        "precision": "Publisher's split MLX weights",
-        "tag": "LTX-2.5 · runtime required",
+        "name": "LTX-Video 2.5 (MLX Q4 Video & Audio)", "short_name": "LTX-2.5 MLX",
+        "precision": "Q4 MLX distilled pipeline with text encoder and audio/video decoders",
+        "tag": "🎥 LTX-2.5 MLX Q4",
+        "raw_params": None, "base_params": "LTX-2.5 distilled",
+        "estimated_peak_memory_gb": 20.0,
+        "vram": "Estimated 20 GiB working memory; 32 GB Mac recommended",
+        "memory_note": "The selected LTX-2.5 pack needs about 28.8 GB of downloads. Its working-memory estimate is 20 GiB; a 32 GB Mac is recommended.",
     },
     "freeguyfroverrrr/Wan-2.2-Remix-GGUF": {
-        "name": "Wan 2.2 Remix (GGUF components)", "short_name": "Wan 2.2 Remix GGUF",
-        "precision": "Separate high/low-noise and quantization variants",
-        "tag": "Wan 2.2 Remix · runtime required",
+        "name": "Wan 2.2 Remix v2 (Q4 GGUF Video)", "short_name": "Wan 2.2 Remix GGUF",
+        "precision": "Q4_K_M high/low-noise experts + Q4 UMT5 + VAE",
+        "tag": "🎬 Wan 2.2 Remix Q4", "base_params": "A14B dual experts", "raw_params": None,
     },
     "pipenetwork/MiniMax-H3-MLX-4bit": {
-        "name": "MiniMax-H3 (4-bit MLX transformer)", "short_name": "MiniMax-H3 MLX",
+        "name": "MiniMax-H3 + AfterMidnight (MLX Q4)", "short_name": "MiniMax-H3 AfterMidnight",
         "raw_params": 33_000_000_000, "base_params": "33B transformer",
-        "precision": "4-bit transformer; text encoder, VAEs and LoRA are separate",
-        "tag": "MiniMax-H3 · runtime required",
+        "precision": "4-bit transformer + upstream text encoder/VAEs + AfterMidnight rank64",
+        "tag": "🌙 MiniMax-H3 AfterMidnight",
+        "estimated_peak_memory_gb": 64.0,
+        "vram": "Estimated 64 GiB working memory; 96 GB Mac recommended",
+        "memory_note": "The full preset needs about 104.2 GB of downloads. Its working-memory estimate is 64 GiB; a 96 GB Mac is recommended. It is not a 16 GB preset.",
     },
     "prism-ml/bonsai-image-ternary-4B-unpacked": {
         "precision": "Ternary weights in unpacked FP16 SafeTensors",
@@ -239,16 +225,9 @@ _DISPLAY = {
 
 
 def media_download_metadata(repo_id: str) -> dict:
-    """Return a fresh exact selection or a known unsupported-runtime reason."""
+    """Return a fresh exact selection including every required companion."""
     if repo_id in _DOWNLOADS:
         result = deepcopy(_DOWNLOADS[repo_id])
-    elif repo_id in _UNAVAILABLE:
-        kind, reason = _UNAVAILABLE[repo_id]
-        result = {
-            "builtin_media_preset": True, "model_type": kind, "download_unavailable_reason": reason,
-            "est_speed": "Publisher runtime setup required", "vram": "Memory requirements not verified",
-            "raw_params": None, "base_params": "Parameter count not verified",
-        }
     else:
         return {}
     result.update(_DISPLAY.get(repo_id, {}))
@@ -259,9 +238,16 @@ def media_download_metadata(repo_id: str) -> dict:
 def apply_builtin_media_catalog(models: dict) -> None:
     """Attach download requirements before user-created selections are loaded.
 
-    Existing model IDs and repository choices stay intact, including the old
-    model_6 slot. Its former Ideogram label was not the selected repository.
+    Existing IDs and repositories stay intact. The original Ideogram Instant
+    slot keeps its familiar preset name and identifies its RealVisXL backend.
     """
-    for info in models.values():
+    for model_id, info in models.items():
         repo = info.get("repo_id") or info.get("default_repo_id")
         info.update(media_download_metadata(repo))
+        if model_id == "model_6" and repo == REALVIS_REPO:
+            info.update(
+                name="Ideogram Instant preset (RealVisXL V5.0)",
+                short_name="Ideogram Instant · RealVisXL",
+                tag="✨ Ideogram Instant · RealVisXL",
+                preset_note="Original Ideogram Instant preset using RealVisXL V5.0 locally; no Ideogram service or weights are used.",
+            )

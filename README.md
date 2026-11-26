@@ -41,6 +41,16 @@ Media commands documented there include:
 
 The project document is the authoritative reference for implementation details; this README remains the quick-start/project overview.
 
+### Local image, video and audio presets
+
+All original preset slots are available, including the native GGUF Z-Image,
+Qwen Image Edit and Wan Remix pipelines, plus the Apple Silicon LTX-2.5 and
+MiniMax-H3/AfterMidnight pipelines. Install includes each selected encoder,
+VAE and adapter. The restored **Ideogram Instant** preset clearly identifies
+its original **RealVisXL V5.0** backend. See the
+[media preset guide](docs/media-presets.md) for complete download sizes,
+hardware requirements, image attachments, previews and cache repair.
+
 ### Bonsai 2.5 with MTP
 
 The main **Bonsai** and **CRACK** tabs now select Bonsai 2.5 27B. Apple Silicon

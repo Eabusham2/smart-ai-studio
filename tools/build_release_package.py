@@ -285,10 +285,36 @@ print('BONSAI_IMAGE_NATIVE_SMOKE passed; publisher imports and 2-bit Metal, no m
                    cwd=code, env=env, check=True, timeout=1800)
 
 
+def smoke_restored_media_runtimes(code, cache_dir, *, apple_silicon=False):
+    """Exercise packaged native code and tiny operators, without model weights."""
+    from bootstrap_runtime import python_path
+    code = Path(code).resolve()
+    env = dict(os.environ, PYTHONNOUSERSITE='1', SMARTAI_DATA_DIR=str(Path(cache_dir).resolve()),
+               HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', RUN_REAL_WEIGHTS_EVAL='0')
+    for key in ('PYTHONHOME', 'PYTHONPATH', 'SMARTAI_GGUF_MEDIA_DIR'):
+        env.pop(key, None)
+    python = str(python_path(code / 'runtime/python'))
+    subprocess.run([python, '-m', 'core.gguf_image_runtime', '--prepare', '--probe'],
+                   cwd=code, env=env, check=True, timeout=240)
+    if apple_silicon:
+        script = '''
+from importlib.metadata import version
+from core.mlx_video_runtime import ensure_mlx_video_runtime
+before = version('mlx')
+for backend in ('ltx_mlx', 'minimax_mlx'):
+    runtime = ensure_mlx_video_runtime(backend, force_probe=True)
+    assert ensure_mlx_video_runtime(backend) == runtime
+    assert version('mlx') == before, 'Video runtime setup changed the main chat environment'
+print('RESTORED_MLX_VIDEO_SMOKE passed; native code only, no pretrained model weights')
+'''
+        subprocess.run([python, '-c', script], cwd=code, env=env, check=True, timeout=1800)
+
+
 def package(target, output, *, prepare_only=False):
     from bootstrap_runtime import pip_install, fingerprint, python_path
     from tools.bundled_native import embed_native_runtime
     from tools.portable_download import write_linux_downloader
+    from tools.build_gguf_media_runtime import build_gguf_media_runtime
     import build_app
     if target!=target_name():raise RuntimeError('Packages must be built on their matching native OS/architecture')
     identity = release_identity()
@@ -311,6 +337,13 @@ def package(target, output, *, prepare_only=False):
         build_app.create_linux_bundle(str(build),'SmartAI')
         app=build/'SmartAI-Linux';code=app/'SmartAI.AppDir/usr/bin'
     bundled_native = embed_native_runtime(code, target)
+    # A matching native build avoids new-OS-only publisher binaries and keeps
+    # compilers off users' machines. The same files ship in portable and Setup.
+    # Ubuntu 22's SDK predates required Vulkan structures. A deliberate CPU
+    # build preserves this package's OS floor; Metal stays native on Mac.
+    build_gguf_media_runtime(code / 'runtime/gguf-media',
+                            backend='cpu' if target.startswith('Linux') else 'auto',
+                            work_dir=build / 'gguf-media-build')
     runtime=code/'runtime/python'
     # Every declared app dependency is installed; no models or inference.
     if target.startswith('macOS'):
@@ -352,6 +385,8 @@ def package(target, output, *, prepare_only=False):
     smoke_bonsai_runtime(code, build / 'bonsai-runtime-smoke')
     if target.startswith('macOS'):
         smoke_bonsai_image_runtime(code, build / 'bonsai-image-runtime-smoke')
+    smoke_restored_media_runtimes(code, build / 'restored-media-runtime-smoke',
+                                 apple_silicon=target.startswith('macOS'))
     if prepare_only:return app
     portable=output/f'SmartAI-{target}-portable.zip'
     archive_tree(app,portable)
@@ -391,6 +426,8 @@ def package(target, output, *, prepare_only=False):
              'macos_app_identity':'passed' if target.startswith('macOS') else 'not_applicable',
              'bonsai_native_smoke':'passed',
              'bonsai_image_runtime_smoke':'passed' if target.startswith('macOS') else 'not_applicable',
+             'gguf_media_runtime_smoke':'passed',
+             'mlx_video_runtime_smoke':'passed' if target.startswith('macOS') else 'not_applicable',
              'bundled_native_verified':'passed' if bundled_native else 'not_applicable',
              'files':[{'name':p.name,'size':p.stat().st_size,'sha256':sha(p)} for p in files]}
     (output/f'SmartAI-{target}.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')

@@ -10,11 +10,13 @@ from tools.run_ci_tests import ROOT, selected_tests, verify_desktop_report
 
 def test_default_gate_selects_regressions_without_collecting_the_entire_suite():
     selected = selected_tests("regression")
-    assert 20 <= len(selected) <= 40
+    assert 20 <= len(selected) <= 43
     assert all((ROOT / path).is_file() for path in selected)
     assert "tests/unit/test_desktop_app.py" in selected
     assert "tests/unit/test_best_work_tournament.py" in selected
     assert "tests/unit/test_native_speculation.py" in selected
+    assert all(f"tests/unit/test_{name}_runtime.py" in selected
+               for name in ("gguf_image", "wan_gguf", "mlx_video"))
     for pattern in ("test_local_api*.py", "test_bonsai25*.py"):
         assert all(str(path.relative_to(ROOT)) in selected for path in (ROOT / "tests/unit").glob(pattern))
     assert selected_tests("regression", full=True) == ["tests/unit", "tests/live"]

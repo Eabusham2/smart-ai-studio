@@ -100,31 +100,38 @@ def test_every_builtin_media_choice_has_an_exact_download_or_runtime_reason():
         original_repos = {key: value["repo_id"] for key, value in models.items()}
         apply_builtin_media_catalog(models)
         assert original_repos == {key: value["repo_id"] for key, value in models.items()}
-        for field in ("name", "short_name", "precision", "raw_params", "base_params", "vram", "est_speed"):
+        assert set(models) == {f"model_{index}" for index in range(1, 16)}
+        for field in ("precision", "raw_params", "base_params", "vram", "est_speed"):
             assert models["model_3"][field] == models["model_6"][field]
+        assert "Ideogram Instant" in models["model_6"]["name"]
+        assert "RealVisXL" in models["model_6"]["name"]
         assert models["model_6"]["raw_params"] is None
         assert "AIO" not in models["model_5"]["name"]
         assert models["model_5"]["raw_params"] is None
         assert models["model_9"]["raw_params"] == 33_000_000_000
-        assert "AfterMidnight" not in models["model_9"]["name"]
-        assert "separate" in models["model_9"]["precision"]
+        assert "AfterMidnight" in models["model_9"]["name"]
+        assert "rank64" in models["model_9"]["precision"]
+        assert models["model_9"]["download_bytes"] == 104_246_158_600
         for info in models.values():
             if info.get("model_type") not in {"image", "video", "audio"}:
                 continue
             assert info["builtin_media_preset"]
             required = info.get("download_required_files", [])
             reason = info.get("download_unavailable_reason", "")
-            assert bool(required) != bool(reason), info["repo_id"]
-            if reason:
-                assert "download_allow_patterns" not in info
-                assert info["est_speed"] == "Publisher runtime setup required"
-                assert info["vram"] == "Memory requirements not verified"
-                continue
+            assert required and not reason, info["repo_id"]
             assert re.fullmatch(r"[0-9a-f]{40}", info["repo_revision"])
             assert required == info["download_allow_patterns"]
             assert len(required) == len(set(required))
             assert info["download_bytes"] > 0
-            assert any(name.endswith(".safetensors") for name in required)
+            assert any(name.endswith((".safetensors", ".gguf")) for name in required)
+            components = info.get("download_components", [])
+            assert info["download_bytes"] == info["download_primary_bytes"] + sum(c["size_bytes"] for c in components)
+            assert len({c["role"] for c in components}) == len(components)
+            for component in components:
+                assert re.fullmatch(r"[0-9a-f]{40}", component["revision"])
+                assert component["repo_id"] and component["size_bytes"] > 0
+                assert component["required_files"]
+                required = [*required, *component["required_files"]]
             for name in required:
                 assert not PurePosixPath(name).is_absolute()
                 assert ".." not in PurePosixPath(name).parts
@@ -138,7 +145,8 @@ def test_realvis_legacy_slot_selects_one_complete_fp16_pipeline():
     info = MODEL_PRESETS["model_6"]
     assert info["default_repo_id"] == REALVIS_REPO
     assert set(info["artifacts"].values()) == {REALVIS_REPO}
-    assert "Ideogram" not in info["name"] and "Turbo" not in info["name"]
+    assert "Ideogram Instant" in info["name"] and "RealVisXL" in info["name"]
+    assert "16GB" not in info["name"] and "Turbo" not in info["name"]
     assert info["diffusers_variant"] == "fp16"
     assert info["inference_steps"] >= 30
     selected = set(info["download_required_files"])

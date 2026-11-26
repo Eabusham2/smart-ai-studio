@@ -141,6 +141,11 @@ class UpdatePackagingTests(unittest.TestCase):
             (destination / 'Prism-llama-LICENSE').write_text('fixture license')
             return destination
 
+        def embed_gguf(destination, **_kwargs):
+            destination.mkdir(parents=True)
+            (destination / 'sd-cli').write_bytes(b'fixture verified media runtime')
+            return destination
+
         original_split = builder.split_large
         def split(path):
             return original_split(path, limit=256 if split_portable and path.name.endswith('-portable.zip')
@@ -159,11 +164,16 @@ class UpdatePackagingTests(unittest.TestCase):
              patch.object(builder, 'smoke_app', side_effect=smoke), \
              patch.object(builder, 'smoke_bonsai_runtime') as native_smoke, \
              patch.object(builder, 'smoke_bonsai_image_runtime') as image_smoke, \
+             patch.object(builder, 'smoke_restored_media_runtimes') as media_smoke, \
+             patch('tools.build_gguf_media_runtime.build_gguf_media_runtime', side_effect=embed_gguf) as build_media, \
              patch.object(builder, 'split_large', side_effect=split), \
              patch.object(bundled_native, 'embed_native_runtime', side_effect=embed_native) as embed:
             result = builder.package(target, output, prepare_only=prepare_only)
             native_smoke.assert_called_once()
             self.assertEqual(image_smoke.call_count, 1 if target.startswith('macOS') else 0)
+            media_smoke.assert_called_once()
+            self.assertEqual(media_smoke.call_args.kwargs['apple_silicon'], target.startswith('macOS'))
+            build_media.assert_called_once()
             embed.assert_called_once()
         return output, result, smoke_kinds
 
@@ -182,6 +192,9 @@ class UpdatePackagingTests(unittest.TestCase):
                         self.assertEqual(record['commit'], COMMIT)
                         self.assertEqual(record['tag'], 'v2.3.0')
                         self.assertIn('requirements.lock.txt', record['managed_paths'])
+                        media = next(name for name in archive.namelist()
+                                     if name.endswith('/runtime/gguf-media/sd-cli'))
+                        self.assertEqual(archive.read(media), b'fixture verified media runtime')
                         if not target.startswith('Windows'):
                             native = next(name for name in archive.namelist()
                                           if name.endswith('/runtime/native/llama-server'))
@@ -189,6 +202,9 @@ class UpdatePackagingTests(unittest.TestCase):
                 receipt = json.loads((output / f'SmartAI-{target}.receipt.json').read_text())
                 self.assertEqual(receipt['commit'], COMMIT)
                 self.assertEqual(receipt['bonsai_native_smoke'], 'passed')
+                self.assertEqual(receipt['gguf_media_runtime_smoke'], 'passed')
+                self.assertEqual(receipt['mlx_video_runtime_smoke'],
+                                 'passed' if target.startswith('macOS') else 'not_applicable')
                 self.assertEqual(receipt['relaunch_smoke'], 'passed')
                 self.assertEqual(receipt['macos_app_identity'],
                                  'passed' if target.startswith('macOS') else 'not_applicable')

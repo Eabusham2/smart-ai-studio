@@ -3376,7 +3376,10 @@ class SmartAIChatbotApp:
         if not repo_id:
             return
 
-        self._append_ai_message(f"⬇️ **HuggingFace Downloader**: Initializing download for `{repo_id}` ({target_info['name']})...")
+        size = target_info.get("download_bytes")
+        size_note = f"\n\nSelected files: **{int(size) / 1_000_000_000:.1f} GB**, including required components." if size else ""
+        memory_note = f"\n\n{target_info['memory_note']}" if target_info.get("memory_note") else ""
+        self._append_ai_message(f"⬇️ **HuggingFace Downloader**: Initializing download for `{repo_id}` ({target_info['name']})...{size_note}{memory_note}")
         self.lbl_model_status.configure(text=f"⬇️ Connecting to HF: {target_info['short_name']}...", fg=self.C["accent_yellow"])
 
         if target_info.get("requires_local_validation") or (
@@ -3468,6 +3471,9 @@ class SmartAIChatbotApp:
                 # Keep the exact snapshot returned by the completed transfer.
                 # A pinned download need not create the Hub's refs/main entry.
                 target_info["path"] = str(result["local_dir"])
+                for key in ("component_paths", "component_files"):
+                    if key in result:
+                        target_info[key] = result[key]
             if self.active_tab_id != target_id:
                 if self.active_tab_id in self.models_config:
                     self._update_model_action_buttons()
@@ -3490,6 +3496,13 @@ class SmartAIChatbotApp:
                 self._event_queue.put(("model_load_complete", _show))
 
             def _download():
+                if target_info.get("download_components"):
+                    from core.media_assets import download_media_model_assets
+                    return download_media_model_assets(target_info, progress_callback=_progress,
+                                                       cancel_event=download_cancel)
+                if target_info.get("platform_requirement"):
+                    from core.media_assets import validate_media_platform
+                    validate_media_platform(target_info)
                 gguf_file = str(target_info.get("gguf_file") or "").strip()
                 mmproj_file = str(target_info.get("mmproj_file") or "").strip()
                 mmproj_repo_id = str(target_info.get("mmproj_repo_id") or "").strip()
@@ -3625,6 +3638,12 @@ class SmartAIChatbotApp:
         if info.get("requires_local_validation"):
             # A different cached revision/quantization does not validate this selection.
             return False
+        if info.get("download_components"):
+            from core.media_assets import resolve_media_model_assets
+            try:
+                return resolve_media_model_assets(info) is not None
+            except (OSError, TypeError, ValueError):
+                return False
         if info.get("controller_runtime") == "strata":
             from core.strata_runtime import StrataRuntime, StrataRuntimeError
             try:
@@ -3977,8 +3996,10 @@ class SmartAIChatbotApp:
                         self.audio_engine.unload_model()
                         load_res = {"status": "cancelled"}
                 else:
-                    # Image/video pipelines are lazy-loaded by their generation backend.
-                    load_res = {"status": "loaded", "backend": f"{model_type}-lazy"}
+                    # Native dependencies are prepared on Load. Heavy image/video
+                    # tensors remain lazy so only the current request owns them.
+                    load_res = self.media_engine.prepare_model(target_info, progress_callback=load_progress,
+                                                              cancel_event=load_cancel)
             except Exception as exc:
                 load_res = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
@@ -4002,6 +4023,10 @@ class SmartAIChatbotApp:
                         pass
 
                 if load_res.get("status") == "loaded":
+                    prepared = load_res.get("model_info") or {}
+                    for key in ("path", "model_path", "component_paths", "component_files"):
+                        if key in prepared:
+                            target_info[key] = prepared[key]
                     self.is_model_loaded = True
                     self._loaded_text_can_train = model_type == "text" and load_res.get("trainable") is True
                     self._active_memory_placement = dict(load_res.get("memory_placement") or {})
@@ -5012,6 +5037,7 @@ class SmartAIChatbotApp:
         user_msg = raw_text
         learn_source_path: Optional[str] = None
         learn_media_target: Optional[str] = None
+        image_source_path: Optional[str] = None
         attached = (
             os.path.abspath(self.attached_file_path)
             if self.attached_file_path and os.path.exists(self.attached_file_path)
@@ -5042,6 +5068,16 @@ class SmartAIChatbotApp:
                     f"⚠️ Could not inspect the attached Learn source: {type(exc).__name__}: {exc}"
                 )
                 return
+        elif attached and self.models_config.get(self.active_tab_id, {}).get("supports_image_edit"):
+            try:
+                from PIL import Image
+                with Image.open(attached) as reference:
+                    reference.verify()
+                image_source_path = attached
+                self._on_remove_attachment()
+            except Exception as exc:
+                self._append_ai_message(f"Could not open the attached image: {exc}")
+                return
         elif attached:
             # Preserve the old ordinary-chat attachment behavior for normal text files.
             # Folders/binary documents are left attached rather than being mis-decoded.
@@ -5057,9 +5093,8 @@ class SmartAIChatbotApp:
 
         worker = getattr(self, "_generation_worker", None)
         if self.is_generating or (worker is not None and worker.is_alive()):
-            self.prompt_queue.append(
-                (user_msg, raw_text, learn_source_path, learn_media_target)
-            )
+            queued = (user_msg, raw_text, learn_source_path, learn_media_target)
+            self.prompt_queue.append(queued + (image_source_path,) if image_source_path else queued)
             self._update_queue_ui()
             self._append_queued_message(raw_text, len(self.prompt_queue))
             self.txt_input.delete("1.0", "end")
@@ -5086,6 +5121,7 @@ class SmartAIChatbotApp:
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
                   bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())),
+            kwargs={"image_source_path": image_source_path},
             daemon=True,
         )
         self._generation_worker.start()
@@ -5098,6 +5134,7 @@ class SmartAIChatbotApp:
         learn_media_target: Optional[str] = None,
         use_pro_branches: bool = False,
         route_with_history: bool = False,
+        image_source_path: Optional[str] = None,
     ):
         start_time = time.perf_counter()
         origin_tab = self.active_tab_id
@@ -5234,12 +5271,14 @@ class SmartAIChatbotApp:
                     media_res = self.media_engine.generate_image(
                         active_info, full_msg, output_path=output_path,
                         progress_callback=_media_progress, preview_callback=_media_preview,
+                        cancel_event=self.cancel_event, image_path=image_source_path,
                     )
                 else:
                     media_res = self.media_engine.generate_video(
                         active_info, full_msg, output_path=output_path,
                         frames=int(active_info.get("frames", 49) or 49),
                         progress_callback=_media_progress, preview_callback=_media_preview,
+                        cancel_event=self.cancel_event,
                     )
                 if media_res.get("status") == "success":
                     path = str(media_res.get("path") or output_path)
@@ -5883,12 +5922,13 @@ class SmartAIChatbotApp:
         if self.prompt_queue:
             item = self.prompt_queue.pop(0)
             queued_tab = self.active_tab_id
+            image_source_path = item[4] if len(item) > 4 else None
             if len(item) == 2:
                 next_user_msg, next_raw = item
                 learn_source_path = None
                 learn_media_target = None
             else:
-                next_user_msg, next_raw, learn_source_path, learn_media_target = item
+                next_user_msg, next_raw, learn_source_path, learn_media_target = item[:4]
             self._update_queue_ui()
             def run_owned_task():
                 worker = getattr(self, "_generation_worker", None)
@@ -5898,7 +5938,10 @@ class SmartAIChatbotApp:
                     queues.setdefault(queued_tab, self.prompt_queue if self.active_tab_id == queued_tab else []).insert(0, item)
                     self._model_prompt_queues = queues
                     return
-                self._run_queued_task(next_user_msg, next_raw, learn_source_path, learn_media_target)
+                if image_source_path:
+                    self._run_queued_task(next_user_msg, next_raw, learn_source_path, learn_media_target, image_source_path)
+                else:
+                    self._run_queued_task(next_user_msg, next_raw, learn_source_path, learn_media_target)
             self.root.after(120, run_owned_task)
         else:
             self._update_queue_ui()
@@ -5909,6 +5952,7 @@ class SmartAIChatbotApp:
         raw_text: str,
         learn_source_path: Optional[str] = None,
         learn_media_target: Optional[str] = None,
+        image_source_path: Optional[str] = None,
     ):
         if self.is_generating:
             return
@@ -5925,6 +5969,7 @@ class SmartAIChatbotApp:
             target=self._process_message_thread,
             args=(user_msg, raw_text, learn_source_path, learn_media_target,
                   bool(getattr(self, "pro_branches_var", None) and self.pro_branches_var.get())),
+            kwargs={"image_source_path": image_source_path},
             daemon=True,
         )
         self._generation_worker.start()

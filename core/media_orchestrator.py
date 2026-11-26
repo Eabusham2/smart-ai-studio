@@ -111,7 +111,7 @@ class MediaController:
         def list_tools(_registry):
             tools = old_list() + [
                 {"name": "media_list_models", "description": "List installed catalog image/video/audio generators and their training capabilities.", "parameters": {}},
-                {"name": "media_generate", "description": "Generate a real local image, video, or audio artifact using a catalog model.", "parameters": {"kind": "image|video|audio", "prompt": "string", "model_id": "optional catalog id"}},
+                {"name": "media_generate", "description": "Generate a real local image, video, or audio artifact using a catalog model. Qwen Image Edit accepts a local image_path.", "parameters": {"kind": "image|video|audio", "prompt": "string", "model_id": "optional catalog id", "image_path": "optional local image for Qwen editing"}},
                 {"name": "media_pro", "description": "Generate up to four media candidates. If the controller accepts that modality as input, it may also review them; otherwise candidates remain ungraded.", "parameters": {"kind": "image|video|audio", "prompts": "list of strings", "model_id": "optional catalog id"}},
                 {"name": "media_learn", "description": "Train a supported media adapter from local media, a folder, JSONL, direct media/page URL, or bounded web-search query. Real media parameters/adapters are updated by the selected media backend.", "parameters": {"model_id": "catalog id", "source": "file|folder|jsonl|url|search query", "caption": "optional label/context"}},
                 {"name": "media_gather", "description": "Gather bounded local/web media into a workspace folder for later media learning. Supports file, folder, direct media/page URL, or search query.", "parameters": {"kind": "image|video|audio", "source": "file|folder|url|search query", "caption": "optional label/context"}},
@@ -127,6 +127,11 @@ class MediaController:
             active = self.app.models_config.get(self.app.active_tab_id, {})
             aliases = {**dict.fromkeys(("generate_image", "image_gen", "draw_image", "create_image", "generate_image_diffusion", "diffusion_image", "realvis", "z_image", "sdxl_image"), "image"),
                        **dict.fromkeys(("generate_video_diffusion", "video_gen", "ltx_video", "wan_video", "minimax_video"), "video"), "generate_audio":"audio"}
+            if active.get("model_type", "text") == "text" and name in {"edit_image_rapid", "image_edit", "qwen_edit"}:
+                if not args.get("image_path"):
+                    return False, "Provide the local image_path to edit."
+                args = dict(args, kind="image", model_id="Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF")
+                name = "media_generate"
             if active.get("model_type", "text") == "text" and name in aliases:
                 args = dict(args, kind=aliases[name])
                 name = "media_generate"
@@ -220,7 +225,8 @@ class MediaController:
         # Prefer the existing runnable routes. MLX-only media cannot be loaded by Diffusers.
         candidates = [(mid, info) for mid, info in candidates if kind == "audio" or
                       "mlx" not in str(info.get("repo_id", "")).lower() or
-                      info.get("image_backend") in {"mflux", "bonsai_mlx"}]
+                      info.get("image_backend") in {"mflux", "bonsai_mlx"} or
+                      info.get("video_backend") in {"ltx_mlx", "minimax_mlx"}]
         if not candidates:
             raise ValueError("No compatible catalog model for this media type/id")
         candidates.sort(key=lambda row: not bool(row[1].get("real_media_engine")))
@@ -444,6 +450,9 @@ class MediaController:
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / (aid + {"image": ".png", "video": ".mp4", "audio": ".wav"}[kind])
             info["seed"] = int(args.get("seed", 42))
+            for key in ("width", "height", "fps", "inference_steps"):
+                if args.get(key) is not None:
+                    info[key] = int(args[key])
             with self._lease(self._estimated_peak(info)):
                 if kind == "audio":
                     try:
@@ -459,7 +468,9 @@ class MediaController:
                 elif kind == "image":
                     result = self.app.media_engine.generate_image(info, prompt, output_path=str(path),
                         progress_callback=progress, preview_callback=preview,
-                        cancel_event=getattr(self.app, "cancel_event", None))
+                        cancel_event=getattr(self.app, "cancel_event", None),
+                        **({"image_path": str(Path(self.app.workspace_dir or os.getcwd()) / args["image_path"])}
+                           if args.get("image_path") else {}))
                 else:
                     result = self.app.media_engine.generate_video(info, prompt, output_path=str(path),
                         frames=int(args.get("frames", info.get("frames",49))),

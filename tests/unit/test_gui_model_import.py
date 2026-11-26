@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import queue
+import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -488,3 +490,220 @@ def test_exact_native_selection_does_not_attach_an_unrequested_projector(tmp_pat
         "mmproj_choices": ["mmproj-unrelated-1.gguf", "mmproj-unrelated-2.gguf"],
     })
     assert selected == str(model) and projector is None
+
+
+_RESTORED_MEDIA_REPOS = (
+    "lesliemore/z-image-turbo-nsfw-v2-GGUF",
+    "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF",
+    "freeguyfroverrrr/Wan-2.2-Remix-GGUF",
+    "dgrauet/ltx-2.5-mlx-q4",
+    "pipenetwork/MiniMax-H3-MLX-4bit",
+)
+
+
+@pytest.fixture
+def real_media_graph(tmp_path, monkeypatch, gui):
+    """Actual Hub snapshots for a component graph; replace only network I/O."""
+    from core import hf_downloader, media_assets
+    from config.media_components import RESTORED_MEDIA_MODELS
+    # Import at fixture execution to avoid the GUI/Bonsai test module cycle.
+    # Reuse its SDK-alias isolation and actual tree/blob/cache implementation.
+    from tests.unit.test_bonsai25_download import real_hub_selection
+    hub = real_hub_selection.__wrapped__(tmp_path, monkeypatch)
+    original_download = hf_downloader.download_model_from_hf
+    attempts, transfers, false_success = [], [], {}
+    inventories = defaultdict(set)
+    for preset in RESTORED_MEDIA_MODELS:
+        for part in [preset, *preset["options"].get("download_components", [])]:
+            inventories[(part["repo_id"], part["revision"])].update(part["required_files"])
+
+    def download(repo_id, **kwargs):
+        attempts.append(repo_id)
+        if repo_id in false_success:
+            return {"status": "success", "local_dir": false_success[repo_id]}
+        hub.prepare({"repo_id": repo_id, "repo_revision": kwargs["revision"],
+                     "download_required_files": sorted(inventories[(repo_id, kwargs["revision"])])})
+        before = len(hub.downloaded)
+        result = original_download(repo_id, **kwargs)
+        transfers.extend((repo_id, name) for name in hub.downloaded[before:])
+        return result
+
+    monkeypatch.setattr(hf_downloader, "download_model_from_hf", download)
+    gui.env["download_model_from_hf"] = download
+    # Exercise the original Mac presets on the platform they actually support.
+    monkeypatch.setattr(media_assets.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(media_assets.platform, "machine", lambda: "arm64")
+    return SimpleNamespace(cache=hub.cache, attempts=attempts, transfers=transfers,
+                           false_success=false_success, hub=hub, original_download=original_download)
+
+
+def _media_selection(gui, repo):
+    from config.media_models import media_download_metadata
+    info = {"repo_id": repo, **media_download_metadata(repo)}
+    gui.models_config["restored_media"] = info
+    gui.active_tab_id = "restored_media"
+    return info
+
+
+def _media_snapshot_files(info):
+    selections = [(info["repo_id"], Path(info["path"]), info["download_required_files"])]
+    selections.extend((part["repo_id"], Path(info["component_paths"][part["role"]]), part["required_files"])
+                      for part in info.get("download_components", []))
+    return [(repo, directory, name) for repo, directory, names in selections for name in names]
+
+
+def _cache_file_state(info, exclude=None):
+    return {(repo, name): ((directory / name).read_bytes(), (directory / name).stat().st_mtime_ns)
+            for repo, directory, name in _media_snapshot_files(info) if (repo, name) != exclude}
+
+
+@pytest.mark.parametrize("repo", _RESTORED_MEDIA_REPOS)
+def test_restored_presets_install_exact_graph_and_restart_with_real_hub_cache(gui, real_media_graph, monkeypatch, repo):
+    info = _media_selection(gui, repo)
+    gui._update_model_action_buttons()
+    assert gui.btn_load_unload.cget("text") == "⬇️ Install"
+    gui.btn_load_unload.invoke()
+    run_worker(gui)
+    drain(gui)
+    assert not gui._on_download_hf_failed.called, gui._on_download_hf_failed.call_args
+    assert gui.btn_load_unload.cget("text") == "⚡ Load"
+    assert gui._on_download_hf_completed.call_count == 1
+    graph = _media_snapshot_files(info)
+    assert graph and all((directory / name).is_file() for _, directory, name in graph)
+    for _, directory, _ in graph:
+        assert not (directory / "README.md").exists()
+        assert not (directory.parent.parent / "refs" / "main").exists()
+    expected_files = {(source, name) for source, _, name in graph}
+    assert set(real_media_graph.transfers) <= expected_files
+    assert set(real_media_graph.attempts) == {source for source, _, _ in graph}
+    before = _cache_file_state(info)
+    real_media_graph.attempts.clear()
+    real_media_graph.transfers.clear()
+    gui._on_download_hf_model()
+    run_worker(gui)
+    drain(gui)
+    assert real_media_graph.transfers == []
+    assert not info.get("download_components") or real_media_graph.attempts == []
+    assert _cache_file_state(info) == before
+
+    # A new process recreates the catalog without recorded local paths. Actual
+    # Hub local-only lookup must find every pinned selection without refs/main.
+    child = subprocess.run([sys.executable, "-c", """
+import json, sys
+from config.media_models import media_download_metadata
+from core.media_assets import resolve_media_model_assets
+info = {'repo_id': sys.argv[1], **media_download_metadata(sys.argv[1])}
+assert not info.get('path') and not info.get('component_paths')
+ready = resolve_media_model_assets(info)
+assert ready is not None, info['repo_id']
+print(json.dumps({'path': ready['path'], 'components': ready['component_paths']}))
+""", repo], cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=30,
+                           env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+    assert child.returncode == 0, child.stdout + child.stderr
+    report = json.loads(child.stdout.strip().splitlines()[-1])
+    assert report == {"path": info["path"], "components": info.get("component_paths", {})}
+    assert _cache_file_state(info) == before
+
+
+@pytest.mark.parametrize("repo", _RESTORED_MEDIA_REPOS)
+@pytest.mark.parametrize("empty", [False, True])
+def test_incomplete_media_graph_cannot_claim_ready_and_retry_reuses_completed_bytes(
+        gui, real_media_graph, repo, empty):
+    info = _media_selection(gui, repo)
+    gui._on_download_hf_model()
+    run_worker(gui)
+    drain(gui)
+    assert not gui._on_download_hf_failed.called, gui._on_download_hf_failed.call_args
+    source, directory, filename = next((source, directory, filename)
+                                        for source, directory, filename in reversed(_media_snapshot_files(info))
+                                        if filename.endswith((".gguf", ".safetensors")))
+    path = directory / filename
+    blob = path.resolve()
+    before = _cache_file_state(info, exclude=(source, filename))
+    blob.write_bytes(b"") if empty else blob.unlink()
+    gui._update_model_action_buttons()
+    assert gui.btn_load_unload.cget("text") == "⬇️ Install"
+    gui._append_ai_message.reset_mock()
+    gui._on_download_hf_completed.reset_mock()
+    # Even a transfer backend claiming success cannot bypass the same actual
+    # local-cache readiness checks used after a normal download.
+    real_media_graph.false_success[source] = str(directory)
+    gui.btn_load_unload.invoke()
+    run_worker(gui)
+    drain(gui)
+    assert gui.btn_load_unload.cget("text") == "⬇️ Install"
+    assert gui._on_download_hf_failed.called
+    assert not any("Download Complete" in call.args[0] for call in gui._append_ai_message.call_args_list)
+    assert _cache_file_state(info, exclude=(source, filename)) == before
+
+    real_media_graph.false_success.clear()
+    real_media_graph.attempts.clear()
+    real_media_graph.transfers.clear()
+    gui._on_download_hf_failed.reset_mock()
+    gui.btn_load_unload.invoke()
+    run_worker(gui)
+    drain(gui)
+    assert not gui._on_download_hf_failed.called, gui._on_download_hf_failed.call_args
+    assert gui.btn_load_unload.cget("text") == "⚡ Load"
+    assert real_media_graph.attempts == [source]
+    assert real_media_graph.transfers == [(source, filename)]
+    assert _cache_file_state(info, exclude=(source, filename)) == before
+
+
+def test_completed_media_graph_is_remembered_after_switching_tabs(gui, real_media_graph):
+    info = _media_selection(gui, "freeguyfroverrrr/Wan-2.2-Remix-GGUF")
+    gui._on_download_hf_model()
+    gui.active_tab_id = "model_1"
+    run_worker(gui)
+    drain(gui)
+    assert info.get("path") and set(info["component_paths"]) == {"t5xxl", "vae"}
+    assert gui.active_tab_id == "model_1"
+    gui._on_download_hf_completed.assert_not_called()
+    gui._on_download_hf_failed.assert_not_called()
+    gui.active_tab_id = "restored_media"
+    gui._update_model_action_buttons()
+    assert gui.btn_load_unload.cget("text") == "⚡ Load"
+    assert not gui._hf_download_in_progress and not gui._hf_download_events
+
+
+@pytest.mark.parametrize("revision", [None, "main"])
+def test_empty_blob_repair_uses_resolved_commit_even_for_a_moving_branch(
+        gui, real_media_graph, monkeypatch, revision):
+    from huggingface_hub import file_download
+    info = _media_selection(gui, _RESTORED_MEDIA_REPOS[0])
+    gui._on_download_hf_model()
+    run_worker(gui)
+    drain(gui)
+    assert not gui._on_download_hf_failed.called, gui._on_download_hf_failed.call_args
+    primary = Path(info["path"]) / info["download_required_files"][0]
+    primary.resolve().write_bytes(b"")
+    real_media_graph.hub.prepare(info)
+    metadata = file_download.get_hf_file_metadata
+    urls = []
+
+    def record(url, **kwargs):
+        urls.append(url)
+        return metadata(url, **kwargs)
+
+    monkeypatch.setattr(file_download, "get_hf_file_metadata", record)
+    result = real_media_graph.original_download(
+        info["repo_id"], revision=revision, required_files=info["download_required_files"],
+        allow_patterns=info["download_allow_patterns"],
+    )
+    assert result["status"] == "success", result
+    assert result["local_dir"] == info["path"] and primary.stat().st_size > 0
+    assert urls and "/resolve/" + info["repo_revision"] + "/" in urls[-1]
+
+
+def test_empty_blob_repair_rejects_snapshot_from_a_different_explicit_commit(tmp_path, monkeypatch):
+    from core import hf_downloader, hf_transfer
+    wrong = tmp_path / "models--owner--model" / "snapshots" / ("b" * 40)
+    wrong.mkdir(parents=True)
+    (wrong / "selected.gguf").write_bytes(b"")
+    monkeypatch.setattr(hf_transfer, "snapshot_download", lambda **_kwargs: str(wrong))
+    result = hf_downloader.download_model_from_hf(
+        "owner/model", revision="a" * 40,
+        required_files=["selected.gguf"], allow_patterns=["selected.gguf"],
+    )
+    assert result["status"] == "error" and "does not match" in result["error"]
+    assert (wrong / "selected.gguf").stat().st_size == 0

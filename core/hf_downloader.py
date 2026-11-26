@@ -6,6 +6,7 @@ inspects local cache presence, supports cache purge, and tracks models proven lo
 
 import os
 import json
+import re
 import shutil
 import threading
 from pathlib import PurePosixPath
@@ -371,6 +372,40 @@ def download_model_from_hf(
                 if not os.path.isfile(os.path.join(local_dir, name))
                 or os.path.getsize(os.path.join(local_dir, name)) == 0
             ]
+            if missing:
+                # Hub can consider a completed zero-byte blob cached and return
+                # it on every retry. Repair only the failed selected artifacts;
+                # other components and quantizations retain their bytes/mtimes.
+                from core.hf_transfer import hf_hub_download
+                from pathlib import Path, PurePosixPath
+                snapshot_path = Path(local_dir)
+                cache_options = {}
+                repair_revision = revision
+                if snapshot_path.parent.name == "snapshots" and snapshot_path.parent.parent.name.startswith("models--"):
+                    cache_options["cache_dir"] = str(snapshot_path.parent.parent.parent)
+                    if re.fullmatch(r"[0-9a-fA-F]{40}", snapshot_path.name):
+                        if revision and re.fullmatch(r"[0-9a-fA-F]{40}", str(revision)):
+                            if str(revision).lower() != snapshot_path.name.lower():
+                                raise ValueError("The downloaded snapshot does not match the selected repository revision.")
+                        else:
+                            # A branch can move between snapshot transfer and
+                            # repair. Keep every companion on the resolved commit.
+                            repair_revision = snapshot_path.name
+                for name in missing:
+                    relative = PurePosixPath(name)
+                    if relative.is_absolute() or ".." in relative.parts or "\\" in name:
+                        raise ValueError("The selected model has an invalid artifact filename.")
+                    hf_hub_download(
+                        repo_id=repo_id, filename=name, revision=repair_revision,
+                        force_download=True, cancel_event=cancel_event,
+                        progress_callback=progress_callback, **cache_options,
+                    )
+                if cancel_event is not None and cancel_event.is_set():
+                    return {"status": "cancelled", "repo_id": repo_id, "local_dir": local_dir,
+                            "error": "Download cancelled; completed cache files are kept."}
+                missing = [name for name in required_files
+                           if not os.path.isfile(os.path.join(local_dir, name))
+                           or os.path.getsize(os.path.join(local_dir, name)) == 0]
             if missing:
                 return {
                     "status": "error",

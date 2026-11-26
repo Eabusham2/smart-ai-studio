@@ -101,7 +101,7 @@ class AgentToolRegistry:
             {"name": "generate_image", "description": "Runs the image model and saves a decoded PNG, JPEG, or WebP in the workspace.", "parameters": {"prompt": "string", "filename": "optional string", "format": "optional string"}},
             {"name": "generate_image_diffusion", "description": "Runs a supported image pipeline using the selected repository and reports the actual output file; unsupported model layouts return an error.", "parameters": {"prompt": "string", "model_id": "optional string", "filename": "optional string"}},
             {"name": "generate_video_diffusion", "description": "Runs a supported video pipeline and saves a decoded MP4; this tool does not synthesize an audio track.", "parameters": {"prompt": "string", "model_id": "optional string", "frames": "optional int", "filename": "optional string"}},
-            {"name": "edit_image_rapid", "description": "Checks availability of the selected Qwen GGUF image-edit runtime. Returns an error until that runtime is integrated.", "parameters": {"prompt": "string", "image_path": "optional string", "filename": "optional string"}},
+            {"name": "edit_image_rapid", "description": "Edit a local image with the Qwen Image Edit Rapid GGUF pipeline and save the generated pixels.", "parameters": {"prompt": "string", "image_path": "string", "filename": "optional string"}},
             {"name": "render_bezier_art", "description": "Generates parametric Bezier curves and vector art canvas as SVG/PNG in workspace.", "parameters": {"curves": "optional list", "filename": "optional string"}},
             {"name": "export_chat_history", "description": "Exports conversation history to a clean readable Markdown (.md) file in the workspace.", "parameters": {"filename": "optional string"}},
             {"name": "dsl_evaluator", "description": "Evaluates TensorGraphDSL (non-commutative matrix/tensor operators) or GlyphScript (symbolic logic rules and graph invariants) or executes code in Python sandbox.", "parameters": {"dsl_type": "string (tensorgraph, glyphscript, python)", "expression_or_code": "string", "assertions": "optional string"}},
@@ -927,7 +927,7 @@ class AgentToolRegistry:
         )
         return ok, report
 
-    def _run_media_generation(self, kind, prompt, model_id, filename=None, *, frames=49):
+    def _run_media_generation(self, kind, prompt, model_id, filename=None, *, frames=49, image_path=None):
         """Use the same real backend as the selected-model GUI route."""
         from config.media_models import media_download_metadata
         from core.media_engine import MediaGenerationEngine, validate_media_file
@@ -942,7 +942,8 @@ class AgentToolRegistry:
         info = {"repo_id": model_id, **media_download_metadata(model_id)}
         engine = MediaGenerationEngine()
         if kind == "image":
-            result = engine.generate_image(info, prompt, output_path=output_path)
+            result = engine.generate_image(info, prompt, output_path=output_path,
+                                           **({"image_path": image_path} if image_path else {}))
         else:
             result = engine.generate_video(info, prompt, output_path=output_path, frames=frames)
         if result.get("status") != "success":
@@ -996,9 +997,17 @@ class AgentToolRegistry:
         image_path: Optional[str] = None,
         filename: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        from config.media_models import media_download_metadata
-        info = media_download_metadata("Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF")
-        return False, str(info.get("download_unavailable_reason") or "The selected image-edit runtime is not integrated. No edited image was created.")
+        if not image_path:
+            return False, "Provide the local image_path to edit, or attach an image in the Qwen Image Edit preset."
+        source = os.path.abspath(os.path.join(self.workspace_dir, image_path))
+        try:
+            from PIL import Image
+            with Image.open(source) as image:
+                image.verify()
+        except Exception as exc:
+            return False, f"Could not open the input image: {exc}"
+        return self._run_media_generation("image", prompt, "Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF",
+                                          filename, image_path=source)
 
     def _tool_render_bezier_art(self, filename: str = "bezier_artwork.svg") -> Tuple[bool, str]:
         """Renders mathematical cubic/quadratic Bezier spline vector art canvas."""

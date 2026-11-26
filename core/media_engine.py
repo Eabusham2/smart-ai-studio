@@ -65,9 +65,15 @@ class MediaGenerationEngine:
         """Only live media workers started by this engine count toward its RAM."""
         with self._process_lock:
             processes = list(self._owned_processes.values())
-        return [process.pid for process in processes
+        pids = [process.pid for process in processes
                 if process.poll() is None and isinstance(process.pid, int)
                 and not isinstance(process.pid, bool) and process.pid > 0]
+        for name in ("core.gguf_image_runtime", "core.mlx_video_runtime"):
+            module = sys.modules.get(name)
+            hook = getattr(module, "owned_process_ids", None)
+            if callable(hook):
+                pids.extend(hook())
+        return sorted(set(pids))
 
     @staticmethod
     def _torch_device():
@@ -107,12 +113,38 @@ class MediaGenerationEngine:
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Media generation cancelled.")
 
+    def prepare_model(self, model_info, progress_callback=None, cancel_event=None):
+        """Prepare native dependencies on Load; allocate model tensors on demand."""
+        try:
+            info = self._model_info(model_info)
+            self._check_cancelled(cancel_event)
+            backend = info.get("image_backend") or info.get("video_backend")
+            if backend in {"gguf", "wan_gguf", "ltx_mlx", "minimax_mlx"}:
+                from core.media_assets import ensure_media_model_assets, validate_media_platform
+                validate_media_platform(info)
+                if backend in {"ltx_mlx", "minimax_mlx"}:
+                    from core.mlx_video_runtime import validate_mlx_video_memory
+                    validate_mlx_video_memory(info)
+                info = ensure_media_model_assets(info, progress_callback=progress_callback, cancel_event=cancel_event)
+                if backend in {"gguf", "wan_gguf"}:
+                    from core.gguf_image_runtime import ensure_sd_cpp_runtime
+                    ensure_sd_cpp_runtime(progress_callback=progress_callback, cancel_event=cancel_event)
+                else:
+                    from core.mlx_video_runtime import ensure_mlx_video_runtime
+                    ensure_mlx_video_runtime(info, progress_callback=progress_callback, cancel_event=cancel_event)
+            self._check_cancelled(cancel_event)
+            return {"status": "loaded", "backend": backend or "diffusers-lazy", "model_info": info}
+        except Exception as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                return {"status": "cancelled"}
+            return {"status": "error", "error": str(exc)}
+
     def _source(self, info, progress_callback=None, cancel_event=None):
         """Resolve the selected immutable component set, never a sibling model."""
         from core.hf_transfer import hf_hub_download, snapshot_download
         self._check_cancelled(cancel_event)
         repo_id = info["repo_id"]
-        local = str(info.get("model_path") or "")
+        local = str(info.get("path") or info.get("model_path") or "")
         if local and Path(local).is_dir():
             source = Path(local)
             index = source / "model_index.json"
@@ -270,6 +302,7 @@ class MediaGenerationEngine:
         progress_callback: Optional[Callable[[float, str], None]] = None,
         preview_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         cancel_event=None,
+        image_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         repo_id = str(model_info.get("repo_id") or "").strip()
         if not repo_id:
@@ -291,6 +324,26 @@ class MediaGenerationEngine:
             if progress_callback:
                 progress_callback(0.03, "Preparing image pipeline")
             backend_hint = str(model_info.get("image_backend") or "diffusers").lower()
+            if image_path and not model_info.get("supports_image_edit"):
+                raise ValueError("Select Qwen Image Edit Rapid to edit an attached image.")
+            if image_path:
+                from PIL import Image
+                with Image.open(image_path) as reference:
+                    reference.verify()
+            if backend_hint == "gguf":
+                from core.media_assets import ensure_media_model_assets
+                from core.gguf_image_runtime import generate_gguf_image
+                model_info = ensure_media_model_assets(model_info, progress_callback=progress_callback, cancel_event=cancel_event)
+                result = generate_gguf_image(
+                    model_info, prompt, temporary, steps=steps,
+                    width=int(model_info.get("width", 1024)), height=int(model_info.get("height", 1024)),
+                    seed=int(model_info.get("seed", 42)), reference_images=[image_path] if image_path else None,
+                    progress_callback=progress_callback, preview_callback=preview_callback, cancel_event=cancel_event,
+                )
+                if result.get("status") != "success":
+                    return result
+                return self._finish_output(temporary, output_path, "image", repo_id, "gguf",
+                                           progress_callback, preview_callback, cancel_event)
             if backend_hint == "bonsai_mlx":
                 from core.bonsai_image_runtime import generate_bonsai_image
                 result = generate_bonsai_image(model_info, prompt, temporary, steps=steps,
@@ -438,6 +491,28 @@ class MediaGenerationEngine:
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
             if progress_callback:
                 progress_callback(0.03, "Preparing video pipeline")
+            backend = str(model_info.get("video_backend") or "diffusers")
+            if backend in {"wan_gguf", "ltx_mlx", "minimax_mlx"}:
+                from core.media_assets import ensure_media_model_assets, validate_media_platform
+                validate_media_platform(model_info)
+                if backend in {"ltx_mlx", "minimax_mlx"}:
+                    from core.mlx_video_runtime import validate_mlx_video_memory
+                    validate_mlx_video_memory(model_info, frames=frames)
+                model_info = ensure_media_model_assets(model_info, progress_callback=progress_callback, cancel_event=cancel_event)
+                if backend == "wan_gguf":
+                    from core.wan_gguf_runtime import generate_wan_gguf_video as generate_native_video
+                else:
+                    from core.mlx_video_runtime import generate_mlx_video as generate_native_video
+                result = generate_native_video(
+                    model_info, prompt, temporary, frames=int(frames),
+                    progress_callback=progress_callback, preview_callback=preview_callback, cancel_event=cancel_event,
+                )
+                if result.get("status") != "success":
+                    return result
+                return self._finish_output(temporary, output_path, "video", repo_id, backend,
+                                           progress_callback, preview_callback, cancel_event)
+            if backend != "diffusers":
+                raise ValueError(f"Unsupported video runtime: {backend}.")
             from diffusers.utils import export_to_video
             pipe = self._load_pipeline(model_info, progress_callback, cancel_event)
             if progress_callback:

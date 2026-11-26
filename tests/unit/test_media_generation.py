@@ -245,6 +245,113 @@ def test_legacy_image_tool_uses_backend_pixels_and_never_writes_svg_placeholder(
     assert not ok
 
 
+@pytest.mark.parametrize('repo, backend, module_name, function, kind', [
+    ('lesliemore/z-image-turbo-nsfw-v2-GGUF', 'gguf', 'core.gguf_image_runtime', 'generate_gguf_image', 'image'),
+    ('Phil2Sat/Qwen-Image-Edit-Rapid-AIO-GGUF', 'gguf', 'core.gguf_image_runtime', 'generate_gguf_image', 'image'),
+    ('freeguyfroverrrr/Wan-2.2-Remix-GGUF', 'wan_gguf', 'core.wan_gguf_runtime', 'generate_wan_gguf_video', 'video'),
+    ('dgrauet/ltx-2.5-mlx-q4', 'ltx_mlx', 'core.mlx_video_runtime', 'generate_mlx_video', 'video'),
+    ('pipenetwork/MiniMax-H3-MLX-4bit', 'minimax_mlx', 'core.mlx_video_runtime', 'generate_mlx_video', 'video'),
+])
+def test_restored_native_preset_routes_complete_assets_to_real_artifact_validation(
+        media, repo, backend, module_name, function, kind):
+    from core import media_assets
+    import imageio.v2 as imageio
+    info = {'repo_id': repo, **media.metadata(repo)}
+    resolved = {**info, 'path': str(media.tmp / 'primary'), 'model_path': str(media.tmp / 'primary'),
+                'component_paths': {part['role']: str(media.tmp / part['role'])
+                                    for part in info.get('download_components', [])}}
+    media.monkeypatch.setattr(media_assets, 'ensure_media_model_assets', lambda selected, **_: resolved)
+    media.monkeypatch.setattr(media_assets, 'validate_media_platform', lambda selected: None)
+    invocations, previews = [], []
+    reference = media.tmp / 'reference.png'
+    Image.fromarray(media.pixels).save(reference)
+
+    def native(selected, prompt, output, **kwargs):
+        invocations.append((selected, kwargs))
+        assert selected is resolved
+        assert prompt == 'use the selected pipeline'
+        if kind == 'image':
+            Image.fromarray(media.pixels).save(output)
+        else:
+            imageio.mimsave(output, [np.roll(media.pixels, shift, axis=1) for shift in range(4)], fps=8)
+        kwargs['progress_callback'](0.5, 'Native sampling step')
+        kwargs['preview_callback']({'kind': kind, 'image': Image.fromarray(media.pixels), 'label': 'Actual step preview'})
+        return {'status': 'success', 'path': output}
+
+    module = ModuleType(module_name)
+    setattr(module, function, native)
+    module.validate_mlx_video_memory = lambda selected, **_: None
+    media.monkeypatch.setitem(sys.modules, module_name, module)
+    output = media.tmp / ('native.png' if kind == 'image' else 'native.mp4')
+    output.write_bytes(b'previous output')
+    kwargs = {'progress_callback': lambda *_: None, 'preview_callback': previews.append}
+    if info.get('supports_image_edit'):
+        kwargs['image_path'] = str(reference)
+    if kind == 'image':
+        result = media.engine.generate_image(info, 'use the selected pipeline', str(output), **kwargs)
+    else:
+        result = media.engine.generate_video(info, 'use the selected pipeline', str(output), frames=33, **kwargs)
+    assert result['status'] == 'success' and result['backend'] == backend, result
+    assert result['path'] == str(output) and result['width'] == result['height'] == 16
+    assert len(invocations) == 1 and not media.loads and not media.downloads
+    assert previews[0]['label'] == 'Actual step preview'
+    assert not list(media.tmp.glob('.smartai-*'))
+    if info.get('supports_image_edit'):
+        assert invocations[0][1]['reference_images'] == [str(reference)]
+
+
+def test_native_load_requires_runtime_preparation_before_media_ready(media):
+    from core import media_assets
+    info = {'repo_id': 'lesliemore/z-image-turbo-nsfw-v2-GGUF'}
+    media.monkeypatch.setattr(media_assets, 'ensure_media_model_assets', lambda selected, **_: dict(selected, path='/selected/cache'))
+    prepare = Mock(side_effect=RuntimeError('native executable did not pass its probe'))
+    module = ModuleType('core.gguf_image_runtime')
+    module.ensure_sd_cpp_runtime = prepare
+    media.monkeypatch.setitem(sys.modules, 'core.gguf_image_runtime', module)
+    failed = media.engine.prepare_model(info)
+    assert failed['status'] == 'error' and 'probe' in failed['error']
+    prepare.side_effect = None
+    ready = media.engine.prepare_model(info)
+    assert ready['status'] == 'loaded' and ready['model_info']['path'] == '/selected/cache'
+    event = threading.Event()
+    event.set()
+    assert media.engine.prepare_model(info, cancel_event=event)['status'] == 'cancelled'
+    assert prepare.call_count == 2
+
+
+def test_qwen_attachment_remains_a_file_through_the_gui_queue(tmp_path):
+    import ast
+    import os
+    from typing import Optional
+    # Exercise the actual GUI callbacks without needing a display. The binary
+    # reference must survive queueing as a path, never become a text attachment.
+    source = tmp_path / 'reference.png'
+    Image.new('RGB', (16, 16), 'red').save(source)
+    module = ast.parse((Path(__file__).parents[2] / 'app_gui.py').read_text())
+    cls = next(node for node in module.body if isinstance(node, ast.ClassDef)
+               and node.name == 'SmartAIChatbotApp')
+    selected = [node for node in cls.body if isinstance(node, ast.FunctionDef)
+                and node.name in {'_on_send_message', '_check_and_run_next_queue'}]
+    namespace = {'os': os, 'Optional': Optional}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), 'actual-image-attachment-callbacks', 'exec'), namespace)
+    app = SimpleNamespace(
+        txt_input=SimpleNamespace(get=lambda *_: 'change the red panel to green', delete=Mock()),
+        _placeholder_active=False, attached_file_path=str(source), active_tab_id='model_5',
+        models_config={'model_5': {'supports_image_edit': True}}, is_generating=True,
+        prompt_queue=[], _on_remove_attachment=Mock(), _append_ai_message=Mock(),
+        _update_queue_ui=Mock(), _append_queued_message=Mock(), _recompute_input_height=Mock(),
+        _run_queued_task=Mock(), root=SimpleNamespace(after=lambda _delay, callback: callback()),
+    )
+    namespace['_on_send_message'](app)
+    assert app.prompt_queue == [('change the red panel to green', 'change the red panel to green', None, None, str(source))]
+    app._on_remove_attachment.assert_called_once()
+    app._append_ai_message.assert_not_called()
+    app.is_generating = False
+    namespace['_check_and_run_next_queue'](app)
+    app._run_queued_task.assert_called_once_with('change the red panel to green', 'change the red panel to green',
+                                                None, None, str(source))
+
+
 @pytest.mark.parametrize('writes_image', [False, True])
 def test_packed_bonsai_uses_exact_isolated_worker_components_and_validates_its_png(media, writes_image):
     from core import bonsai_image_runtime as runtime
