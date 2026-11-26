@@ -35,6 +35,28 @@ def test_overlapping_host_process_and_metal_counters_are_not_added(monkeypatch):
     assert not result.can_snapshot(256 * 1024 ** 2)
 
 
+@pytest.mark.parametrize("metal", [False, True])
+def test_mac_headroom_keeps_metal_accounting_without_cuda_device_probe(monkeypatch, metal):
+    import psutil
+    from unittest.mock import Mock
+    import core.training_memory as training
+    import core.mlx_memory_guard as guard
+
+    monkeypatch.setattr(guard, "platform", types.SimpleNamespace(system=lambda: "Darwin"))
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: types.SimpleNamespace(available=10 * GIB, total=16 * GIB))
+    monkeypatch.setattr(training, "process_memory_bytes", lambda: 9 * GIB)
+    mx = types.SimpleNamespace(
+        get_active_memory=lambda: 8 * GIB, get_cache_memory=lambda: GIB,
+        metal=types.SimpleNamespace(is_available=lambda: metal),
+        device_info=lambda: {"max_recommended_working_set_size": 12 * GIB},
+        default_device=Mock(side_effect=AssertionError("Mac must not use the CUDA probe")), gpu=object(),
+    )
+    result = memory_headroom(mx=mx, max_process_gb=14)
+    assert result.usable_bytes == (3 if metal else 5) * GIB - result.reserve_bytes
+    assert result.device_limit_bytes == (12 * GIB if metal else None)
+    mx.default_device.assert_not_called()
+
+
 def test_allocator_trims_cached_memory_without_releasing_model_arrays(monkeypatch):
     import core.mlx_memory_guard as guard
 

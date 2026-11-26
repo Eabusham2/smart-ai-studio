@@ -266,6 +266,10 @@ class ProReasoningEngine:
             controller_runtime = resolve_controller_runtime(info, str(target_path or ""))
             backend_family = str(info.get("backend_family") or "").strip().lower()
             mlx_controller_runtimes = {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
+            portable_mlx = platform.system() in ("Windows", "Linux")
+            if controller_runtime == "tensorfold_mlx" and not portable_mlx:
+                return {"status": "error", "model": model_name, "backend": "tensorfold_mlx",
+                        "path": target_path, "error": "TensorFold is available only on Windows and Linux."}
 
             if controller_runtime == "strata" or backend_family == "strata" or str(target_path).startswith("strata://"):
                 from config.strata_models import validate_strata_selection
@@ -301,7 +305,7 @@ class ProReasoningEngine:
                     target_backend = resolved_backend
 
             # Select the compute runtime for the same MLX checkpoint.
-            if target_backend == "mlx":
+            if target_backend == "mlx" and portable_mlx:
                 from core.cross_platform_mlx import select_mlx_runtime
                 try:
                     mlx_runtime = select_mlx_runtime(controller_runtime, info)
@@ -429,7 +433,8 @@ class ProReasoningEngine:
                         load_options = {
                             "progress": load_progress,
                             "cancelled": load_cancelled,
-                            "context_tokens": int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
+                            "context_tokens": (int(getattr(self, "_context_budget_tokens", 0) or info["default_context"])
+                                               if controller_runtime == "strata" else self.controller_backend.context_tokens),
                         }
                     if self.controller_backend.load_model(**load_options):
                         if getattr(self.controller_backend, "is_mlx_available", False):
@@ -449,17 +454,20 @@ class ProReasoningEngine:
                             **migration_details(loaded=True),
                         }
                     if controller_runtime in {"strata", "tensorfold_mlx"}:
+                        load_error = ("Strata could not prepare the selected model." if controller_runtime == "strata"
+                                      else "The selected native runtime could not prepare the model.")
                         return {
                             "status": "cancelled" if load_cancelled() else "error",
                             "model": model_name, "backend": controller_runtime, "path": target_path,
-                            "error": self.controller_backend.last_error or "The selected native runtime could not prepare the model.",
+                            "error": self.controller_backend.last_error or load_error,
                         }
                     return {"status": "error", "model": model_name, "backend": controller_runtime,
                             "path": target_path, "error": "The selected runtime did not load a usable model.",
                             **migration_details()}
 
                 # 1. Native MLX (Apple Metal or Linux CUDA/CPU)
-                if target_backend == "mlx":
+                if target_backend == "mlx" and (portable_mlx or (
+                        platform.system() == "Darwin" and platform.machine() == "arm64")):
                     self.mlx_backend = MLXReasoningBackend(
                         model_path=target_path,
                         adapter_path=(info.get("legacy_adapter_path") or self.lora_adapter_path)
@@ -491,6 +499,10 @@ class ProReasoningEngine:
                     else:
                         return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
                                 "error": getattr(self.mlx_backend, "last_error", "") or "The selected checkpoint could not load with its MLX runtime."}
+
+                if target_backend == "mlx":
+                    return {"status": "error", "model": model_name, "backend": "mlx", "path": target_path,
+                            "error": "This checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."}
 
                 # 2. GGUF / Llama.cpp Cross-Platform
                 if target_backend == "gguf":
@@ -757,7 +769,8 @@ class ProReasoningEngine:
         for _ in range(3):
             gc.collect()
 
-        self.mlx_engine = None
+        if platform.system() in ("Windows", "Linux"):
+            self.mlx_engine = None
         self.active_model_name = None
         self.active_model_path = None
         self.active_backend = None
@@ -767,7 +780,7 @@ class ProReasoningEngine:
     def calculate_token_entropy(self, prompt: str) -> float:
         """Evaluates model next-token Shannon entropy across supported backends."""
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
-            if getattr(self.controller_backend, "supports_entropy", True) is False:
+            if getattr(self.controller_backend, "runtime", None) == "tensorfold_mlx":
                 raise RuntimeError("This runtime does not expose model entropy. Select an explicit thinking branch count.")
             try:
                 return self.controller_backend.calculate_token_entropy(prompt)

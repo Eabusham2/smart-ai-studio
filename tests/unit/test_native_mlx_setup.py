@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from unittest.mock import Mock
 import subprocess
+import sys
 import venv
 
 import pytest
@@ -41,7 +42,29 @@ def test_windows_plan_installs_the_backend_distribution_explicitly():
         plan = mlx_setup.packages(backend)
         assert f"{package}==0.32.5" in plan
         assert "mlx==0.32.5" in plan
+        assert "mlx-audio==0.4.6" in plan
+        assert "transformers==5.5.0" in plan
         assert not any("[cuda" in item or "[cpu" in item for item in plan)
+
+
+@pytest.mark.parametrize(("name", "wrong_version", "required"), [
+    ("mlx-audio", "0.6.8", "0.4.6"),
+    ("transformers", "5.24.1", "5.5.0"),
+])
+def test_probe_rejects_incompatible_resolved_dependencies(tmp_path, monkeypatch, name, wrong_version, required):
+    # The child sees a misresolved environment even on runners without MLX.
+    # Version diagnostics must run before any native extension gets imported.
+    for requirement in mlx_setup.packages("cpu"):
+        package, version = requirement.split("==")
+        if package == name:
+            version = wrong_version
+        info = tmp_path / f"{package.replace('-', '_')}-{version}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(f"Name: {package}\nVersion: {version}\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    with pytest.raises(RuntimeError) as error:
+        mlx_setup.probe(sys.executable, "cpu")
+    assert f"Studio requires {name}=={required} (found {wrong_version})" in str(error.value)
 
 
 def test_failed_download_does_not_uninstall_existing_backend(monkeypatch, tmp_path):
@@ -126,6 +149,7 @@ def test_native_cpu_telemetry_does_not_claim_an_available_torch_gpu(monkeypatch)
     from types import SimpleNamespace
     from core import cross_platform_mlx
     from core.platform import PlatformRouter
+    monkeypatch.setattr(cross_platform_mlx.platform, "system", lambda: "Linux")
     monkeypatch.setattr(cross_platform_mlx, "native_mlx_installed", lambda: True)
     mx = SimpleNamespace(default_device=lambda: "cpu", gpu="gpu")
     monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=mx))

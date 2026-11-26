@@ -18,6 +18,8 @@ import tempfile
 MLX_VERSION = "0.32.5"
 MLX_LM_VERSION = "0.31.3"
 MLX_VLM_VERSION = "0.6.3"
+MLX_AUDIO_VERSION = "0.4.6"
+TRANSFORMERS_VERSION = "5.5.0"
 BACKENDS = {"cpu": "mlx-cpu", "cuda12": "mlx-cuda-12", "cuda13": "mlx-cuda-13"}
 
 
@@ -80,11 +82,22 @@ def select_backend(requested="auto", *, system=None, machine=None, devices=None)
     return "cpu"
 
 
-def packages(backend):
+def _pinned_versions(backend):
     if backend not in BACKENDS:
         raise ValueError("Unknown MLX backend")
-    return [f"mlx=={MLX_VERSION}", f"{BACKENDS[backend]}=={MLX_VERSION}",
-            f"mlx-lm=={MLX_LM_VERSION}", f"mlx-vlm=={MLX_VLM_VERSION}"]
+    return {
+        "mlx": MLX_VERSION,
+        BACKENDS[backend]: MLX_VERSION,
+        "mlx-lm": MLX_LM_VERSION,
+        "mlx-vlm": MLX_VLM_VERSION,
+        # Newer MLX Audio releases pull a Transformers version outside Studio's pin.
+        "mlx-audio": MLX_AUDIO_VERSION,
+        "transformers": TRANSFORMERS_VERSION,
+    }
+
+
+def packages(backend):
+    return [f"{name}=={version}" for name, version in _pinned_versions(backend).items()]
 
 
 def installed_backends(python):
@@ -103,19 +116,26 @@ def installed_backends(python):
 
 def probe(python, backend):
     """Execute packed arithmetic and autodiff in a fresh process, without a model."""
-    if backend not in BACKENDS:
-        raise ValueError("Unknown MLX backend")
+    expected = _pinned_versions(backend)
     script = """
-import importlib.metadata as metadata, json
+import importlib.metadata as metadata, json, sys
+backend, expected_json, root = sys.argv[1:]
+versions = {}
+for name, wanted in json.loads(expected_json).items():
+    try:
+        actual = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        actual = None
+    if actual != wanted:
+        raise RuntimeError(f"Studio requires {name}=={wanted} (found {actual or 'no installed version'}).")
+    versions[name] = actual
 import mlx.core as mx
 import mlx.nn
 import mlx.optimizers
-import sys
-sys.path.insert(0, __ROOT__)
+sys.path.insert(0, root)
 from mlx_import_compat import load_mlx_lm
 load_mlx_lm()
 import mlx_vlm
-backend = __BACKEND__
 if backend.startswith("cuda"):
     if not mx.cuda.is_available():
         raise RuntimeError("The selected CUDA backend cannot access a supported NVIDIA GPU.")
@@ -131,12 +151,15 @@ mx.eval(y, h, g)
 if not bool(mx.all(mx.isfinite(y)).item()) or not bool(mx.all(g == 2).item()):
     raise RuntimeError("MLX arithmetic/gradient check failed.")
 print(json.dumps({"status": "ready", "backend": backend, "device": str(mx.default_device()),
-                  "versions": {name: metadata.version(name) for name in ("mlx", "mlx-lm", "mlx-vlm")},
+                  "versions": versions,
                   "packed_matmul": True, "hadamard": True, "autodiff": True,
                   "model_loaded": False}))
-""".replace("__BACKEND__", repr(backend)).replace("__ROOT__", repr(str(Path(__file__).resolve().parent)))
-    result = subprocess.run([str(python), "-c", script], check=True,
+"""
+    root = str(Path(__file__).resolve().parent)
+    result = subprocess.run([str(python), "-c", script, backend, json.dumps(expected), root],
                             capture_output=True, text=True, timeout=90)
+    if result.returncode:
+        raise RuntimeError(f"Native MLX {backend} probe failed: {result.stderr.strip() or result.stdout.strip()}")
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
@@ -162,7 +185,7 @@ def install(python=sys.executable, requested="auto", *, check_only=False):
         # backends install the same native-library paths, so they cannot coexist.
         with tempfile.TemporaryDirectory(prefix="smartai-mlx-") as temporary:
             subprocess.run([*pip, "download", "--only-binary=:all:", "--no-deps",
-                            "--dest", temporary, wanted[1]], check=True)
+                            "--dest", temporary, f"{BACKENDS[selected]}=={MLX_VERSION}"], check=True)
             wheels = list(Path(temporary).glob("*.whl"))
             if len(wheels) != 1:
                 raise RuntimeError("Expected exactly one official MLX backend wheel.")

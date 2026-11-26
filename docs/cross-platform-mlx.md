@@ -38,7 +38,7 @@ python tools/setup_mlx.py --backend auto
 python tools/setup_mlx.py --check
 ```
 
-Portable and Setup releases include the runtime helpers and this repair CLI
+Windows/Linux portable and Setup releases include the runtime helpers and this repair CLI
 inside the app. Legacy source-only Windows/Linux bundles retain their manual
 MLX setup: from `SmartAI-Windows` or
 `SmartAI-Linux/SmartAI.AppDir/usr/bin`, run `tools/setup_mlx.py` using the
@@ -58,13 +58,16 @@ python tools/setup_mlx.py --backend cuda12
 python tools/setup_mlx.py --backend cuda13
 ```
 
-`--dry-run` prints the package plan. `--check` runs a real packed matrix
+`--dry-run` prints the package plan. `--check` verifies the exact installed
+versions and runs a real packed matrix
 multiply, Hadamard transform and autodiff check without installing packages or
 downloading a model. Setup also verifies that MLX-LM and MLX-VLM import.
 A failed probe leaves setup incomplete with the error visible.
 
-The Windows/Linux stack is pinned to MLX **0.32.5**, MLX-LM **0.31.3** and MLX-VLM
-**0.6.3**. Setup installs an explicit `mlx-cpu`, `mlx-cuda-12` or
+The Windows/Linux stack is pinned to MLX **0.32.5**, MLX-LM **0.31.3**, MLX-VLM
+**0.6.3**, MLX Audio **0.4.6** and Transformers **5.5.0**. Installing these in
+one transaction preserves Studio's Transformers version instead of allowing
+a newer transitive audio dependency to upgrade it. Setup installs an explicit `mlx-cpu`, `mlx-cuda-12` or
 `mlx-cuda-13` package. This matters on Windows because the MLX frontend's
 CPU/CUDA extras use Linux-only dependency markers in this release.
 
@@ -201,7 +204,7 @@ python -m pytest -q tests/unit/test_native_mlx_setup.py tests/unit/test_cross_pl
 python -m pytest -q tests/unit/test_mlx_packed_terminal.py tests/unit/test_mlx_learning_implementations.py
 ```
 
-The final combined application regression run passed **478 tests and 16
+An earlier combined application regression run passed **478 tests and 16
 subtests**. Ten tests were skipped in that lightweight environment because
 optional Torch or MLX packages were absent. Separate real MLX CPU environments
 passed the 17 packed/learning checks and 27 publisher/runtime/memory checks.
@@ -253,19 +256,33 @@ transcripts and thinking, checkpoint-bound legacy context, CogVideoX scheduler
 fix and Canvas web-artifact routing remain in place.
 
 The package builder now ships `mlx_import_compat.py`, `mlx_setup.py`,
-`tools/setup_mlx.py` and this guide in all three layouts. Isolated relocated
+`tools/setup_mlx.py` and this guide in Windows/Linux layouts. Isolated relocated
 bundle tests exclude the checkout and host packages when importing the helpers;
-the release smoke checks the installed runtime without loading model weights.
+the Windows/Linux release smoke checks the installed runtime without loading model weights.
+Mac's bundle builder, launcher scripts, existing dependency declarations and
+first-launch smoke behavior retain their master implementation. The whole-core
+copy still includes shared source revisions and the new API module.
 The three-mode application-restart transcript regression has been restored and
 is included in the regular focused gate.
 
 Mac import dialogs keep their supported choices; TensorFold is exposed only on
-Windows/Linux, and Intel Macs do not receive native MLX presets. Legacy MLX-VLM
-controller names retain their `mlx_engine` compatibility reference, which is
-cleared on unload. The public platform loader preserves its Transformers fallback
+Windows/Linux, and Intel Macs do not receive native MLX presets. Darwin keeps
+its original device/backend detection, resource label, Strata retry handling,
+public platform-loader fallback and legacy MLX-VLM controller-reference lifetime.
+Portable runtime choices do not override the Mac loader. Explicit internal
+TensorFold controller metadata is also refused on Mac.
+
+On Windows/Linux, the public platform loader preserves its Transformers fallback
 for admitted Transformers checkpoints while keeping packed MLX artifacts on
-their declared format. Hardware discovery does not execute Metal arithmetic
-outside the model's owner thread. TensorFold retries use their own download path.
+their declared format, and the compatibility reference is cleared on unload.
+Hardware discovery does not execute Metal arithmetic outside the model's owner
+thread. TensorFold retries use their own download path.
+
+The Mac isolation checks compare the original and current behavior directly,
+including native imports, architecture gates, UI controls, load failures and
+custom-controller behavior. The API memory control is the intended Mac-visible
+addition: it defaults off with 14.5 GiB selected. Shared files necessarily differ
+from master because they also contain Windows/Linux and API code.
 
 Verification also corrected stale test fixtures that extracted GUI functions
 without their current imported helpers or mocked only the old platform boundary.

@@ -14,7 +14,7 @@ def requires_explicit_branch_count(engine) -> bool:
     """Serving runtimes without full next-token logits use the selected branch budget."""
     controller = getattr(engine, "controller_backend", None)
     native = getattr(engine, "gguf_backend", None)
-    return (getattr(controller, "supports_entropy", True) is False
+    return (getattr(controller, "runtime", None) == "tensorfold_mlx"
             or getattr(native, "runtime", None) == "prism_speculative")
 
 

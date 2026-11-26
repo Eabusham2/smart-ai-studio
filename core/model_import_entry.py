@@ -87,7 +87,7 @@ def make_imported_model_entry(
         info["mlx_runtime"] = "tensorfold"
         info["inference_only"] = True
         info["memory_note"] = "TensorFold inference; Studio learning modes are unavailable. The selected weights are unchanged."
-    elif runtime in {"mlx_lm", "mlx_vlm", "mlx_repo_vlm", "jang_vlm"}:
+    elif tensorfold_platform() and runtime in {"mlx_lm", "mlx_vlm", "mlx_repo_vlm", "jang_vlm"}:
         if preference == "native":
             info["mlx_runtime"] = "native"
         else:

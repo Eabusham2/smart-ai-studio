@@ -30,10 +30,15 @@ class MLXReasoningBackend:
         Loads MLX neural model into Apple Silicon unified memory with dynamic RAM scaling.
         Memory allocation starts lean and dynamically expands on demand as context & rollouts grow.
         """
-        from core.cross_platform_mlx import native_mlx_platform
-        if not native_mlx_platform():
-            self.is_mlx_available = False
-            return False
+        if platform.system() == "Darwin":
+            if platform.machine() != "arm64":
+                self.is_mlx_available = False
+                return False
+        else:
+            from core.cross_platform_mlx import native_mlx_platform
+            if not native_mlx_platform():
+                self.is_mlx_available = False
+                return False
 
         if not os.path.exists(self.model_path) and os.getenv("OFFLINE", "0") == "1":
             self.is_mlx_available = False
@@ -42,8 +47,11 @@ class MLXReasoningBackend:
         try:
             import mlx.core as mx
             import mlx.nn as nn
-            from mlx_import_compat import load_mlx_lm
-            mlx_lm = load_mlx_lm()
+            if platform.system() == "Darwin":
+                import mlx_lm
+            else:
+                from mlx_import_compat import load_mlx_lm
+                mlx_lm = load_mlx_lm()
             from core.memory_watchdog import SystemMemoryWatchdog
 
             # Configure dynamic elastic Metal headroom based on available host RAM

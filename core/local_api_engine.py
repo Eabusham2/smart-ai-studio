@@ -63,7 +63,7 @@ class LoadedModelAdapter:
     def _learning_ready(self, backend):
         service = getattr(self.engine, "awake_consolidator", None)
         check = getattr(service, "_real_training_ready", None)
-        if getattr(backend, "supports_learning_modes", True) is False:
+        if getattr(backend, "runtime", None) == "tensorfold_mlx":
             return False
         try:
             return bool(getattr(service, "engine", None) is backend and callable(check) and check())
@@ -233,7 +233,7 @@ class LoadedModelAdapter:
             active["speculative_mode"] = getattr(plan, "active_mode", "none")
             active["max_draft_tokens"] = getattr(plan, "max_draft_tokens", None)
         defaults = self._sampling_defaults(backend, sampling)
-        inference_only = getattr(backend, "supports_learning_modes", True) is False
+        inference_only = getattr(backend, "runtime", None) == "tensorfold_mlx"
         return {
             "stateless": True, "client_owned_history": True, "client_owned_tools": True,
             "context_limit": self._context_limit(backend),
@@ -335,7 +335,7 @@ class LoadedModelAdapter:
             previous_mode = self._learning_mode()
             requested = getattr(request, "learning_mode", None)
             if (requested not in (None, "off")
-                    and getattr(self._backend(), "supports_learning_modes", True) is False):
+                    and getattr(self._backend(), "runtime", None) == "tensorfold_mlx"):
                 raise APIError(400, "The loaded runtime is inference-only.", code="unsupported_option")
             if requested not in (None, "off", previous_mode):
                 switch = getattr(self.engine, "set_learning_implementation", None)

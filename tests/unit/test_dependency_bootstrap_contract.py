@@ -72,7 +72,7 @@ def test_first_launch_installers_generated_for_all_formats(tmp_path, monkeypatch
     (build_app.create_windows_bundle, "SmartAI-Windows"),
     (build_app.create_linux_bundle, "SmartAI-Linux/SmartAI.AppDir/usr/bin"),
 ])
-def test_relocated_bundle_can_import_mlx_helpers_and_run_setup_cli(tmp_path, monkeypatch, builder, layout):
+def test_relocated_bundle_ships_mlx_setup_only_for_windows_and_linux(tmp_path, monkeypatch, builder, layout):
     monkeypatch.chdir(Path(__file__).resolve().parents[2])
     monkeypatch.setenv("SMARTAI_PACKAGE_ASSEMBLY_ONLY", "1")
     monkeypatch.delenv("SMARTAI_EMBEDDED_RUNTIME", raising=False)
@@ -81,6 +81,11 @@ def test_relocated_bundle_can_import_mlx_helpers_and_run_setup_cli(tmp_path, mon
     builder(str(dist), "SmartAI")
     code = dist.rename(tmp_path / "relocated package") / layout
 
+    setup_files = ("mlx_import_compat.py", "mlx_setup.py", "tools/setup_mlx.py", "docs/cross-platform-mlx.md")
+    if builder is build_app.create_macos_bundle:
+        assert all(not (code / path).exists() for path in setup_files)
+        return
+    assert all((code / path).is_file() for path in setup_files)
     # Ignore the checkout, PYTHONPATH and installed packages. These two
     # bootstrap helpers must import even before pip has installed MLX.
     isolated = [sys.executable, "-I", "-S"]
@@ -104,3 +109,17 @@ def test_release_workflow_packages_python_and_checks_native_launch_before_public
     assert "python tools/build_release_package.py" in workflow
     assert "needs.package.result == 'success'" in workflow
     assert workflow.index("Verify the canonical portable and setup packages") < workflow.index("Build one Mac installer using the portable app archive")
+
+
+def test_macos_package_smoke_does_not_import_native_mlx_or_run_setup(monkeypatch):
+    import builtins
+    import package_smoke
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(package_smoke, "sys", SimpleNamespace(platform="darwin"))
+    original_import = builtins.__import__
+    def checked_import(name, *args, **kwargs):
+        assert name not in {"core.cross_platform_mlx", "mlx", "mlx.core", "mlx_lm", "subprocess"}
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", checked_import)
+    package_smoke.verify_packaged_mlx()

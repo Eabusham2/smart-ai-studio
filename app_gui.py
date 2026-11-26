@@ -35,7 +35,7 @@ from core.media_engine import MediaGenerationEngine
 from core.media_orchestrator import MediaController
 from core.hf_downloader import is_model_cached_locally, purge_local_model_cache, download_model_from_hf
 from core.model_policy import admit_hf_model, admit_local_model
-from core.cross_platform_mlx import native_mlx_platform
+from core.cross_platform_mlx import native_mlx_platform, tensorfold_platform
 from core.model_import_entry import import_runtime_choices, make_imported_model_entry
 from core.model_import_download import download_imported_model
 from core.memory_watchdog import SystemMemoryWatchdog
@@ -2312,7 +2312,10 @@ class SmartAIChatbotApp:
         self.lbl_res_ram = tk.Label(col2, text="• Host Memory: Detecting...", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_green"], anchor="w")
         self.lbl_res_ram.pack(fill="x", pady=2)
 
-        self.lbl_res_arch = tk.Label(col2, text=f"• Platform: {platform.system()} {platform.machine()}", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_muted"], anchor="w")
+        arch = f"• Platform: {platform.system()} {platform.machine()}"
+        if platform.system() == "Darwin":
+            arch += " (MLX Native)"
+        self.lbl_res_arch = tk.Label(col2, text=arch, font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_muted"], anchor="w")
         self.lbl_res_arch.pack(fill="x", pady=2)
         def wrap_column(event):
             for label in event.widget.winfo_children():
@@ -3789,7 +3792,9 @@ class SmartAIChatbotApp:
 
         if (getattr(self, "_native_unload_pending", False)
                 or getattr(self, "_model_unload_pending", False)
-                or getattr(self, "_strata_unload_pending", False)):
+                or (getattr(self, "_strata_unload_pending", False)
+                    and getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "tensorfold_mlx"
+                    and tensorfold_platform())):
             self.btn_load_unload.configure(text="Retry unload", command=self._on_toggle_load_unload)
             return
 
@@ -3952,8 +3957,9 @@ class SmartAIChatbotApp:
         m_path = target_info.get("model_path") or target_info.get("repo_id")
         repo_id = str(target_info.get("repo_id") or "")
         is_strata = target_info.get("controller_runtime") == "strata"
-        tensorfold_owner = getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "tensorfold_mlx"
-        is_sidecar = is_strata or tensorfold_owner or target_info.get("mlx_runtime") == "tensorfold"
+        controller_runtime = getattr(getattr(self.engine, "controller_backend", None), "runtime", None)
+        tensorfold_owner = controller_runtime == "tensorfold_mlx" and tensorfold_platform()
+        is_sidecar = is_strata or tensorfold_owner or (target_info.get("mlx_runtime") == "tensorfold" and tensorfold_platform())
         cached = self._model_is_cached(target_info)
 
         is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
@@ -4122,9 +4128,9 @@ class SmartAIChatbotApp:
                 backend = getattr(self.engine, "controller_backend", None)
                 self._strata_unload_pending = bool(
                     not self.is_model_loaded
-                    and ((getattr(backend, "runtime", None) == "strata"
+                    and ((is_strata and getattr(backend, "runtime", None) == "strata"
                           and getattr(backend, "_manager", None) is not None)
-                         or (getattr(backend, "runtime", None) == "tensorfold_mlx"
+                         or (getattr(backend, "runtime", None) == "tensorfold_mlx" and tensorfold_platform()
                              and getattr(backend, "_process", None) is not None))
                 )
                 native = getattr(self.engine, "gguf_backend", None)
@@ -4157,8 +4163,10 @@ class SmartAIChatbotApp:
         backend = getattr(self.engine, "controller_backend", None)
         backend_attribute = "controller_backend"
         pending_attribute = "_strata_unload_pending"
-        runtime_label = "TensorFold" if getattr(backend, "runtime", None) == "tensorfold_mlx" else "Strata"
-        if getattr(backend, "runtime", None) not in {"strata", "tensorfold_mlx"}:
+        runtime = getattr(backend, "runtime", None)
+        is_tensorfold = runtime == "tensorfold_mlx" and tensorfold_platform()
+        runtime_label = "TensorFold" if is_tensorfold else "Strata"
+        if runtime != "strata" and not is_tensorfold:
             backend = getattr(self.engine, "gguf_backend", None)
             if getattr(backend, "runtime", None) != "prism_speculative":
                 return False
@@ -4362,7 +4370,8 @@ class SmartAIChatbotApp:
             return
         if target_tab_id not in self.models_config:
             return
-        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) in {"strata", "tensorfold_mlx"}
+        runtime = getattr(getattr(self.engine, "controller_backend", None), "runtime", None)
+        if ((runtime == "strata" or (runtime == "tensorfold_mlx" and tensorfold_platform()))
                 and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False))):
             self._unload_strata_async(on_complete=lambda: self._on_switch_model_tab(target_tab_id))
             return
@@ -4524,7 +4533,8 @@ class SmartAIChatbotApp:
                 messagebox.showerror("Chat Export", str(error))
 
     def _on_memory_pressure_emergency(self, status: Dict[str, Any]):
-        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) in {"strata", "tensorfold_mlx"}
+        runtime = getattr(getattr(self.engine, "controller_backend", None), "runtime", None)
+        if ((runtime == "strata" or (runtime == "tensorfold_mlx" and tensorfold_platform()))
                 or getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"):
             # The external native process is counted by the owned-PID provider.
             # Honor the user's enabled cap while allowing cancellation to unblock
@@ -6044,7 +6054,7 @@ class SmartAIChatbotApp:
     def _on_stop_generation(self):
         self.cancel_event.set()
         controller = getattr(self.engine, "controller_backend", None)
-        if getattr(controller, "runtime", None) == "tensorfold_mlx":
+        if getattr(controller, "runtime", None) == "tensorfold_mlx" and tensorfold_platform():
             controller.cancel_current_request()
         native = getattr(self.engine, "gguf_backend", None)
         if getattr(native, "runtime", None) == "prism_speculative":
@@ -6054,8 +6064,8 @@ class SmartAIChatbotApp:
     def _update_telemetry(self, tps: float = 0.0):
         curr_info = self.models_config.get(self.active_tab_id, {})
         controller = getattr(self.engine, "controller_backend", None)
-        is_strata = (curr_info.get("controller_runtime") == "strata"
-                     or getattr(controller, "runtime", None) == "tensorfold_mlx")
+        is_tensorfold = getattr(controller, "runtime", None) == "tensorfold_mlx" and tensorfold_platform()
+        is_strata = curr_info.get("controller_runtime") == "strata" or is_tensorfold
         is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
         completed = available = False
         generation = None
@@ -6121,7 +6131,7 @@ class SmartAIChatbotApp:
             self.lbl_context.configure(text=context_label(
                 prompt_count, limit, completion_tokens=selected_count, live=live))
         inference_only = bool(curr_info.get("inference_only")
-                              or getattr(controller, "supports_learning_modes", True) is False
+                              or (is_tensorfold and getattr(controller, "supports_learning_modes", True) is False)
                               or (is_native and not getattr(self, "_loaded_text_can_train", False)))
         raw_params = curr_info.get("raw_params")
         total_p = (raw_params or 0) + (0 if inference_only else self.synapses_learned_count)

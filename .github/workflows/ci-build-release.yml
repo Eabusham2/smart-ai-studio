@@ -396,7 +396,6 @@ jobs:
               python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
             fi
             python -m pip install 'transformers==5.5.0'
-            python tools/setup_mlx.py --backend cpu
           else
             python -m pip install 'mlx==0.32.0' 'mlx-lm==0.31.3' 'mlx-vlm==0.6.3' 'transformers==5.5.0'
           fi
@@ -404,6 +403,9 @@ jobs:
             python -m pip install -r requirements.txt
           fi
           python -m pip install -r tools/requirements-ci.txt
+          if [ "${{ matrix.device }}" = "cpu" ]; then
+            python tools/setup_mlx.py --backend cpu
+          fi
       - name: Verify actual compute device
         shell: bash
         env:

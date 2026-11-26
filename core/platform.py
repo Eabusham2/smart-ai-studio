@@ -19,7 +19,8 @@ class PlatformRouter:
 
     def __init__(self, override_backend: Optional[str] = None):
         self.override_backend = override_backend
-        self.last_error = ""
+        if platform.system() in ("Windows", "Linux"):
+            self.last_error = ""
         self._cached_platform_info: Optional[Dict[str, Any]] = None
 
     def get_platform_info(self) -> Dict[str, Any]:
@@ -38,14 +39,23 @@ class PlatformRouter:
         else:
             os_family = "linux"
 
-        # Probe the native binary backend as well as the Python frontend.
-        from core.cross_platform_mlx import native_mlx_installed
-        mlx_available = native_mlx_installed()
-        mlx_device = "cpu"
-        if mlx_available:
-            import mlx.core as mx
-            if mx.default_device() == mx.gpu:
-                mlx_device = "mps" if os_family == "macos" else "cuda"
+        portable_mlx = os_name in ("windows", "linux")
+        mlx_available = False
+        if os_family == "macos" and machine in ("arm64", "aarch64"):
+            try:
+                import mlx.core
+                import mlx_lm
+                mlx_available = True
+            except ImportError:
+                pass
+        elif portable_mlx:
+            from core.cross_platform_mlx import native_mlx_installed
+            mlx_available = native_mlx_installed()
+            mlx_device = "cpu"
+            if mlx_available:
+                import mlx.core as mx
+                if mx.default_device() == mx.gpu:
+                    mlx_device = "cuda"
 
         # Check PyTorch & Accelerators
         torch_available = False
@@ -78,17 +88,15 @@ class PlatformRouter:
             backend = "torch"
 
         # Determine primary compute device
-        if backend == "mlx":
+        if portable_mlx and backend == "mlx":
             device = mlx_device
             if device == "cuda":
                 device_name = "NVIDIA CUDA (MLX)"
-            elif device == "mps":
-                device_name = "Apple Silicon Metal (MLX)"
             else:
                 device_name = "CPU (MLX)"
         elif cuda_available:
             device = "cuda"
-        elif mps_available:
+        elif mps_available or (not portable_mlx and mlx_available):
             device = "mps"
         else:
             device = "cpu"
@@ -100,7 +108,6 @@ class PlatformRouter:
             "device": device,
             "device_name": device_name,
             "mlx_available": mlx_available,
-            "mlx_device": mlx_device if mlx_available else None,
             "torch_available": torch_available,
             "cuda_available": cuda_available,
             "mps_available": mps_available,
@@ -108,6 +115,8 @@ class PlatformRouter:
             "python_version": sys.version.split()[0],
             "executable": sys.executable
         }
+        if portable_mlx:
+            self._cached_platform_info["mlx_device"] = mlx_device if mlx_available else None
         return self._cached_platform_info
 
     def route_model_loader(
@@ -123,43 +132,54 @@ class PlatformRouter:
         Returns (backend_name, model_instance, tokenizer_instance)
         """
         info = self.get_platform_info()
-        self.last_error = ""
+        portable_mlx = platform.system() in ("Windows", "Linux")
+        if portable_mlx:
+            self.last_error = ""
         backend = info["backend"]
-        device = info["device"]
+        fallback_device = None
         source_options = {}
 
         if backend == "mlx":
             try:
-                from mlx_import_compat import load_mlx_lm
-                load = load_mlx_lm().load
-                print(f"[*] Loading native MLX model from {model_path} (full-precision KV)...")
+                if portable_mlx:
+                    from mlx_import_compat import load_mlx_lm
+                    load = load_mlx_lm().load
+                    print(f"[*] Loading native MLX model from {model_path} (full-precision KV)...")
+                else:
+                    import mlx.core
+                    from mlx_lm import load
+                    print(f"[*] Loading Apple Silicon MLX Model from {model_path} (full-precision KV)...")
                 model, tokenizer = run_hf_operation(lambda: load(model_path))
                 return "mlx", model, tokenizer
             except Exception as e:
-                self.last_error = str(e)
-                print(f"[!] Native MLX load failed: {e}.")
-                if not info["torch_available"]:
-                    return "none", None, None
-                # Preserve the original Transformers fallback only for its own checkpoints.
-                from core.controller_runtime import resolve_local_snapshot
-                from core.model_policy import admit_hf_model, admit_local_model
-                source = resolve_local_snapshot(model_path)
-                if os.path.exists(source):
-                    allowed, _, metadata = admit_local_model(source)
-                    model_path = source
+                if portable_mlx:
+                    self.last_error = str(e)
+                    print(f"[!] Native MLX load failed: {e}.")
+                    if not info["torch_available"]:
+                        return "none", None, None
+                    # Only retry portable checkpoints in their declared format.
+                    from core.controller_runtime import resolve_local_snapshot
+                    from core.model_policy import admit_hf_model, admit_local_model
+                    source = resolve_local_snapshot(model_path)
+                    if os.path.exists(source):
+                        allowed, _, metadata = admit_local_model(source)
+                        model_path = source
+                    else:
+                        allowed, _, metadata = admit_hf_model(model_path)
+                        if allowed:
+                            source_options["revision"] = metadata["repo_revision"]
+                    if not allowed or metadata.get("backend_family") != "transformers":
+                        return "none", None, None
+                    fallback_device = "cuda" if info["cuda_available"] else "mps" if info["mps_available"] else "cpu"
                 else:
-                    allowed, _, metadata = admit_hf_model(model_path)
-                    if allowed:
-                        source_options["revision"] = metadata["repo_revision"]
-                if not allowed or metadata.get("backend_family") != "transformers":
-                    return "none", None, None
+                    print(f"[!] MLX load failed: {e}. Falling back to PyTorch/Transformers...")
                 backend = "torch"
-                device = "cuda" if info["cuda_available"] else "mps" if info["mps_available"] else "cpu"
 
         if backend == "torch":
             try:
                 import torch
                 from transformers import AutoModelForCausalLM, AutoTokenizer
+                device = fallback_device or info["device"]
                 dtype = torch.bfloat16 if (device == "cuda" or (device == "mps" and info["os_family"] == "macos")) else torch.float32
 
                 print(f"[*] Loading PyTorch Model from {model_path} on {device} ({dtype})...")
@@ -174,10 +194,12 @@ class PlatformRouter:
                     model = model.to("mps")
                 elif device == "cpu":
                     model = model.to("cpu")
-                self.last_error = ""
+                if portable_mlx:
+                    self.last_error = ""
                 return "torch", model, tokenizer
             except Exception as e:
-                self.last_error = str(e)
+                if portable_mlx:
+                    self.last_error = str(e)
                 print(f"[!] PyTorch model load failed: {e}.")
 
         return "none", None, None

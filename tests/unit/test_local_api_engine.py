@@ -459,6 +459,13 @@ def test_api_pro_routes_multiple_branches_and_selects_only_the_tournament_winner
         backend.supports_entropy = False
         backend.calculate_token_entropy = lambda prompt: pytest.fail("TensorFold has no full-vocabulary logits")
         engine.lossless_speed_options = {"native_branch_count": 2}
+    elif routing == "auto":
+        # Existing external controllers may define their own capability attributes.
+        engine.active_backend = "controller"
+        engine.controller_backend = backend
+        backend.runtime = "custom"
+        backend.supports_entropy = backend.supports_learning_modes = False
+        assert adapter.model_info()["capabilities"]["learning_modes"] == ["legacy", "managed", "hybrid", "off"]
     engine.solve = engine.stream_solve = lambda *a, **k: pytest.fail("Desktop solver called")
     backend.tokenizer.apply_chat_template = lambda messages, **kwargs: messages[-1]["content"]
     originals = []
@@ -486,6 +493,8 @@ def test_api_pro_routes_multiple_branches_and_selects_only_the_tournament_winner
     report = adapter.model_info()["capabilities"]["pro"]["last_result"]
     if tensorfold:
         assert report["mode"] == "native_configured" and report["entropy"] is None
+    elif routing == "auto":
+        assert report["entropy"] == 0.5
     assert report["routed_branches"] == 2 and report["original_candidates"] == 3
     assert report["winning_branch"] == 3 and report["invocations"] == 8
     assert report["generated_tokens"] == 24 and chunks[-1].completion_tokens == 3

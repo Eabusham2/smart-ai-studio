@@ -169,8 +169,7 @@ def run_pro(adapter, backend, request, prompt, prompt_count, maximum, context,
         with inference_cycle(guard, cancel), inference_fork(engine), observe_generations(total.update):
             _check(cancel)
             if config["routing"] == "auto":
-                if (getattr(backend, "supports_entropy", True) is False
-                        or getattr(backend, "runtime", None) == "prism_speculative"):
+                if getattr(backend, "runtime", None) in {"prism_speculative", "tensorfold_mlx"}:
                     mode = "native_configured"
                 else:
                     measure = getattr(backend, "calculate_token_entropy", None)

@@ -53,8 +53,6 @@ def test_tensorfold_pro_uses_requested_budget_and_exact_runtime_input_count(pro_
 @pytest.mark.parametrize("implementation", ["legacy", "managed", "hybrid"])
 def test_original_native_checkpoint_preserves_selected_learning_implementation(
         pro_module, monkeypatch, tmp_path, system, implementation):
-    import core.cross_platform_mlx as dispatch
-
     engine = engine_for(pro_module)
     engine.settings.auto_download = False
     engine.settings.learning_implementation = implementation
@@ -64,10 +62,16 @@ def test_original_native_checkpoint_preserves_selected_learning_implementation(
     backend = SimpleNamespace(model=object(), is_mlx_available=True, load_model=lambda: True)
     native = Mock(return_value=backend)
     monkeypatch.setattr(pro_module, "MLXReasoningBackend", native)
-    monkeypatch.setattr(dispatch, "native_mlx_error", lambda: None)
-    monkeypatch.setattr(dispatch, "platform", SimpleNamespace(
-        system=lambda: system, machine=lambda: "arm64" if system == "Darwin" else "AMD64"))
-    monkeypatch.delenv("SMARTAI_MLX_RUNTIME", raising=False)
+    host = SimpleNamespace(system=lambda: system, machine=lambda: "arm64" if system == "Darwin" else "AMD64")
+    monkeypatch.setattr(pro_module, "platform", host)
+    if system == "Darwin":
+        # The desktop Metal loader predates this Windows/Linux selector.
+        monkeypatch.setenv("SMARTAI_MLX_RUNTIME", "portable-only-value")
+    else:
+        import core.cross_platform_mlx as dispatch
+        monkeypatch.setattr(dispatch, "native_mlx_error", lambda: None)
+        monkeypatch.setattr(dispatch, "platform", host)
+        monkeypatch.delenv("SMARTAI_MLX_RUNTIME", raising=False)
     monkeypatch.setattr(pro_module, "UniversalControllerBackend", Mock(side_effect=AssertionError("Replaced MLX weights")))
     result = engine.load_model("Selected local MLX", str(tmp_path),
                                model_info={"controller_runtime": "mlx_lm"})
@@ -78,7 +82,9 @@ def test_original_native_checkpoint_preserves_selected_learning_implementation(
 
 
 @pytest.mark.parametrize("runtime", ["mlx-vlm", "repo_mlx_vlm", "jang-vlm"])
-def test_legacy_mlx_controller_alias_tracks_loaded_owner_until_unload(pro_module, monkeypatch, tmp_path, runtime):
+@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+def test_legacy_mlx_controller_alias_after_unload(pro_module, monkeypatch, tmp_path, runtime, system):
+    monkeypatch.setattr(pro_module, "platform", SimpleNamespace(system=lambda: system, machine=lambda: "arm64"))
     engine = engine_for(pro_module)
     engine.settings.auto_download = False
     engine.awake_consolidator = SimpleNamespace(engine=None)
@@ -90,5 +96,49 @@ def test_legacy_mlx_controller_alias_tracks_loaded_owner_until_unload(pro_module
     assert receipt["trainable"] is False
     assert engine.mlx_engine is engine.controller_backend is engine.awake_consolidator.engine is backend
     assert engine.unload_model()["status"] == "unloaded"
-    assert engine.mlx_engine is engine.controller_backend is None
+    assert engine.controller_backend is None
+    assert engine.mlx_engine is (backend if system == "Darwin" else None)
     backend.unload_model.assert_called_once()
+
+
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+def test_darwin_pro_requires_original_arm64_architecture(pro_module, monkeypatch, tmp_path, machine):
+    monkeypatch.setattr(pro_module, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: machine))
+    engine = engine_for(pro_module)
+    engine.settings.auto_download = False
+    result = engine.load_model("Selected MLX", str(tmp_path), model_info={"controller_runtime": "mlx_lm"})
+    assert result == {"status": "error", "model": "Selected MLX", "backend": "mlx", "path": str(tmp_path),
+                      "error": "This checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."}
+
+
+def test_darwin_refuses_saved_tensorfold_controller_before_loading(pro_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(pro_module, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
+    engine = engine_for(pro_module)
+    engine.settings.auto_download = False
+    result = engine.load_model("Imported checkpoint", str(tmp_path), model_info={"controller_runtime": "tensorfold_mlx"})
+    assert result["status"] == "error" and result["backend"] == "tensorfold_mlx"
+    assert "Windows and Linux" in result["error"]
+    assert engine.controller_backend is None
+
+
+def test_custom_controller_keeps_existing_model_entropy_routing(pro_module):
+    backend = SimpleNamespace(runtime="custom", is_loaded=True, supports_entropy=False,
+                              calculate_token_entropy=Mock(return_value=0.25), last_generation={})
+    engine = engine_for(pro_module, backend)
+    engine.generate_parallel_branches = Mock(return_value=["answer"])
+    answer, metadata = engine.solve("hello")
+    assert answer == "answer" and metadata["entropy"] == 0.25
+    backend.calculate_token_entropy.assert_called_once()
+
+
+def test_darwin_strata_load_failure_keeps_preset_context_and_message(pro_module, monkeypatch):
+    from config.strata_models import get_strata_preset
+    from core.engines.strata_engine import StrataReasoningBackend
+    monkeypatch.setattr(pro_module, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
+    load = Mock(return_value=False)
+    monkeypatch.setattr(StrataReasoningBackend, "load_model", load)
+    engine = engine_for(pro_module)
+    engine._context_budget_tokens = 0
+    result = engine.load_model("strata_q2_0")
+    assert result["error"] == "Strata could not prepare the selected model."
+    assert load.call_args.kwargs["context_tokens"] == get_strata_preset("q2_0")["default_context"]

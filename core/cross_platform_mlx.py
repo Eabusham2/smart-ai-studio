@@ -7,10 +7,10 @@ import shutil
 
 
 def native_mlx_platform():
-    system, machine = platform.system(), platform.machine().lower()
+    system, machine = platform.system(), platform.machine()
     if system == "Darwin":
-        return machine in {"arm64", "aarch64"}
-    return system in {"Linux", "Windows"} and machine in {"x86_64", "amd64", "arm64", "aarch64"}
+        return machine == "arm64"
+    return system in {"Linux", "Windows"} and machine.lower() in {"x86_64", "amd64", "arm64", "aarch64"}
 
 
 def tensorfold_platform():
@@ -23,15 +23,17 @@ def native_mlx_error():
         return "Native MLX needs Apple Silicon or a supported Windows/Linux processor."
     try:
         import mlx.core as mx
-        from mlx_import_compat import load_mlx_lm
-        if platform.system() != "Darwin":
+        if platform.system() == "Darwin":
+            import mlx_lm
+        else:
+            from mlx_import_compat import load_mlx_lm
             # Check CPU/CUDA binaries here. Metal execution belongs to the model owner thread.
             device = mx.default_device()
             if not mx.is_available(device):
                 return f"MLX reports an unavailable default device: {device}"
             if (mx.array(1) + 1).item() != 2:
                 return f"MLX failed its arithmetic check on {device}"
-        load_mlx_lm()
+            load_mlx_lm()
     except Exception as exc:
         return f"{type(exc).__name__}: {exc}"
     return None

@@ -98,34 +98,40 @@ mlx-linux-cpu = [
     "mlx[cpu]==0.32.5; sys_platform == 'linux'",
     "mlx-lm==0.31.3; sys_platform == 'linux'",
     "mlx-vlm==0.6.3; sys_platform == 'linux'",
+    "mlx-audio==0.4.6; sys_platform == 'linux'",
 ]
 mlx-windows-cpu = [
     "mlx==0.32.5; sys_platform == 'win32'",
     "mlx-cpu==0.32.5; sys_platform == 'win32'",
     "mlx-lm==0.31.3; sys_platform == 'win32'",
     "mlx-vlm==0.6.3; sys_platform == 'win32'",
+    "mlx-audio==0.4.6; sys_platform == 'win32'",
 ]
 mlx-linux-cuda12 = [
     "mlx[cuda12]==0.32.5; sys_platform == 'linux'",
     "mlx-lm==0.31.3; sys_platform == 'linux'",
     "mlx-vlm==0.6.3; sys_platform == 'linux'",
+    "mlx-audio==0.4.6; sys_platform == 'linux'",
 ]
 mlx-windows-cuda12 = [
     "mlx==0.32.5; sys_platform == 'win32'",
     "mlx-cuda-12==0.32.5; sys_platform == 'win32'",
     "mlx-lm==0.31.3; sys_platform == 'win32'",
     "mlx-vlm==0.6.3; sys_platform == 'win32'",
+    "mlx-audio==0.4.6; sys_platform == 'win32'",
 ]
 mlx-linux-cuda13 = [
     "mlx[cuda13]==0.32.5; sys_platform == 'linux'",
     "mlx-lm==0.31.3; sys_platform == 'linux'",
     "mlx-vlm==0.6.3; sys_platform == 'linux'",
+    "mlx-audio==0.4.6; sys_platform == 'linux'",
 ]
 mlx-windows-cuda13 = [
     "mlx==0.32.5; sys_platform == 'win32'",
     "mlx-cuda-13==0.32.5; sys_platform == 'win32'",
     "mlx-lm==0.31.3; sys_platform == 'win32'",
     "mlx-vlm==0.6.3; sys_platform == 'win32'",
+    "mlx-audio==0.4.6; sys_platform == 'win32'",
 ]
 gguf = [
     "llama-cpp-python>=0.2.70",

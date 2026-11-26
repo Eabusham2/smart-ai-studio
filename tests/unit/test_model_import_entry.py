@@ -222,3 +222,21 @@ def test_mac_import_rejects_explicit_tensorfold_without_editing_the_metadata(mon
     with pytest.raises(ValueError, match="only on Windows and Linux"):
         make_imported_model_entry(info, runtime_preference="tensorfold")
     assert info == {"controller_runtime": "mlx_lm", "task": "text"}
+
+
+@pytest.mark.parametrize("preference", ["auto", "native"])
+@pytest.mark.parametrize("extra", [{}, {"mlx_runtime": "saved metadata", "memory_note": "custom note",
+                                       "inference_only": True, "runtime_preference": "tensorfold"}])
+def test_mac_import_keeps_existing_native_metadata(tmp_path, monkeypatch, preference, extra):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: "Darwin")
+    info = {"controller_runtime": "mlx_lm", "backend_family": "mlx_lm", "task": "text",
+            "model_path": str(tmp_path), "precision": "4-bit MLX", **extra}
+    original = deepcopy(info)
+    entry = make_imported_model_entry(info, local_path=str(tmp_path), runtime_preference=preference)
+    assert info == original
+    assert entry["controller_runtime"] == "mlx_lm" and entry["runtime_preference"] == preference
+    assert entry["model_path"] == str(tmp_path) and entry["precision"] == "4-bit MLX"
+    for name in ("mlx_runtime", "memory_note", "inference_only"):
+        assert (name in entry) == (name in original)
+        if name in original:
+            assert entry[name] == original[name]

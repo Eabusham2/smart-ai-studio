@@ -587,3 +587,14 @@ def test_solid_button_exposes_real_disabled_state_and_preserves_it_on_theme_swit
     app.btn_eval.configure(state="normal")
     app.btn_eval.invoke()
     assert calls == ["Eval"]
+
+
+@pytest.mark.parametrize(("system", "machine", "suffix"), [
+    ("Darwin", "arm64", " (MLX Native)"), ("Darwin", "x86_64", " (MLX Native)"),
+    ("Windows", "AMD64", ""), ("Linux", "x86_64", ""),
+])
+def test_resource_viewer_keeps_platform_label(app, monkeypatch, system, machine, suffix):
+    import app_gui
+    monkeypatch.setattr(app_gui, "platform", SimpleNamespace(system=lambda: system, machine=lambda: machine))
+    app._build_resource_viewer()
+    assert app.lbl_res_arch.cget("text") == f"• Platform: {system} {machine}{suffix}"

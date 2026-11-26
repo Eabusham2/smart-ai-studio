@@ -39,8 +39,8 @@ def detect_optimal_device() -> str:
     except Exception:
         pass
 
-    system, machine = platform.system(), platform.machine().lower()
-    if system == "Darwin" and machine in {"arm64", "aarch64"}:
+    system = platform.system()
+    if system == "Darwin" and platform.machine() == "arm64":
         return "mps"
     if system in {"Linux", "Windows"}:
         try:
@@ -58,8 +58,15 @@ def detect_optimal_backend() -> str:
     if env_backend in ("mlx", "gguf", "bitnet", "torch"):
         return env_backend
 
-    system, machine = platform.system(), platform.machine().lower()
-    if system in {"Linux", "Windows"} or (system == "Darwin" and machine in {"arm64", "aarch64"}):
+    system = platform.system()
+    if system == "Darwin" and platform.machine() == "arm64":
+        try:
+            import mlx.core as mx
+            import mlx_lm
+            return "mlx"
+        except ImportError:
+            pass
+    if system in {"Linux", "Windows"}:
         try:
             import mlx.core
             from mlx_import_compat import load_mlx_lm

@@ -572,9 +572,13 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         from pathlib import Path
         from core.learning_state import cached_model_source, requested_revision
 
-        from core.cross_platform_mlx import native_mlx_platform
-        if not native_mlx_platform():
-            return None
+        if platform.system() == "Darwin":
+            if platform.machine() != "arm64":
+                return None
+        else:
+            from core.cross_platform_mlx import native_mlx_platform
+            if not native_mlx_platform():
+                return None
         identifier = str(self.model_path)
         path = Path(identifier).expanduser()
         if path.exists():
@@ -612,14 +616,21 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         self.last_error = ""
         self._oom_prefill_step_size = None
         self.last_memory_recovery = ""
-        from core.cross_platform_mlx import select_mlx_runtime
-        runtime = resolve_controller_runtime(self.model_info, str(self.model_path or ""))
-        try:
-            select_mlx_runtime(runtime, {**self.model_info, "mlx_runtime": "native"})
-        except (RuntimeError, ValueError) as exc:
-            self.last_error = str(exc)
-            self.is_mlx_available = False
-            return False
+        if platform.system() == "Darwin":
+            if platform.machine() != "arm64":
+                self.last_error = "This MLX checkpoint requires an Apple Silicon Mac and its compatible MLX runtime."
+                self.is_mlx_available = False
+                return False
+            runtime = resolve_controller_runtime(self.model_info, str(self.model_path or ""))
+        else:
+            from core.cross_platform_mlx import select_mlx_runtime
+            runtime = resolve_controller_runtime(self.model_info, str(self.model_path or ""))
+            try:
+                select_mlx_runtime(runtime, {**self.model_info, "mlx_runtime": "native"})
+            except (RuntimeError, ValueError) as exc:
+                self.last_error = str(exc)
+                self.is_mlx_available = False
+                return False
         specialized_vlm = runtime in {"mlx_vlm", "mlx_repo_vlm", "jang_vlm"}
         load_stamps = (_local_artifact_stamp(self.model_path), _local_artifact_stamp(self.adapter_path))
 
@@ -629,7 +640,8 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
             source = getattr(self, "_mlx_loaded_source", None) or self._resolve_mlx_source()
             if specialized_vlm:
-                if runtime == "mlx_repo_vlm" and self.model_info.get("bonsai25_mtp"):
+                if (platform.system() != "Darwin" and runtime == "mlx_repo_vlm"
+                        and self.model_info.get("bonsai25_mtp")):
                     from core.mlx_repo_config_compat import enable_portable_qwen35_verification
                     enable_portable_qwen35_verification()
                 loader = UniversalControllerBackend(

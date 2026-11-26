@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import importlib
 import inspect
+import platform
 import threading
 import weakref
 
@@ -85,7 +86,7 @@ def memory_headroom(*, mx=None, max_process_gb=None):
                 device_limit = measured if measured > 0 else None
         except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
             pass
-    if mx is not None:
+    if mx is not None and platform.system() != "Darwin":
         try:
             if mx.default_device() == mx.gpu and not mx.metal.is_available():
                 info = mx.device_info()

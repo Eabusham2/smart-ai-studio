@@ -97,12 +97,13 @@ def app(tmp_path):
         "_check_and_run_next_queue",
     }
     from core.context_memory import ChatArchive
+    from core.cross_platform_mlx import tensorfold_platform
     methods.update({"_open_tab_history", "_render_tab_transcript"})
     nodes = [node for node in app_class.body if isinstance(node, ast.FunctionDef)
              and node.name in methods]
     namespace = {
         "os": os, "math": math, "json": json, "time": time, "re": re, "ChatArchive": ChatArchive,
-        "datetime": datetime,
+        "datetime": datetime, "tensorfold_platform": tensorfold_platform,
         "threading": SimpleNamespace(Thread=Thread, Event=threading.Event),
         "format_parameter_count": str, "format_added_synapses": str,
         "is_model_cached_locally": Mock(return_value=False),
@@ -499,7 +500,9 @@ def test_cancelled_ordinary_backend_never_fabricates_or_saves_completed_answer(a
     assert "stopped" in app.chat_stream.text.lower()
 
 
-def test_tensorfold_unload_and_retry_keep_the_original_gui_owner(app):
+@pytest.mark.parametrize("system", ["Windows", "Linux"])
+def test_tensorfold_unload_and_retry_keep_the_original_gui_owner(app, monkeypatch, system):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: system)
     app.backend.runtime = "tensorfold_mlx"
     app.backend.supports_learning_modes = False
     app.backend._process = object()
@@ -523,7 +526,9 @@ def test_tensorfold_unload_and_retry_keep_the_original_gui_owner(app):
     app.engine.load_model.assert_not_called()
 
 
-def test_failed_tensorfold_load_can_retry_without_strata_metadata(app):
+@pytest.mark.parametrize("system", ["Windows", "Linux"])
+def test_failed_tensorfold_load_can_retry_without_strata_metadata(app, monkeypatch, system):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: system)
     app.backend.runtime = "tensorfold_mlx"
     app.backend.is_loaded = False
     app.is_model_loaded = False
@@ -539,3 +544,28 @@ def test_failed_tensorfold_load_can_retry_without_strata_metadata(app):
     assert app.is_model_loaded
     assert "details" not in app._show_model_loading_popup.call_args.kwargs
     app.engine.load_model.assert_called_once()
+
+
+def test_mac_pending_strata_cleanup_keeps_model_info_and_retry(app, monkeypatch):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: "Darwin")
+    app._strata_unload_pending = True
+    app.is_model_loaded = False
+    app._update_model_action_buttons()
+    assert app.btn_load_unload.cget("text") == "Retry unload"
+    assert app.btn_reset_reinstall.cget("text") == "Model info"
+    assert app.btn_reset_reinstall.cget("command") == app._show_strata_model_info
+    assert app.btn_reset_reinstall.options["mapped"]
+
+
+def test_mac_failed_non_strata_load_preserves_target_ownership(app, monkeypatch):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: "Darwin")
+    app.is_model_loaded = False
+    app.active_tab_id = "native"
+    app.models_config["native"]["mlx_runtime"] = "tensorfold"
+    app._model_is_cached = lambda _info: True
+    app.backend._manager = object()
+    app.engine.load_model.return_value = {"status": "error", "error": "Model could not load"}
+    app._on_toggle_load_unload()
+    app.engine.load_model.assert_called_once()
+    assert not app.pending
+    assert not app._strata_unload_pending
