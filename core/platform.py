@@ -1,7 +1,7 @@
 """
 Cross-Platform Hardware & Inference Backend Router.
 Provides seamless detection and routing between:
-1. Apple MLX (macOS Apple Silicon arm64 - M1/M2/M3/M4)
+1. Native MLX (Apple Silicon, Linux CPU/CUDA, Windows CPU/CUDA)
 2. PyTorch CUDA / ROCm / Metal MPS / CPU (Windows & Linux)
 3. GGUF / llama.cpp & CPU fallbacks
 Guarantees zero unhandled import errors across platforms.
@@ -37,15 +37,14 @@ class PlatformRouter:
         else:
             os_family = "linux"
 
-        # Check MLX availability (Apple Silicon only)
-        mlx_available = False
-        if os_family == "macos" and machine in ("arm64", "aarch64"):
-            try:
-                import mlx.core as mx
-                import mlx_lm
-                mlx_available = True
-            except ImportError:
-                mlx_available = False
+        # Probe the native binary backend as well as the Python frontend.
+        from core.cross_platform_mlx import native_mlx_installed
+        mlx_available = native_mlx_installed()
+        mlx_device = "cpu"
+        if mlx_available:
+            import mlx.core as mx
+            if mx.default_device() == mx.gpu:
+                mlx_device = "mps" if os_family == "macos" else "cuda"
 
         # Check PyTorch & Accelerators
         torch_available = False
@@ -78,9 +77,17 @@ class PlatformRouter:
             backend = "torch"
 
         # Determine primary compute device
-        if cuda_available:
+        if backend == "mlx":
+            device = mlx_device
+            if device == "cuda":
+                device_name = "NVIDIA CUDA (MLX)"
+            elif device == "mps":
+                device_name = "Apple Silicon Metal (MLX)"
+            else:
+                device_name = "CPU (MLX)"
+        elif cuda_available:
             device = "cuda"
-        elif mps_available or mlx_available:
+        elif mps_available:
             device = "mps"
         else:
             device = "cpu"
@@ -92,6 +99,7 @@ class PlatformRouter:
             "device": device,
             "device_name": device_name,
             "mlx_available": mlx_available,
+            "mlx_device": mlx_device if mlx_available else None,
             "torch_available": torch_available,
             "cuda_available": cuda_available,
             "mps_available": mps_available,
@@ -108,8 +116,8 @@ class PlatformRouter:
     ) -> Tuple[str, Any, Any]:
         """
         Loads the reasoning model and tokenizer using the optimal engine for this OS:
-        - On macOS arm64: MLX native engine with native/full-precision KV cache
-        - On Windows/Linux: PyTorch / Transformers engine with CUDA/CPU
+        - Native MLX when installed, on its current CPU/CUDA/Metal device
+        - PyTorch / Transformers when that backend is selected
         ``kv_bits`` is retained only as a backwards-compatible argument and ignored.
         Returns (backend_name, model_instance, tokenizer_instance)
         """
@@ -120,12 +128,14 @@ class PlatformRouter:
             try:
                 import mlx.core as mx
                 from mlx_lm import load
-                print(f"[*] Loading Apple Silicon MLX Model from {model_path} (full-precision KV)...")
+                print(f"[*] Loading native MLX model from {model_path} (full-precision KV)...")
                 model, tokenizer = run_hf_operation(lambda: load(model_path))
                 return "mlx", model, tokenizer
             except Exception as e:
-                print(f"[!] MLX load failed: {e}. Falling back to PyTorch/Transformers...")
-                backend = "torch"
+                # Packed MLX weights cannot be reinterpreted as Transformers weights.
+                self.last_error = str(e)
+                print(f"[!] Native MLX load failed: {e}.")
+                return "none", None, None
 
         if backend == "torch":
             try:

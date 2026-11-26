@@ -60,3 +60,24 @@ def test_canvas_long_stdout_keeps_final_traceback_visible_in_bounded_real_widget
     assert "Error (Exit 1)" in shown
     assert len(shown) < 1400  # Tool header plus the bounded 1,200-character preview.
     assert app.txt_canvas.get("1.0", "end-1c") == code
+
+
+def test_canvas_run_routes_html_to_browser_without_python_or_workspace(work_app, tmp_path, monkeypatch):
+    import app_gui
+    from pathlib import Path
+    from unittest.mock import Mock
+    app = work_app
+    app.workspace_dir = None
+    app._canvas_preview_directory = str(tmp_path)
+    app.tools = Mock()
+    opened = []
+    monkeypatch.setattr(app_gui.webbrowser, "open", lambda uri: opened.append(uri) or True)
+    app._append_ai_message = Mock()
+    code = '<!doctype HTML>\n<html><style>body { background: #1a1a2e; }</style><script>function flap() {}</script></html>'
+    app.txt_canvas.delete("1.0", "end")
+    app.txt_canvas.insert("1.0", code)
+    app._on_canvas_run_code()
+    assert opened == [(tmp_path / "canvas_interactive_preview.html").resolve().as_uri()]
+    assert (tmp_path / "canvas_interactive_preview.html").read_text() == code
+    app.tools.execute_tool.assert_not_called()
+    assert app.txt_canvas.get("1.0", "end-1c") == code

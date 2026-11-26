@@ -50,3 +50,30 @@ def compatible_qwen35_configs():
             yield
         finally:
             ModelConfig.from_dict = descriptor
+
+
+def _no_metal_kernel(*args, **kwargs):
+    # Returning None selects mlx-vlm's existing per-token/per-pad-group path.
+    return None
+
+
+def enable_portable_qwen35_verification():
+    """Use mlx-vlm 0.6.3's native fallback for Metal-only MTP fast paths.
+
+    GatedDeltaNet already dispatches to differentiable MLX ops on CPU/CUDA.
+    These optional projection and ragged-attention helpers omit that check in
+    0.6.3. Their callers implement the identical operation when they return None.
+    """
+    import mlx.core as mx
+    if mx.metal.is_available():
+        return
+    from importlib.metadata import version
+    if version("mlx-vlm") != "0.6.3":
+        raise RuntimeError("Bonsai 2.5 requires Studio's pinned mlx-vlm 0.6.3 runtime.")
+    from mlx_vlm.models.qwen3_5 import language
+    with _LOCK:
+        for name in ("_target_verify_weight", "_target_verify_quantized_linear",
+                     "_target_verify_quantized_argmax", "_qwen3_5_ragged_decode_attention"):
+            if not callable(getattr(language, name, None)):
+                raise RuntimeError(f"Missing mlx-vlm Qwen3.5 verification helper: {name}")
+            setattr(language, name, _no_metal_kernel)

@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config.paths import get_bundled_model_path, get_custom_models_file, get_portable_data_dir, inspect_mlx_model_folder, terminate_existing_app_instances
 from config.settings import Settings, get_settings
-from config.bonsai_models import bonsai_model_info
+from config.bonsai_models import bonsai_model_info, cross_platform_mlx_presets
 from config.strata_models import STRATA_PRESETS, get_strata_preset
 from core.context_memory import ChatArchive, completed_groups
 from core.training_memory import backend_label
@@ -534,6 +534,8 @@ class SmartAIChatbotApp:
             }
         }
         from config.media_models import apply_builtin_media_catalog
+        if not is_apple_silicon:
+            self.models_config.update(cross_platform_mlx_presets())
         apply_builtin_media_catalog(self.models_config)
         self.models_config.update({key: get_strata_preset(key) for key in STRATA_PRESETS})
         self._load_saved_custom_models()
@@ -1887,7 +1889,7 @@ class SmartAIChatbotApp:
 
         tk.Label(body, text="Runtime:", font=_FONT_SMALL, bg=self.C["bg_hud"],
                  fg=self.C["text_muted"]).pack(anchor="w", pady=(8, 2))
-        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata"], state="readonly")
+        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata", "TensorFold"], state="readonly")
         runtime_choice.set("Automatic")
         runtime_choice.pack(fill="x")
 
@@ -1967,7 +1969,7 @@ class SmartAIChatbotApp:
                 return
 
             selected_file = ent_gguf.get().strip() or None
-            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata"}[runtime_choice.get()]
+            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata", "TensorFold": "tensorfold"}[runtime_choice.get()]
             fetching["active"] = True
             btn_fetch.configure(state="disabled", text="⏳ Fetching...")
             lbl_status.configure(text=f"Connecting to Hugging Face: {repo_id}", fg=self.C["accent_yellow"])
@@ -2093,7 +2095,7 @@ class SmartAIChatbotApp:
 
         tk.Label(body, text="Runtime:", font=_FONT_SMALL, bg=self.C["bg_hud"],
                  fg=self.C["text_muted"]).pack(anchor="w")
-        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata"], state="readonly")
+        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata", "TensorFold"], state="readonly")
         runtime_choice.set("Automatic")
         runtime_choice.pack(fill="x", pady=(2, 8))
 
@@ -2210,7 +2212,7 @@ class SmartAIChatbotApp:
                 return
             is_local = source_var.get() == "local" or os.path.exists(os.path.expanduser(m_path_or_id))
             chosen_file = ent_gguf.get().strip() or None
-            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata"}[runtime_choice.get()]
+            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata", "TensorFold": "tensorfold"}[runtime_choice.get()]
             import_busy["active"] = True
             btn_import.configure(state="disabled", text="Inspecting…")
 
@@ -2307,7 +2309,7 @@ class SmartAIChatbotApp:
         self.lbl_res_ram = tk.Label(col2, text="• Host Memory: Detecting...", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["accent_green"], anchor="w")
         self.lbl_res_ram.pack(fill="x", pady=2)
 
-        self.lbl_res_arch = tk.Label(col2, text=f"• Platform: {platform.system()} {platform.machine()} (MLX Native)", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_muted"], anchor="w")
+        self.lbl_res_arch = tk.Label(col2, text=f"• Platform: {platform.system()} {platform.machine()}", font=_FONT_SMALL, bg=self.C["bg_resources"], fg=self.C["text_muted"], anchor="w")
         self.lbl_res_arch.pack(fill="x", pady=2)
         def wrap_column(event):
             for label in event.widget.winfo_children():
@@ -2701,29 +2703,69 @@ class SmartAIChatbotApp:
             self.btn_canvas_preview.configure(text="👁️ Preview", fg=self.C["accent_cyan"])
             self.txt_canvas.configure(font=_FONT_MONO, wrap="none", bg=self.C["code_bg"])
 
+    @staticmethod
+    def _canvas_web_source(content):
+        """Recognize web artifacts without treating ordinary Python strings as HTML."""
+        from pathlib import Path
+        stripped = content.lstrip("\ufeff \t\r\n")
+        fenced = re.fullmatch(r"```(?:html|htm|svg)\s*\n([\s\S]*?)\n```\s*", stripped, re.I)
+        if fenced:
+            stripped = fenced.group(1)
+        # Leading HTML comments and XML declarations are legal in a web artifact.
+        probe = re.sub(r"^(?:\s*(?:<!--[\s\S]*?-->|<\?xml[^>]*\?>))*\s*", "", stripped, flags=re.I)
+        if re.match(r"(?i)^(?:<!doctype\s+html\b|<(?:html|head|body|svg|style|script|div|section|main|canvas|p|h[1-6]|article|form|button|table|meta|link)\b)", probe):
+            return stripped
+        if len(stripped) < 4096 and "\n" not in stripped and stripped.lower().endswith((".html", ".htm", ".svg")):
+            try:
+                if Path(stripped.strip()).is_file():
+                    return stripped.strip()
+            except OSError:
+                pass
+        return None
+
     def _on_canvas_run_code(self):
         # Preserve source positions so Python's traceback matches the editor.
         code = self.txt_canvas.get("1.0", "end-1c")
         if not code.strip():
             return
+        if self._canvas_web_source(code) is not None:
+            self._on_canvas_open_browser()
+            return
         ok, res = self.tools.execute_tool("python_sandbox", {"code": code})
         self._append_tool_call("python_sandbox", "Canvas Code Execution", res)
 
     def _on_canvas_open_browser(self):
-        """Opens current canvas HTML/SVG content or saved artifact in user's default web browser."""
-        content = self.txt_canvas.get("1.0", "end").strip()
-        if not content:
+        """Open web artifacts in the browser; show other content as escaped text."""
+        from pathlib import Path
+        import html
+        import tempfile
+        content = self.txt_canvas.get("1.0", "end-1c")
+        if not content.strip():
             messagebox.showinfo("Canvas Empty", "Please generate or load an interactive visualizer or HTML/SVG content first.")
             return
+        web_source = self._canvas_web_source(content)
+        if web_source is not None and "\n" not in web_source and len(web_source) < 4096:
+            try:
+                artifact = Path(web_source)
+                if artifact.suffix.lower() in {".html", ".htm", ".svg"} and artifact.is_file():
+                    webbrowser.open(artifact.resolve().as_uri())
+                    return
+            except OSError:
+                pass
 
-        # Check if content points to an existing file
-        if os.path.exists(content) and content.endswith((".html", ".htm", ".svg")):
-            webbrowser.open(f"file://{os.path.abspath(content)}")
-            return
-
-        # Create or update preview HTML in workspace
-        preview_file = os.path.join(self.workspace_dir, "canvas_interactive_preview.html")
-        if not content.startswith("<!DOCTYPE") and not content.startswith("<html") and not content.startswith("<svg"):
+        # The workspace is optional. Use a private temporary preview directory
+        # when no workspace is set, rather than joining a path with None.
+        workspace = getattr(self, "workspace_dir", None)
+        if workspace:
+            directory = Path(workspace)
+        else:
+            directory = Path(getattr(self, "_canvas_preview_directory", "") or tempfile.mkdtemp(prefix="smartai-canvas-"))
+            self._canvas_preview_directory = str(directory)
+        preview_file = directory / "canvas_interactive_preview.html"
+        if web_source is not None:
+            content = web_source
+        else:
+            content = html.escape(content)
             # Wrap standard code / text into styled HTML document
             html_wrapped = f"""<!DOCTYPE html>
 <html>
@@ -2742,11 +2784,15 @@ class SmartAIChatbotApp:
 </html>"""
             content = html_wrapped
 
-        with open(preview_file, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        webbrowser.open(f"file://{os.path.abspath(preview_file)}")
-        self._append_ai_message(f"🌐 **Browser Preview Opened**: Interactive visualizer launched at [`{preview_file}`](file://{os.path.abspath(preview_file)}).")
+        try:
+            preview_file.write_text(content, encoding="utf-8")
+            uri = preview_file.resolve().as_uri()
+            if not webbrowser.open(uri):
+                messagebox.showwarning("Canvas Browser", f"Could not open the default browser. Preview saved at {preview_file}.")
+                return
+            self._append_ai_message(f"🌐 **Browser Preview Opened**: Interactive visualizer launched at [`{preview_file}`]({uri}).")
+        except (OSError, webbrowser.Error) as error:
+            messagebox.showerror("Canvas Browser", str(error))
 
     def _on_canvas_make_visual(self):
         """Triggers the Interactive Visual Maker to generate a rich chart or simulation on Canvas."""
@@ -3738,7 +3784,9 @@ class SmartAIChatbotApp:
             return
         cached = self._model_is_cached(target_info)
 
-        if getattr(self, "_native_unload_pending", False) or getattr(self, "_model_unload_pending", False):
+        if (getattr(self, "_native_unload_pending", False)
+                or getattr(self, "_model_unload_pending", False)
+                or getattr(self, "_strata_unload_pending", False)):
             self.btn_load_unload.configure(text="Retry unload", command=self._on_toggle_load_unload)
             return
 
@@ -3900,7 +3948,8 @@ class SmartAIChatbotApp:
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
         repo_id = str(target_info.get("repo_id") or "")
-        is_strata = target_info.get("controller_runtime") == "strata"
+        is_strata = (target_info.get("controller_runtime") == "strata"
+                     or getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "tensorfold_mlx")
         cached = self._model_is_cached(target_info)
 
         is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
@@ -4068,9 +4117,11 @@ class SmartAIChatbotApp:
 
                 backend = getattr(self.engine, "controller_backend", None)
                 self._strata_unload_pending = bool(
-                    is_strata and not self.is_model_loaded
-                    and getattr(backend, "runtime", None) == "strata"
-                    and getattr(backend, "_manager", None) is not None
+                    not self.is_model_loaded
+                    and ((getattr(backend, "runtime", None) == "strata"
+                          and getattr(backend, "_manager", None) is not None)
+                         or (getattr(backend, "runtime", None) == "tensorfold_mlx"
+                             and getattr(backend, "_process", None) is not None))
                 )
                 native = getattr(self.engine, "gguf_backend", None)
                 self._native_unload_pending = bool(
@@ -4102,8 +4153,8 @@ class SmartAIChatbotApp:
         backend = getattr(self.engine, "controller_backend", None)
         backend_attribute = "controller_backend"
         pending_attribute = "_strata_unload_pending"
-        runtime_label = "Strata"
-        if getattr(backend, "runtime", None) != "strata":
+        runtime_label = "TensorFold" if getattr(backend, "runtime", None) == "tensorfold_mlx" else "Strata"
+        if getattr(backend, "runtime", None) not in {"strata", "tensorfold_mlx"}:
             backend = getattr(self.engine, "gguf_backend", None)
             if getattr(backend, "runtime", None) != "prism_speculative":
                 return False
@@ -4192,17 +4243,29 @@ class SmartAIChatbotApp:
         self._show_transcript_page()
 
     def _open_tab_history(self, tab, cached=None):
+        """Persist the complete visible history independently of the active prompt."""
+        from core.context_memory import LegacyChatArchive
         implementation = getattr(self.settings, "learning_implementation", "legacy")
-        if (implementation in {"managed", "hybrid"}
-                and self.models_config[tab].get("model_type", "text") == "text"):
+        archive_cls = ChatArchive
+        if self.models_config[tab].get("model_type", "text") != "text":
+            # Media conversations belong to the model, not a text learning mode.
+            key = f"media:{tab}"
+        elif implementation == "legacy":
+            key = f"legacy:{tab}"
+            archive_cls = LegacyChatArchive
+        else:
             scope = getattr(self.engine, "learning_scope", None)
             key = tab if scope is None or scope.kind == "model" else f"{tab}:scope:{scope.scope_id}"
             if implementation == "hybrid":
                 key = f"hybrid:{key}"
-            if isinstance(cached, ChatArchive) and cached.path == self.settings.database_path and cached.tab == key:
-                return cached
-            return ChatArchive(self.settings.database_path, key)
-        return cached if isinstance(cached, list) else []
+        if isinstance(cached, archive_cls) and cached.path == self.settings.database_path and cached.tab == key:
+            return cached
+        archive = archive_cls(self.settings.database_path, key)
+        # Migrate any still-live old list without duplicating an existing archive.
+        if isinstance(cached, list) and cached and not archive:
+            for turn in cached:
+                archive.append(turn)
+        return archive
 
     def _clear_media_previews(self):
         for state in getattr(self, "_generation_visuals", {}).values():
@@ -4295,7 +4358,7 @@ class SmartAIChatbotApp:
             return
         if target_tab_id not in self.models_config:
             return
-        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
+        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) in {"strata", "tensorfold_mlx"}
                 and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False))):
             self._unload_strata_async(on_complete=lambda: self._on_switch_model_tab(target_tab_id))
             return
@@ -4457,7 +4520,7 @@ class SmartAIChatbotApp:
                 messagebox.showerror("Chat Export", str(error))
 
     def _on_memory_pressure_emergency(self, status: Dict[str, Any]):
-        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "strata"
+        if (getattr(getattr(self.engine, "controller_backend", None), "runtime", None) in {"strata", "tensorfold_mlx"}
                 or getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"):
             # The external native process is counted by the owned-PID provider.
             # Honor the user's enabled cap while allowing cancellation to unblock
@@ -5976,6 +6039,9 @@ class SmartAIChatbotApp:
 
     def _on_stop_generation(self):
         self.cancel_event.set()
+        controller = getattr(self.engine, "controller_backend", None)
+        if getattr(controller, "runtime", None) == "tensorfold_mlx":
+            controller.cancel_current_request()
         native = getattr(self.engine, "gguf_backend", None)
         if getattr(native, "runtime", None) == "prism_speculative":
             native.cancel_generation()
@@ -5983,7 +6049,9 @@ class SmartAIChatbotApp:
 
     def _update_telemetry(self, tps: float = 0.0):
         curr_info = self.models_config.get(self.active_tab_id, {})
-        is_strata = curr_info.get("controller_runtime") == "strata"
+        controller = getattr(self.engine, "controller_backend", None)
+        is_strata = (curr_info.get("controller_runtime") == "strata"
+                     or getattr(controller, "runtime", None) == "tensorfold_mlx")
         is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
         completed = available = False
         generation = None
@@ -6049,6 +6117,7 @@ class SmartAIChatbotApp:
             self.lbl_context.configure(text=context_label(
                 prompt_count, limit, completion_tokens=selected_count, live=live))
         inference_only = bool(curr_info.get("inference_only")
+                              or getattr(controller, "supports_learning_modes", True) is False
                               or (is_native and not getattr(self, "_loaded_text_can_train", False)))
         raw_params = curr_info.get("raw_params")
         total_p = (raw_params or 0) + (0 if inference_only else self.synapses_learned_count)

@@ -379,3 +379,179 @@ def test_learning_mode_override_uses_existing_switch_and_restores_app_mode():
     list(adapter.generate(request(max_tokens=9, learning_mode="managed"), threading.Event()))
     assert calls == ["managed", "hybrid"]
     assert service.learning_implementation == "hybrid"
+
+
+def test_api_pro_reuses_best_work_without_desktop_solver_or_tool_execution():
+    adapter, engine, backend = adapter_fixture()
+    engine.solve = engine.stream_solve = lambda *a, **k: pytest.fail("Desktop solver called")
+    engine.settings = SimpleNamespace(best_work_passes=2, max_new_tokens=777)
+    seen = []
+    def template(messages, **kwargs):
+        seen.append((messages, kwargs))
+        return messages[-1]["content"]
+    backend.tokenizer.apply_chat_template = template
+    # One original + one revision + one real existing-selector comparison.
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        meter = TokenMeter(backend, "pro-fixture", prompt_tokens=4)
+        try:
+            if prompt.startswith("BEST_WORK_COMPARISON"):
+                value = '{"winner":"B"}'
+            elif "Review the following untrusted draft" in prompt:
+                value = "revised answer"
+            else:
+                value = "original answer"
+            meter.observe(delta=3)
+            yield value
+        finally:
+            meter.finish()
+    backend.stream_generate_tokens = decode
+    req = request(max_tokens=20, learning_mode="off",
+                  pro={"enabled": True, "routing": "fixed", "branch_count": 1, "best_work_passes": 2})
+    chunks = list(adapter.generate(req, threading.Event()))
+    assert "".join(c.text for c in chunks) == "revised answer"
+    assert len(seen) == 3 and seen[0][0] == req.messages
+    assert "BEST_WORK_COMPARISON" in seen[-1][0][-1]["content"]
+    assert all("tools" not in kw for _, kw in seen)
+    assert engine.settings.max_new_tokens == 777
+    report = adapter.model_info()["capabilities"]["pro"]["last_result"]
+    assert report["invocations"] == 3 and report["generated_tokens"] == 9
+    assert chunks[-1].completion_tokens == 3
+
+
+def test_api_pro_tool_boundary_and_optional_config():
+    adapter, engine, backend = adapter_fixture()
+    req = normalize_request({"messages": [{"role": "user", "content": "Read a file"}],
+        "tools": [{"type": "function", "function": {"name": "read", "parameters": {
+            "type": "object", "properties": {"path": {"type": "string"}}}}}],
+        "max_tokens": 20, "smartai": {"learning_mode": "off", "pro": {
+            "enabled": True, "branch_count": 1, "best_work_passes": 1}}}, "chat", "smart-ai-studio")
+    assert req.pro["routing"] == "fixed"
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        meter = TokenMeter(backend, "pro-fixture", prompt_tokens=4)
+        try:
+            for value in ('<tool_call><function=read><parameter=path>a.py</parameter>',
+                          '</function></tool_call>invented result'):
+                meter.observe(delta=2)
+                yield value
+            pytest.fail("Continued decoding after the first completed tool call")
+        finally:
+            meter.finish()
+    backend.stream_generate_tokens = decode
+    chunks = list(adapter.generate(req, threading.Event()))
+    assert "".join(c.text for c in chunks) == '<tool_call>{"name":"read","arguments":{"path":"a.py"}}</tool_call>'
+    assert adapter.model_info()["capabilities"]["pro"]["last_result"]["invocations"] == 1
+    for invalid in ({"enabled": 1}, {"routing": "auto", "branch_count": 2}, {"best_work_passes": 0}):
+        with pytest.raises(APIError):
+            normalize_request({"messages": [{"role": "user", "content": "hi"}],
+                               "smartai": {"pro": invalid}}, "chat", "smart-ai-studio")
+
+
+@pytest.mark.parametrize(("routing", "tensorfold"), [("auto", False), ("fixed", False), ("auto", True)])
+def test_api_pro_routes_multiple_branches_and_selects_only_the_tournament_winner(routing, tensorfold):
+    adapter, engine, backend = adapter_fixture()
+    engine.settings = SimpleNamespace(best_work_passes=1, max_new_tokens=777)
+    engine.router = SimpleNamespace(route=lambda entropy, **kw: ("test router", 2))
+    backend.calculate_token_entropy = lambda prompt: .5
+    if tensorfold:
+        engine.active_backend = "controller"
+        engine.controller_backend = backend
+        backend.runtime = "tensorfold_mlx"
+        backend.supports_entropy = False
+        backend.calculate_token_entropy = lambda prompt: pytest.fail("TensorFold has no full-vocabulary logits")
+        engine.lossless_speed_options = {"native_branch_count": 2}
+    engine.solve = engine.stream_solve = lambda *a, **k: pytest.fail("Desktop solver called")
+    backend.tokenizer.apply_chat_template = lambda messages, **kwargs: messages[-1]["content"]
+    originals = []
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        meter = TokenMeter(backend, "pro-fixture", prompt_tokens=4)
+        try:
+            if prompt.startswith("BEST_WORK_COMPARISON"):
+                value = '{"winner":"B"}'
+            elif prompt.startswith("BEST_WORK_SYNTHESIS"):
+                value = "synthesized answer"
+            else:
+                originals.append(temperature)
+                value = f"original candidate {len(originals)}"
+            meter.observe(delta=3)
+            yield value
+        finally:
+            meter.finish()
+    backend.stream_generate_tokens = decode
+    pro = {"enabled": True, "routing": routing, "best_work_passes": 1}
+    if routing == "fixed":
+        pro["branch_count"] = 2
+    chunks = list(adapter.generate(request(max_tokens=20, learning_mode="off", pro=pro), threading.Event()))
+    assert "".join(chunk.text for chunk in chunks) == "synthesized answer"
+    assert originals == [.2, .95, .65]
+    report = adapter.model_info()["capabilities"]["pro"]["last_result"]
+    if tensorfold:
+        assert report["mode"] == "native_configured" and report["entropy"] is None
+    assert report["routed_branches"] == 2 and report["original_candidates"] == 3
+    assert report["winning_branch"] == 3 and report["invocations"] == 8
+    assert report["generated_tokens"] == 24 and chunks[-1].completion_tokens == 3
+
+
+def test_api_pro_is_off_by_default_even_when_desktop_pro_is_enabled():
+    adapter, engine, backend = adapter_fixture()
+    # Simulate legacy server-start defaults captured with the desktop checkbox on.
+    adapter.pro_defaults = {"enabled": True, "best_work_passes": 5}
+    for pro in ({}, {"best_work_passes": 3}, {"enabled": False}):
+        chunks = list(adapter.generate(request(max_tokens=8, learning_mode="off", pro=pro),
+                                       threading.Event()))
+        assert "".join(chunk.text for chunk in chunks) == "Hello world!"
+        assert adapter.model_info()["capabilities"]["pro"]["last_result"]["status"] == "disabled"
+    assert len(backend.calls) == 3
+    defaults = adapter.model_info()["capabilities"]["pro"]["defaults"]
+    assert defaults["enabled"] is False and defaults["best_work_passes"] == 5
+    assert adapter._pro_config({"enabled": True})["enabled"] is True
+
+
+def test_inference_only_tensorfold_preserves_client_sampling_and_cannot_reload_for_training():
+    from unittest.mock import Mock
+
+    adapter, engine, backend = adapter_fixture()
+    engine.active_backend = "controller"
+    engine.controller_backend = backend
+    backend.runtime = "tensorfold_mlx"
+    backend.supports_learning_modes = False
+    backend.api_prompt_count = Mock(return_value=4)
+    engine.awake_consolidator = SimpleNamespace(engine=backend, learning_implementation="legacy",
+                                                _real_training_ready=Mock(return_value=True))
+    engine.set_learning_implementation = Mock(side_effect=AssertionError("Unexpected model reload"))
+
+    capabilities = adapter.model_info()["capabilities"]
+    assert capabilities["sampling_options"] == ["temperature", "top_p"]
+    assert capabilities["learning_modes"] == ["off"]
+    assert capabilities["learning_mode_default"] == "off"
+    assert capabilities["learning_ready"] is False
+    assert list(adapter.generate(request(max_tokens=3, temperature=0.2, top_p=0.8),
+                                 threading.Event()))[-1].completion_tokens == 3
+    assert backend.calls[-1][1:] == (3, 0.2, 0.8, False)
+    backend.api_prompt_count.assert_called_once()
+    for mode in ("legacy", "managed", "hybrid"):
+        with pytest.raises(APIError, match="inference-only"):
+            list(adapter.generate(request(learning_mode=mode), threading.Event()))
+    assert len(backend.calls) == 1
+    engine.set_learning_implementation.assert_not_called()
+    engine.awake_consolidator._real_training_ready.assert_not_called()
+
+
+@pytest.mark.parametrize("use_pro", [False, True])
+@pytest.mark.parametrize(("limit", "native_reason"), [(3, "stop"), (9, "length")])
+def test_tensorfold_terminal_reason_reaches_api_even_when_token_heuristic_differs(use_pro, limit, native_reason):
+    adapter, engine, backend = adapter_fixture()
+    engine.active_backend = "controller"
+    engine.controller_backend = backend
+    backend.runtime = "tensorfold_mlx"
+    backend.supports_entropy = False
+    original = backend.stream_generate_tokens
+
+    def decode(prompt, max_tokens, temperature, top_p, cancelled=None):
+        yield from original(prompt, max_tokens, temperature, top_p, cancelled)
+        backend.last_generation = {"status": "completed", "stop_type": native_reason}
+
+    backend.stream_generate_tokens = decode
+    pro = {"enabled": True, "best_work_passes": 1} if use_pro else {}
+    result = list(adapter.generate(request(max_tokens=limit, learning_mode="off", pro=pro), threading.Event()))
+    assert result[-1].completion_tokens == 3
+    assert result[-1].finish_reason == native_reason

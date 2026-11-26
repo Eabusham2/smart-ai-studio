@@ -23,7 +23,15 @@ def requirements_file(root):
 
 def fingerprint(root):
     req = requirements_file(root)
-    return hashlib.sha256(req.read_bytes()).hexdigest()
+    payload = req.read_bytes()
+    mlx_setup = root / 'mlx_setup.py'
+    if platform.system() in {'Linux', 'Windows'} and mlx_setup.is_file():
+        payload += mlx_setup.read_bytes()
+        mlx_compat = root / 'mlx_import_compat.py'
+        if mlx_compat.is_file():
+            payload += mlx_compat.read_bytes()
+        payload += os.environ.get('SMARTAI_MLX_BACKEND', 'auto').encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
 
 
 def python_path(runtime):
@@ -39,6 +47,8 @@ def ready(runtime, root):
 
 def pip_install(runtime, root):
     python = python_path(runtime)
+    if platform.system() in {'Linux', 'Windows'}:
+        (runtime / '.smartai-deps-ready').unlink(missing_ok=True)
     wheel_kind = 'metal' if platform.system() == 'Darwin' and platform.machine() == 'arm64' else 'cpu'
     options = ['--prefer-binary', '--only-binary=llama-cpp-python',
                '--extra-index-url', f'https://abetlen.github.io/llama-cpp-python/whl/{wheel_kind}']
@@ -61,6 +71,9 @@ def pip_install(runtime, root):
     # On setup, install the exact tested lock; preserve installed native wheel.
     subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', *options,
                     '-r', str(requirements_file(root))], check=True)
+    if platform.system() in {'Linux', 'Windows'}:
+        from mlx_setup import install as install_native_mlx
+        install_native_mlx(python, os.environ.get('SMARTAI_MLX_BACKEND', 'auto'))
     subprocess.run([str(python), '-c', 'import tkinter,sqlite3,torch,transformers,llama_cpp; tkinter.Tcl()'], check=True)
     (runtime / '.smartai-deps-ready').write_text(fingerprint(root)+'\n', encoding='utf-8')
 

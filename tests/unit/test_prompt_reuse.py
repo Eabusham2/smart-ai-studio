@@ -71,6 +71,11 @@ def runtime(monkeypatch):
     import core.kv_cache_manager as kv
     import core.mlx_engine as engine
     import core.mlx_memory_guard as memory_guard
+    # A previous real-VLM test can leave thread-local generation streams in
+    # sys.modules. They cannot be rebound to this fixture's synthetic mx.
+    for name in list(sys.modules):
+        if name == "mlx_vlm.generate" or name.startswith(("mlx_vlm.generate.", "mlx_vlm.speculative.")):
+            monkeypatch.delitem(sys.modules, name)
     mx = types.ModuleType("mlx.core")
     mx.array = Array
     mx.eval = lambda *args: None

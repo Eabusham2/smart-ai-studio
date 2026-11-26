@@ -418,6 +418,8 @@ class TestVLMNativeSpeedAdapter(unittest.TestCase):
             env.backend._finish_vlm_request = lambda **kwargs: None
             env.backend._speed_vlm_prefill_kwargs = types.MethodType(engine_method("_speed_vlm_prefill_kwargs", env.state), env.backend)
             branches = engine_method("generate_branches", env.state)
+            env.backend._stream_generate_tokens_impl = types.MethodType(
+                engine_method("_stream_generate_tokens_impl", env.state), env.backend)
             streaming = engine_method("stream_generate_tokens", env.state)
             branches(env.backend, "user text", branch_count=1, temperature=0.7, top_p=0.85)
             self.assertNotIn("prefill_step_size", env.state.calls[-1])

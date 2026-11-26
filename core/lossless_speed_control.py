@@ -69,7 +69,7 @@ def cancel_before_request(engine, cancel_event):
     if cancel_event is None or not cancel_event.is_set():
         return False
     backend = active_backend(engine)
-    if getattr(backend, "runtime", None) in {"strata", "prism_speculative"}:
+    if getattr(backend, "runtime", None) in {"strata", "prism_speculative", "tensorfold_mlx"}:
         stop = getattr(backend, "cancel_generation", None) or getattr(backend, "cancel_current_request", None)
         if callable(stop):
             stop()

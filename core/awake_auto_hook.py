@@ -17,7 +17,7 @@ import re
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from core.context_memory import (ActiveChatHistory, ChatArchive, ContextOverflow, completed_groups,
+from core.context_memory import (ActiveChatHistory, ChatArchive, LegacyChatArchive, ContextOverflow, completed_groups,
                                  oldest_completed_chunk, working_history)
 from core.platform import get_auto_context_window_size
 from core.temperature_policy import CHAT_N1_TEMPERATURE
@@ -119,6 +119,8 @@ def _selected_context_budget(engine) -> int:
 
 def _formatted_token_count(engine, formatted_prompt: str, *, budget: Optional[int] = None) -> int:
     backend = _active_trainable_backend(engine)
+    if getattr(backend, "runtime", None) == "tensorfold_mlx":
+        return backend.api_prompt_count(formatted_prompt)
     tokenizer = getattr(backend, "tokenizer", None) if backend is not None else None
 
     encode = getattr(tokenizer, "encode", None)
@@ -237,6 +239,63 @@ def _explicit_document(prompt):
     return None
 
 
+def _prepare_legacy_archive(engine, prompt, archive, cancel_event=None):
+    """Archive adapter for the unchanged original learning implementation."""
+    backend = _active_trainable_backend(engine)
+    active, retired, checkpoint = archive.legacy_projection(backend)
+    service = getattr(engine, "awake_consolidator", None)
+    if not prompt or service is None or getattr(backend, "tokenizer", None) is None:
+        return active
+    if getattr(backend, "runtime", None) in {"strata", "prism_speculative", "tensorfold_mlx"}:
+        return active
+    budget = _selected_context_budget(engine)
+    service.max_context = budget
+    trigger, target = max(1, int(budget * .80)), max(1, int(budget * .60))
+    service.watermark_tokens = trigger
+    def count(rows):
+        packed = engine._format_prompt_with_history(prompt, rows)
+        return _formatted_token_count(engine, packed, budget=budget)
+    current = count(active)
+    original = current
+    learned_count = 0
+    if current >= trigger:
+        while current > target:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Chat consolidation cancelled")
+            chunk, retained = oldest_completed_chunk(active, getattr(service, "evict_ratio", .40))
+            if not chunk and current >= budget:
+                chunk, retained = oldest_completed_chunk(active, getattr(service, "evict_ratio", .40), keep_recent=False)
+            if not chunk:
+                break
+            if not service.consolidate_chunk_sync(chunk, cancel_event=cancel_event):
+                break
+            receipt = archive.record_legacy_update(backend, checkpoint, retired, chunk)
+            if receipt is None:
+                # An update without a verifiable saved checkpoint cannot
+                # authorize the loss of source text on the next app launch.
+                break
+            retired, checkpoint = receipt
+            learned_count += len(chunk)
+            active = retained
+            current = count(active)
+    if current >= budget:
+        raise ContextOverflow(f"Packed prompt requires {current:,} tokens with active Context {budget:,}; "
+                              "the full transcript is saved, and unverified context was not truncated.")
+    if learned_count:
+        engine._last_context_consolidation_note = (
+            f"Context {budget:,}: consolidated {learned_count} old dialogue turns "
+            f"({original:,} → {current:,} active prompt tokens); full chat remains archived.")
+    # The media/Best Work handoff copies this prepared history. Reuse the same
+    # one-shot marker already preserved by TranscriptTurn.copy(), so the legacy
+    # public solver does not run the old list-pruning path a second time.
+    if active:
+        for turn in reversed(active):
+            if hasattr(turn, "turn_id"):
+                turn._capacity_recovery = {"legacy_archive_prepared": True}
+                break
+    return active
+
+
 def prepare_awake_request(engine, prompt, history, cancel_event=None):
     """Prepare the bounded text before a caller copies or routes the visible archive."""
     if getattr(engine, "_best_work_inference_read_only", False):
@@ -245,10 +304,12 @@ def prepare_awake_request(engine, prompt, history, cancel_event=None):
         history = history.archive
     service = getattr(engine, "awake_consolidator", None)
     if getattr(service, "learning_implementation", None) == "legacy":
+        if isinstance(history, LegacyChatArchive):
+            return prompt, _prepare_legacy_archive(engine, prompt, history, cancel_event)
         return prompt, history
     backend = _active_trainable_backend(engine)
     if (not prompt or service is None or getattr(service, "engine", None) is not backend
-            or backend is None or getattr(backend, "runtime", None) == "strata"):
+            or backend is None or getattr(backend, "runtime", None) in {"strata", "tensorfold_mlx"}):
         return prompt, history
     if getattr(backend, "runtime", None) == "prism_speculative" and not service._real_training_ready():
         return prompt, history
@@ -456,9 +517,16 @@ def install_awake_auto_learning(cls) -> None:
     def _apply_awake_learning(self, history, prompt: Optional[str] = None, cancel_event=None):
         if getattr(self, "_best_work_inference_read_only", False):
             return history
+        if getattr(getattr(self, "controller_backend", None), "runtime", None) == "tensorfold_mlx":
+            self._last_context_consolidation_note = "TensorFold retains the full transcript without weight updates."
+            return history
         if getattr(getattr(self, "awake_consolidator", None), "learning_implementation", None) == "legacy":
             if cancel_event is not None and cancel_event.is_set():
                 return history
+            for turn in history or ():
+                marker = getattr(turn, "_capacity_recovery", None)
+                if marker is not None and marker.pop("legacy_archive_prepared", False):
+                    return history
             return _apply_legacy_awake_learning(self, history, prompt)
         if not prompt:
             return history
@@ -679,12 +747,12 @@ def install_awake_auto_learning(cls) -> None:
         remaining = _remaining_generation_tokens(self, formatted)
 
         # Preserve the historical chat decision point: entropy chooses N=1/8/16.
-        native = getattr(self, "gguf_backend", None)
+        from core.entropy_router import requires_explicit_branch_count
         if bool(getattr(self, "_gui_force_single_stream", False)):
             entropy = None
             branch_count = 1
             mode = "Instant GUI stream (Pro unchecked)"
-        elif getattr(native, "runtime", None) == "prism_speculative":
+        elif requires_explicit_branch_count(self):
             # Native completion does not expose full-vocabulary entropy. Use
             # the explicit GUI/API branch budget for both Off and draft modes;
             # never substitute a prompt heuristic for the model router.

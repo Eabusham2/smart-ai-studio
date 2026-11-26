@@ -128,7 +128,9 @@ def test_packed_mlx_load_reports_decoder_capability_on_owner(pro_module, monkeyp
     engine = engine_for(pro_module)
     engine.settings.auto_download = False
     engine.lora_adapter_path = None
-    monkeypatch.setattr(pro_module, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
+    apple = SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64")
+    monkeypatch.setattr(pro_module, "platform", apple)
+    monkeypatch.setattr("core.cross_platform_mlx.platform", apple)
     with ThreadPoolExecutor(max_workers=1) as owner:
         owner_id = owner.submit(threading.get_ident).result()
         decoder = SimpleNamespace(named_modules=lambda: [], lm_head=(lambda x: x) if has_head else None)

@@ -8,9 +8,13 @@ MLX-LM's original prompt cache so generation remains available.
 from __future__ import annotations
 
 import platform
+import sys
 from typing import Any, List
 
 try:
+    if sys.platform == "win32":
+        from mlx_import_compat import load_mlx_lm
+        load_mlx_lm()
     from mlx_lm.models.cache import make_prompt_cache as _mlx_make_prompt_cache
 except Exception:
     _mlx_make_prompt_cache = None

@@ -336,3 +336,79 @@ def test_ewc_status_requires_trainer_evidence(tmp_path, measured, active):
     archive = archive_at(tmp_path)
     add_pair(archive, 0)
     assert service.sleep(archive)["ewc_active"] is active
+
+
+def test_legacy_archive_keeps_visible_thinking_and_checkpoint_bound_active_context(tmp_path):
+    from core.context_memory import LegacyChatArchive
+    from core.gui_thinking import transcript_payload, transcript_segments
+    archive = LegacyChatArchive(str(tmp_path / "legacy.sqlite3"), "legacy:normal")
+    archive.append({"role": "user", "content": "Old question"})
+    archive.append(transcript_payload([(True, "Old reasoning"), (False, "Old answer")]))
+    archive.append({"role": "user", "content": "Recent question"})
+    archive.append(transcript_payload([(True, "Recent reasoning"), (False, "Recent answer")]))
+    all_turns = list(archive)
+    state = SimpleNamespace(manifest=None)
+    store = SimpleNamespace(directory=tmp_path / "learned", identity_digest="model-identity",
+                            current_manifest=lambda **kw: state.manifest)
+    backend = SimpleNamespace(learning_state=store, adapter_path=None, _mlx_parent_generation=None)
+    active, retired, previous = archive.legacy_projection(backend)
+    assert active == all_turns and not retired and previous is None
+    checkpoint = store.directory / "generations" / "one" / "adapter.safetensors"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"verified learned adapter")
+    state.manifest = {"generation": "one", "parent": None, "checkpoint": checkpoint.name}
+    backend.adapter_path = str(checkpoint)
+    backend._mlx_parent_generation = "one"
+    assert archive.record_legacy_update(backend, previous, retired, active[:2]) is not None
+    reopened = LegacyChatArchive(str(tmp_path / "legacy.sqlite3"), "legacy:normal")
+    assert list(reopened) == all_turns
+    assert reopened.legacy_projection(backend)[0] == all_turns[2:]
+    assert (True, "Old reasoning") in transcript_segments(reopened[1])
+    assert (True, "Recent reasoning") in transcript_segments(reopened[-1])
+    # The same transcript cannot be compacted by a different live model or a
+    # checkpoint that was not actually activated.
+    backend._mlx_parent_generation = "unloaded"
+    assert reopened.legacy_projection(backend)[0] == all_turns
+    backend._mlx_parent_generation = "one"
+    other = LegacyChatArchive(str(tmp_path / "legacy.sqlite3"), "legacy:crack")
+    assert list(other) == []
+    assert other.legacy_projection(backend)[0] == []
+
+
+def test_legacy_archive_compacts_using_original_service_without_deleting_visible_history(tmp_path):
+    from core.context_memory import LegacyChatArchive
+    from core.awake_auto_hook import prepare_awake_request
+    archive = LegacyChatArchive(str(tmp_path / "legacy.sqlite3"), "legacy:normal")
+    for i in range(6):
+        add_pair(archive, i)
+    archive.append({"role": "user", "content": "new question"})
+    state = SimpleNamespace(manifest=None, counter=0)
+    store = SimpleNamespace(directory=tmp_path / "learned", identity_digest="original",
+                            current_manifest=lambda **kw: state.manifest)
+    backend = SimpleNamespace(model=object(), tokenizer=SimpleNamespace(encode=lambda text: list(text)),
+                              learning_state=store, adapter_path=None, _mlx_parent_generation=None)
+    batches = []
+    def consolidate(chunk, **kwargs):
+        batches.append(list(chunk))
+        parent = backend._mlx_parent_generation
+        state.counter += 1
+        generation = str(state.counter)
+        checkpoint = store.directory / "generations" / generation / "adapter.safetensors"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"learned")
+        state.manifest = {"generation": generation, "parent": parent, "checkpoint": checkpoint.name}
+        backend.adapter_path = str(checkpoint)
+        backend._mlx_parent_generation = generation
+        return True
+    service = SimpleNamespace(engine=backend, learning_implementation="legacy", evict_ratio=.4,
+                              consolidate_chunk_sync=consolidate)
+    engine = SimpleNamespace(active_backend="mlx", mlx_backend=backend, awake_consolidator=service,
+                             _context_budget_tokens=400, _format_prompt_with_history=lambda p, rows:
+                             "".join(row["content"] for row in rows) + p)
+    saved = list(archive)
+    _, active = prepare_awake_request(engine, "new question", archive)
+    assert batches and len(active) < len(saved)
+    assert active[-1]["content"] == "new question"
+    assert list(archive) == saved
+    reopened = LegacyChatArchive(str(tmp_path / "legacy.sqlite3"), "legacy:normal")
+    assert reopened.legacy_projection(backend)[0] == active

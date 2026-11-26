@@ -64,11 +64,16 @@ def pytest_sessionstart(session):
     requested_mlx = os.environ.get("MLX_TEST_DEVICE")
     if requested_mlx:
         import mlx.core as mx
-        if requested_mlx not in {"cpu", "metal"}:
-            raise ValueError("MLX_TEST_DEVICE must be cpu or metal")
+        if requested_mlx not in {"cpu", "metal", "cuda"}:
+            raise ValueError("MLX_TEST_DEVICE must be cpu, metal, or cuda")
         if requested_mlx == "metal" and not mx.metal.is_available():
             raise RuntimeError("The native MLX Metal test lane cannot fall back to CPU")
-        mx.set_default_device(mx.gpu if requested_mlx == "metal" else mx.cpu)
+        if requested_mlx == "cuda" and not mx.cuda.is_available():
+            raise RuntimeError("The native MLX CUDA test lane requires a visible CUDA device")
+        mx.set_default_device(mx.cpu if requested_mlx == "cpu" else mx.gpu)
+        if os.name == "nt":
+            from mlx_import_compat import load_mlx_lm
+            load_mlx_lm()
     if os.environ.get("SMARTAI_TEST_OFFLINE", "1") == "0":
         return
     original_resolve = socket.getaddrinfo

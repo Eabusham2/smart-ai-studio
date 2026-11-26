@@ -58,6 +58,28 @@ def test_original_algorithm_bodies_match_pre_merge_version(path, name, expected)
             'else str(authorization_prompt), executed)', mode='eval').body
         assert _canonical_ast(dispatch) == _canonical_ast(corrected)
         dispatch.args[2] = ast.parse('original_prompt', mode='eval').body
+        # Media cards may present a real tool result instead of the two text
+        # messages. Verify the complete presentation hook before comparing
+        # the original dispatch and continuation algorithm.
+        loop = next(stmt for stmt in ast.walk(node) if isinstance(stmt, ast.While))
+        start = next(i for i, stmt in enumerate(loop.body) if isinstance(stmt, ast.Assign)
+                     and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id == "media_hook")
+        presentation = ast.parse(r'''media_hook = getattr(controller, "media_result_presenter", None)
+presenter = media_hook(action[1]) if callable(media_hook) else None
+invocation = "\n⚙️ Calling " + action[1] + "(" + json.dumps(action[2], ensure_ascii=False) + ")\n"
+if presenter is None:
+    yield invocation''').body
+        assert _canonical_ast(loop.body[start:start + 4]) == _canonical_ast(presentation)
+        loop.body[start:start + 4] = [ast.Expr(value=ast.Yield(value=presentation[2].value))]
+        dispatch_index = next(i for i, stmt in enumerate(loop.body)
+                              if isinstance(stmt, ast.Assign) and stmt.value is dispatch)
+        reported = loop.body[dispatch_index + 1]
+        expected_report = ast.parse(r'''if presenter is None or not presenter(result):
+    if presenter is not None:
+        yield invocation
+    yield f"\n⚙️ {action[1]} ({'complete' if ok else 'failed'}): {result}\n"''').body[0]
+        assert _canonical_ast(reported) == _canonical_ast(expected_report)
+        loop.body[dispatch_index + 1] = reported.body[-1]
     serialized = json.dumps(_canonical_ast(node.body), sort_keys=True, separators=(',', ':'))
     actual = hashlib.sha256(serialized.encode()).hexdigest()
     assert actual == expected
@@ -119,3 +141,23 @@ def test_original_full_transcript_and_new_paged_view_are_both_available(implemen
     assert rendered[-1] == "139"
     assert ("0" in rendered) == (implementation == "legacy")
     assert len(history) == 140
+
+@pytest.mark.parametrize("presented", [False, True])
+def test_legacy_media_result_presented_once_with_text_fallback(presented):
+    from unittest.mock import Mock
+    from tests.unit.test_best_work_live_handoff import controller
+
+    call = '<media_call>{"name":"media_generate","arguments":{"prompt":"a landscape"}}</media_call>'
+    ctrl, _ = controller([[call], ["Finished."]])
+    ctrl.call = Mock(return_value={"status": "success", "path": "image.png"})
+    card = Mock(return_value=presented)
+    ctrl.media_result_presenter = Mock(return_value=card)
+    answer = "".join(stream_best_work(ctrl, "Generate a landscape", passes=1))
+    ctrl.call.assert_called_once()
+    ctrl.media_result_presenter.assert_called_once_with("media_generate")
+    assert json.loads(card.call_args.args[0])["path"] == "image.png"
+    card.assert_called_once()
+    assert answer.endswith("Finished.")
+    assert ("Calling media_generate" in answer) is (not presented)
+    assert ("image.png" in answer) is (not presented)
+    assert "image.png" in ctrl.app.engine.contexts[1][1][-1]["content"]

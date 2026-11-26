@@ -9,6 +9,7 @@ import json
 import re
 
 from core.context_memory import ActiveChatHistory, ChatArchive, ContextOverflow
+from core.entropy_router import requires_explicit_branch_count
 from core.gui_thinking import _PAIRS as _THOUGHT_PAIRS
 
 _TAG = re.compile(r"<(?P<tag>media_call|tool_call)>\s*(?P<data>\{[\s\S]*?\})\s*</(?P=tag)>", re.I)
@@ -223,12 +224,11 @@ def continue_selected_best_work(
         )
         if status_callback:
             status_callback("search", name, stage + 2)
-        native = getattr(getattr(controller.app.engine, "gguf_backend", None), "runtime", None)
         # A real tool result changes the context and may change model entropy.
         # Preserve the historical router (N=1/8/16), not the prior round's N.
         # Native servers have no full-logit entropy API, so retain their
         # explicit runtime budget rather than inventing confidence.
-        forced_budget = int(branch_count) if native == "prism_speculative" else None
+        forced_budget = int(branch_count) if requires_explicit_branch_count(controller.app.engine) else None
         answer, metadata = controller.app.engine.solve(
             current_prompt, history=turns, cancel_event=cancel_event,
             force_branch_count=forced_budget, progress_callback=progress_callback,

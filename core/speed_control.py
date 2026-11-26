@@ -31,7 +31,7 @@ def install_speed_control(cls) -> None:
 
     def active_native(self):
         controller = getattr(self, "controller_backend", None)
-        if getattr(self, "active_backend", None) == "controller" and getattr(controller, "runtime", None) == "strata":
+        if getattr(self, "active_backend", None) == "controller" and getattr(controller, "runtime", None) in {"strata", "tensorfold_mlx"}:
             return controller
         return {
             "mlx": getattr(self, "mlx_backend", None),
@@ -156,7 +156,7 @@ def install_speed_control(cls) -> None:
         native = getattr(self, "gguf_backend", None)
         if getattr(native, "runtime", None) == "prism_speculative":
             native.cancel_generation()
-        if getattr(controller, "runtime", None) == "strata":
+        if getattr(controller, "runtime", None) in {"strata", "tensorfold_mlx"}:
             # A silent native prefill can hold its HTTP read for minutes. Close
             # that transport before waiting for any load/configuration lock.
             controller.cancel_current_request()

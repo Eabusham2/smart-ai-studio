@@ -34,8 +34,8 @@ def _active_backend_name(engine) -> str:
     controller = getattr(engine, "controller_backend", None)
     if active == "controller" and getattr(controller, "direct_cuda_loaded", False) is True:
         return controller.direct_backend_name
-    if active == "controller" and getattr(getattr(engine, "controller_backend", None), "runtime", None) == "strata":
-        return "strata"
+    if active == "controller" and getattr(controller, "runtime", None) in {"strata", "tensorfold_mlx"}:
+        return controller.runtime
     if active == "gguf" and getattr(getattr(engine, "gguf_backend", None), "runtime", None) == "prism_speculative":
         return "prism_speculative"
     if active:
@@ -127,18 +127,18 @@ def install_pro_runtime_hardening(cls) -> None:
         measurements = measured_work.snapshot()
         metadata = dict(metadata or {})
         controller = getattr(self, "controller_backend", None)
-        is_strata = (getattr(self, "active_backend", None) == "controller"
-                     and getattr(controller, "runtime", None) == "strata")
+        is_sidecar = (getattr(self, "active_backend", None) == "controller"
+                      and getattr(controller, "runtime", None) in {"strata", "tensorfold_mlx"})
         native = getattr(self, "gguf_backend", None)
         is_native = (getattr(self, "active_backend", None) == "gguf"
                      and getattr(native, "runtime", None) == "prism_speculative")
-        owner = controller if is_strata else native if is_native else None
+        owner = controller if is_sidecar else native if is_native else None
         generated = measurements.get("tokens")
         metadata["token_usage_available"] = type(generated) is int
         metadata["generation_invocations"] = measurements["invocations"]
         # A Best Work tournament makes additional one-candidate calls. Its
         # observer covers all of them; last_branch_usage covers only the last.
-        if (is_strata or is_native) and not metadata.get("best_work"):
+        if (is_sidecar or is_native) and not metadata.get("best_work"):
             usage = dict(getattr(owner, "last_branch_usage", {}) or {})
             if is_native and any(type(value) is not int or value < 0 for value in usage.values()):
                 usage = {}
@@ -165,7 +165,7 @@ def install_pro_runtime_hardening(cls) -> None:
             from core.memory_watchdog import SystemMemoryWatchdog
             memory = SystemMemoryWatchdog.get_detailed_memory_breakdown(owned_pids=owned_processes())
             metadata["memory_rss_mb"] = memory["total_allocated_gb"] * 1024
-            if (is_strata or is_native) and not metadata["token_usage_available"]:
+            if (is_sidecar or is_native) and not metadata["token_usage_available"]:
                 metadata.pop("tokens_generated", None)
         metadata["backend"] = _active_backend_name(self)
 

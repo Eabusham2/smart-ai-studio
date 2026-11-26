@@ -606,7 +606,7 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
         return self._mtp.telemetry()
 
     def load_model(self) -> bool:
-        """Load native model weights with the model's required Apple-Silicon runtime."""
+        """Load the selected checkpoint with its native MLX loader."""
         self.invalidate_prompt_reuse("model load")
         self.kv_cache_manager = None
         self.last_error = ""
@@ -629,6 +629,9 @@ class MLXReasoningBackend(_base.MLXReasoningBackend):
 
             source = getattr(self, "_mlx_loaded_source", None) or self._resolve_mlx_source()
             if specialized_vlm:
+                if runtime == "mlx_repo_vlm" and self.model_info.get("bonsai25_mtp"):
+                    from core.mlx_repo_config_compat import enable_portable_qwen35_verification
+                    enable_portable_qwen35_verification()
                 loader = UniversalControllerBackend(
                     model_path=source,
                     model_info={**self.model_info, "controller_runtime": runtime},

@@ -12,6 +12,7 @@ import functools
 import importlib
 import inspect
 import queue
+import sys
 import threading
 from typing import Any
 
@@ -37,13 +38,15 @@ def _bind_mlx_generation_streams():
     # Import it here if available; this is the only normal model execution lane.
     modules = []
     try:
+        if sys.platform == "win32":
+            from mlx_import_compat import load_mlx_lm
+            load_mlx_lm()
         modules.append(importlib.import_module("mlx_lm.generate"))
     except ModuleNotFoundError as exc:
         if not str(exc.name or "").startswith("mlx_lm"):
             raise
     # mlx-vlm may have been imported by startup initialization too. Never
     # import it eagerly for a plain MLX-LM checkpoint.
-    import sys
     # mlx-vlm 0.6.3 split the former module into generate.{common,ar,dispatch}
     # and speculative.*. Each imports the stream into its own globals. Updating
     # only the public re-export leaves the actual target/draft code on the old

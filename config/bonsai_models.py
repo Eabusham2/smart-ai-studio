@@ -92,3 +92,17 @@ def bonsai_registry_preset(*, crack: bool = False) -> dict:
         "default_repo_id": CRACK_MLX_REPO if crack else BONSAI_MLX_REPO,
     })
     return info
+
+
+def cross_platform_mlx_presets() -> dict:
+    """Explicit original MLX choices alongside the existing GGUF desktop tabs."""
+    presets = {}
+    for crack, key in ((False, "bonsai25_mlx"), (True, "bonsai25_crack_mlx")):
+        info = bonsai_model_info(crack=crack, is_apple_silicon=True)
+        info["name"] += " (MLX)"
+        info["short_name"] += " (MLX)"
+        info["tag"] += " MLX"
+        info["controller_runtime"] = "mlx_repo_vlm"
+        info["mlx_runtime"] = "native"
+        presets[key] = info
+    return presets

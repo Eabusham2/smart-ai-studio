@@ -1,7 +1,7 @@
 """
-Apple Silicon Native MLX Reasoning Backend.
+Native MLX reasoning backend.
 Provides optimized inference, parallel candidate rollouts, token entropy calculations,
-and LoRA sleep consolidation specifically tailored for macOS Apple Silicon unified memory.
+and LoRA sleep consolidation on the selected MLX device.
 """
 
 import math
@@ -42,7 +42,8 @@ class MLXReasoningBackend:
         try:
             import mlx.core as mx
             import mlx.nn as nn
-            import mlx_lm
+            from mlx_import_compat import load_mlx_lm
+            mlx_lm = load_mlx_lm()
             from core.memory_watchdog import SystemMemoryWatchdog
 
             # Configure dynamic elastic Metal headroom based on available host RAM

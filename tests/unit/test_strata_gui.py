@@ -50,6 +50,13 @@ class Widget:
     def focus_set(self):
         pass
 
+    def pack(self, **kwargs):
+        self.options.update(kwargs)
+        self.options["mapped"] = True
+
+    def pack_forget(self):
+        self.options["mapped"] = False
+
 
 class Root:
     def __init__(self):
@@ -156,6 +163,7 @@ def app(tmp_path):
     for name in ("_sync_memory_watchdog", "_update_memory_hud_badge", "_update_resource_view_metrics",
                  "_scroll_chat_to_bottom", "_send_welcome_messages", "_on_download_hf_model",
                  "_on_reset_and_reinstall_single_confirm", "_show_strata_model_info",
+                 "_clear_media_previews",
                  "_append_ai_message", "_append_user_message", "_recompute_input_height",
                  "_set_generating_state", "_check_and_run_next_queue", "_prepare_memory_limit_for_model"):
         setattr(obj, name, Mock())
@@ -489,3 +497,27 @@ def test_cancelled_ordinary_backend_never_fabricates_or_saves_completed_answer(a
     assert app.chat_history["native"] == []
     assert "I am ready" not in app.chat_stream.text
     assert "stopped" in app.chat_stream.text.lower()
+
+
+def test_tensorfold_unload_and_retry_keep_the_original_gui_owner(app):
+    app.backend.runtime = "tensorfold_mlx"
+    app.backend.supports_learning_modes = False
+    app.backend._process = object()
+    app.models_config["strata"]["controller_runtime"] = "mlx_lm"
+    app.models_config["strata"]["mlx_runtime"] = "tensorfold"
+    app.engine.unload_model.side_effect = None
+    app.engine.unload_model.return_value = {"status": "error", "error": "server still stopping"}
+    app._on_toggle_load_unload()
+    assert app.backend.cancel_current_request.called
+    assert app.active_tab_id == "strata"
+    assert not app.engine.unload_model.called
+    finish_worker(app)
+    assert app._strata_unload_pending
+    assert app.btn_load_unload.cget("text") == "Retry unload"
+    assert "TensorFold" in app.lbl_model_status.cget("text")
+    app.engine.unload_model.return_value = {"status": "unloaded"}
+    app._on_toggle_load_unload()
+    finish_worker(app)
+    assert not app._strata_unload_pending
+    assert app.active_tab_id == "strata"
+    app.engine.load_model.assert_not_called()

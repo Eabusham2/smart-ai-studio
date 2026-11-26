@@ -46,6 +46,7 @@ class GenerationRequest:
     speedups: dict = field(default_factory=dict)
     include_reasoning: bool = False
     learning_mode: str | None = None
+    pro: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -263,9 +264,26 @@ def _optional_execution_options(body, protocol):
         settings = {}
     if not isinstance(settings, dict):
         raise APIError(400, "smartai must be an object.")
-    unknown = set(settings) - {"context_limit", "enable_thinking", "speedups", "include_reasoning", "learning_mode"}
+    unknown = set(settings) - {"context_limit", "enable_thinking", "speedups", "include_reasoning", "learning_mode", "pro"}
     if unknown:
         raise APIError(400, "Unknown smartai option: " + ", ".join(sorted(unknown)))
+    pro = settings.get("pro")
+    if pro is None:
+        pro = {}
+    if not isinstance(pro, dict) or set(pro) - {"enabled", "routing", "branch_count", "best_work_passes"}:
+        raise APIError(400, "smartai.pro accepts enabled, routing, branch_count and best_work_passes.")
+    pro = dict(pro)
+    if "enabled" in pro and type(pro["enabled"]) is not bool:
+        raise APIError(400, "smartai.pro.enabled must be a boolean.")
+    if "routing" in pro and pro["routing"] not in ("auto", "fixed"):
+        raise APIError(400, "smartai.pro.routing must be auto or fixed.")
+    for key, maximum in (("branch_count", 64), ("best_work_passes", 999)):
+        if key in pro and (type(pro[key]) is not int or not 1 <= pro[key] <= maximum):
+            raise APIError(400, f"smartai.pro.{key} must be an integer from 1 to {maximum}.")
+    if "branch_count" in pro:
+        if pro.get("routing") == "auto":
+            raise APIError(400, "Choose fixed routing when overriding branch_count.")
+        pro.setdefault("routing", "fixed")
     learning = settings.get("learning_mode")
     if learning is not None and (not isinstance(learning, str) or learning not in {"legacy", "managed", "hybrid", "off"}):
         raise APIError(400, "smartai.learning_mode must be legacy, managed, hybrid, or off.")
@@ -364,7 +382,7 @@ def _optional_execution_options(body, protocol):
             raise APIError(400, f"{key} must be {'an integer' if integer else 'a number'} between {low} and {high}.")
         sampling[key] = value
     return {"context_limit": context, "enable_thinking": thinking, "speedups": speedups,
-            "include_reasoning": include, "sampling": sampling, "learning_mode": learning}
+            "include_reasoning": include, "sampling": sampling, "learning_mode": learning, "pro": pro}
 
 
 def normalize_request(body, protocol, model):
@@ -438,8 +456,9 @@ class _OutputParser:
     Existing literal-code/thought rules are shared with desktop tool handoff.
     Only supplied tools can become calls. No local registry is consulted.
     """
-    def __init__(self, request):
+    def __init__(self, request, *, first_tool_only=False):
         from core.gui_thinking import ReasoningParser
+        self.first_tool_only = first_tool_only
         self.reasoning = ReasoningParser()
         self.request = request
         self.buffer, self.prefix = "", ""
@@ -581,6 +600,11 @@ class _OutputParser:
                 raise APIError(502, "The model emitted parallel tools when they were disabled.", "model_error")
             events.append(("tool", {"id": "call_" + uuid4().hex, "name": payload["name"], "arguments": args, "definition": tool}))
             self.buffer = payload_text[end + close.end():]
+            if self.first_tool_only:
+                # Pro candidates stop after the first complete client call.
+                # Ordinary API streaming retains parallel-tool support.
+                self.stopped = True
+                self.buffer = ""
         return events
 
 

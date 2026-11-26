@@ -52,7 +52,7 @@ class MemoryHeadroom:
 
 
 def memory_headroom(*, mx=None, max_process_gb=None):
-    """Read current independent bounds, reserving RAM for macOS and scratch."""
+    """Read current independent bounds, reserving host and device RAM for runtime scratch."""
     available = total = process = active = device_limit = device_free = None
     cached = 0
     try:
@@ -87,8 +87,7 @@ def memory_headroom(*, mx=None, max_process_gb=None):
             pass
     if mx is not None:
         try:
-            import platform
-            if platform.system() == "Linux" and mx.default_device() == mx.Device(mx.gpu):
+            if mx.default_device() == mx.gpu and not mx.metal.is_available():
                 info = mx.device_info()
                 if "free_memory" in info:
                     device_free = max(0, int(info["free_memory"]))

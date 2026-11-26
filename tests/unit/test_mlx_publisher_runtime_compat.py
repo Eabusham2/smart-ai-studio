@@ -101,3 +101,22 @@ def test_typed_model_config_patch_restores_after_error(monkeypatch):
             ModelConfig.from_dict({"text_config": {"model_type": "qwen3_5_text"},
                                    "vision_config": {"model_type": "qwen3_5"}})
     assert ModelConfig.__dict__["from_dict"] is original
+
+
+def test_qwen35_mtp_verification_uses_original_nonmetal_projections():
+    mx = pytest.importorskip("mlx.core")
+    if mx.metal.is_available():
+        pytest.skip("This test exercises native CPU/CUDA verification")
+    nn = pytest.importorskip("mlx.nn")
+    language = pytest.importorskip("mlx_vlm.models.qwen3_5.language")
+    from core.mlx_repo_config_compat import enable_portable_qwen35_verification
+
+    enable_portable_qwen35_verification()
+    x = mx.ones((2, 3, 512), dtype=mx.float16)
+    layer = nn.Linear(512, 16, bias=False)
+    layer.weight = layer.weight.astype(x.dtype)
+    packed = nn.QuantizedLinear.from_linear(layer, group_size=32, bits=4)
+    for projection in (layer, packed):
+        expected = projection(x)
+        actual = language._target_verify_linear(projection, x, True)
+        assert mx.allclose(actual, expected, atol=.002, rtol=.002).item()

@@ -89,7 +89,7 @@ def install_chat(pro_module) -> None:
         n = max(1, int(branch_count))
         controller = getattr(self, "controller_backend", None)
         native = getattr(self, "gguf_backend", None)
-        usage_backend = (controller if getattr(controller, "runtime", None) == "strata" else
+        usage_backend = (controller if getattr(controller, "runtime", None) in {"strata", "tensorfold_mlx"} else
                          native if getattr(native, "runtime", None) == "prism_speculative" else None)
         tracks_usage = usage_backend is not None
         if tracks_usage:

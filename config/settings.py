@@ -39,9 +39,16 @@ def detect_optimal_device() -> str:
     except Exception:
         pass
 
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
+    system, machine = platform.system(), platform.machine().lower()
+    if system == "Darwin" and machine in {"arm64", "aarch64"}:
         return "mps"
-
+    if system in {"Linux", "Windows"}:
+        try:
+            import mlx.core as mx
+            if mx.default_device() == mx.gpu:
+                return "cuda"
+        except (ImportError, OSError, RuntimeError):
+            pass
     return "cpu"
 
 
@@ -51,12 +58,14 @@ def detect_optimal_backend() -> str:
     if env_backend in ("mlx", "gguf", "bitnet", "torch"):
         return env_backend
 
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
+    system, machine = platform.system(), platform.machine().lower()
+    if system in {"Linux", "Windows"} or (system == "Darwin" and machine in {"arm64", "aarch64"}):
         try:
-            import mlx.core as mx
-            import mlx_lm
+            import mlx.core
+            from mlx_import_compat import load_mlx_lm
+            load_mlx_lm()
             return "mlx"
-        except ImportError:
+        except (ImportError, OSError, RuntimeError):
             pass
 
     return "torch"

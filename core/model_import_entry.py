@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-_RUNTIME_PREFERENCES = {"auto", "native", "strata"}
+_RUNTIME_PREFERENCES = {"auto", "native", "strata", "tensorfold"}
 _STRATA_UNSUPPORTED_TERNARY = {34: "TQ1_0", 35: "TQ2_0", 143: "PTQ1_0"}
 # The pinned Qwen native kernels support these formats. This only chooses an
 # inspection route: the official preflight still checks their tensor roles,
@@ -64,7 +64,23 @@ def make_imported_model_entry(
     info = dict(metadata)
     preference = runtime_preference if runtime_preference is not None else info.get("runtime_preference", "auto")
     if not isinstance(preference, str) or preference not in _RUNTIME_PREFERENCES:
-        raise ValueError("Choose Automatic, Native, or Strata as the model runtime.")
+        raise ValueError("Choose Automatic, Native, Strata, or TensorFold as the model runtime.")
+    runtime = str(info.get("controller_runtime") or info.get("backend_family") or "")
+    if preference == "tensorfold":
+        if (runtime != "mlx_lm" or set(info.get("input_modalities") or ["text"]) != {"text"}
+                or info.get("bonsai25_mtp") or info.get("gguf_file")):
+            raise ValueError("TensorFold requires a standard text MLX checkpoint. Select Native for publisher-packed or multimodal MLX models.")
+        info["mlx_runtime"] = "tensorfold"
+        info["inference_only"] = True
+        info["memory_note"] = "TensorFold inference; Studio learning modes are unavailable. The selected weights are unchanged."
+    elif runtime in {"mlx_lm", "mlx_vlm", "mlx_repo_vlm", "jang_vlm"}:
+        if preference == "native":
+            info["mlx_runtime"] = "native"
+        else:
+            info.pop("mlx_runtime", None)
+        if info.get("runtime_preference") == "tensorfold":
+            info.pop("inference_only", None)
+            info.pop("memory_note", None)
     checked = info.get("gguf_metadata") if isinstance(info.get("gguf_metadata"), dict) else {}
     observed = _observed_types(checked)
     chosen_path = str(checked.get("model_path") or info.get("strata_model_path") or info.get("model_path") or local_path)

@@ -24,7 +24,7 @@ from core.hf_transfer import run_hf_operation
 from core.engines.bitnet_cpp_engine import BitNetCppReasoningBackend
 from core.engines.gguf_engine import GGUFReasoningBackend
 from core.engines.prism_gguf_engine import PrismGGUFReasoningBackend
-from core.entropy_router import EntropyRouter
+from core.entropy_router import EntropyRouter, requires_explicit_branch_count
 from core.controller_runtime import UniversalControllerBackend, resolve_controller_runtime, resolve_gguf_artifacts
 from core.engines.strata_engine import StrataCancelled, StrataReasoningBackend
 from core.hardware import resolve_optimal_backend, detect_system_hardware
@@ -432,10 +432,6 @@ class ProReasoningEngine:
                             "context_tokens": int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
                         }
                     if self.controller_backend.load_model(**load_options):
-                        if getattr(self.controller_backend, "is_mlx_available", False):
-                            # Keep MLX-aware routing/telemetry compatible without
-                            # pretending this backend supports MLX-LM training.
-                            self.mlx_engine = self.controller_backend
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
                             self.awake_consolidator.engine = self.controller_backend
                         return {
@@ -645,14 +641,14 @@ class ProReasoningEngine:
                 return {"status": "error", "unloaded": False, "model": old_model,
                         "backend": getattr(controller, "runtime", "transformers"), "error": str(exc)}
             self.controller_backend = None
-        if getattr(controller, "runtime", None) == "strata":
+        if getattr(controller, "runtime", None) in {"strata", "tensorfold_mlx"}:
             try:
                 controller.unload_model()
             except Exception as exc:
                 # Keep the owner reachable for a later stop attempt and for RAM
                 # accounting; a partially stopped engine is not an unloaded one.
                 return {"status": "error", "unloaded": False, "model": old_model,
-                        "backend": "strata", "error": str(exc)}
+                        "backend": controller.runtime, "error": str(exc)}
             self.controller_backend = None
 
         if hasattr(self, "model") and self.model is not None:
@@ -767,6 +763,8 @@ class ProReasoningEngine:
     def calculate_token_entropy(self, prompt: str) -> float:
         """Evaluates model next-token Shannon entropy across supported backends."""
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
+            if getattr(self.controller_backend, "supports_entropy", True) is False:
+                raise RuntimeError("This runtime does not expose model entropy. Select an explicit thinking branch count.")
             try:
                 return self.controller_backend.calculate_token_entropy(prompt)
             except Exception:
@@ -1013,7 +1011,8 @@ class ProReasoningEngine:
             return
         if (getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
                 and not getattr(self.controller_backend, "is_loaded", False)):
-            raise RuntimeError("Load the selected native model before generating text.")
+            name = "Strata" if self.controller_backend.runtime == "strata" else "TensorFold"
+            raise RuntimeError(f"Load the {name} model before generating text.")
         if (getattr(self.gguf_backend, "runtime", None) == "prism_speculative"
                 and not getattr(self.gguf_backend, "is_loaded", False)):
             raise RuntimeError("Load the selected native runtime before generating text.")
@@ -1033,8 +1032,8 @@ class ProReasoningEngine:
         # 0. Specialized controller streaming
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
             has_yielded = False
-            is_strata = getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
-            cancel_options = {"cancelled": cancel_event.is_set} if is_strata and cancel_event is not None else {}
+            is_sidecar = getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
+            cancel_options = {"cancelled": cancel_event.is_set} if is_sidecar and cancel_event is not None else {}
             stream = self.controller_backend.stream_generate_tokens(
                 prompt=formatted_prompt,
                 max_tokens=self.settings.max_new_tokens,
@@ -1053,9 +1052,7 @@ class ProReasoningEngine:
                 close = getattr(stream, "close", None)
                 if callable(close):
                     close()
-            # An empty completed or cancelled Strata request must not be sent again
-            # through solve(), nor fall through to a different model backend.
-            # An empty completion must not be restarted on another backend.
+            # A completed empty stream must not restart inference on a different backend.
             return
 
         # 1. MLX Streaming
@@ -1162,7 +1159,8 @@ class ProReasoningEngine:
             return []
         if (getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
                 and not getattr(self.controller_backend, "is_loaded", False)):
-            raise RuntimeError("Load the selected native model before generating text.")
+            name = "Strata" if self.controller_backend.runtime == "strata" else "TensorFold"
+            raise RuntimeError(f"Load the {name} model before generating text.")
         formatted_prompt = self._format_prompt_with_history(prompt, history)
         ladder = temperatures if temperatures is not None else get_ladder_temperatures(branch_count)
 
@@ -1207,7 +1205,7 @@ class ProReasoningEngine:
 
         # 0. Architecture-specific controller inference
         if self.controller_backend and getattr(self.controller_backend, "is_loaded", False):
-            is_strata = getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
+            is_sidecar = getattr(self.controller_backend, "runtime", None) in {"strata", "tensorfold_mlx"}
             cancel_options = _cancel_kwargs(self.controller_backend)
             branches = self.controller_backend.generate_branches(
                 prompt=formatted_prompt,
@@ -1221,7 +1219,7 @@ class ProReasoningEngine:
             )
             if cancel_event is not None and cancel_event.is_set():
                 return list(branches or [])
-            if branches or is_strata:
+            if branches or is_sidecar:
                 return _report_if_legacy(branches, self.controller_backend)
 
         # 1. Apple Silicon Native MLX Inference
@@ -1409,7 +1407,7 @@ class ProReasoningEngine:
         has_tests = bool(test_cases and test_cases.strip())
         native = getattr(self, "gguf_backend", None)
         is_native = getattr(native, "runtime", None) == "prism_speculative"
-        if is_native:
+        if requires_explicit_branch_count(self):
             if type(force_branch_count) is not int or force_branch_count < 1:
                 raise ValueError("Choose an explicit thinking branch count for this native runtime; automatic model-entropy routing is unavailable.")
             entropy = None
@@ -1430,7 +1428,7 @@ class ProReasoningEngine:
         temp_ladder = [temperature] if temperature is not None else get_ladder_temperatures(branch_count)
         winning_temp = temp_ladder[0]
         controller = self.controller_backend
-        is_strata = getattr(controller, "runtime", None) == "strata"
+        is_sidecar = getattr(controller, "runtime", None) in {"strata", "tensorfold_mlx"}
         branch_options = {"cancel_event": cancel_event} if cancel_event is not None else {}
         if progress_callback is not None:
             branch_options['progress_callback'] = progress_callback
@@ -1440,9 +1438,9 @@ class ProReasoningEngine:
             return "", {"cancelled": True, "mode": mode, "raw_branches": candidates,
                         "branch_count": len(candidates), "verified": False, "surprise_score": 0.0}
 
-        def strata_cancelled():
+        def generation_cancelled():
             return bool(cancel_event is not None and cancel_event.is_set()) or (
-                (is_strata or is_native)
+                (is_sidecar or is_native)
                 and getattr(native if is_native else controller, "last_generation", {}).get("status") == "cancelled"
             )
 
@@ -1452,7 +1450,7 @@ class ProReasoningEngine:
         # Path 1: Instant Single-Pass Mode
         if branch_count == 1 and not has_tests and not callable(best_work_selector):
             candidates = self.generate_parallel_branches(prompt, branch_count=1, history=history, temperatures=temp_ladder, **branch_options)
-            if strata_cancelled():
+            if generation_cancelled():
                 return cancelled_result(candidates)
             if not candidates:
                 raise RuntimeError("The selected runtime completed without any response candidates.")
@@ -1493,7 +1491,7 @@ class ProReasoningEngine:
                     candidates = self.generate_parallel_branches(
                         prompt, branch_count=branch_count, history=history,
                         temperatures=temp_ladder, **branch_options)
-                if strata_cancelled():
+                if generation_cancelled():
                     return cancelled_result(candidates)
                 try:
                     candidates, selected_index, selection_metadata = best_work_selector(
@@ -1506,7 +1504,7 @@ class ProReasoningEngine:
                     return cancelled_result(candidates)
         else:
             candidates = self.generate_parallel_branches(prompt, branch_count=branch_count, history=history, temperatures=temp_ladder, **branch_options)
-        if strata_cancelled():
+        if generation_cancelled():
             return cancelled_result(candidates)
         if not candidates:
             raise RuntimeError("The selected runtime completed without any response candidates.")

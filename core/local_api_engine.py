@@ -26,12 +26,14 @@ class FormattedPrompt(str):
 
 
 class LoadedModelAdapter:
-    def __init__(self, engine, *, selected_model=None, busy=None):
+    def __init__(self, engine, *, selected_model=None, busy=None, pro_defaults=None):
         self.engine = engine
         self.selected_model = selected_model or (lambda: {})
         self.busy = busy or (lambda: "")
         self._request_lock = threading.Lock()
         self._last_learning = {"status": "not_run"}
+        self.pro_defaults = dict(pro_defaults or {})
+        self._last_pro = {"status": "not_run"}
 
     def model_info(self):
         if not getattr(self.engine, "is_model_loaded", False):
@@ -54,6 +56,8 @@ class LoadedModelAdapter:
     def _learning_ready(self, backend):
         service = getattr(self.engine, "awake_consolidator", None)
         check = getattr(service, "_real_training_ready", None)
+        if getattr(backend, "supports_learning_modes", True) is False:
+            return False
         try:
             return bool(getattr(service, "engine", None) is backend and callable(check) and check())
         except Exception:
@@ -220,26 +224,51 @@ class LoadedModelAdapter:
             active["speculative_mode"] = getattr(plan, "active_mode", "none")
             active["max_draft_tokens"] = getattr(plan, "max_draft_tokens", None)
         defaults = self._sampling_defaults(backend, sampling)
+        inference_only = getattr(backend, "supports_learning_modes", True) is False
         return {
             "stateless": True, "client_owned_history": True, "client_owned_tools": True,
             "context_limit": self._context_limit(backend),
             "sampling_options": ["temperature", "top_p", *sorted(sampling)],
             "sampling_defaults": defaults,
             "sampling_defaults_non_thinking": self._sampling_defaults(backend, sampling, thinking=False),
-            "learning_modes": ["legacy", "managed", "hybrid", "off"],
-            "learning_mode_default": self._learning_mode(),
+            "learning_modes": ["off"] if inference_only else ["legacy", "managed", "hybrid", "off"],
+            "learning_mode_default": "off" if inference_only else self._learning_mode(),
             "learning_ready": self._learning_ready(backend),
             "learning_last_result": dict(self._last_learning),
-            "learning_mode_switch_requires_reload": True,
+            "learning_mode_switch_requires_reload": not inference_only,
+            "pro": {"supported": True, "defaults": self._pro_config({}),
+                    "routing": ["auto", "fixed"], "max_branches": 64,
+                    "max_best_work_passes": 999, "last_result": dict(self._last_pro)},
             "enable_thinking_supported": thinking,
             "include_reasoning_protocols": ["chat"],
             "request_speedups": sorted(speedups),
             "active_speedups": active,
             "load_time_only": ["model", "context_capacity", "device", "offload", "kv_cache_precision",
                                "runtime", "memory_limit", "native_gguf_speculation"],
-            "disabled": ["desktop_history", "desktop_tools", "desktop_trace_logging", "best_work",
+            "disabled": ["desktop_history", "desktop_tools", "desktop_trace_logging",
                          "persistent_api_prompt_cache", "server_side_conversation"],
         }
+
+    def _pro_config(self, overrides):
+        settings = getattr(self.engine, "settings", None)
+        passes = getattr(settings, "best_work_passes", 2)
+        if type(passes) is not int or passes < 1:
+            passes = 2
+        count = (getattr(self.engine, "lossless_speed_options", None) or {}).get("native_branch_count", 1)
+        if type(count) is not int or not 1 <= count <= 64:
+            count = 1
+        # The API must not inherit an enabled desktop Pro toggle. Only an
+        # explicit request can enable it; other Pro preferences remain defaults.
+        return {"routing": "auto", "branch_count": count,
+                "best_work_passes": passes, **self.pro_defaults, "enabled": False, **overrides}
+
+    def _decode_stream(self, backend, options, cancel_event):
+        if backend is self.engine:
+            return self._torch_stream(backend, options, cancel_event)
+        options = dict(options)
+        if "cancelled" in inspect.signature(backend.stream_generate_tokens).parameters:
+            options["cancelled"] = cancel_event.is_set
+        return backend.stream_generate_tokens(**options)
 
     def _validate_execution(self, backend, request):
         from core.local_api import APIError
@@ -282,6 +311,9 @@ class LoadedModelAdapter:
                 raise APIError(503, "Load a text model in Smart AI Studio first.", code="model_not_loaded")
             previous_mode = self._learning_mode()
             requested = getattr(request, "learning_mode", None)
+            if (requested not in (None, "off")
+                    and getattr(self._backend(), "supports_learning_modes", True) is False):
+                raise APIError(400, "The loaded runtime is inference-only.", code="unsupported_option")
             if requested not in (None, "off", previous_mode):
                 switch = getattr(self.engine, "set_learning_implementation", None)
                 if previous_mode not in {"legacy", "managed", "hybrid"} or not callable(switch):
@@ -424,6 +456,16 @@ class LoadedModelAdapter:
             return len(tokenize(prompt.encode("utf-8"), add_bos=True, special=True))
         return None
 
+    @staticmethod
+    def _finish_reason(backend, completion, maximum):
+        from core.generation_metrics import valid_count
+        if getattr(backend, "runtime", None) == "tensorfold_mlx":
+            generation = getattr(backend, "last_generation", {}) or {}
+            stop = generation.get("stop_type")
+            if generation.get("status") == "completed" and stop in {"stop", "length"}:
+                return stop
+        return "length" if valid_count(completion) and completion >= maximum else "stop"
+
     def _context_limit(self, backend):
         values = []
         info = self.selected_model() or {}
@@ -485,7 +527,9 @@ class LoadedModelAdapter:
             defaults = self._sampling_defaults(backend, supported, thinking=starts_thinking)
             temperature = defaults.pop("temperature") if request.temperature is None else request.temperature
             top_p = defaults.pop("top_p") if request.top_p is None else request.top_p
-            # Final Responses metadata reports the parameters actually used.
+            # Remember an explicit temperature before filling in response metadata;
+            # Pro otherwise uses its established search ladder.
+            explicit_temperature = request.temperature
             request.temperature, request.top_p = temperature, top_p
             sampling = {key: value for key, value in defaults.items() if key in supported}
             sampling.update(request.sampling)
@@ -495,19 +539,57 @@ class LoadedModelAdapter:
                                 if key == "seed" or key in backend.sampling_defaults})
             elif mlx:
                 options.update(api_sampling=sampling, api_speedups=dict(request.speedups))
+            pro = self._pro_config(request.pro)
+            if pro["enabled"]:
+                from core.local_api_pro import run_pro
+                self._last_pro = {"status": "running"}
+                try:
+                    result = run_pro(self, backend, request, prompt, prompt_count, maximum,
+                                     context, options, pro, explicit_temperature, cancel_event)
+                except InterruptedError:
+                    self._last_pro = {"status": "cancelled"}
+                    if cancel_event.is_set():
+                        return
+                    raise
+                except Exception:
+                    self._last_pro = {"status": "error"}
+                    raise
+                if cancel_event.is_set():
+                    self._last_pro = {"status": "cancelled"}
+                    return
+                self._last_pro = result["report"]
+                chosen_temp = self._last_pro.get("selected_temperature")
+                if chosen_temp is not None:
+                    request.temperature = chosen_temp
+                # Pro buffers candidates and emits only the selected text. Its
+                # reasoning markers are explicit, even for an implicit template.
+                yield GenerationChunk(prompt_tokens=prompt_count, starts_in_thought=False)
+                text = result["text"]
+                for offset in range(0, len(text), 256):
+                    if cancel_event.is_set():
+                        return
+                    yield GenerationChunk(text=text[offset:offset + 256])
+                if cancel_event.is_set():
+                    return
+                if (result["finish_reason"] == "stop" and valid_count(result["completion_tokens"])
+                        and not result["tool_call"] and not result["stop_sequence"]
+                        and request.learning_mode != "off" and self._learning_ready(backend)):
+                    self._learn_completed_reply(backend, request, result["answer"], False, cancel_event)
+                elif request.learning_mode == "off":
+                    self._last_learning = {"status": "disabled", "mode": "off"}
+                else:
+                    self._last_learning = {"status": "skipped" if self._learning_ready(backend) else "unavailable",
+                                           "mode": self._learning_mode()}
+                yield GenerationChunk(prompt_tokens=prompt_count, completion_tokens=result["completion_tokens"],
+                                      finish_reason=result["finish_reason"])
+                return
+            self._last_pro = {"status": "disabled"}
             yield GenerationChunk(prompt_tokens=prompt_count, starts_in_thought=starts_thinking)
             learn = request.learning_mode != "off" and self._learning_ready(backend)
             raw_parts, raw_size = [], 0
             measurements = RequestMetrics()
-            if backend is self.engine:
-                stream = self._torch_stream(backend, options, cancel_event)
-            else:
-                parameters = inspect.signature(backend.stream_generate_tokens).parameters
-                if "cancelled" in parameters:
-                    options["cancelled"] = cancel_event.is_set
-                # The protocol parser recognizes the model's XML/JSON tool
-                # syntax. Studio's desktop dispatcher is never invoked here.
-                stream = backend.stream_generate_tokens(**options)
+            # Only the harness may execute a model-requested tool.
+            stream = self._decode_stream(backend, options, cancel_event)
             try:
                 with observe_generations(measurements.update):
                     try:
@@ -544,7 +626,7 @@ class LoadedModelAdapter:
             completion = snapshot.get("tokens")
             if cancel_event.is_set():
                 return
-            finish = "length" if valid_count(completion) and completion >= maximum else "stop"
+            finish = self._finish_reason(backend, completion, maximum)
             if finish == "stop" and learn and valid_count(completion):
                 self._learn_completed_reply(backend, request, "".join(raw_parts), starts_thinking, cancel_event)
             elif request.learning_mode == "off":

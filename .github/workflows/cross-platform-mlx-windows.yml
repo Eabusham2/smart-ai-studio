@@ -1,0 +1,57 @@
+name: Windows native MLX CPU
+
+on:
+  push:
+    branches:
+      - cross-platform-mlx
+    paths:
+      - '.github/workflows/cross-platform-mlx-windows.yml'
+      - 'mlx_setup.py'
+      - 'mlx_import_compat.py'
+      - 'tools/setup_mlx.py'
+      - 'pyproject.toml'
+      - 'core/cross_platform_mlx.py'
+      - 'core/*mlx*.py'
+      - 'core/engines/tensorfold*.py'
+      - 'core/turboquant_cache.py'
+      - 'core/kv_cache_manager.py'
+      - 'tests/conftest.py'
+      - 'tests/unit/test_*mlx*.py'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cpu:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      MLX_TEST_DEVICE: cpu
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      SMARTAI_TEST_OFFLINE: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install pytest psutil sympy pydantic-settings 'transformers==5.5.0'
+      - name: Install and probe the published Windows MLX CPU wheels
+        run: python tools/setup_mlx.py --backend cpu
+      - name: Exercise native routing, packed projections, and learning
+        shell: bash
+        run: |
+          python -m pytest -q --junitxml=windows-mlx.xml \
+            tests/unit/test_native_mlx_setup.py \
+            tests/unit/test_cross_platform_mlx.py \
+            tests/unit/test_mlx_learning_implementations.py \
+            tests/unit/test_mlx_packed_terminal.py \
+            tests/unit/test_mlx_publisher_runtime_compat.py \
+            tests/unit/test_tensorfold_mlx_engine.py
+          python - <<'PY'
+          from xml.etree import ElementTree as ET
+          cases = ET.parse("windows-mlx.xml").findall(".//testcase")
+          assert cases and all(case.find("skipped") is None for case in cases), "Native MLX tests must run"
+          PY
