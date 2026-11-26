@@ -432,6 +432,9 @@ class ProReasoningEngine:
                             "context_tokens": int(getattr(self, "_context_budget_tokens", 0) or info.get("default_context") or 32768),
                         }
                     if self.controller_backend.load_model(**load_options):
+                        if getattr(self.controller_backend, "is_mlx_available", False):
+                            # Some saved MLX-VLM runtime names use this controller directly.
+                            self.mlx_engine = self.controller_backend
                         if hasattr(self, "awake_consolidator") and self.awake_consolidator:
                             self.awake_consolidator.engine = self.controller_backend
                         return {
@@ -754,6 +757,7 @@ class ProReasoningEngine:
         for _ in range(3):
             gc.collect()
 
+        self.mlx_engine = None
         self.active_model_name = None
         self.active_model_path = None
         self.active_backend = None

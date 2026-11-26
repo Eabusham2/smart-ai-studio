@@ -1,6 +1,9 @@
 """Native backend installation and explicit original-checkpoint choices."""
+import os
+from pathlib import Path
 from unittest.mock import Mock
 import subprocess
+import venv
 
 import pytest
 
@@ -63,6 +66,21 @@ def test_check_never_installs_and_reuses_locked_backend(monkeypatch, tmp_path):
     assert mlx_setup.install(tmp_path / "python", check_only=True)["backend"] == "cpu"
 
 
+def test_setup_runs_in_the_selected_virtual_environment(tmp_path, monkeypatch):
+    env = tmp_path / "Studio Python"
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(env)
+    python = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    monkeypatch.setattr(mlx_setup, "select_backend", lambda requested: "cpu")
+
+    def read_prefix(interpreter, backend):
+        return subprocess.check_output(
+            [interpreter, "-I", "-c", "import sys; print(sys.prefix)"], text=True
+        ).strip()
+
+    monkeypatch.setattr(mlx_setup, "probe", read_prefix)
+    assert Path(mlx_setup.install(python, "cpu", check_only=True)).resolve() == env.resolve()
+
+
 def test_failed_native_probe_never_marks_setup_ready(monkeypatch, tmp_path):
     (tmp_path / "requirements.txt").write_text("example==1\n")
     runtime = tmp_path / "runtime"; runtime.mkdir()
@@ -86,7 +104,8 @@ def test_explicit_mlx_presets_keep_pinned_original_weights_and_mtp():
         assert "runtime/vision_artifact.py" in row["download_required_files"]
 
 
-def test_import_keeps_explicit_tensorfold_choice_and_artifact_identity():
+def test_import_keeps_explicit_tensorfold_choice_and_artifact_identity(monkeypatch):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: "Windows")
     from core.model_import_entry import make_imported_model_entry
     meta = {"controller_runtime": "mlx_lm", "task": "text", "repo_id": "owner/original",
             "source_revision": "a" * 40, "input_modalities": ["text"], "max_context": 4096}

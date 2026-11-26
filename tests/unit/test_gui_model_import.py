@@ -16,6 +16,7 @@ from unittest.mock import Mock
 
 import pytest
 from core.context_memory import ChatArchive
+from core.model_import_entry import import_runtime_choices
 
 
 class Widgets:
@@ -134,6 +135,7 @@ def gui(tmp_path):
                             for kind in ("Toplevel", "Frame", "Label", "Entry", "Button", "Radiobutton", "StringVar")})
     env = {
         "os": os, "time": time, "tk": tk, "ChatArchive": ChatArchive,
+        "import_runtime_choices": import_runtime_choices,
         "fit_window_to_screen": Mock(),
         "ttk": SimpleNamespace(Combobox=lambda *a, **k: widgets.create("Combobox", *a, **k)),
         "threading": SimpleNamespace(Thread=Thread, Event=threading.Event),
@@ -230,6 +232,19 @@ def open_fetch(gui, tmp_path):
     choice.set("q/chosen-00002-of-00002.gguf")
     runtime.set("Native")
     return gui.widgets.of("Toplevel")[-1], choice, runtime
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Windows", "Linux"])
+def test_model_import_dialogs_offer_only_platform_runtimes(gui, monkeypatch, system):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: system)
+    expected = ["Automatic", "Native", "Strata"]
+    if system != "Darwin":
+        expected.append("TensorFold")
+    for open_dialog in (gui._on_fetch_custom_hf_model_dialog, gui._on_import_custom_model_dialog):
+        open_dialog()
+        runtime = gui.widgets.of("Combobox")[-1]
+        assert list(runtime.options["values"]) == expected
+        assert runtime.get() == "Automatic"
 
 
 def test_fetch_captures_selection_before_worker_and_only_updates_ui_from_queue(gui, tmp_path):

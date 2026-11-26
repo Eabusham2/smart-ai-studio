@@ -5,8 +5,16 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.cross_platform_mlx import tensorfold_platform
 
-_RUNTIME_PREFERENCES = {"auto", "native", "strata", "tensorfold"}
+
+def import_runtime_choices() -> dict[str, str]:
+    choices = {"Automatic": "auto", "Native": "native", "Strata": "strata"}
+    if tensorfold_platform():
+        choices["TensorFold"] = "tensorfold"
+    return choices
+
+
 _STRATA_UNSUPPORTED_TERNARY = {34: "TQ1_0", 35: "TQ2_0", 143: "PTQ1_0"}
 # The pinned Qwen native kernels support these formats. This only chooses an
 # inspection route: the official preflight still checks their tensor roles,
@@ -63,8 +71,14 @@ def make_imported_model_entry(
     """
     info = dict(metadata)
     preference = runtime_preference if runtime_preference is not None else info.get("runtime_preference", "auto")
-    if not isinstance(preference, str) or preference not in _RUNTIME_PREFERENCES:
-        raise ValueError("Choose Automatic, Native, Strata, or TensorFold as the model runtime.")
+    choices = import_runtime_choices()
+    if preference == "tensorfold" and "TensorFold" not in choices:
+        raise ValueError("TensorFold is available only on Windows and Linux.")
+    if not isinstance(preference, str) or preference not in choices.values():
+        message = "Choose Automatic, Native, or Strata as the model runtime."
+        if "TensorFold" in choices:
+            message += " TensorFold is also available for standard text MLX checkpoints."
+        raise ValueError(message)
     runtime = str(info.get("controller_runtime") or info.get("backend_family") or "")
     if preference == "tensorfold":
         if (runtime != "mlx_lm" or set(info.get("input_modalities") or ["text"]) != {"text"}

@@ -19,6 +19,7 @@ class PlatformRouter:
 
     def __init__(self, override_backend: Optional[str] = None):
         self.override_backend = override_backend
+        self.last_error = ""
         self._cached_platform_info: Optional[Dict[str, Any]] = None
 
     def get_platform_info(self) -> Dict[str, Any]:
@@ -122,42 +123,61 @@ class PlatformRouter:
         Returns (backend_name, model_instance, tokenizer_instance)
         """
         info = self.get_platform_info()
+        self.last_error = ""
         backend = info["backend"]
+        device = info["device"]
+        source_options = {}
 
         if backend == "mlx":
             try:
-                import mlx.core as mx
-                from mlx_lm import load
+                from mlx_import_compat import load_mlx_lm
+                load = load_mlx_lm().load
                 print(f"[*] Loading native MLX model from {model_path} (full-precision KV)...")
                 model, tokenizer = run_hf_operation(lambda: load(model_path))
                 return "mlx", model, tokenizer
             except Exception as e:
-                # Packed MLX weights cannot be reinterpreted as Transformers weights.
                 self.last_error = str(e)
                 print(f"[!] Native MLX load failed: {e}.")
-                return "none", None, None
+                if not info["torch_available"]:
+                    return "none", None, None
+                # Preserve the original Transformers fallback only for its own checkpoints.
+                from core.controller_runtime import resolve_local_snapshot
+                from core.model_policy import admit_hf_model, admit_local_model
+                source = resolve_local_snapshot(model_path)
+                if os.path.exists(source):
+                    allowed, _, metadata = admit_local_model(source)
+                    model_path = source
+                else:
+                    allowed, _, metadata = admit_hf_model(model_path)
+                    if allowed:
+                        source_options["revision"] = metadata["repo_revision"]
+                if not allowed or metadata.get("backend_family") != "transformers":
+                    return "none", None, None
+                backend = "torch"
+                device = "cuda" if info["cuda_available"] else "mps" if info["mps_available"] else "cpu"
 
         if backend == "torch":
             try:
                 import torch
                 from transformers import AutoModelForCausalLM, AutoTokenizer
-                device = info["device"]
                 dtype = torch.bfloat16 if (device == "cuda" or (device == "mps" and info["os_family"] == "macos")) else torch.float32
 
                 print(f"[*] Loading PyTorch Model from {model_path} on {device} ({dtype})...")
-                tokenizer = run_hf_operation(lambda: AutoTokenizer.from_pretrained(model_path, trust_remote_code=True))
+                tokenizer = run_hf_operation(lambda: AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, **source_options))
                 model = run_hf_operation(lambda: AutoModelForCausalLM.from_pretrained(
                     model_path,
                     torch_dtype=dtype,
                     device_map="auto" if device == "cuda" else None,
-                    trust_remote_code=True
+                    trust_remote_code=True, **source_options
                 ))
                 if device == "mps":
                     model = model.to("mps")
                 elif device == "cpu":
                     model = model.to("cpu")
+                self.last_error = ""
                 return "torch", model, tokenizer
             except Exception as e:
+                self.last_error = str(e)
                 print(f"[!] PyTorch model load failed: {e}.")
 
         return "none", None, None

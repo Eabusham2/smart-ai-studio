@@ -320,7 +320,7 @@ _EVAL_CACHE_CHILD = r'''
 import json, sys
 from pathlib import Path
 from types import SimpleNamespace
-from core import pro_engine
+from core import cross_platform_mlx, pro_engine
 from eval.app_cross_platform_bridge import AppEvalEngineAdapter
 
 config = json.loads(Path(sys.argv[1]).read_text())
@@ -345,6 +345,7 @@ class FixtureMLX:
 
 pro_engine.MLXReasoningBackend = FixtureMLX
 pro_engine.platform = SimpleNamespace(system=lambda: 'Darwin', machine=lambda: 'arm64')
+cross_platform_mlx.platform = pro_engine.platform
 engine = AppEvalEngineAdapter(config, str(Path(sys.argv[1]).parent))
 assert engine.pro.settings.auto_download and not engine.pro.settings.use_mock
 assert allocated == [str(expected)], allocated

@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      verify_packages:
+        description: 'Build and smoke-test portable/Setup packages without publishing a release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -360,7 +365,7 @@ jobs:
           PY
 
   mlx-learning:
-    name: Native MLX Learning (${{ matrix.device }})
+    name: Native MLX Learning (${{ matrix.os }}, ${{ matrix.device }})
     needs: preflight
     if: needs.preflight.outputs.reuse_green != 'true'
     runs-on: ${{ matrix.os }}
@@ -373,6 +378,8 @@ jobs:
             device: cpu
           - os: macos-latest
             device: metal
+          - os: windows-latest
+            device: cpu
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -386,7 +393,8 @@ jobs:
             if [ "${{ inputs.full_tests }}" = "true" ]; then
               python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
             fi
-            python -m pip install 'mlx[cpu]==0.32.0' 'mlx-lm==0.31.3' 'mlx-vlm==0.6.3' 'transformers==5.5.0'
+            python -m pip install 'transformers==5.5.0'
+            python tools/setup_mlx.py --backend cpu
           else
             python -m pip install 'mlx==0.32.0' 'mlx-lm==0.31.3' 'mlx-vlm==0.6.3' 'transformers==5.5.0'
           fi
@@ -395,12 +403,15 @@ jobs:
           fi
           python -m pip install -r tools/requirements-ci.txt
       - name: Verify actual compute device
+        shell: bash
         env:
           MLX_TEST_DEVICE: ${{ matrix.device }}
         run: |
           python - <<'PY'
           import os
           import mlx.core as mx
+          from mlx_import_compat import load_mlx_lm
+          load_mlx_lm()
           from mlx_lm.models import qwen3_5
           wanted = os.environ['MLX_TEST_DEVICE']
           if wanted == 'metal':
@@ -433,6 +444,16 @@ jobs:
                    if 'test_mlx_packed_terminal' in c.get('classname', '')]
           assert len(cases) >= 2, 'Both packed Bonsai layouts must be exercised'
           assert all(c.find('skipped') is None for c in cases), 'Packed native MLX tests cannot be skipped'
+          all_cases = list(ET.parse('mlx-learning.xml').iter('testcase'))
+          required = ['test_native_mlx_setup', 'test_cross_platform_mlx',
+                      'test_mlx_pro_routing', 'test_mlx_learning_implementations',
+                      'test_tensorfold_mlx_engine']
+          if os.environ['MLX_TEST_DEVICE'] == 'cpu':
+              required.append('test_mlx_publisher_runtime_compat')
+          for module in required:
+              native = [c for c in all_cases if module in c.get('classname', '')]
+              assert native, f'Missing native runtime coverage: {module}'
+              assert all(c.find('skipped') is None for c in native), f'Native runtime coverage cannot be skipped: {module}'
           if os.environ['SMARTAI_CI_FULL_TESTS'] != '1':
               print('Verified focused native packed-model coverage; extended learning checks remain available with full_tests')
               raise SystemExit(0)
@@ -468,7 +489,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SmartAI-mlx-learning-${{ matrix.device }}
+          name: SmartAI-mlx-learning-${{ runner.os }}-${{ matrix.device }}
           path: mlx-learning.xml
           if-no-files-found: error
 
@@ -599,8 +620,10 @@ jobs:
       (needs.preflight.outputs.reuse_green == 'true' ||
        needs.native-build.result == 'success' || needs.reuse-native.result == 'success') &&
       (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.publish_release &&
-        (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))))
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.verify_packages ||
+         (inputs.publish_release &&
+          (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))))))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -659,6 +682,43 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
+
+  verify-packages:
+    name: Verify Packaged Installers (no publish)
+    needs: [test, mlx-learning, package]
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SmartAI-ready-*
+          path: dist
+          merge-multiple: true
+      - name: Validate portable, Setup and Mac installer artifacts
+        shell: bash
+        run: |
+          python tools/verify_release_packages.py dist --commit "$GITHUB_SHA"
+          python -m tools.build_macos_full_installer \
+            --receipt dist/SmartAI-macOS-arm64.receipt.json \
+            --output-dir dist \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag latest \
+            --commit "$GITHUB_SHA"
+          unzip -p dist/Install-SmartAI-macOS-Full.zip Install-SmartAI-macOS-Full.command | /bin/bash -n
+          python tools/verify_release_packages.py dist --commit "$GITHUB_SHA" --include-installer --manifest release-assets.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartAI-verified-package-manifest
+          path: release-assets.json
+          if-no-files-found: error
 
   build-and-release:
     name: Build & Auto-Publish Release Packages

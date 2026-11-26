@@ -140,11 +140,14 @@ def test_native_source_uses_requested_revision_for_first_fetch(tmp_path, monkeyp
     def snapshot_download(**kwargs):
         downloads.append(kwargs)
         return str(exact)
-    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=snapshot_download))
+    monkeypatch.setattr("core.hf_transfer.snapshot_download", snapshot_download)
     backend = types.SimpleNamespace(model_path="fixture/model", model_info=requested)
     assert engine.MLXReasoningBackend._resolve_mlx_source(backend) == str(exact)
+    # The pinned snapshot includes only the selected weights and the loader,
+    # MTP and licensing companions supported by the existing publisher path.
     assert downloads == [{"repo_id": "fixture/model", "revision": "3" * 40,
-                          "allow_patterns": ["config.json", "w.safetensors"]}]
+                          "allow_patterns": ["config.json", "w.safetensors", "runtime/*", "mtp/*",
+                                             "LICENSE", "NOTICE.txt"]}]
 
 
 @pytest.mark.parametrize("package", [False, True])

@@ -13,19 +13,24 @@ def native_mlx_platform():
     return system in {"Linux", "Windows"} and machine in {"x86_64", "amd64", "arm64", "aarch64"}
 
 
+def tensorfold_platform():
+    return platform.system() in {"Windows", "Linux"}
+
+
 def native_mlx_error():
-    """Probe the active device and MLX-LM, including missing shared libraries."""
+    """Check MLX-LM and verify the Windows/Linux native backend can execute."""
     if not native_mlx_platform():
         return "Native MLX needs Apple Silicon or a supported Windows/Linux processor."
     try:
         import mlx.core as mx
         from mlx_import_compat import load_mlx_lm
-        device = mx.default_device()
-        if not mx.is_available(device):
-            return f"MLX reports an unavailable default device: {device}"
-        # Import success alone does not prove a CUDA driver or CPU runtime can execute work.
-        if (mx.array(1) + 1).item() != 2:
-            return f"MLX failed its arithmetic check on {device}"
+        if platform.system() != "Darwin":
+            # Check CPU/CUDA binaries here. Metal execution belongs to the model owner thread.
+            device = mx.default_device()
+            if not mx.is_available(device):
+                return f"MLX reports an unavailable default device: {device}"
+            if (mx.array(1) + 1).item() != 2:
+                return f"MLX failed its arithmetic check on {device}"
         load_mlx_lm()
     except Exception as exc:
         return f"{type(exc).__name__}: {exc}"
@@ -66,7 +71,7 @@ def select_mlx_runtime(controller_runtime, info):
             return "native"
         raise RuntimeError("Install the native MLX runtime using tools/setup_mlx.py in Studio's Python "
                            f"environment. MLX probe failed: {error}")
-    if system not in {"Windows", "Linux"}:
+    if not tensorfold_platform():
         raise RuntimeError("The TensorFold adapter is currently enabled on Windows and Linux only.")
     if not text_pack:
         raise RuntimeError("TensorFold admits standard text MLX checkpoints only. Select the native MLX "

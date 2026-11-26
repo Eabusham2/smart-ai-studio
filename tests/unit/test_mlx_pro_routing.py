@@ -49,7 +49,7 @@ def test_tensorfold_pro_uses_requested_budget_and_exact_runtime_input_count(pro_
     assert backend.last_branch_usage == {"prompt_tokens": 76, "completion_tokens": 4, "total_tokens": 80}
 
 
-@pytest.mark.parametrize("system", ["Linux", "Windows"])
+@pytest.mark.parametrize("system", ["Darwin", "Linux", "Windows"])
 @pytest.mark.parametrize("implementation", ["legacy", "managed", "hybrid"])
 def test_original_native_checkpoint_preserves_selected_learning_implementation(
         pro_module, monkeypatch, tmp_path, system, implementation):
@@ -65,7 +65,8 @@ def test_original_native_checkpoint_preserves_selected_learning_implementation(
     native = Mock(return_value=backend)
     monkeypatch.setattr(pro_module, "MLXReasoningBackend", native)
     monkeypatch.setattr(dispatch, "native_mlx_error", lambda: None)
-    monkeypatch.setattr(dispatch, "platform", SimpleNamespace(system=lambda: system, machine=lambda: "AMD64"))
+    monkeypatch.setattr(dispatch, "platform", SimpleNamespace(
+        system=lambda: system, machine=lambda: "arm64" if system == "Darwin" else "AMD64"))
     monkeypatch.delenv("SMARTAI_MLX_RUNTIME", raising=False)
     monkeypatch.setattr(pro_module, "UniversalControllerBackend", Mock(side_effect=AssertionError("Replaced MLX weights")))
     result = engine.load_model("Selected local MLX", str(tmp_path),
@@ -74,3 +75,20 @@ def test_original_native_checkpoint_preserves_selected_learning_implementation(
     assert native.call_args.kwargs["model_path"] == result["path"] == str(tmp_path)
     assert engine.mlx_engine is engine.awake_consolidator.engine is backend
     assert backend.learning_implementation == implementation and backend.learning_scope is engine.learning_scope
+
+
+@pytest.mark.parametrize("runtime", ["mlx-vlm", "repo_mlx_vlm", "jang-vlm"])
+def test_legacy_mlx_controller_alias_tracks_loaded_owner_until_unload(pro_module, monkeypatch, tmp_path, runtime):
+    engine = engine_for(pro_module)
+    engine.settings.auto_download = False
+    engine.awake_consolidator = SimpleNamespace(engine=None)
+    backend = SimpleNamespace(runtime=runtime, is_mlx_available=True, can_train=False,
+                              load_model=lambda: True, unload_model=Mock())
+    monkeypatch.setattr(pro_module, "UniversalControllerBackend", Mock(return_value=backend))
+    receipt = engine.load_model("Saved MLX controller", str(tmp_path), model_info={"controller_runtime": runtime})
+    assert receipt["status"] == "loaded" and receipt["backend"] == runtime
+    assert receipt["trainable"] is False
+    assert engine.mlx_engine is engine.controller_backend is engine.awake_consolidator.engine is backend
+    assert engine.unload_model()["status"] == "unloaded"
+    assert engine.mlx_engine is engine.controller_backend is None
+    backend.unload_model.assert_called_once()

@@ -1,4 +1,6 @@
 import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -67,3 +69,17 @@ def test_windows_loader_scopes_resource_to_mlx_utils(tmp_path, monkeypatch):
     finally:
         sys.modules.pop("mlx_lm.utils", None)
         sys.modules.pop("mlx_lm", None)
+
+
+def test_metal_hardware_probe_never_allocates_an_array_on_the_calling_thread(monkeypatch):
+    from core.platform import PlatformRouter
+    monkeypatch.setattr(runtime.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(runtime.platform, "machine", lambda: "arm64")
+    mx = SimpleNamespace(default_device=lambda: "gpu", gpu="gpu",
+                         array=Mock(side_effect=AssertionError("unexpected Metal work")))
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setitem(sys.modules, "mlx_lm", SimpleNamespace())
+    info = PlatformRouter().get_platform_info()
+    assert info["mlx_available"] and info["device"] == "mps"
+    mx.array.assert_not_called()

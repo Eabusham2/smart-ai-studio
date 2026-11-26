@@ -142,6 +142,32 @@ def test_original_full_transcript_and_new_paged_view_are_both_available(implemen
     assert ("0" in rendered) == (implementation == "legacy")
     assert len(history) == 140
 
+
+@pytest.mark.parametrize("implementation", ["legacy", "managed", "hybrid"])
+def test_reopening_application_preserves_separate_text_and_media_transcripts(tmp_path, implementation):
+    from core.gui_thinking import transcript_payload, transcript_segments
+    config = {"normal": {"model_type": "text"}, "crack": {"model_type": "text"},
+              "video": {"model_type": "video"}}
+    def new_app():
+        return SimpleNamespace(settings=SimpleNamespace(learning_implementation=implementation,
+                                    database_path=str(tmp_path / "history.sqlite3")),
+                               engine=SimpleNamespace(learning_scope=None), models_config=config)
+    first = new_app()
+    normal = SmartAIChatbotApp._open_tab_history(first, "normal")
+    crack = SmartAIChatbotApp._open_tab_history(first, "crack")
+    video = SmartAIChatbotApp._open_tab_history(first, "video")
+    normal.append({"role": "user", "content": "normal question"})
+    normal.append(transcript_payload([(True, "normal thought"), (False, "normal answer")]))
+    crack.append({"role": "user", "content": "crack question"})
+    video.append({"role": "assistant", "content": "video output", "media": {"kind": "video", "path": "test.mp4"}})
+    second = new_app()
+    reopened = SmartAIChatbotApp._open_tab_history(second, "normal")
+    assert list(reopened) == list(normal)
+    assert (True, "normal thought") in transcript_segments(reopened[-1])
+    assert SmartAIChatbotApp._open_tab_history(second, "crack")[0]["content"] == "crack question"
+    assert SmartAIChatbotApp._open_tab_history(second, "video")[0]["media"]["path"] == "test.mp4"
+
+
 @pytest.mark.parametrize("presented", [False, True])
 def test_legacy_media_result_presented_once_with_text_fallback(presented):
     from unittest.mock import Mock

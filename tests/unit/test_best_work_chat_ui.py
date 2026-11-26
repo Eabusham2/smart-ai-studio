@@ -256,7 +256,7 @@ def test_best_work_selected_progress_uses_winning_branch_events(
 
 def _persist_gui_output(accumulated, history, *, use_pro_branches):
     """Execute the actual GUI text preparation, empty check, and persistence."""
-    from core.gui_thinking import reasoning_segments, transcript_payload
+    from core.gui_thinking import completed_display_segments, transcript_payload
 
     source = (Path(__file__).resolve().parents[2] / 'app_gui.py').read_text(encoding='utf-8')
     method = next(node for node in ast.walk(ast.parse(source))
@@ -284,7 +284,7 @@ def _persist_gui_output(accumulated, history, *, use_pro_branches):
     notices = []
     namespace = {'accumulated': accumulated, 'origin_history': history,
                  'use_pro_branches': use_pro_branches, 'initial_thinking': False,
-                 'reasoning_segments': reasoning_segments, 'transcript_payload': transcript_payload,
+                 'completed_display_segments': completed_display_segments, 'transcript_payload': transcript_payload,
                  'self': SimpleNamespace(cancel_event=threading.Event()),
                  '_post': lambda delay, callback: notices.append(callback)}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),

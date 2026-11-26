@@ -48,9 +48,17 @@ REGRESSION = (
     "test_learning_release_gate.py",
     "test_macos_full_installer.py",
     "test_macos_dependency_bundle.py",
+    "test_dependency_bootstrap_contract.py",
+    "test_original_user_behaviors.py",
+    "test_persistent_context_memory.py",
     "test_ci_selection.py",
 )
 NATIVE = (
+    "test_native_mlx_setup.py",
+    "test_cross_platform_mlx.py",
+    "test_mlx_pro_routing.py",
+    "test_tensorfold_mlx_engine.py",
+    "test_mlx_learning_implementations.py",
     "test_mlx_packed_terminal.py",
     "test_mlx_publisher_runtime_compat.py",
     "test_mlx_thread_owner.py",
@@ -58,7 +66,6 @@ NATIVE = (
     "test_vlm_input_memo.py",
 )
 NATIVE_EXTENDED = (
-    "test_mlx_learning_implementations.py",
     "test_query_reward_adaptation.py",
     "test_native_context_learning.py",
     "test_mlx_context_memory.py",

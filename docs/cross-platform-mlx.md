@@ -38,6 +38,13 @@ python tools/setup_mlx.py --backend auto
 python tools/setup_mlx.py --check
 ```
 
+Portable and Setup releases include the runtime helpers and this repair CLI
+inside the app. Legacy source-only Windows/Linux bundles retain their manual
+MLX setup: from `SmartAI-Windows` or
+`SmartAI-Linux/SmartAI.AppDir/usr/bin`, run `tools/setup_mlx.py` using the
+Studio virtual environment's Python. The setup command preserves that
+interpreter path, including a virtual environment's Python symlink.
+
 To target a different Studio interpreter explicitly:
 
 ```sh
@@ -165,6 +172,20 @@ transform and automatic differentiation. The offline fixtures also exercised
 learning, Windows imports, TensorFold sockets, cancellation and process
 ownership. No model weights were downloaded. See the [exact Windows job](https://github.com/Eabusham2/smart-ai-studio/actions/runs/45789508190/job/139804653483).
 
+The Windows check now belongs to the existing `ci-build-release.yml` workflow
+alongside Linux CPU and macOS Metal. The branch-only Windows workflow has been
+removed. All three native lanes exercise packed arithmetic, runtime selection,
+learning and process ownership. CPU lanes require the publisher's non-Metal
+verification test to run; Metal retains its existing kernel path and dependency
+pins. Missing native coverage fails the job.
+
+A manual run with `full_tests=true`, `verify_packages=true` and
+`publish_release=false` verifies the broader desktop/native suites, builds
+portable and Setup packages on their native operating systems, checks relocated
+first launch and relaunch, and validates the combined receipts and Mac installer.
+The verification job has read-only repository permissions; release publication
+still requires its separate default-branch/version-tag gate.
+
 No physical NVIDIA, AMD or Intel GPU was available for this implementation
 session. A complete 27B Bonsai/CRACK generation, multimodal
 run and MTP performance comparison must still be exercised on the intended
@@ -218,6 +239,36 @@ bounded weight ranges. It does not run during setup or CI and does not load
 an entire 27B model. A SmolLM training attempt exceeded the 40-second check
 limit; only the tiny Qwen training result above is a completed full-graph
 training check from this session.
+
+## Compatibility repair and merge preservation
+
+The repair was reviewed against master commit
+`58298ca402f6bfc7147f39a9febd5023f9795ffd`, which is already an ancestor of
+this branch. All paths from that master snapshot remain present. The recent
+API learning/sampling defaults, explicit API Pro opt-in, Best Work, persistent
+transcripts and thinking, checkpoint-bound legacy context, CogVideoX scheduler
+fix and Canvas web-artifact routing remain in place.
+
+The package builder now ships `mlx_import_compat.py`, `mlx_setup.py`,
+`tools/setup_mlx.py` and this guide in all three layouts. Isolated relocated
+bundle tests exclude the checkout and host packages when importing the helpers;
+the release smoke checks the installed runtime without loading model weights.
+The three-mode application-restart transcript regression has been restored and
+is included in the regular focused gate.
+
+Mac import dialogs keep their supported choices; TensorFold is exposed only on
+Windows/Linux, and Intel Macs do not receive native MLX presets. Legacy MLX-VLM
+controller names retain their `mlx_engine` compatibility reference, which is
+cleared on unload. The public platform loader preserves its Transformers fallback
+for admitted Transformers checkpoints while keeping packed MLX artifacts on
+their declared format. Hardware discovery does not execute Metal arithmetic
+outside the model's owner thread. TensorFold retries use their own download path.
+
+Verification also corrected stale test fixtures that extracted GUI functions
+without their current imported helpers or mocked only the old platform boundary.
+A pre-existing download-manifest test now checks the publisher companion files
+already required by master; production manifest and offline-download behavior
+are unchanged.
 
 ## Upstream references
 

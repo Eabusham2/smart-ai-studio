@@ -10,11 +10,14 @@ from tools.run_ci_tests import ROOT, selected_tests, verify_desktop_report
 
 def test_default_gate_selects_regressions_without_collecting_the_entire_suite():
     selected = selected_tests("regression")
-    assert 20 <= len(selected) <= 43
+    assert 20 <= len(selected) <= 46
     assert all((ROOT / path).is_file() for path in selected)
     assert "tests/unit/test_desktop_app.py" in selected
     assert "tests/unit/test_best_work_tournament.py" in selected
     assert "tests/unit/test_native_speculation.py" in selected
+    assert "tests/unit/test_original_user_behaviors.py" in selected
+    assert "tests/unit/test_persistent_context_memory.py" in selected
+    assert "tests/unit/test_dependency_bootstrap_contract.py" in selected
     assert all(f"tests/unit/test_{name}_runtime.py" in selected
                for name in ("gguf_image", "wan_gguf", "mlx_video"))
     for pattern in ("test_local_api*.py", "test_bonsai25*.py"):
@@ -38,6 +41,19 @@ def test_ci_keeps_full_matrix_opt_in_and_all_native_package_release_gates():
     assert "HF_TOKEN:" not in workflow
     assert "needs.package.result == 'success'" in workflow
     assert "needs.mlx-learning.result == 'success'" in workflow
+    lanes = data["jobs"]["mlx-learning"]["strategy"]["matrix"]["include"]
+    assert {(lane["os"], lane["device"]) for lane in lanes} == {
+        ("ubuntu-latest", "cpu"), ("macos-latest", "metal"), ("windows-latest", "cpu"),
+    }
+    assert not (ROOT / ".github/workflows/cross-platform-mlx-windows.yml").exists()
+    verification = data["jobs"]["verify-packages"]
+    assert verification["permissions"] == {"contents": "read", "actions": "read"}
+    assert verification["if"] == "github.event_name == 'workflow_dispatch' && inputs.verify_packages"
+    commands = "\n".join(step.get("run", "") for step in verification["steps"])
+    assert "tools/verify_release_packages.py" in commands
+    assert "tools.build_macos_full_installer" in commands
+    assert "--include-installer --manifest" in commands
+    assert "gh release" not in commands
 
 
 @pytest.mark.parametrize("fault", ["missing", "skipped"])

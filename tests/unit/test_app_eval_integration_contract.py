@@ -14,6 +14,14 @@ def _src(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+@pytest.fixture
+def apple_mlx_platform(monkeypatch):
+    from core import cross_platform_mlx, pro_engine
+    apple = SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64")
+    monkeypatch.setattr(pro_engine, "platform", apple)
+    monkeypatch.setattr(cross_platform_mlx, "platform", apple)
+
+
 def test_eval_button_is_text_only_and_cancel_is_confirmed():
     src = _src("core/gui_eval_panel.py")
     assert 'text="Eval"' in src
@@ -71,7 +79,8 @@ def test_eval_state_is_isolated_but_native_runtime_cache_remains_shared():
 
 @pytest.mark.parametrize("resume", [False, True])
 @pytest.mark.parametrize("implementation", [None, "legacy", "managed", "hybrid"])
-def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, request, resume, implementation):
+def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, request, resume, implementation,
+                                                        apple_mlx_platform):
     from config.settings import Settings
     from core import pro_engine
     from core.learning_state import LearningStateStore, model_identity
@@ -133,8 +142,8 @@ def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, r
             self.is_mlx_available = False
 
     monkeypatch.setattr(pro_engine, "MLXReasoningBackend", EvalMLX)
-    monkeypatch.setattr(pro_engine, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
-    monkeypatch.setattr(bridge, "get_settings", lambda: Settings(use_mock=False, auto_download=False))
+    monkeypatch.setattr(bridge, "get_settings", lambda: Settings(
+        use_mock=False, auto_download=False, backend="mlx", device="cpu"))
     read = []
     decode = mx.load
 
@@ -176,7 +185,7 @@ def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, r
 @pytest.mark.parametrize("crack", [False, True])
 @pytest.mark.parametrize("auto_download", [False, True])
 def test_pro_load_uses_exact_cached_mlx_path_and_refuses_missing_companions(
-        tmp_path, monkeypatch, crack, auto_download):
+        tmp_path, monkeypatch, crack, auto_download, apple_mlx_platform):
     import importlib
     import inspect
     import threading
@@ -215,7 +224,6 @@ def test_pro_load_uses_exact_cached_mlx_path_and_refuses_missing_companions(
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
-    monkeypatch.setattr(pro_engine, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
     allocated = []
 
     class TinyMLX:

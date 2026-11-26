@@ -2,11 +2,16 @@
 Unit tests for Cross-Platform compatibility (macOS/Apple Silicon, Windows, Linux/Unix).
 """
 
+import json
 import os
 import platform
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
 from config.settings import (
     Settings,
     detect_optimal_backend,
@@ -77,6 +82,41 @@ class TestPlatformCompatibility(unittest.TestCase):
         settings = get_settings()
         db_path = os.path.normpath(settings.database_path)
         self.assertTrue(len(db_path) > 0)
+
+
+@pytest.mark.parametrize("quantization", [None, {"bits": 4, "group_size": 64}])
+def test_mac_mlx_failure_retries_only_transformers_checkpoints(tmp_path, monkeypatch, quantization):
+    # A neutral directory name makes the actual checkpoint metadata decisive.
+    config = {"model_type": "llama"}
+    if quantization:
+        config["quantization"] = quantization
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    header = json.dumps({"weight": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
+    (tmp_path / "model.safetensors").write_bytes(len(header).to_bytes(8, "little") + header + bytes(4))
+    router = PlatformRouter()
+    router._cached_platform_info = {"backend": "mlx", "device": "mps", "os_family": "macos",
+                                    "torch_available": True, "cuda_available": False, "mps_available": True}
+    mlx_load = Mock(side_effect=ValueError("MLX cannot load this model"))
+    monkeypatch.setattr("mlx_import_compat.load_mlx_lm", lambda: SimpleNamespace(load=mlx_load))
+    model, tokenizer = Mock(), Mock()
+    model.to.return_value = model
+    model_factory = Mock(from_pretrained=Mock(return_value=model))
+    tokenizer_factory = Mock(from_pretrained=Mock(return_value=tokenizer))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(
+        AutoModelForCausalLM=model_factory, AutoTokenizer=tokenizer_factory))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(bfloat16="bfloat16", float32="float32"))
+    result = router.route_model_loader(str(tmp_path))
+    mlx_load.assert_called_once_with(str(tmp_path))
+    if quantization:
+        assert result == ("none", None, None)
+        assert "MLX cannot load" in router.last_error
+        model_factory.from_pretrained.assert_not_called()
+        tokenizer_factory.from_pretrained.assert_not_called()
+    else:
+        assert result == ("torch", model, tokenizer) and not router.last_error
+        model.to.assert_called_once_with("mps")
+        model_factory.from_pretrained.assert_called_once_with(
+            str(tmp_path), torch_dtype="bfloat16", device_map=None, trust_remote_code=True)
 
 
 if __name__ == "__main__":

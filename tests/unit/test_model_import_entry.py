@@ -214,3 +214,11 @@ def test_checkpoint_keeps_native_runtime_and_cannot_be_relabelled_as_gguf(tmp_pa
     assert entry["model_path"] == str(tmp_path)
     with pytest.raises(ValueError, match="inspected local GGUF"):
         make_imported_model_entry(info, local_path=str(tmp_path), runtime_preference="strata")
+
+
+def test_mac_import_rejects_explicit_tensorfold_without_editing_the_metadata(monkeypatch):
+    monkeypatch.setattr("core.cross_platform_mlx.platform.system", lambda: "Darwin")
+    info = {"controller_runtime": "mlx_lm", "task": "text"}
+    with pytest.raises(ValueError, match="only on Windows and Linux"):
+        make_imported_model_entry(info, runtime_preference="tensorfold")
+    assert info == {"controller_runtime": "mlx_lm", "task": "text"}

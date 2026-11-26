@@ -10,18 +10,22 @@ import yaml
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/ci-build-release.yml"
 
 
-def release_allowed(event, ref, publish=False, *, reuse=False, failure=None):
+def job_allowed(job, event, ref, publish=False, *, verify_packages=False, reuse=False, failure=None):
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
-    required = jobs["build-and-release"]["needs"]
+    required = jobs[job]["needs"]
     results = {name: SimpleNamespace(result="failure" if name == failure else "success") for name in required}
     results["preflight"].outputs = SimpleNamespace(reuse_green="true" if reuse else "false")
-    expression = jobs["build-and-release"]["if"].replace("&&", " and ").replace("||", " or ")
+    expression = jobs[job]["if"].replace("&&", " and ").replace("||", " or ")
     expression = re.sub(r"needs\.([\w-]+)", lambda m: f'needs["{m[1]}"]', expression)
     return eval("(" + expression + ")", {"__builtins__": {}}, {
         "always": lambda: True, "startsWith": lambda value, prefix: value.startswith(prefix),
         "needs": results, "github": SimpleNamespace(event_name=event, ref=ref),
-        "inputs": SimpleNamespace(publish_release=publish),
+        "inputs": SimpleNamespace(publish_release=publish, verify_packages=verify_packages),
     })
+
+
+def release_allowed(event, ref, publish=False, **kwargs):
+    return job_allowed("build-and-release", event, ref, publish, **kwargs)
 
 
 @pytest.mark.parametrize("publish", [False, True])
@@ -45,6 +49,15 @@ def test_failed_required_learning_or_packaging_gate_prevents_release(failure):
 def test_exact_green_merge_reuse_is_preserved():
     assert release_allowed("push", "refs/heads/master", reuse=True, failure="test")
     assert not release_allowed("push", "refs/heads/master", reuse=True, failure="package")
+
+
+def test_feature_branch_can_verify_packages_without_publishing():
+    ref = "refs/heads/cross-platform-mlx"
+    assert job_allowed("package", "workflow_dispatch", ref, verify_packages=True)
+    assert not job_allowed("package", "workflow_dispatch", ref)
+    assert not release_allowed("workflow_dispatch", ref, verify_packages=True)
+    assert not release_allowed("workflow_dispatch", ref, True, verify_packages=True)
+    assert not release_allowed("workflow_dispatch", "refs/heads/master", verify_packages=True)
 
 
 def test_native_learning_lanes_fail_on_errors_and_require_both_devices():

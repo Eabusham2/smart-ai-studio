@@ -35,7 +35,8 @@ from core.media_engine import MediaGenerationEngine
 from core.media_orchestrator import MediaController
 from core.hf_downloader import is_model_cached_locally, purge_local_model_cache, download_model_from_hf
 from core.model_policy import admit_hf_model, admit_local_model
-from core.model_import_entry import make_imported_model_entry
+from core.cross_platform_mlx import native_mlx_platform
+from core.model_import_entry import import_runtime_choices, make_imported_model_entry
 from core.model_import_download import download_imported_model
 from core.memory_watchdog import SystemMemoryWatchdog
 from core.learning_sources import inspect_learning_source
@@ -534,7 +535,7 @@ class SmartAIChatbotApp:
             }
         }
         from config.media_models import apply_builtin_media_catalog
-        if not is_apple_silicon:
+        if not is_apple_silicon and native_mlx_platform():
             self.models_config.update(cross_platform_mlx_presets())
         apply_builtin_media_catalog(self.models_config)
         self.models_config.update({key: get_strata_preset(key) for key in STRATA_PRESETS})
@@ -1889,7 +1890,8 @@ class SmartAIChatbotApp:
 
         tk.Label(body, text="Runtime:", font=_FONT_SMALL, bg=self.C["bg_hud"],
                  fg=self.C["text_muted"]).pack(anchor="w", pady=(8, 2))
-        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata", "TensorFold"], state="readonly")
+        runtimes = import_runtime_choices()
+        runtime_choice = ttk.Combobox(body, values=tuple(runtimes), state="readonly")
         runtime_choice.set("Automatic")
         runtime_choice.pack(fill="x")
 
@@ -1969,7 +1971,7 @@ class SmartAIChatbotApp:
                 return
 
             selected_file = ent_gguf.get().strip() or None
-            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata", "TensorFold": "tensorfold"}[runtime_choice.get()]
+            selected_runtime = runtimes[runtime_choice.get()]
             fetching["active"] = True
             btn_fetch.configure(state="disabled", text="⏳ Fetching...")
             lbl_status.configure(text=f"Connecting to Hugging Face: {repo_id}", fg=self.C["accent_yellow"])
@@ -2095,7 +2097,8 @@ class SmartAIChatbotApp:
 
         tk.Label(body, text="Runtime:", font=_FONT_SMALL, bg=self.C["bg_hud"],
                  fg=self.C["text_muted"]).pack(anchor="w")
-        runtime_choice = ttk.Combobox(body, values=["Automatic", "Native", "Strata", "TensorFold"], state="readonly")
+        runtimes = import_runtime_choices()
+        runtime_choice = ttk.Combobox(body, values=tuple(runtimes), state="readonly")
         runtime_choice.set("Automatic")
         runtime_choice.pack(fill="x", pady=(2, 8))
 
@@ -2212,7 +2215,7 @@ class SmartAIChatbotApp:
                 return
             is_local = source_var.get() == "local" or os.path.exists(os.path.expanduser(m_path_or_id))
             chosen_file = ent_gguf.get().strip() or None
-            selected_runtime = {"Automatic": "auto", "Native": "native", "Strata": "strata", "TensorFold": "tensorfold"}[runtime_choice.get()]
+            selected_runtime = runtimes[runtime_choice.get()]
             import_busy["active"] = True
             btn_import.configure(state="disabled", text="Inspecting…")
 
@@ -3948,12 +3951,13 @@ class SmartAIChatbotApp:
         model_type = str(target_info.get("model_type", "text") or "text").lower()
         m_path = target_info.get("model_path") or target_info.get("repo_id")
         repo_id = str(target_info.get("repo_id") or "")
-        is_strata = (target_info.get("controller_runtime") == "strata"
-                     or getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "tensorfold_mlx")
+        is_strata = target_info.get("controller_runtime") == "strata"
+        tensorfold_owner = getattr(getattr(self.engine, "controller_backend", None), "runtime", None) == "tensorfold_mlx"
+        is_sidecar = is_strata or tensorfold_owner or target_info.get("mlx_runtime") == "tensorfold"
         cached = self._model_is_cached(target_info)
 
         is_native = getattr(getattr(self.engine, "gguf_backend", None), "runtime", None) == "prism_speculative"
-        if ((is_strata and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False)))
+        if (((is_strata or tensorfold_owner) and (self.is_model_loaded or getattr(self, "_strata_unload_pending", False)))
                 or (is_native and (self.is_model_loaded or getattr(self, "_native_unload_pending", False)))):
             self._unload_strata_async()
             return
@@ -4009,7 +4013,7 @@ class SmartAIChatbotApp:
         load_cancel = threading.Event()
         self._model_load_cancel_event = load_cancel
         self.engine._model_load_cancelled = load_cancel.is_set
-        asynchronous = is_strata or model_type == "audio" or bool(self.root.winfo_viewable())
+        asynchronous = is_sidecar or model_type == "audio" or bool(self.root.winfo_viewable())
         self._update_model_action_buttons()
 
         def load_progress(value, message):
@@ -4135,7 +4139,7 @@ class SmartAIChatbotApp:
                 refresh_context = getattr(self, "_refresh_context_model_note", None)
                 if callable(refresh_context):
                     refresh_context()
-                if is_strata:
+                if is_sidecar:
                     self._update_telemetry()
 
             if asynchronous:

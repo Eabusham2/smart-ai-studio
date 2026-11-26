@@ -141,7 +141,9 @@ print(json.dumps({"status": "ready", "backend": backend, "device": str(mx.defaul
 
 
 def install(python=sys.executable, requested="auto", *, check_only=False):
-    python = str(Path(python).expanduser().resolve())
+    # A venv's interpreter can be a symlink to the base Python. Keep the
+    # venv path so that dependency checks and pip use its site-packages.
+    python = str(Path(python).expanduser().absolute())
     installed = installed_backends(python)
     if requested == "auto" and len(installed) == 1:
         # A portable release's lock already chose a backend. Reuse that backend;

@@ -3,6 +3,9 @@ import subprocess
 import os
 import shutil
 from pathlib import Path
+import sys
+
+import pytest
 
 import build_app
 
@@ -62,6 +65,36 @@ def test_first_launch_installers_generated_for_all_formats(tmp_path, monkeypatch
     assert "-m pip install" in setup
     subprocess.run([_bash(), "-n"], input=(mac / "launch_studio.sh").read_bytes(), check=True)
     subprocess.run([_bash(), "-n"], input=(mac / "Install_Dependencies.command").read_bytes(), check=True)
+
+
+@pytest.mark.parametrize(("builder", "layout"), [
+    (build_app.create_macos_bundle, "SmartAI.app/Contents/Resources/app"),
+    (build_app.create_windows_bundle, "SmartAI-Windows"),
+    (build_app.create_linux_bundle, "SmartAI-Linux/SmartAI.AppDir/usr/bin"),
+])
+def test_relocated_bundle_can_import_mlx_helpers_and_run_setup_cli(tmp_path, monkeypatch, builder, layout):
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
+    monkeypatch.setenv("SMARTAI_PACKAGE_ASSEMBLY_ONLY", "1")
+    monkeypatch.delenv("SMARTAI_EMBEDDED_RUNTIME", raising=False)
+    dist = tmp_path / "build"
+    dist.mkdir()
+    builder(str(dist), "SmartAI")
+    code = dist.rename(tmp_path / "relocated package") / layout
+
+    # Ignore the checkout, PYTHONPATH and installed packages. These two
+    # bootstrap helpers must import even before pip has installed MLX.
+    isolated = [sys.executable, "-I", "-S"]
+    script = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from mlx_import_compat import load_mlx_lm
+from mlx_setup import install
+assert callable(load_mlx_lm) and callable(install)
+"""
+    subprocess.run([*isolated, "-c", script, str(code)], cwd=tmp_path, check=True)
+    result = subprocess.run([*isolated, str(code / "tools/setup_mlx.py"), "--help"],
+                            cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert "--check" in result.stdout
 
 
 def test_release_workflow_packages_python_and_checks_native_launch_before_publication():

@@ -521,3 +521,21 @@ def test_tensorfold_unload_and_retry_keep_the_original_gui_owner(app):
     assert not app._strata_unload_pending
     assert app.active_tab_id == "strata"
     app.engine.load_model.assert_not_called()
+
+
+def test_failed_tensorfold_load_can_retry_without_strata_metadata(app):
+    app.backend.runtime = "tensorfold_mlx"
+    app.backend.is_loaded = False
+    app.is_model_loaded = False
+    app.active_tab_id = "native"
+    app.models_config["native"]["mlx_runtime"] = "tensorfold"
+    # A failed TensorFold owner can remain until the next load. An uncached
+    # checkpoint still goes through its own download, then normal preparation.
+    app._on_toggle_load_unload()
+    app._on_download_hf_model.assert_called_once()
+    app._model_is_cached = lambda _: True
+    app._on_toggle_load_unload()
+    finish_worker(app)
+    assert app.is_model_loaded
+    assert "details" not in app._show_model_loading_popup.call_args.kwargs
+    app.engine.load_model.assert_called_once()

@@ -4,6 +4,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -28,6 +29,20 @@ def verify_macos_identity():
     assert Path(os.fsdecode(buffer.value)).resolve() == bundle / 'Contents/MacOS/applet'
 
 
+def verify_packaged_mlx():
+    """Exercise the installed MLX runtime from the relocated package."""
+    from core.cross_platform_mlx import native_mlx_error, native_mlx_platform
+    if not native_mlx_platform():
+        return
+    if sys.platform == 'darwin':
+        error = native_mlx_error()
+        if error:
+            raise RuntimeError(f'Packaged MLX failed its import check: {error}')
+    else:
+        setup = Path(__file__).resolve().parent / 'tools/setup_mlx.py'
+        subprocess.run([sys.executable, str(setup), '--check'], check=True)
+
+
 def main():
     os.environ.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', RUN_REAL_WEIGHTS_EVAL='0')
     verify_macos_identity()
@@ -37,11 +52,13 @@ def main():
         folder = Path(folder).resolve()
         folder.mkdir(parents=True, exist_ok=True)
         os.environ['SMARTAI_DATA_DIR'] = str(folder)
+        launch = int(os.environ.get('SMARTAI_SMOKE_LAUNCH', '1'))
+        if launch == 1:
+            verify_packaged_mlx()
         import tkinter as tk
         from config.settings import Settings
         from memory.db import EpisodicMemoryDB
         from app_gui import SmartAIChatbotApp
-        launch = int(os.environ.get('SMARTAI_SMOKE_LAUNCH', '1'))
         preferences = folder / 'app_preferences.json'
         if launch == 2:
             assert preferences.is_file(), 'Relaunch did not reuse the first-launch preferences'
