@@ -28,7 +28,7 @@ def preflight_script():
     return textwrap.dedent(workflow_step("Detect reusable native compile artifacts").split("script: |\n", 1)[1])
 
 
-def run_preflight(tmp_path, fault=None):
+def run_preflight(tmp_path, fault=None, event="pull_request"):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required to execute the actual GitHub Actions preflight")
@@ -80,14 +80,16 @@ def run_preflight(tmp_path, fault=None):
     if fault == "failed_native_job":
         jobs[0]["conclusion"] = "failure"
     payload = {"script": preflight_script(), "files": files, "fault": fault, "artifacts": artifacts, "jobs": jobs,
-               "head": HEAD, "old": OLD, "base": BASE}
+               "head": HEAD, "old": OLD, "base": BASE, "event": event}
     (tmp_path / "fixture.json").write_text(json.dumps(payload), encoding="utf-8")
     # A file avoids platform command-line limits for the full workflow fixtures.
     harness = r"""
 const p = require('./fixture.json');
 const outputs = {}, calls = [];
 const context = {repo: {owner: 'owner', repo: 'repo'}, sha: p.head, runId: 42, workflow: 'CI',
+  eventName: p.event, ref: 'refs/heads/feature',
   payload: {pull_request: {number: 16, head: {ref: 'feature', repo: {full_name: 'owner/repo'}}, base: {sha: p.base}}}};
+if (p.event !== 'pull_request') context.payload = {};
 const run = {id: 41, name: 'CI', path: '.github/workflows/ci-build-release.yml', head_sha: p.old, head_branch: 'feature', head_repository: {full_name: 'owner/repo'},
   pull_requests: [{number: 16, base: {sha: p.base}}]};
 if (p.fault === 'other_repository') run.head_repository.full_name = 'fork/repo';
@@ -142,6 +144,15 @@ def test_identical_native_inputs_reuse_both_artifacts_despite_changed_job_gate(t
         {"backend": "metal", "name": "SmartAI-native-metal-macOS-ARM64"},
     ]}
     assert any(method == "ancestry" and args["base"] == BASE and args["head"] == OLD
+               for method, args in result["calls"])
+
+
+def test_manual_verification_reuses_only_its_verified_native_compilations(tmp_path):
+    result = run_preflight(tmp_path, event="workflow_dispatch")
+    assert result["outputs"]["native_reuse_run_id"] == "41"
+    assert any(method == "runs" and args["event"] == "workflow_dispatch"
+               for method, args in result["calls"])
+    assert any(method == "ancestry" and args["base"] == OLD and args["head"] == HEAD
                for method, args in result["calls"])
 
 

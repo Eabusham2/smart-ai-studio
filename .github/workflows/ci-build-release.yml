@@ -168,7 +168,7 @@ jobs:
               const definition = nativeDefinition((await fileAt(workflowPath, context.sha)).text);
               if (!definition) return;
               const { data } = await github.rest.actions.listWorkflowRunsForRepo({
-                owner, repo, branch: sourceBranch, event: pr ? 'pull_request' : 'push', status: 'completed', per_page: 30,
+                owner, repo, branch: sourceBranch, event: pr ? 'pull_request' : context.eventName, status: 'completed', per_page: 30,
               });
               for (const run of data.workflow_runs) {
                 if (run.id === context.runId || run.name !== context.workflow || run.path !== workflowPath ||
@@ -225,7 +225,9 @@ jobs:
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.full_tests && '{"os":["ubuntu-latest","macos-latest","windows-latest"],"python-version":["3.10","3.11"]}' || '{"os":["ubuntu-latest"],"python-version":["3.11"]}') }}
+      # The current Mac media stack requires Python 3.11+. Keep 3.10 coverage
+      # on Windows/Linux and exercise 3.12 instead on Mac, still six lanes.
+      matrix: ${{ fromJSON(inputs.full_tests && '{"os":["ubuntu-latest","macos-latest","windows-latest"],"python-version":["3.10","3.11"],"exclude":[{"os":"macos-latest","python-version":"3.10"}],"include":[{"os":"macos-latest","python-version":"3.12"}]}' || '{"os":["ubuntu-latest"],"python-version":["3.11"]}') }}
 
     steps:
       - name: Checkout Repository

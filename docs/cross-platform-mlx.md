@@ -185,6 +185,9 @@ portable and Setup packages on their native operating systems, checks relocated
 first launch and relaunch, and validates the combined receipts and Mac installer.
 The verification job has read-only repository permissions; release publication
 still requires its separate default-branch/version-tag gate.
+The full desktop matrix uses Python 3.11/3.12 on macOS because the existing
+MFLUX dependency requires 3.11 or newer; Windows/Linux retain 3.10/3.11 coverage.
+This changes CI interpreter selection without changing application dependencies.
 
 No physical NVIDIA, AMD or Intel GPU was available for this implementation
 session. A complete 27B Bonsai/CRACK generation, multimodal
