@@ -426,12 +426,13 @@ smoke check.
 
 | Computer | Full app with dependencies | Smaller Setup download |
 | --- | --- | --- |
-| Apple Silicon Mac | [Mac installer](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Install-SmartAI-macOS-Full.command), or [portable ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-macOS-arm64-portable.zip) | [Mac Setup ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-macOS-arm64-Setup.zip) |
+| Apple Silicon Mac | [Mac installer](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Install-SmartAI-macOS-Full.zip), or [portable ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-macOS-arm64-portable.zip) | [Mac Setup ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-macOS-arm64-Setup.zip) |
 | Windows x64 | [Windows portable ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-Windows-x86_64-portable.zip) | [Windows Setup ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-Windows-x86_64-Setup.zip) |
 | Linux x64 | [Linux portable downloader](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/Download-SmartAI-Linux.sh) | [Linux Setup ZIP](https://github.com/Eabusham2/smart-ai-studio/releases/download/latest/SmartAI-Linux-x86_64-Setup.zip) |
 
-**Mac:** Quit SmartAI, download the installer, then double-click it or run
-`/bin/bash Install-SmartAI-macOS-Full.command`. It downloads and verifies the same
+**Mac:** Quit SmartAI, download the installer ZIP, extract it, then double-click
+the included `Install-SmartAI-macOS-Full.command`. The ZIP preserves the permission
+needed to run the installer. It downloads and verifies the same
 complete portable ZIP linked above and opens the installed app. Fresh installs
 use `~/Applications/SmartAI.app` without administrator credentials, Homebrew,
 Xcode or system Python. Existing copies are updated in their original location

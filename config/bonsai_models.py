@@ -77,6 +77,7 @@ def bonsai_model_info(*, crack: bool = False, is_apple_silicon: bool = True) -> 
     }
     if is_apple_silicon:
         info["download_required_files"] = list(MLX_REQUIRED_FILES)
+        info["download_allow_patterns"] = list(MLX_REQUIRED_FILES)
     return info
 
 

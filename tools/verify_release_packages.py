@@ -4,10 +4,13 @@ import argparse
 import hashlib
 import json
 import re
+import stat
+import zipfile
 
 
 TARGETS = ('Linux-x86_64', 'Windows-x86_64', 'macOS-arm64')
-INSTALLER = 'Install-SmartAI-macOS-Full.command'
+INSTALLER = 'Install-SmartAI-macOS-Full.zip'
+INSTALLER_COMMAND = 'Install-SmartAI-macOS-Full.command'
 LINUX_DOWNLOADER = 'Download-SmartAI-Linux.sh'
 MAX_RELEASE_ASSETS = 19
 HASH = re.compile(r'^[a-f0-9]{64}$')
@@ -92,7 +95,15 @@ def verify(root, commit, *, include_installer=False):
         expected.append(file_record(receipt_path))
     if include_installer:
         path = root / INSTALLER
-        script = path.read_text(encoding='utf-8')
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError('Mac installer ZIP is missing or linked')
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if (len(entries) != 1 or entries[0].filename != INSTALLER_COMMAND
+                    or entries[0].create_system != 3
+                    or entries[0].external_attr >> 16 != stat.S_IFREG | 0o755):
+                raise RuntimeError('Mac installer ZIP must contain one executable command')
+            script = archive.read(entries[0]).decode('utf-8')
         portable_name = 'SmartAI-macOS-arm64-portable.zip'
         portable = next(row for row in expected if row['name'] == portable_name)
         if (f'COMMIT="{commit}"' not in script or f'ARCHIVE_NAME="{portable_name}"' not in script

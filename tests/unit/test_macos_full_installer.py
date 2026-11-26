@@ -15,7 +15,7 @@ import zipfile
 
 import pytest
 
-from tools.build_macos_full_installer import ARCHIVE, INSTALLER, RECEIPT, build
+from tools.build_macos_full_installer import ARCHIVE, INSTALLER, INSTALLER_ZIP, RECEIPT, build
 
 
 COMMIT = '2' * 40
@@ -44,13 +44,31 @@ def _installer(tmp_path):
                 {'name': ARCHIVE, 'size': archive.stat().st_size,
                  'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}]}
     (tmp_path / RECEIPT).write_text(json.dumps(data))
-    script = build(tmp_path / RECEIPT, tmp_path, repo='Eabusham2/smart-ai-studio',
-                   tag='latest', commit=COMMIT)
+    delivery = build(tmp_path / RECEIPT, tmp_path / 'published',
+                     repo='Eabusham2/smart-ai-studio', tag='latest', commit=COMMIT)
+    # A browser saves the ZIP without execute permission. The actual extractor
+    # must restore the command's permission without an extra chmod workaround.
+    delivery.chmod(0o644)
+    extracted = tmp_path / 'downloaded installer with spaces'
+    if sys.platform == 'darwin':
+        subprocess.run(['/usr/bin/ditto', '-x', '-k', str(delivery), str(extracted)], check=True)
+    elif os.name == 'posix':
+        subprocess.run(['unzip', '-q', str(delivery), '-d', str(extracted)], check=True)
+    else:
+        with zipfile.ZipFile(delivery) as packaged:
+            packaged.extractall(extracted)
+    script = extracted / INSTALLER
     return script, data
 
 
-def test_full_installer_is_executable_pinned_and_has_valid_shell_syntax(tmp_path):
+def test_downloaded_installer_zip_preserves_execute_permission_and_pins(tmp_path):
     script, _ = _installer(tmp_path)
+    with zipfile.ZipFile(tmp_path / 'published' / INSTALLER_ZIP) as packaged:
+        assert packaged.namelist() == [INSTALLER]
+        info = packaged.getinfo(INSTALLER)
+        assert info.create_system == 3
+        assert info.external_attr >> 16 == stat.S_IFREG | 0o755
+    assert not (tmp_path / 'published' / INSTALLER).exists()
     content = script.read_text()
     assert COMMIT in content
     assert hashlib.sha256((tmp_path / ARCHIVE).read_bytes()).hexdigest() in content
@@ -81,11 +99,13 @@ def test_full_installer_rejects_mismatched_release_and_shell_injection(tmp_path)
 def test_installer_is_not_emitted_for_corrupt_or_unverified_app_archive(tmp_path):
     script, data = _installer(tmp_path)
     script.unlink()
+    delivery = tmp_path / 'published' / INSTALLER_ZIP
+    delivery.unlink()
     (tmp_path / ARCHIVE).write_bytes(b'corrupted archive')
     with pytest.raises(ValueError, match='verified receipt'):
-        build(tmp_path / RECEIPT, tmp_path, repo='Eabusham2/smart-ai-studio',
+        build(tmp_path / RECEIPT, tmp_path / 'published', repo='Eabusham2/smart-ai-studio',
               tag='latest', commit=COMMIT)
-    assert not script.exists()
+    assert not delivery.exists()
     data['gui_smoke'] = 'failed'
     (tmp_path / RECEIPT).write_text(json.dumps(data))
     with pytest.raises(ValueError, match='verified release'):
@@ -125,7 +145,7 @@ def _system_candidate(script, path):
 def test_native_full_install_cleans_owned_downloads_preserves_data_and_reopens_offline(tmp_path):
     script, data = _installer(tmp_path)
     env, target, downloads = _offline_env(tmp_path, data)
-    result = subprocess.run(['/bin/bash', str(script)], env=env, capture_output=True,
+    result = subprocess.run([str(script)], env=env, capture_output=True,
                             text=True, timeout=120)
     assert result.returncode == 0, (result.stdout, result.stderr)
     code = target / 'Contents/Resources/app'

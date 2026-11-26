@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the canonical portable Mac ZIP with a pinned hash and no extra kit."""
+"""Package an executable Mac installer that pins the canonical portable ZIP."""
 from __future__ import annotations
 
 import argparse
@@ -7,8 +7,11 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import stat
+import zipfile
 
 INSTALLER = "Install-SmartAI-macOS-Full.command"
+INSTALLER_ZIP = "Install-SmartAI-macOS-Full.zip"
 ARCHIVE = "SmartAI-macOS-arm64-portable.zip"
 RECEIPT = "SmartAI-macOS-arm64.receipt.json"
 
@@ -218,6 +221,20 @@ if [ "${SMARTAI_FULL_INSTALL_ONLY:-0}" != 1 ]; then /usr/bin/open "$TARGET"; fi
 '''
 
 
+def write_installer_zip(script, output_dir):
+    """Keep the execute bit through a browser download and Mac extraction."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dest = output_dir / INSTALLER_ZIP
+    entry = zipfile.ZipInfo(INSTALLER)
+    entry.create_system = 3  # Unix permissions, even when built on Windows.
+    entry.external_attr = (stat.S_IFREG | 0o755) << 16
+    entry.compress_type = zipfile.ZIP_DEFLATED
+    with zipfile.ZipFile(dest, "w") as archive:
+        archive.writestr(entry, script.encode("utf-8"))
+    return dest
+
+
 def build(receipt_path, output_dir, *, repo, tag, commit):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid source repository")
@@ -257,12 +274,7 @@ def build(receipt_path, output_dir, *, repo, tag, commit):
         script = script.replace(f"__{key}__", value)
     if re.search(r"__[A-Z_]+__", script):
         raise ValueError("Unexpanded installer placeholder")
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    dest = output_dir / INSTALLER
-    dest.write_text(script, encoding="utf-8", newline="\n")
-    dest.chmod(0o755)
-    return dest
+    return write_installer_zip(script, output_dir)
 
 
 def main():

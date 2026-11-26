@@ -3365,7 +3365,9 @@ class SmartAIChatbotApp:
         self.lbl_model_status.configure(text=f"⬇️ Connecting to HF: {target_info['short_name']}...", fg=self.C["accent_yellow"])
 
         if target_info.get("requires_local_validation") or (
-            target_info.get("download_required_files") and (target_info.get("repo_revision") or target_info.get("source_revision"))
+            target_info.get("download_required_files")
+            and (target_info.get("repo_revision") or target_info.get("source_revision"))
+            and not target_info.get("bonsai25_mtp")
         ):
             pending = getattr(self, "_hf_download_in_progress", set())
             self._hf_download_in_progress = pending
@@ -3483,6 +3485,7 @@ class SmartAIChatbotApp:
                     cancel_event=self.cancel_event,
                     revision=target_info.get("repo_revision"),
                     required_files=target_info.get("download_required_files"),
+                    allow_patterns=target_info.get("download_allow_patterns"),
                 )
                 if res.get("status") != "success":
                     err = res.get("error", "Unknown error")
@@ -3582,6 +3585,9 @@ class SmartAIChatbotApp:
                 return False
         if info.get("download_required_files") and (info.get("repo_revision") or info.get("source_revision")):
             root = info.get("path")
+            if not root and info.get("bonsai25_mtp") and info.get("repo_id"):
+                from core.controller_runtime import resolve_local_snapshot
+                root = resolve_local_snapshot(info["repo_id"], info.get("repo_revision"))
             return bool(root and os.path.isdir(root) and all(
                 os.path.isfile(os.path.join(root, name)) for name in info["download_required_files"]
             ))

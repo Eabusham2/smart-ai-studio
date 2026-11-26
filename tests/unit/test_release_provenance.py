@@ -6,17 +6,21 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import textwrap
+import zipfile
 
 import pytest
 
 from tools.verify_release_packages import file_record, verify
+from tools.build_macos_full_installer import INSTALLER, INSTALLER_ZIP, write_installer_zip
 
 WORKFLOW = Path(__file__).resolve().parents[2] / '.github/workflows/ci-build-release.yml'
 STEP_NAME = 'Verify Release Assets and Update Rolling Tag'
 SHA = 'a' * 40
 OBSOLETE = {
+    'Install-SmartAI-macOS-Full.command',
     'Install-SmartAI-macOS-Full.command.sha256',
     'Reassemble-SmartAI-Linux-x86_64-portable.zip.ps1',
     'Reassemble-SmartAI-Linux-x86_64-portable.zip.sh',
@@ -77,8 +81,8 @@ def package_fixture(root, *, split_linux=True):
             'files': files,
         }))
     mac = file_record(root / 'SmartAI-macOS-arm64-portable.zip')
-    (root / 'Install-SmartAI-macOS-Full.command').write_text(
-        f'#!/bin/bash\nCOMMIT="{SHA}"\nARCHIVE_NAME="{mac["name"]}"\nARCHIVE_SHA256="{mac["sha256"]}"\n')
+    write_installer_zip(
+        f'#!/bin/bash\nCOMMIT="{SHA}"\nARCHIVE_NAME="{mac["name"]}"\nARCHIVE_SHA256="{mac["sha256"]}"\n', root)
     return verify(root, SHA, include_installer=True)
 
 
@@ -97,7 +101,7 @@ def run_release_gate(tmp_path, *, tag='latest', fault=None):
     if fault in {'missing_part', 'missing_package', 'missing_installer'}:
         missing = {'missing_part': 'SmartAI-Linux-x86_64-portable.zip.part001',
                    'missing_package': 'SmartAI-Windows-x86_64-portable.zip',
-                   'missing_installer': 'Install-SmartAI-macOS-Full.command'}[fault]
+                   'missing_installer': INSTALLER_ZIP}[fault]
         assets = [asset for asset in assets if asset['name'] != missing]
     elif fault == 'wrong_digest':
         assets[0]['digest'] = 'sha256:' + '0' * 64
@@ -208,12 +212,28 @@ def test_tag_readback_must_confirm_packaged_sha_before_publication(tmp_path):
 
 
 @pytest.mark.parametrize('name', ['SmartAI-macOS-arm64.dmg', 'SmartAI-native-cpu-Linux-X64.zip',
-                                 'Reassemble-SmartAI-Linux-x86_64-portable.zip.ps1', 'SmartAI-macOS-arm64.bundle.json'])
+                                 'Reassemble-SmartAI-Linux-x86_64-portable.zip.ps1', 'SmartAI-macOS-arm64.bundle.json',
+                                 'Install-SmartAI-macOS-Full.command'])
 def test_build_rejects_reintroduced_public_clutter(tmp_path, name):
     package_fixture(tmp_path / 'dist')
     (tmp_path / 'dist' / name).write_bytes(b'obsolete distribution')
     with pytest.raises(RuntimeError, match='Unexpected files'):
         verify(tmp_path / 'dist', SHA, include_installer=True)
+
+
+def test_release_rejects_installer_zip_without_execute_permission(tmp_path):
+    root = tmp_path / 'dist'
+    package_fixture(root)
+    path = root / INSTALLER_ZIP
+    with zipfile.ZipFile(path) as packaged:
+        script = packaged.read(INSTALLER)
+    info = zipfile.ZipInfo(INSTALLER)
+    info.create_system = 3
+    info.external_attr = (stat.S_IFREG | 0o644) << 16
+    with zipfile.ZipFile(path, 'w') as packaged:
+        packaged.writestr(info, script)
+    with pytest.raises(RuntimeError, match='executable command'):
+        verify(root, SHA, include_installer=True)
 
 
 def test_pipeline_bundles_native_artifacts_and_uploads_only_verified_allowlist():

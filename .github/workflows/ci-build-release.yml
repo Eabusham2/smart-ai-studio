@@ -731,7 +731,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --tag "$RELEASE_TAG" \
             --commit "$GITHUB_SHA"
-          /bin/bash -n dist/Install-SmartAI-macOS-Full.command
+          unzip -p dist/Install-SmartAI-macOS-Full.zip Install-SmartAI-macOS-Full.command | /bin/bash -n
           python tools/verify_release_packages.py dist --commit "$GITHUB_SHA" --include-installer --manifest release-assets.json
       - name: Prepare GitHub Release for Verified Packages
         shell: bash
@@ -768,11 +768,13 @@ jobs:
 
           The app, Python, dependencies and matching original Bonsai 2 native runtime are now packaged together. Bonsai 2.5 and the local API remain available. Models download only when selected inside the app.
 
+          This update fixes the built-in Bonsai 2.5 MLX downloads, including CRACK, while preserving their MTP settings. The Mac installer now comes in a ZIP that preserves its executable permission.
+
           ### Start here
 
           | Your computer | Download | Next step |
           | --- | --- | --- |
-          | Apple Silicon Mac | [Install SmartAI]({base}Install-SmartAI-macOS-Full.command) | Run with `/bin/bash Install-SmartAI-macOS-Full.command`; fresh installs use your own Applications folder without administrator access, and upgrades reuse the existing location. |
+          | Apple Silicon Mac | [Install SmartAI]({base}Install-SmartAI-macOS-Full.zip) | Extract the ZIP, then double-click the included installer; fresh installs use your own Applications folder without administrator access, and upgrades reuse the existing location. |
           | Windows x64 | [Portable app]({base}SmartAI-Windows-x86_64-portable.zip) | Extract the ZIP and run SmartAI.bat. |
           | Linux x64 | [Portable app downloader]({base}{linux}) | Run `bash Download-SmartAI-Linux.sh` when provided; it downloads, verifies and joins the full package automatically. |
 
@@ -839,7 +841,7 @@ jobs:
             const metadataPattern = new RegExp(`^SmartAI-${platform}\\.(?:receipt|bundle)\\.json$`);
             const reassemblerPattern = new RegExp(`^Reassemble-SmartAI-${platform}(?:-(?:portable|Setup))?(?:\\.(?:zip|tar\\.gz))?\\.(?:command|sh|ps1)$`);
             const known = new Set(['SmartAI-Windows.zip', 'SmartAI-Unix-POSIX.tar.gz',
-              'Install-SmartAI-macOS-Full.command', 'Install-SmartAI-macOS-Full.command.sha256', 'Download-SmartAI-Linux.sh']);
+              'Install-SmartAI-macOS-Full.zip', 'Install-SmartAI-macOS-Full.command', 'Install-SmartAI-macOS-Full.command.sha256', 'Download-SmartAI-Linux.sh']);
             function managed(name) {
               return known.has(name) || packagePattern.test(name) || metadataPattern.test(name) || reassemblerPattern.test(name) ||
                 /^SmartAI-native-(?:cpu|metal)-(?:Linux|macOS)-(?:X64|ARM64)\.zip$/.test(name);

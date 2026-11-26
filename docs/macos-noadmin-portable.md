@@ -1,10 +1,12 @@
 # Mac installation without administrator access (Apple Silicon)
 
-Download `Install-SmartAI-macOS-Full.command` from the current release. Quit an
-existing SmartAI session, then double-click the installer or run:
+Download `Install-SmartAI-macOS-Full.zip` from the current release and extract it.
+Quit an existing SmartAI session, then double-click the included
+`Install-SmartAI-macOS-Full.command`. The ZIP preserves its executable permission.
+To run it from Terminal instead, use the command below (for a file in Downloads):
 
 ```sh
-/bin/bash Install-SmartAI-macOS-Full.command
+/bin/bash "$HOME/Downloads/Install-SmartAI-macOS-Full.command"
 ```
 
 The installer downloads the same `SmartAI-macOS-arm64-portable.zip` offered as a
@@ -50,7 +52,9 @@ in the default user Applications folder avoids this requirement. An explicit
 
 Keep room for the downloaded ZIP, extracted app, retained backup and your chosen
 models. The app is unsigned; use macOS's ordinary Open controls if it asks for
-approval. The installer does not disable system security settings.
+approval. The installer does not disable system security settings. If an older,
+loose `.command` download reports that you lack access privileges, use the
+Terminal command above or download and extract the current installer ZIP.
 
 CI checks the canonical archive, relocated first launch and Setup's private
 dependency installation. Mac-specific synthetic installation tests also exercise
