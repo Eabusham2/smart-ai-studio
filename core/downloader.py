@@ -9,7 +9,7 @@ import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config.paths import get_portable_data_dir
-from core.hf_downloader import _snapshot_looks_installed
+from core.hf_downloader import _snapshot_looks_installed, _local_selection_present, resolve_cached_snapshot
 
 
 def get_models_cache_dir() -> str:
@@ -54,21 +54,14 @@ def is_model_available_locally(artifact_id: str) -> Tuple[bool, Optional[str]]:
 
 
 def _selected_local_path(path, filename=None, required_files=None):
-    if not path:
-        return None
-    directory = path if os.path.isdir(path) else os.path.dirname(path)
-    try:
-        if any(not os.path.isfile(os.path.join(directory, name)) or
-               os.path.getsize(os.path.join(directory, name)) == 0 for name in required_files or []):
-            return None
-    except OSError:
+    if not _local_selection_present(path, required_files):
         return None
     if filename:
         if os.path.isdir(path):
             path = os.path.join(path, filename)
         elif os.path.basename(path) != os.path.basename(filename):
             return None
-    return path if _snapshot_looks_installed(path) else None
+    return path if not filename or _snapshot_looks_installed(path) else None
 
 
 def ensure_model_available(
@@ -91,16 +84,17 @@ def ensure_model_available(
 
     local_path = None
     selection_patterns = allow_patterns
-    if selection_patterns is None and filename:
-        selection_patterns = list(dict.fromkeys([filename, *(required_files or [])]))
+    if selection_patterns is None:
+        if filename:
+            selection_patterns = list(dict.fromkeys([filename, *(required_files or [])]))
+        elif required_files is not None:
+            selection_patterns = required_files
     if revision:
         # An arbitrary cached revision or an unversioned portable directory is
         # not proof that the user's pinned selection is installed.
         try:
-            from core.hf_transfer import snapshot_download
-            local_path = snapshot_download(repo_id=repo_or_file_id, revision=revision,
-                                           allow_patterns=selection_patterns, local_files_only=True,
-                                           cancel_event=cancel_event)
+            local_path = resolve_cached_snapshot(repo_or_file_id, revision, allow_patterns=selection_patterns,
+                                                  required_files=required_files)
         except Exception:
             pass
     else:

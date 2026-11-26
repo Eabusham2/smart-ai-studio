@@ -73,28 +73,15 @@ def _control_wait() -> None:
 
 
 def _resolve_cached_path(info: Dict[str, Any]) -> Optional[str]:
-    raw = str(info.get("model_path") or "").strip()
-    gguf_file = str(info.get("gguf_file") or "").strip()
-    if raw and os.path.exists(raw):
-        if os.path.isdir(raw) and gguf_file:
-            candidate = os.path.join(raw, gguf_file)
-            if os.path.isfile(candidate):
-                return candidate
-        return raw
+    from core.hf_downloader import resolve_cached_model_path
 
-    repo_id = str(info.get("repo_id") or "").strip()
-    if not repo_id:
-        return raw or None
-    try:
-        from huggingface_hub import snapshot_download
-        local = snapshot_download(repo_id, local_files_only=True)
-        if gguf_file:
-            candidate = os.path.join(local, gguf_file)
-            if os.path.isfile(candidate):
-                return candidate
-        return local
-    except Exception:
-        return raw or repo_id
+    # A selected download can intentionally omit other repository files and
+    # have no refs/main entry. Keep its exact revision and file manifest when
+    # handing the already installed snapshot to the production backend.
+    resolved = resolve_cached_model_path(info)
+    if resolved:
+        return resolved
+    return str(info.get("model_path") or info.get("path") or info.get("repo_id") or "").strip() or None
 
 
 class AppEvalEngineAdapter:
@@ -138,6 +125,9 @@ class AppEvalEngineAdapter:
                 "App eval could not load the selected text model: "
                 + str(result.get("error") or result.get("message") or result)
             )
+        model_path = result.get("path") or model_path
+        if model_path:
+            info["model_path"] = model_path
 
         self.backend_key = str(self.pro.active_backend or "").lower()
         self.backend = self._active_backend()
@@ -147,7 +137,7 @@ class AppEvalEngineAdapter:
         eval_settings = EngineSettings(enable_awake_ogp_daemon=False)
         eval_settings.db_path = os.path.join(run_dir, "memory.db")
         eval_settings.mlx_model_path = str(
-            info.get("repo_id") or model_path or "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+            model_path or info.get("repo_id") or settings.mlx_model_path
         )
         self.settings = eval_settings
         self.kg = RelationalKnowledgeGraph(eval_settings.db_path)

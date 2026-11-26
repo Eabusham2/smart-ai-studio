@@ -324,3 +324,35 @@ def test_failed_selected_download_never_uses_unrelated_cached_weights(tmp_path, 
     result = download_model_from_hf("owner/model", revision="c" * 40, required_files=["selected.gguf"])
     assert result["status"] == "error"
     assert "Not enough free disk space" in result["error"]
+
+
+def test_selected_cache_ignores_an_unselected_incomplete_format(tmp_path):
+    from core.hf_downloader import resolve_cached_model_path
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_bytes(b"selected weights")
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    (alternate / "model.safetensors.index.json").write_text('{"weight_map":{"x":"missing.safetensors"}}')
+    info = {"path": str(tmp_path), "repo_revision": "a" * 40,
+            "download_required_files": ["config.json", "model.safetensors"]}
+    assert resolve_cached_model_path(info) == str(tmp_path)
+    (tmp_path / "model.safetensors").unlink()
+    assert resolve_cached_model_path(info) is None
+
+
+def test_cache_resolution_keeps_empty_allowlist_and_uses_only_selected_revision(tmp_path, monkeypatch):
+    from core import hf_downloader, hf_transfer
+    wrong = tmp_path / "models--owner--model" / "snapshots" / ("b" * 40)
+    wrong.mkdir(parents=True)
+    (wrong / "model.safetensors").write_bytes(b"other revision")
+    calls = []
+    def absent(**kwargs):
+        calls.append(kwargs)
+        raise FileNotFoundError("exact selection absent")
+    monkeypatch.setattr(hf_transfer, "snapshot_download", absent)
+    monkeypatch.setattr(hf_downloader, "_candidate_hf_cache_roots", lambda: iter([str(tmp_path)]))
+    info = {"repo_id": "owner/model", "repo_revision": "a" * 40, "path": str(wrong),
+            "download_required_files": ["model.safetensors"], "download_allow_patterns": []}
+    assert hf_downloader.resolve_cached_model_path(info) is None
+    assert calls == [{"repo_id": "owner/model", "revision": "a" * 40,
+                      "local_files_only": True, "allow_patterns": []}]

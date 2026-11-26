@@ -224,7 +224,7 @@ class ProReasoningEngine:
                 model_type = "coding"
 
             # Resolve target artifact path.
-            target_path = model_path or info.get("model_path") or info.get("repo_id")
+            target_path = model_path or info.get("model_path") or info.get("path") or info.get("repo_id")
             mmproj_path = None
 
             # Preset artifact mapping
@@ -232,17 +232,17 @@ class ProReasoningEngine:
                 if preset["name"] == model_name or preset["short_name"] == model_name or preset["key"] == model_name:
                     if preset.get("bonsai25_mtp"):
                         from config.bonsai_models import bonsai_model_info
-                        selection = str(model_path or info.get("model_path") or info.get("repo_id") or "").lower()
+                        selection = str(model_path or info.get("model_path") or info.get("path") or info.get("repo_id") or "").lower()
                         apple = platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
                         if "mlx" in selection or "gguf" in selection:
                             use_mlx = "mlx" in selection
                         else:
                             use_mlx = backend == "mlx" or (backend != "gguf" and apple)
                         selected_preset = bonsai_model_info(crack=preset_id == "model_2", is_apple_silicon=use_mlx)
-                        target_path = model_path or info.get("model_path") or info.get("repo_id") or selected_preset["repo_id"]
+                        target_path = model_path or info.get("model_path") or info.get("path") or info.get("repo_id") or selected_preset["repo_id"]
                         info = {**preset, **selected_preset, **info}
                     else:
-                        target_path = model_path or preset.get("default_repo_id", self.settings.mlx_model_path)
+                        target_path = model_path or info.get("model_path") or info.get("path") or preset.get("default_repo_id", self.settings.mlx_model_path)
                         info = {**preset, **info}
                     mmproj_path = preset.get("mmproj")
                     if info.get("input_modalities"):
@@ -321,10 +321,22 @@ class ProReasoningEngine:
             self.active_backend = target_backend
             self.active_model_path = target_path
 
-            # Auto-download check if requested
-            if self.settings.auto_download and controller_runtime != "strata":
-                ensure_res = ensure_model_available(target_path, backend=target_backend, auto_download=False)
-                if ensure_res.get("status") == "not_downloaded" and not os.path.exists(target_path):
+            # Pinned subsets must resolve with their original file manifest,
+            # not as an unfiltered lookup of a repository's default branch.
+            pinned = bool(info.get("repo_revision") or info.get("source_revision"))
+            exact_manifest = pinned and bool(info.get("download_required_files"))
+            if (self.settings.auto_download or exact_manifest) and controller_runtime != "strata":
+                from core.hf_downloader import resolve_cached_model_path
+                lookup = dict(info)
+                if not lookup.get("repo_id"):
+                    lookup["repo_id"] = target_path
+                cached = resolve_cached_model_path(lookup, explicit_path=target_path)
+                if not cached and not pinned:
+                    # Preserve legacy unversioned portable-model locations.
+                    ensure_res = ensure_model_available(target_path, backend=target_backend, auto_download=False)
+                    if ensure_res.get("status") == "ready":
+                        cached = ensure_res.get("path")
+                if not cached and (pinned or not os.path.exists(target_path)):
                     return {
                         "status": "not_downloaded",
                         "model": model_name,
@@ -332,6 +344,10 @@ class ProReasoningEngine:
                         "backend": target_backend,
                         "message": f"Weights for {model_name} ({target_path}) are not downloaded yet."
                     }
+                if cached:
+                    target_path = str(cached)
+                    info["model_path"] = target_path
+                    self.active_model_path = target_path
 
             def load_cancelled():
                 event = getattr(self, "_speed_cancel_event", None)

@@ -269,10 +269,15 @@ def test_snapshot_lookup_uses_exact_model_and_projector_revisions(monkeypatch, t
     (model_dir / info["gguf_file"]).write_bytes(b"fixture")
     (model_dir / info["mmproj_file"]).write_bytes(b"fixture")
     calls = []
-    def resolve(identifier, revision=None):
-        calls.append((identifier, revision))
+    def resolve(identifier, revision=None, **options):
+        calls.append((identifier, revision, options))
         return str(model_dir)
     monkeypatch.setattr("core.controller_runtime.resolve_local_snapshot", resolve)
     resolve_gguf_artifacts(info["repo_id"], info)
-    assert calls == [(info["repo_id"], info["repo_revision"]),
-                     (info["mmproj_repo_id"], info["mmproj_repo_revision"])]
+    selected = [info["gguf_file"]]
+    if not info.get("mmproj_repo_id") or info["mmproj_repo_id"] == info["repo_id"]:
+        selected.append(info["mmproj_file"])
+    assert calls == [(info["repo_id"], info["repo_revision"],
+                      {"allow_patterns": selected, "required_files": selected}),
+                     (info["mmproj_repo_id"], info["mmproj_repo_revision"],
+                      {"allow_patterns": [info["mmproj_file"]], "required_files": [info["mmproj_file"]]})]

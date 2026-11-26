@@ -8,6 +8,7 @@ import os
 import json
 import shutil
 import threading
+from pathlib import PurePosixPath
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
@@ -129,6 +130,116 @@ def _snapshot_looks_installed(path: str) -> bool:
         return False
 
     return has_weights
+
+
+def _local_selection_present(path: str, required_files=None) -> bool:
+    """Validate the selected files, including nested companions and shards."""
+    try:
+        if not path or not os.path.exists(path):
+            return False
+        if required_files is not None:
+            if not required_files or isinstance(required_files, (str, bytes)):
+                return False
+            names = []
+            for name in required_files:
+                if not isinstance(name, str) or not name or "\\" in name or ":" in name:
+                    return False
+                relative = PurePosixPath(name)
+                if relative.is_absolute() or ".." in relative.parts:
+                    return False
+                names.append(relative)
+            directory = path
+            if os.path.isfile(path):
+                # An explicit selected file may live below the snapshot root.
+                # Recover that root only from an exact selected relative suffix.
+                absolute = os.path.abspath(path).replace(os.sep, "/")
+                matching = [name for name in names if absolute.endswith("/" + name.as_posix())]
+                if not matching:
+                    return False
+                selected = max(matching, key=lambda name: len(name.parts))
+                directory = path
+                for _ in selected.parts:
+                    directory = os.path.dirname(directory)
+            if not all(os.path.isfile(os.path.join(directory, *name.parts)) and
+                       os.path.getsize(os.path.join(directory, *name.parts)) > 0 for name in names):
+                return False
+            for name in names:
+                if name.as_posix().endswith(".index.json"):
+                    with open(os.path.join(directory, *name.parts), encoding="utf-8") as handle:
+                        index = json.load(handle)
+                    for shard in set((index.get("weight_map") or {}).values()):
+                        relative = PurePosixPath(shard)
+                        if relative.is_absolute() or ".." in relative.parts or "\\" in shard:
+                            return False
+                        shard_path = os.path.join(directory, *name.parent.parts, *relative.parts)
+                        if not os.path.isfile(shard_path) or os.path.getsize(shard_path) == 0:
+                            return False
+            # Unselected alternate-format indexes in this same commit must not
+            # make a complete selected checkpoint look incomplete.
+            return any(name.as_posix().lower().endswith(_WEIGHT_SUFFIXES) for name in names)
+        return _snapshot_looks_installed(path)
+    except (OSError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def resolve_cached_snapshot(repo_id: str, revision=None, *, allow_patterns=None, required_files=None) -> Optional[str]:
+    """Resolve only the selected local Hub snapshot; never fetch or change refs.
+
+    Recent Hub versions verify cached repository inventories during offline
+    lookup. A filtered download must be looked up with the same selection, or
+    an intentionally omitted README/alternate quant makes it look incomplete.
+    """
+    if not repo_id:
+        return None
+    if allow_patterns is None and required_files is not None:
+        allow_patterns = required_files
+    try:
+        from core.hf_transfer import snapshot_download
+        options = {"repo_id": repo_id, "revision": revision, "local_files_only": True}
+        if allow_patterns is not None:
+            options["allow_patterns"] = allow_patterns
+        # The default API cache is the same one downloads use. Additional known
+        # roots cover a changed HF_HOME/cache setting without trying other pins.
+        cache_roots = list(_candidate_hf_cache_roots())
+        for index, cache_root in enumerate(cache_roots or [None]):
+            try:
+                snapshot = snapshot_download(**options, **({"cache_dir": cache_root} if index else {}))
+                if _local_selection_present(snapshot, required_files):
+                    return os.path.abspath(snapshot)
+            except Exception:
+                continue
+    except (ImportError, OSError, TypeError, ValueError):
+        pass
+    return None
+
+
+def resolve_cached_model_path(model_info: Dict[str, Any], explicit_path=None) -> Optional[str]:
+    """Return the complete selected local model for UI, Eval, and loading."""
+    info = model_info or {}
+    revision = info.get("repo_revision") or info.get("source_revision")
+    pinned = isinstance(revision, str) and len(revision) == 40 and all(c in "0123456789abcdefABCDEF" for c in revision)
+    required = info.get("download_required_files")
+    if required is None and info.get("gguf_file"):
+        required = list(info.get("gguf_files") or [info["gguf_file"]])
+        if info.get("mmproj_file") and info["mmproj_file"] not in required and (not info.get("mmproj_repo_id") or info.get("mmproj_repo_id") == info.get("repo_id")):
+            required.append(info["mmproj_file"])
+    for candidate in (explicit_path, info.get("path"), info.get("model_path")):
+        if not candidate:
+            continue
+        expanded = os.path.abspath(os.path.expanduser(str(candidate)))
+        if os.path.exists(expanded):
+            parts = expanded.replace(os.sep, "/").split("/")
+            # A stale recorded Hub cache path cannot override a newly selected
+            # commit. Explicit custom folders retain their normal semantics.
+            if pinned and any(part == "snapshots" and index > 0 and parts[index - 1].startswith("models--")
+                                and index + 1 < len(parts) and parts[index + 1].lower() != revision.lower()
+                                for index, part in enumerate(parts)):
+                continue
+            return expanded if _local_selection_present(expanded, required) else None
+    repo_id = info.get("repo_id") or explicit_path or info.get("model_path")
+    return resolve_cached_snapshot(repo_id, revision,
+                                   allow_patterns=info.get("download_allow_patterns"),
+                                   required_files=required)
 
 
 def is_model_cached_locally(repo_id: str) -> bool:
@@ -268,7 +379,7 @@ def download_model_from_hf(
                     "error": "Pinned Hugging Face artifact(s) missing: " + ", ".join(missing),
                 }
 
-        if not _snapshot_looks_installed(local_dir):
+        if not _local_selection_present(local_dir, required_files):
             return {
                 "status": "error",
                 "repo_id": repo_id,

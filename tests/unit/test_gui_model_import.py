@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+import json
 import os
 from pathlib import Path
 import queue
@@ -376,7 +377,7 @@ def test_media_install_changes_to_load_and_stays_cached_after_restart(gui, tmp_p
     gui.models_config["media"] = info
     gui.active_tab_id = "media"
     snapshot = tmp_path / info["repo_revision"]
-    monkeypatch.setattr("core.controller_runtime.resolve_local_snapshot", lambda repo_id, revision: str(snapshot))
+    monkeypatch.setattr("core.hf_transfer.snapshot_download", lambda *args, **_selection: str(snapshot))
     gui._update_model_action_buttons()
     assert gui.btn_load_unload.cget("text") == "⬇️ Install"
     assert not gui.btn_reset_reinstall.visible
@@ -386,7 +387,15 @@ def test_media_install_changes_to_load_and_stays_cached_after_restart(gui, tmp_p
         for name in kwargs["required_files"]:
             path = snapshot / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"complete pinned cache fixture")
+            if name.endswith(".index.json"):
+                shards = [Path(candidate).name for candidate in kwargs["required_files"]
+                          if Path(candidate).parent == Path(name).parent
+                          and candidate.endswith((".safetensors", ".bin"))]
+                assert shards, "The selected index needs its real shard filenames"
+                path.write_text(json.dumps({"weight_map": {f"tensor_{i}": shard
+                                                           for i, shard in enumerate(shards)}}))
+            else:
+                path.write_bytes(b"complete pinned cache fixture")
         return {"status": "success", "local_dir": str(snapshot)}
     gui.env["download_model_from_hf"].side_effect = complete
     gui.btn_load_unload.invoke()

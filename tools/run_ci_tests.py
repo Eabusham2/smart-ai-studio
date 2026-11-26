@@ -37,6 +37,7 @@ REGRESSION = (
     "test_app_updates.py",
     "test_app_update_ui.py",
     "test_app_update_packaging.py",
+    "test_app_eval_integration_contract.py",
     "test_update_installer.py",
     "test_portable_runtime.py",
     "test_portable_download.py",

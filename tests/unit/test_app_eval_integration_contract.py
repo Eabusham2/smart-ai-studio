@@ -86,7 +86,7 @@ def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, r
     source = tmp_path / "local-mlx"
     source.mkdir()
     (source / "model.safetensors").write_bytes(b"fixed base")
-    info = {"name": "Local MLX", "model_path": str(source), "controller_runtime": "mlx_lm"}
+    info = {"name": "Local MLX", "repo_id": "owner/eval-fixture", "model_path": str(source), "controller_runtime": "mlx_lm"}
     identity = model_identity(str(source), info)
 
     def commit(store, value):
@@ -159,6 +159,8 @@ def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, r
     bridge.install(SimpleNamespace(_model_context_limit=lambda engine: None), phase4, Suite)
     suite = Suite()
     try:
+        assert suite.engine.settings.mlx_model_path == str(source)
+        assert suite.engine.model_info["model_path"] == str(source)
         assert suite.engine.backend.learning_state.root == run_store.root
         assert suite.engine.backend.adapter_path == run_store.current_checkpoint()
         assert read == ([run_store.current_checkpoint()] if resume else [])
@@ -169,6 +171,84 @@ def test_mlx_eval_never_reads_or_writes_desktop_weights(tmp_path, monkeypatch, r
         assert run_store.current_manifest() == run_manifest
     finally:
         suite.engine.unload_model()
+
+
+@pytest.mark.parametrize("crack", [False, True])
+@pytest.mark.parametrize("auto_download", [False, True])
+def test_pro_load_uses_exact_cached_mlx_path_and_refuses_missing_companions(
+        tmp_path, monkeypatch, crack, auto_download):
+    import importlib
+    import inspect
+    import threading
+    import huggingface_hub as hub_api
+    from huggingface_hub import constants, file_download
+    from config.bonsai_models import bonsai_model_info
+    from core import hf_transfer, pro_engine
+
+    # Transfer-fault tests intentionally substitute Hub implementations. Exercise
+    # the installed Hub API here and restore every policy alias on teardown.
+    snapshots = importlib.import_module("huggingface_hub._snapshot_download")
+    for module, names in ((hub_api, ("hf_hub_download", "snapshot_download")),
+                          (file_download, ("hf_hub_download",)),
+                          (snapshots, ("snapshot_download", "hf_hub_download"))):
+        for name in names:
+            monkeypatch.setattr(module, name, getattr(module, name))
+    for name in ("_hub", "_original_snapshot", "_original_file"):
+        monkeypatch.setattr(hf_transfer, name, None)
+    importlib.reload(file_download)
+    importlib.reload(snapshots)
+    hub_api.hf_hub_download = file_download.hf_hub_download
+    hub_api.snapshot_download = snapshots.snapshot_download
+
+    info = bonsai_model_info(crack=crack)
+    hub = tmp_path / "shared cache with spaces"
+    snapshot = hub / ("models--" + info["repo_id"].replace("/", "--")) / "snapshots" / info["repo_revision"]
+    for relative in info["download_required_files"]:
+        path = snapshot / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"{}" if relative.endswith(".json") else b"tiny selected artifact")
+    # A commit-pinned, filtered install intentionally has neither refs/main nor
+    # every optional repository file. No real model allocation/network occurs.
+    assert not (snapshot.parent.parent / "refs/main").exists()
+    assert not (snapshot / "README.md").exists()
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    monkeypatch.setattr(pro_engine, "platform", SimpleNamespace(system=lambda: "Darwin", machine=lambda: "arm64"))
+    allocated = []
+
+    class TinyMLX:
+        def __init__(self, model_path, adapter_path=None, model_info=None):
+            self.model_path = model_path
+            self.model_info = model_info
+            self.model = None
+            self.is_mlx_available = True
+            allocated.append(self)
+
+        def load_model(self):
+            self.model = object()
+            return True
+
+    monkeypatch.setattr(pro_engine, "MLXReasoningBackend", TinyMLX)
+    engine = pro_engine.ProReasoningEngine.__new__(pro_engine.ProReasoningEngine)
+    engine._model_lock = threading.Lock()
+    engine.unload_model = lambda: {"status": "unloaded"}
+    engine.settings = SimpleNamespace(use_mock=False, auto_download=auto_download, learning_implementation="legacy")
+    engine.lora_adapter_path = str(tmp_path / "eval adapter.safetensors")
+    load = inspect.unwrap(pro_engine.ProReasoningEngine.load_model)
+    result = load(engine, info["name"], model_info=info)
+    assert result["status"] == "loaded", result
+    assert result["path"] == engine.active_model_path == str(snapshot)
+    assert allocated[-1].model_path == str(snapshot)
+    assert allocated[-1].model_info["repo_revision"] == info["repo_revision"]
+    assert allocated[-1].model_info["mtp_file"] == info["mtp_file"]
+    assert allocated[-1].model_info["mtp_sha256"] == info["mtp_sha256"]
+
+    (snapshot / "runtime/mtp_artifact.py").unlink()
+    result = load(engine, info["name"], model_info={**info, "path": str(snapshot)})
+    assert result["status"] == "not_downloaded", result
+    assert len(allocated) == 1, "An incomplete pinned model reached the MLX loader"
 
 
 def test_canonical_suite_order_and_standalone_packaging_are_preserved():

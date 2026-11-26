@@ -778,6 +778,8 @@ jobs:
 
           The app, Python, dependencies and matching original Bonsai 2 native runtime are now packaged together. Bonsai 2.5 and the local API remain available. Models download only when selected inside the app.
 
+          **Model cache correction:** completed Bonsai 2.5 and CRACK downloads now resolve the same pinned files in the Install/Load button, model loader and Eval subprocess. Existing complete downloads are reused after restarting, including snapshots without a default-branch cache reference. Download Complete is shown only after the app verifies the selected files.
+
           This update fixes interrupted model downloads, exact media component selection, and installed-model detection after restarting. One model button now handles Install, Cancel, Load and Unload.
 
           Image, video and audio generation use their real runtimes and validated output files. Generated media opens in large previews with playback, expansion and Save As; generation progress uses real steps. Component-only presets that need an unintegrated runtime explain what is missing instead of reporting a false installation or generating a placeholder.

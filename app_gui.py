@@ -3460,7 +3460,15 @@ class SmartAIChatbotApp:
         def _finish(result):
             pending.discard(target_id)
             events.pop(target_id, None)
-            if self.models_config.get(target_id) is not target_info or self.active_tab_id != target_id:
+            if self.models_config.get(target_id) is not target_info:
+                if self.active_tab_id in self.models_config:
+                    self._update_model_action_buttons()
+                return
+            if result.get("status") == "success" and not download_cancel.is_set() and result.get("local_dir"):
+                # Keep the exact snapshot returned by the completed transfer.
+                # A pinned download need not create the Hub's refs/main entry.
+                target_info["path"] = str(result["local_dir"])
+            if self.active_tab_id != target_id:
                 if self.active_tab_id in self.models_config:
                     self._update_model_action_buttons()
                 return
@@ -3502,7 +3510,7 @@ class SmartAIChatbotApp:
                     if result.get("status") != "success":
                         return result
                     if mmproj_file and mmproj_repo_id and mmproj_repo_id != repo_id:
-                        result = download_model_from_hf(
+                        projector_result = download_model_from_hf(
                             mmproj_repo_id,
                             progress_callback=lambda msg, pct: _progress(msg, 80.0 + pct * 0.20),
                             cancel_event=download_cancel,
@@ -3510,6 +3518,8 @@ class SmartAIChatbotApp:
                             required_files=[mmproj_file],
                             revision=target_info.get("mmproj_repo_revision"),
                         )
+                        if projector_result.get("status") != "success":
+                            return projector_result
                     return result
                 return download_model_from_hf(
                     repo_id,
@@ -3529,6 +3539,14 @@ class SmartAIChatbotApp:
         threading.Thread(target=_worker, name="studio-preset-download", daemon=True).start()
 
     def _on_download_hf_completed(self, target_info: Dict[str, Any]):
+        if not self._model_is_cached(target_info):
+            location = target_info.get("path") or target_info.get("model_path") or target_info.get("repo_id")
+            self._on_download_hf_failed(
+                target_info,
+                f"The transfer finished, but the selected model files could not be verified at `{location}`. "
+                "Downloaded cache files were kept.",
+            )
+            return
         self._append_ai_message(
             f"✓ **Download Complete**: `{target_info['name']}` is ready.\n\n"
             f"• Click **'⚡ Load'** to initialize the selected model with its compatible runtime."
@@ -3625,14 +3643,8 @@ class SmartAIChatbotApp:
             except (OSError, RuntimeError, TypeError, ValueError):
                 return False
         if info.get("download_required_files") and (info.get("repo_revision") or info.get("source_revision")):
-            root = info.get("path")
-            if not root and (info.get("bonsai25_mtp") or info.get("builtin_media_preset")) and info.get("repo_id"):
-                from core.controller_runtime import resolve_local_snapshot
-                root = resolve_local_snapshot(info["repo_id"], info.get("repo_revision"))
-            return bool(root and os.path.isdir(root) and all(
-                os.path.isfile(os.path.join(root, name)) and os.path.getsize(os.path.join(root, name)) > 0
-                for name in info["download_required_files"]
-            ))
+            from core.hf_downloader import resolve_cached_model_path
+            return resolve_cached_model_path(info) is not None
         path = info.get("model_path") or info.get("repo_id")
         return (is_model_cached_locally(info["repo_id"]) if info.get("repo_id")
                 else bool(path and os.path.exists(path)))

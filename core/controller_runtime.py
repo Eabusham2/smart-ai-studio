@@ -90,25 +90,32 @@ def _bonsai2_runtime(info: Dict[str, Any], model_path: str) -> str:
 register_runtime_family("bonsai2_hadamard", _bonsai2_runtime)
 
 
-def resolve_local_snapshot(identifier: str, revision: Optional[str] = None) -> str:
-    """Resolve a local path or an already-downloaded HF snapshot without networking."""
+def resolve_local_snapshot(identifier: str, revision: Optional[str] = None, *,
+                           allow_patterns=None, required_files=None) -> str:
+    """Resolve a local path or selected Hub snapshot without networking."""
+    from core.hf_downloader import _local_selection_present, resolve_cached_snapshot
     value = os.path.abspath(os.path.expanduser(identifier)) if os.path.exists(os.path.expanduser(identifier)) else identifier
     if os.path.exists(value):
-        return value
-    try:
-        from huggingface_hub import snapshot_download
-        return snapshot_download(repo_id=identifier, revision=revision, local_files_only=True)
-    except Exception:
-        return identifier
+        return value if required_files is None or _local_selection_present(value, required_files) else identifier
+    return resolve_cached_snapshot(identifier, revision, allow_patterns=allow_patterns,
+                                   required_files=required_files) or identifier
 
 
 def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
     """Resolve exact pinned GGUF language/projector artifacts, failing closed for built-ins."""
     info = model_info or {}
-    root = resolve_local_snapshot(identifier, info.get("repo_revision"))
     explicit_model = str(info.get("gguf_file") or "").strip()
     explicit_mmproj = str(info.get("mmproj_file") or "").strip()
     mmproj_repo_id = str(info.get("mmproj_repo_id") or "").strip()
+    required = list(info.get("download_required_files") or info.get("gguf_files") or ([explicit_model] if explicit_model else []))
+    if explicit_mmproj and explicit_mmproj not in required and (not mmproj_repo_id or mmproj_repo_id == info.get("repo_id")):
+        required.append(explicit_mmproj)
+    patterns = info.get("download_allow_patterns")
+    if patterns is None:
+        patterns = required or None
+    root = resolve_local_snapshot(identifier, info.get("repo_revision") or info.get("source_revision"),
+                                   allow_patterns=patterns,
+                                   required_files=required or None)
 
     def exact_artifact(directory, relative_name):
         relative = PurePosixPath(relative_name)
@@ -173,7 +180,8 @@ def resolve_gguf_artifacts(identifier: str, model_info: Optional[Dict[str, Any]]
         if not mmproj_repo_id:
             projector_root = str(info.get("path") or (Path(root).parent if os.path.isfile(root) else root))
         else:
-            projector_root = resolve_local_snapshot(projector_root_id, info.get("mmproj_repo_revision"))
+            projector_root = resolve_local_snapshot(projector_root_id, info.get("mmproj_repo_revision"),
+                                                      allow_patterns=[explicit_mmproj], required_files=[explicit_mmproj])
         if os.path.isfile(projector_root):
             candidate = Path(projector_root)
             if candidate.name == PurePosixPath(explicit_mmproj).name:
@@ -255,7 +263,9 @@ class UniversalControllerBackend:
         from mlx_vlm import generate, load
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        source = resolve_local_snapshot(self.model_path)
+        source = resolve_local_snapshot(self.model_path, self.model_info.get("repo_revision") or self.model_info.get("source_revision"),
+                                        allow_patterns=self.model_info.get("download_allow_patterns"),
+                                        required_files=self.model_info.get("download_required_files"))
         loaded = run_hf_operation(lambda: load(source))
         if not isinstance(loaded, tuple) or len(loaded) < 2:
             raise RuntimeError("mlx-vlm loader did not return model + processor")
@@ -283,7 +293,9 @@ class UniversalControllerBackend:
                 "preset in this release, or use the older checkpoint in its compatible "
                 "vMLX installation. Generic MLX/JANG loaders cannot safely execute it."
             ) from exc
-        source = resolve_local_snapshot(self.model_path)
+        source = resolve_local_snapshot(self.model_path, self.model_info.get("repo_revision") or self.model_info.get("source_revision"),
+                                        allow_patterns=self.model_info.get("download_allow_patterns"),
+                                        required_files=self.model_info.get("download_required_files"))
         loaded = run_hf_operation(lambda: load_jang_vlm_model(source))
         if not isinstance(loaded, tuple) or len(loaded) < 2:
             raise RuntimeError("JANG VLM loader did not return model + processor")
@@ -299,7 +311,9 @@ class UniversalControllerBackend:
         return self.is_loaded
 
     def _load_repo_mlx_vlm(self) -> bool:
-        source = resolve_local_snapshot(self.model_path)
+        source = resolve_local_snapshot(self.model_path, self.model_info.get("repo_revision") or self.model_info.get("source_revision"),
+                                        allow_patterns=self.model_info.get("download_allow_patterns"),
+                                        required_files=self.model_info.get("download_required_files"))
         if not os.path.isdir(source):
             raise RuntimeError("Specialized MLX-VLM runtime requires the downloaded model snapshot")
 
