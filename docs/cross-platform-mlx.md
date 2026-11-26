@@ -157,11 +157,16 @@ The MLX numerical tests exercise the actual CPU runtime with packed
 Fisher accumulation, learning updates and adapter persistence. They do not
 replace full-size hardware testing.
 
-The dedicated Windows CPU workflow installs the pinned native runtime, runs
-its arithmetic/import probe, and executes offline numerical and process
-fixtures. It fails if any selected test is skipped; check its result on the
-reviewed commit. No physical NVIDIA, AMD or Intel GPU was available for this
-implementation session. A complete 27B Bonsai/CRACK generation, multimodal
+The dedicated Windows x64 / Python 3.12 CPU workflow passed on implementation
+commit `4e863e87d75af81cc3688bf347bf7fc138a13c27`: **60 tests passed with zero
+skips** in 18.09 seconds. It installed MLX 0.32.5, MLX-LM 0.31.3 and MLX-VLM
+0.6.3 and successfully probed packed matrix multiplication, the Hadamard
+transform and automatic differentiation. The offline fixtures also exercised
+learning, Windows imports, TensorFold sockets, cancellation and process
+ownership. No model weights were downloaded. See the [exact Windows job](https://github.com/Eabusham2/smart-ai-studio/actions/runs/45789508190/job/139804653483).
+
+No physical NVIDIA, AMD or Intel GPU was available for this implementation
+session. A complete 27B Bonsai/CRACK generation, multimodal
 run and MTP performance comparison must still be exercised on the intended
 hardware. Do not infer GPU speedups or complete 27B acceptance from CPU checks.
 
