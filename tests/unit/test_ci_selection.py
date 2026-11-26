@@ -50,7 +50,10 @@ def test_ci_keeps_full_matrix_opt_in_and_all_native_package_release_gates():
     assert not (ROOT / ".github/workflows/cross-platform-mlx-windows.yml").exists()
     verification = data["jobs"]["verify-packages"]
     assert verification["permissions"] == {"contents": "read", "actions": "read"}
-    assert verification["if"] == "github.event_name == 'workflow_dispatch' && inputs.verify_packages"
+    assert verification["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.verify_packages && "
+        "!cancelled() && needs.test.result == 'success' && "
+        "needs.mlx-learning.result == 'success' && needs.package.result == 'success'")
     commands = "\n".join(step.get("run", "") for step in verification["steps"])
     assert "tools/verify_release_packages.py" in commands
     assert "tools.build_macos_full_installer" in commands

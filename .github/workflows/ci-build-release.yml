@@ -690,7 +690,12 @@ jobs:
   verify-packages:
     name: Verify Packaged Installers (no publish)
     needs: [test, mlx-learning, package]
-    if: github.event_name == 'workflow_dispatch' && inputs.verify_packages
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.verify_packages &&
+      !cancelled() &&
+      needs.test.result == 'success' &&
+      needs.mlx-learning.result == 'success' &&
+      needs.package.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
